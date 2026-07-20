@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Femto Bolt Accelerometer Calibration</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Orbbec Femto Bolt</p>
+        <h1>Six-position accelerometer calibration</h1>
+        <p class="subtle">Keep the workspace and camera Provider running. Each accepted pose is averaged for two seconds from raw shared-memory IMU samples.</p>
+      </div>
+      <div id="connectionBadge" class="badge neutral">Connecting</div>
+    </header>
+
+    <section class="panel status-grid">
+      <div><span>Device</span><strong id="deviceName">—</strong></div>
+      <div><span>Serial</span><strong id="serialNumber">—</strong></div>
+      <div><span>Current calibration</span><strong id="calibrationStatus">—</strong></div>
+      <div><span>Config path</span><strong id="calibrationPath" class="path">—</strong></div>
+    </section>
+
+    <section class="panel live-panel">
+      <div>
+        <h2>Live raw acceleration</h2>
+        <p class="subtle">At rest, the dominant axis should approach ±9.80665 m/s². Use the live values to find each requested orientation.</p>
+      </div>
+      <div class="live-values">
+        <div><span>X</span><strong id="liveX">—</strong></div>
+        <div><span>Y</span><strong id="liveY">—</strong></div>
+        <div><span>Z</span><strong id="liveZ">—</strong></div>
+        <div><span>|a|</span><strong id="liveMagnitude">—</strong></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-heading">
+        <div>
+          <h2>Capture the six orientations</h2>
+          <p class="subtle">For each card, rotate the camera until the named raw axis is strongly positive or negative, hold it still, then capture.</p>
+        </div>
+        <button id="resetButton" class="secondary" type="button">Reset captures</button>
+      </div>
+      <div id="poseGrid" class="pose-grid"></div>
+    </section>
+
+    <section class="panel solve-panel">
+      <div>
+        <h2>Solve and save</h2>
+        <p class="subtle">The utility solves the six first-order equations, refines the result against the original nonlinear gravity-norm equations, backs up the previous JSON, writes the device-specific file, and asks the camera Provider to reload it.</p>
+      </div>
+      <button id="solveButton" class="primary" type="button" disabled>Solve and write calibration</button>
+    </section>
+
+    <section id="resultPanel" class="panel hidden">
+      <h2>Calibration result</h2>
+      <div class="result-grid">
+        <div><span>Scale X / Y / Z</span><strong id="resultScale">—</strong></div>
+        <div><span>Offset X / Y / Z (m/s²)</span><strong id="resultOffset">—</strong></div>
+        <div><span>RMS magnitude residual</span><strong id="resultRms">—</strong></div>
+        <div><span>Maximum residual</span><strong id="resultMax">—</strong></div>
+        <div><span>Condition number</span><strong id="resultCondition">—</strong></div>
+        <div><span>Saved revision</span><strong id="resultRevision">—</strong></div>
+      </div>
+      <p id="writeMessage" class="notice"></p>
+    </section>
+
+    <p id="message" class="message" aria-live="polite"></p>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

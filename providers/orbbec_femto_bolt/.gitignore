@@ -1,0 +1,5 @@
+native_host/build/
+python/*.egg-info/
+python/**/__pycache__/
+captures/*
+!captures/.gitkeep

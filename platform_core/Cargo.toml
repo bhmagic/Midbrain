@@ -1,0 +1,3 @@
+[workspace]
+members = ["manager", "fabric"]
+resolver = "2"

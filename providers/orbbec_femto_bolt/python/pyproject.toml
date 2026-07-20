@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orbbec-femto-provider"
+version = "0.3.1"
+description = "Orbbec Femto Bolt Resource Provider with device calibration GUI and transform publication"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "httpx>=0.27,<1",
+  "Pillow>=10,<13",
+  "numpy>=2.0,<3"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["orbbec_femto_provider*"]
+
+[tool.setuptools.package-data]
+orbbec_femto_provider = ["calibration_web/*.html", "calibration_web/*.css", "calibration_web/*.js"]

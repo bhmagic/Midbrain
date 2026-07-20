@@ -1,0 +1,341 @@
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+from .fabric_client import FabricClient
+from .manager_client import ManagerClient
+
+
+@dataclass(frozen=True)
+class InitializationResult:
+    skill_id: str
+    session_epoch: str
+    world_frame: str
+    body_frame: str
+    selected_providers: dict[str, str]
+    reused_physical_provider: bool
+    motion_inhibit: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "skill_id": self.skill_id,
+            "session_epoch": self.session_epoch,
+            "world_frame": self.world_frame,
+            "body_frame": self.body_frame,
+            "selected_providers": self.selected_providers,
+            "reused_physical_provider": self.reused_physical_provider,
+            "motion_inhibit": self.motion_inhibit,
+        }
+
+
+class InitializeSpaceCognitionSkill:
+    """One-time startup Skill that establishes local body pose cognition."""
+
+    def __init__(
+        self,
+        manager: ManagerClient,
+        fabric: FabricClient,
+        *,
+        camera_provider_id: str,
+        vio_provider_id: str,
+        timeout_s: float,
+    ):
+        self.manager = manager
+        self.fabric = fabric
+        self.camera_provider_id = camera_provider_id
+        self.vio_provider_id = vio_provider_id
+        self.timeout_s = timeout_s
+        self._lock = asyncio.Lock()
+
+    async def run(self, *, force_reset: bool = False) -> dict[str, Any]:
+        async with self._lock:
+            existing = await self.fabric.latest_optional("skills.initialize_space_cognition.status")
+            existing_data = (existing or {}).get("data") or {}
+            if (
+                not force_reset
+                and existing_data.get("state") == "SUCCEEDED"
+                and existing_data.get("session_epoch")
+            ):
+                return {
+                    "status": "already_initialized",
+                    "result": existing_data.get("result"),
+                }
+
+            skill_id = str(uuid.uuid4())
+            inhibit_owner = f"skill:{skill_id}"
+            selected = {
+                "head_camera": self.camera_provider_id,
+                "head_depth": self.camera_provider_id,
+                "head_imu": self.camera_provider_id,
+                "local_vio": self.vio_provider_id,
+            }
+            inhibit_status: dict[str, Any] = {}
+            started_at_us = int(time.time() * 1_000_000)
+            await self._publish_status(
+                skill_id,
+                "RUNNING",
+                "pause_robot_motion",
+                selected,
+                started_at_us=started_at_us,
+            )
+            try:
+                inhibit_status = await self.manager.acquire_motion_inhibit(
+                    owner_id=inhibit_owner,
+                    reason="stationary gravity initialization for local VIO",
+                    related_skill_id=skill_id,
+                )
+                await self._publish_status(
+                    skill_id,
+                    "RUNNING",
+                    "initialize_head_camera",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={"motion_inhibit": inhibit_status},
+                )
+
+                await self.manager.set_hot(self.camera_provider_id)
+                await self._wait_for_streams(
+                    [
+                        "camera.rgb.frame_ref",
+                        "camera.depth_aligned_to_rgb.frame_ref",
+                        "camera.imu.accel",
+                        "camera.imu.gyro",
+                        "camera.calibration",
+                        "camera.device_info",
+                    ]
+                )
+                await self._publish_status(
+                    skill_id,
+                    "RUNNING",
+                    "initialize_head_depth_and_scanners",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={"physical_provider_reused": True},
+                )
+                await self._publish_status(
+                    skill_id,
+                    "RUNNING",
+                    "initialize_head_imu",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={"physical_provider_reused": True},
+                )
+
+                await self.manager.set_hot(self.vio_provider_id)
+                await self._wait_for_vio_motion_inhibit()
+                await self._publish_status(
+                    skill_id,
+                    "RUNNING",
+                    "initialize_local_vio",
+                    selected,
+                    started_at_us=started_at_us,
+                )
+                reset_result = await self._request_vio_initialization(
+                    force_reset=force_reset,
+                    related_skill_id=skill_id,
+                )
+                vio_status = await self._wait_for_vio_tracking(
+                    expected_epoch=reset_result.get("session_epoch")
+                )
+                pose = await self.fabric.latest("localization.body.pose")
+                pose_data = pose.get("data") or {}
+                result = InitializationResult(
+                    skill_id=skill_id,
+                    session_epoch=str(vio_status["session_epoch"]),
+                    world_frame=str(vio_status["world_frame"]),
+                    body_frame=str(pose_data.get("body_frame") or "body_base"),
+                    selected_providers=selected,
+                    reused_physical_provider=True,
+                    motion_inhibit=inhibit_status,
+                )
+                await self._publish_status(
+                    skill_id,
+                    "SUCCEEDED",
+                    "initialize_body_pose",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={
+                        "session_epoch": result.session_epoch,
+                        "world_frame": result.world_frame,
+                        "body_position_m": pose_data.get("position_m"),
+                        "yaw_definition": "initial_body_forward_is_zero",
+                        "initialization_control_status": reset_result.get("status"),
+                        "control_response_warning": reset_result.get("control_response_warning")
+                        or reset_result.get("status_publish_warning"),
+                    },
+                    result=result.to_dict(),
+                )
+                return {"status": "initialized", "result": result.to_dict()}
+            except Exception as error:
+                await self._publish_status(
+                    skill_id,
+                    "FAILED",
+                    "failed",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={"error": str(error)},
+                )
+                raise
+            finally:
+                try:
+                    await self.manager.release_motion_inhibit(owner_id=inhibit_owner)
+                except Exception:
+                    pass
+
+    async def _wait_for_vio_motion_inhibit(self) -> None:
+        """Wait until the VIO Provider has observed the Manager inhibit state.
+
+        Releasing the inhibit before the Provider sees it leaves startup gravity
+        initialization with zero accepted samples. The wait is short because the
+        Provider polls Fabric continuously once camera inputs are available.
+        """
+        deadline = asyncio.get_running_loop().time() + min(5.0, self.timeout_s)
+        last_status: dict[str, Any] = {}
+        while asyncio.get_running_loop().time() < deadline:
+            observation = await self.fabric.latest_optional("localization.vio.status")
+            last_status = (observation or {}).get("data") or {}
+            if last_status.get("motion_inhibited") is True:
+                return
+            await asyncio.sleep(0.1)
+        raise TimeoutError(
+            "VIO Provider did not observe motion inhibit before initialization: "
+            f"{last_status}"
+        )
+
+    async def _request_vio_initialization(
+        self,
+        *,
+        force_reset: bool,
+        related_skill_id: str,
+    ) -> dict[str, Any]:
+        before = await self.fabric.latest_optional("localization.vio.status")
+        previous_epoch = str(((before or {}).get("data") or {}).get("session_epoch") or "")
+        action = "force_reset" if force_reset else "initialize"
+        last_error: Exception | None = None
+
+        for attempt in range(2):
+            request_id = str(uuid.uuid4())
+            try:
+                return await self.manager.provider_request(
+                    self.vio_provider_id,
+                    action=action,
+                    payload={"body_position_m": [0.0, 0.0, 0.0], "yaw_rad": 0.0},
+                    request_id=request_id,
+                    related_skill_id=related_skill_id,
+                )
+            except Exception as error:
+                last_error = error
+                recovered = await self._wait_for_reset_acceptance(
+                    previous_epoch=previous_epoch,
+                    timeout_s=3.0,
+                )
+                if recovered is not None:
+                    recovered["status"] = "accepted_after_control_response_error"
+                    recovered["control_response_warning"] = str(error)
+                    return recovered
+                if attempt == 0:
+                    await asyncio.sleep(0.25)
+                    await self.manager.set_hot(self.vio_provider_id)
+
+        assert last_error is not None
+        raise last_error
+
+    async def _wait_for_reset_acceptance(
+        self,
+        *,
+        previous_epoch: str,
+        timeout_s: float,
+    ) -> dict[str, Any] | None:
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while asyncio.get_running_loop().time() < deadline:
+            observation = await self.fabric.latest_optional("localization.vio.status")
+            data = (observation or {}).get("data") or {}
+            epoch = str(data.get("session_epoch") or "")
+            if epoch and epoch != previous_epoch and data.get("tracking_state") in {
+                "INITIALIZING",
+                "TRACKING",
+                "DEGRADED",
+            }:
+                return {
+                    "session_epoch": epoch,
+                    "world_frame": data.get("world_frame"),
+                }
+            await asyncio.sleep(0.1)
+        return None
+
+    async def _wait_for_streams(self, streams: list[str]) -> None:
+        deadline = asyncio.get_running_loop().time() + self.timeout_s
+        missing = list(streams)
+        while asyncio.get_running_loop().time() < deadline:
+            missing = []
+            for stream in streams:
+                observation = await self.fabric.latest_optional(stream)
+                if observation is None or observation.get("valid") is False:
+                    missing.append(stream)
+            if not missing:
+                return
+            await asyncio.sleep(0.2)
+        raise TimeoutError(f"timed out waiting for streams: {', '.join(missing)}")
+
+    async def _wait_for_vio_tracking(self, *, expected_epoch: str | None) -> dict[str, Any]:
+        deadline = asyncio.get_running_loop().time() + self.timeout_s
+        last_status: dict[str, Any] = {}
+        while asyncio.get_running_loop().time() < deadline:
+            observation = await self.fabric.latest_optional("localization.vio.status")
+            last_status = (observation or {}).get("data") or {}
+            epoch_matches = expected_epoch is None or last_status.get("session_epoch") == expected_epoch
+            if epoch_matches and last_status.get("tracking_state") == "TRACKING":
+                return last_status
+            await asyncio.sleep(0.1)
+        raise TimeoutError(f"VIO did not reach TRACKING: {last_status}")
+
+    async def _publish_status(
+        self,
+        skill_id: str,
+        state: str,
+        subskill: str,
+        selected_providers: dict[str, str],
+        *,
+        started_at_us: int,
+        details: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        now_us = int(time.time() * 1_000_000)
+        payload = {
+            "skill_id": skill_id,
+            "skill": "initialize_space_cognition",
+            "state": state,
+            "current_subskill": subskill,
+            "started_at_us": started_at_us,
+            "updated_at_us": now_us,
+            "selected_providers": selected_providers,
+            "details": details or {},
+            "result": result,
+        }
+        if result:
+            payload.update(
+                {
+                    "session_epoch": result.get("session_epoch"),
+                    "world_frame": result.get("world_frame"),
+                }
+            )
+        await self.fabric.publish(
+            {
+                "schema": "physical_agent.skill_status",
+                "schema_version": 1,
+                "stream": "skills.initialize_space_cognition.status",
+                "provider_id": "physical-agent-test-scaffold",
+                "provider_instance_id": "agent-ui-local",
+                "boot_id": "agent-ui-local",
+                "sequence": now_us,
+                "observed_at_us": now_us,
+                "freshness_ms": None,
+                "related_skill_id": skill_id,
+                "valid": state != "FAILED",
+                "data": payload,
+            }
+        )

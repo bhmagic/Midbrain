@@ -1,0 +1,53 @@
+{
+  "provider_type": "localization.local_vio",
+  "version": "0.2.2",
+  "display_name": "Local Inertial-First RGB-D VIO Provider",
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": [
+    "localization.vio.local_pose",
+    "localization.vio.body_pose",
+    "localization.vio.velocity",
+    "localization.vio.tracking_status",
+    "localization.vio.dynamic_transform",
+    "localization.vio.reset"
+  ],
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.imu.accel",
+    "camera.imu.gyro",
+    "camera.rgbd_geometry"
+  ],
+  "optional_capabilities": [
+    "camera.ir",
+    "camera.depth"
+  ],
+  "published_streams": [
+    "localization.body.pose",
+    "localization.vio.status",
+    "localization.vio.bias",
+    "transform.local_vio.body"
+  ],
+  "consumed_streams": [
+    "camera.rgbd.bundle",
+    "camera.ir.frame_ref",
+    "camera.depth.frame_ref",
+    "camera.calibration",
+    "camera.device_info",
+    "camera.imu.accel.calibration",
+    "system.motion.inhibit"
+  ],
+  "backend_contract": {
+    "default": "inertial_first_rgbd_eskf",
+    "classification": "reference_15_state_error_state_filter_with_metric_visual_pose_updates",
+    "production_adapter_candidates": ["basalt", "openvins_msckf"],
+    "imu_policy": "every_ordered_sample_propagates_state_and_covariance",
+    "visual_policy": "rgbd_primary_metric_correction; synchronized_ir_depth_optional_fallback",
+    "feature_preprocess": "raw_baseline_with_optional_circular_lcn_candidate",
+    "gravity_pose_policy": "quiet_imu_roll_pitch_leveling; yaw_and_translation_unchanged"
+  },
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0"
+  }
+}

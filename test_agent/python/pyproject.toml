@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "physical-agent-test-scaffold"
+version = "0.2.9"
+description = "Physical agent test UI for inertial-first VIO, startup space cognition, and world RGB-D visualization"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "httpx>=0.27,<1",
+  "openai-agents>=0.4,<1",
+  "google-genai>=1.0,<2",
+  "python-dotenv>=1.0,<2",
+  "Pillow>=10,<13",
+  "numpy>=2.0,<3",
+  "opencv-python-headless>=4.10,<5",
+  "orbbec-femto-provider>=0.3.0,<0.4"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["physical_agent_test*"]

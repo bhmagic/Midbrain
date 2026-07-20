@@ -1,0 +1,35 @@
+{
+  "id": "localization.local_vio",
+  "display_name": "Local Inertial-First RGB-D VIO Provider",
+  "command": "${PHYSICAL_AGENT_PYTHON}",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/local_vio/provider.py",
+    "--manager-url",
+    "http://127.0.0.1:7001",
+    "--fabric-url",
+    "http://127.0.0.1:7002",
+    "--control-port",
+    "7102",
+    "--backend",
+    "inertial_first_rgbd_eskf",
+    "--gravity-gyro-limit-radps",
+    "0.012",
+    "--poll-interval",
+    "0.005",
+    "--inertial-publish-hz",
+    "100",
+    "--ir-sync-tolerance-us",
+    "8000",
+    "--ir-enabled",
+    "--feature-preprocess-mode",
+    "adaptive_circular_lcn"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:7102",
+  "auto_start": false,
+  "graceful_stop_timeout_ms": 5000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {
+    "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}"
+  }
+}

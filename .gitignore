@@ -1,0 +1,75 @@
+# Machine-local configuration and secrets
+config/*
+!config/.gitkeep
+!config/README.md
+**/api_keys.env
+**/*.env
+!**/*.env.example
+
+# Device-specific calibration and captures
+config/calibration/
+**/captures/*
+!**/captures/.gitkeep
+**/screenshots/*
+!**/screenshots/.gitkeep
+
+# Validation output
+.validation/
+
+# Python
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+build/
+**/build/
+dist/
+**/dist/
+*.egg-info/
+**/*.egg-info/
+
+# Rust
+platform_core/target/
+**/target/
+
+# Native/CMake and proprietary runtime output
+providers/orbbec_femto_bolt/native_host/build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.vcxproj*
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+
+# Runtime state
+**/logs/*
+!**/logs/.gitkeep
+**/run/*
+!**/run/.gitkeep
+*.log
+*.pid
+pids.json
+pid.json
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Archives and temporary backups
+*.zip
+*.rar
+*.7z
+*.bak
+*.tmp
+*~

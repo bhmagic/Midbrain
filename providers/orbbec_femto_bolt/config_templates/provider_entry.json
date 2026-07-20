@@ -1,0 +1,28 @@
+{
+  "id": "camera.femto_bolt",
+  "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera",
+  "command": "${PHYSICAL_AGENT_PYTHON}",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/orbbec_femto_bolt/provider.py",
+    "--manager-url",
+    "http://127.0.0.1:7001",
+    "--fabric-url",
+    "http://127.0.0.1:7002",
+    "--control-port",
+    "7101",
+    "--native-exe",
+    "${PHYSICAL_AGENT_ROOT}/providers/orbbec_femto_bolt/native_host/build/Release/CameraHost.exe",
+    "--mapping-name",
+    "Local\\FemtoBoltPipeline_CameraHost_v2",
+    "--point-cloud-mode",
+    "xyz",
+    "--workspace-root",
+    "${PHYSICAL_AGENT_ROOT}"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:7101",
+  "auto_start": true,
+  "graceful_stop_timeout_ms": 8000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {}
+}

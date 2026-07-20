@@ -1,0 +1,152 @@
+{
+  "provider_type": "camera.femto_bolt",
+  "version": "0.3.1",
+  "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera Provider",
+  "residency_modes": [
+    "HOT",
+    "WARM",
+    "COLD"
+  ],
+  "capabilities": [
+    "camera.rgb",
+    "camera.depth",
+    "camera.ir",
+    "camera.depth_aligned_to_rgb",
+    "camera.point_cloud.xyz",
+    "camera.point_cloud.xyzrgb.experimental",
+    "camera.imu.accel",
+    "camera.imu.gyro",
+    "camera.imu.bundle",
+    "camera.rgbd_geometry",
+    "camera.rgbd.synchronized",
+    "camera.rgbd.bundle",
+    "camera.device_info",
+    "camera.ir_geometry",
+    "camera.imu.calibration",
+    "camera.frame_metadata",
+    "camera.global_timestamp",
+    "camera.imu.accel.calibration",
+    "camera.transforms.static",
+    "camera.imu.high_rate_history"
+  ],
+  "published_streams": [
+    "camera.rgb.frame_ref",
+    "camera.depth.frame_ref",
+    "camera.ir.frame_ref",
+    "camera.depth_aligned_to_rgb.frame_ref",
+    "camera.point_cloud.xyz.frame_ref",
+    "camera.point_cloud.xyzrgb.frame_ref",
+    "camera.rgbd.bundle",
+    "camera.imu.accel",
+    "camera.imu.gyro",
+    "camera.imu.bundle",
+    "camera.calibration",
+    "camera.device_info",
+    "camera.status",
+    "camera.imu.accel.calibration",
+    "transform.camera.color_from_depth",
+    "transform.camera.color_from_imu"
+  ],
+  "default_profile": {
+    "rgb": true,
+    "depth": true,
+    "infrared": true,
+    "imu": true,
+    "frame_sync": true,
+    "hardware_d2c": true,
+    "software_depth_to_color": true,
+    "point_cloud": "xyz",
+    "frame_metadata": true,
+    "global_timestamp": true
+  },
+  "large_payload_transport": "windows_named_shared_memory_v2",
+  "resource_profile": {
+    "basis": "MEASURED_AT_RUNTIME",
+    "wrapper_ram_mb": 80,
+    "native_shared_memory_mb": "MEASURED_AT_RUNTIME",
+    "vram_mb": "NOT_APPLICABLE",
+    "cpu_cores_expected": 2.0,
+    "usb_bandwidth": "UNKNOWN"
+  },
+  "runtime_dependencies": {
+    "orbbec_sdk": {
+      "development_sdk_required_to_build": true,
+      "tested_version": "2.8.6",
+      "runtime_files_copied_next_to_executable": true,
+      "bundled_in_source_zip": false
+    }
+  },
+  "package_layout": "providers/orbbec_femto_bolt",
+  "readiness_requirements": [
+    "camera.rgb.frame_ref available",
+    "camera.depth.frame_ref available"
+  ],
+  "geometry_readiness": [
+    "valid RGB intrinsics",
+    "valid depth intrinsics",
+    "valid depth-to-color extrinsics"
+  ],
+  "experimental": [
+    "continuous OB_FORMAT_RGB_POINT generation is opt-in because SDK/device combinations may be unstable"
+  ],
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0"
+  },
+  "administrative_capabilities_not_yet_exposed": [
+    "camera.controls",
+    "camera.presets",
+    "camera.recording",
+    "camera.playback",
+    "camera.triggered_capture",
+    "camera.device_time_sync",
+    "camera.multi_camera_sync",
+    "camera.firmware_update",
+    "camera.post_processing"
+  ],
+  "shared_memory_layout_version": 2,
+  "operator_control": {
+    "auto_start_configurable": true,
+    "warm_releases_device": true,
+    "explicit_stop_supported": true
+  },
+  "per_frame_metadata": {
+    "transport": "attached_to_video_buffer_ref",
+    "availability": "device_stream_driver_and_windows_registration_dependent",
+    "windows_registration_document": "docs/WINDOWS_FRAME_METADATA_SETUP.md"
+  },
+  "calibration_products": [
+    "rgb_intrinsic_and_distortion",
+    "depth_intrinsic_and_distortion",
+    "depth_to_color_extrinsic",
+    "infrared_intrinsic_distortion_and_available_extrinsics",
+    "accelerometer_intrinsic",
+    "gyroscope_intrinsic",
+    "available_imu_to_camera_extrinsics"
+  ],
+  "timestamp_domains": [
+    "device_timestamp_us",
+    "system_timestamp_us",
+    "global_timestamp_us_when_supported"
+  ],
+  "device_calibration": {
+    "identity": "manufacturer:model:serial_number",
+    "persistent_root": "config/calibration/devices",
+    "first_seen_policy": "create UNCALIBRATED identity correction scale=1 offset=0",
+    "applied_by": "physical IMU provider"
+  },
+  "calibration_utility": {
+    "type": "standalone_local_gui",
+    "launcher": "scripts/run_accelerometer_calibration.ps1",
+    "capture_positions": ["x+", "x-", "y+", "y-", "z+", "z-"],
+    "capture_seconds_default": 2.0,
+    "output": "device-bound accelerometer calibration JSON"
+  },
+  "transform_publication": {
+    "schema": "physical_agent.transform",
+    "static_edges": [
+      "femto_bolt_color_optical_frame<-femto_bolt_depth_optical_frame",
+      "femto_bolt_color_optical_frame<-femto_bolt_imu_frame when available"
+    ]
+  }
+}

@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+
+class ManagerClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(timeout=30.0)
+
+    async def health(self) -> dict[str, Any]:
+        response = await self._client.get(f"{self.base_url}/health")
+        response.raise_for_status()
+        return response.json()
+
+    async def providers(self) -> list[dict[str, Any]]:
+        response = await self._client.get(f"{self.base_url}/v1/providers")
+        response.raise_for_status()
+        return response.json()
+
+    async def capabilities(self) -> list[dict[str, Any]]:
+        response = await self._client.get(f"{self.base_url}/v1/capabilities")
+        response.raise_for_status()
+        return response.json()
+
+    async def set_hot(self, provider_id: str) -> dict[str, Any]:
+        response = await self._client.post(f"{self.base_url}/v1/providers/{provider_id}/hot")
+        response.raise_for_status()
+        return response.json()
+
+    async def provider_request(
+        self,
+        provider_id: str,
+        *,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        related_skill_id: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.base_url}/v1/providers/{provider_id}/request",
+            json={
+                "action": action,
+                "payload": payload or {},
+                "request_id": request_id,
+                "related_skill_id": related_skill_id,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def acquire_motion_inhibit(
+        self,
+        *,
+        owner_id: str,
+        reason: str,
+        related_skill_id: str | None = None,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.base_url}/v1/motion/inhibit/acquire",
+            json={
+                "owner_id": owner_id,
+                "reason": reason,
+                "related_skill_id": related_skill_id,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def release_motion_inhibit(self, *, owner_id: str) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.base_url}/v1/motion/inhibit/release",
+            json={"owner_id": owner_id},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def motion_inhibit_status(self) -> dict[str, Any]:
+        response = await self._client.get(f"{self.base_url}/v1/motion/inhibit")
+        response.raise_for_status()
+        return response.json()
+
+    async def close(self) -> None:
+        await self._client.aclose()
