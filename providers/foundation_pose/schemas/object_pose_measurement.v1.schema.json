@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "physical_agent.object_pose_measurement.v1",
+  "title": "Object Pose Measurement",
+  "type": "object",
+  "required": [
+    "tracking_session_id",
+    "target_id",
+    "model_id",
+    "source_frame_number",
+    "source_observed_at_us",
+    "parent_frame",
+    "child_frame",
+    "translation_m",
+    "quaternion_xyzw",
+    "matrix_4x4_row_major",
+    "mode",
+    "tracking_state"
+  ],
+  "properties": {
+    "tracking_session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_revision": {
+      "type": "string"
+    },
+    "registry_revision": {
+      "type": "string"
+    },
+    "source_frame_number": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_observed_at_us": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "parent_frame": {
+      "type": "string",
+      "minLength": 1
+    },
+    "child_frame": {
+      "type": "string",
+      "minLength": 1
+    },
+    "translation_m": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "quaternion_xyzw": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "matrix_4x4_row_major": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 16,
+      "maxItems": 16
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "INITIAL_ESTIMATE",
+        "TRACKED",
+        "RELOCALIZED"
+      ]
+    },
+    "tracking_state": {
+      "type": "string"
+    },
+    "score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "quality": {
+      "type": "object"
+    },
+    "backend": {
+      "type": "string"
+    },
+    "backend_details": {
+      "type": "object"
+    },
+    "covariance_6x6": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 36,
+      "maxItems": 36
+    },
+    "covariance_order": {
+      "const": [
+        "tx",
+        "ty",
+        "tz",
+        "rx",
+        "ry",
+        "rz"
+      ]
+    },
+    "covariance_basis": {
+      "type": "string"
+    },
+    "related_skill_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "object_role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semantic_frame": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

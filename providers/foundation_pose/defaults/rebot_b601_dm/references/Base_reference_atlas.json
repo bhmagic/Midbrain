@@ -1,0 +1,66 @@
+{
+  "schema": "foundation-pose-cad-reference-render-v1",
+  "renderer": "Blender Workbench",
+  "blender_version": "5.0.1",
+  "label": "reBot B601-DM Base",
+  "input_file": "Base_clean_centered.obj",
+  "input_sha256": "e04d35931ffa598ca9c6e6026d50cc2e6f2ab7e6da6608a79a12030be21c24ba",
+  "output_file": "Base_reference_atlas.png",
+  "output_sha256": "91bba16238a0fea89acd6623ec328d977e31aacdb7c43680a935c5bb1a031cbe",
+  "vertex_count": 238980,
+  "face_count": 475717,
+  "face_sampling": false,
+  "consistent_orthographic_scale": true,
+  "orthographic_scale_m": 0.3,
+  "surface_shading": "flat_faces",
+  "workbench_cavity": false,
+  "workbench_specular": false,
+  "workbench_shadows": false,
+  "scale_to_m": 0.001,
+  "resolution": [
+    2048,
+    1024
+  ],
+  "views": [
+    {
+      "name": "front-low",
+      "azimuth_deg": 0.0,
+      "elevation_deg": 18.0
+    },
+    {
+      "name": "front-high",
+      "azimuth_deg": 45.0,
+      "elevation_deg": 36.0
+    },
+    {
+      "name": "left-low",
+      "azimuth_deg": 90.0,
+      "elevation_deg": 18.0
+    },
+    {
+      "name": "rear-high",
+      "azimuth_deg": 135.0,
+      "elevation_deg": 36.0
+    },
+    {
+      "name": "rear-low",
+      "azimuth_deg": 180.0,
+      "elevation_deg": 18.0
+    },
+    {
+      "name": "rear-high-opposite",
+      "azimuth_deg": 225.0,
+      "elevation_deg": 36.0
+    },
+    {
+      "name": "right-low",
+      "azimuth_deg": 270.0,
+      "elevation_deg": 18.0
+    },
+    {
+      "name": "front-high-opposite",
+      "azimuth_deg": 315.0,
+      "elevation_deg": 36.0
+    }
+  ]
+}

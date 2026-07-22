@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "physical_agent.object_pose_status.v1",
+  "title": "Object Pose Session Status",
+  "type": "object",
+  "required": ["session_id", "operation", "model_id", "target_id", "state"],
+  "properties": {
+    "session_id": {"type": "string", "minLength": 1},
+    "operation": {"type": "string", "enum": ["ESTIMATE", "TRACK"]},
+    "model_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": "string", "minLength": 1},
+    "parent_frame": {"type": "string"},
+    "child_frame": {"type": "string"},
+    "state": {
+      "type": "string",
+      "enum": [
+        "WAITING_FOR_INPUTS",
+        "INITIALIZING",
+        "TRACKING",
+        "DEGRADED",
+        "COMPLETED",
+        "STOPPED",
+        "FAILED",
+        "EXPIRED"
+      ]
+    },
+    "initialized": {"type": "boolean"},
+    "result_count": {"type": "integer", "minimum": 0},
+    "last_error": {"type": ["string", "null"]},
+    "message": {"type": "string"},
+    "backend": {"type": "string"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,69 @@
+{
+  "revision": "example-2",
+  "models": [
+    {
+      "model_id": "robot_base_reference",
+      "role": "robot_base",
+      "description": "Example rigid robot-base reference.",
+      "mesh_path": "models/base_clean_centered.obj",
+      "semantic_frame": "robot/base_reference",
+      "default_child_frame": "observed_object/example_robot/base",
+      "mesh_from_semantic": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale_to_m": 1.0,
+      "symmetry": {
+        "type": "NONE"
+      },
+      "enabled": true,
+      "revision": "cad-revision"
+    },
+    {
+      "model_id": "robot_gripper_reference",
+      "role": "robot_gripper",
+      "description": "Example rigid gripper or wrist reference.",
+      "mesh_path": "models/gripper_clean_centered.obj",
+      "semantic_frame": "robot/gripper_reference",
+      "default_child_frame": "observed_object/example_robot/gripper",
+      "mesh_from_semantic": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale_to_m": 1.0,
+      "symmetry": {
+        "type": "NONE"
+      },
+      "enabled": true,
+      "revision": "cad-revision"
+    }
+  ]
+}
