@@ -13,6 +13,13 @@ Required tools and hardware:
 - Orbbec SDK 2.8.6 development files
 - Orbbec Femto Bolt
 
+Optional FoundationPose operation additionally requires:
+
+- NVIDIA CUDA-capable hardware and a compatible CUDA/PyTorch environment
+- The upstream NVLabs FoundationPose runtime
+- Git LFS for the two published checkpoint files
+- SAM2 and an OpenAI API key only when using the assisted GUI initialization path
+
 The Orbbec SDK is not redistributed in this repository.
 
 ## Workspace location
@@ -43,6 +50,16 @@ The setup sequence:
 6. Installs the Test Agent.
 7. Creates missing local configuration from examples without overwriting existing machine-local files.
 
+The workspace setup does not install FoundationPose or build the upstream NVLabs CUDA runtime. Set up that Provider separately after the core workspace:
+
+```powershell
+git lfs pull
+.\providers\foundation_pose\scripts\setup.ps1
+.\providers\foundation_pose\scripts\setup_sam2.ps1
+```
+
+`setup.ps1` creates the Provider environment, installs Midbrain integration support, seeds missing local configuration, and registers the Provider. It does not compile the complete upstream FoundationPose runtime.
+
 To set explicit SDK paths:
 
 ```powershell
@@ -71,6 +88,7 @@ Default endpoints:
 | Fabric health/state | `http://127.0.0.1:7002` |
 | Camera Provider control | `http://127.0.0.1:7101` |
 | Local VIO Provider control | `http://127.0.0.1:7102` |
+| FoundationPose Provider control | `http://127.0.0.1:7103` |
 | Test Agent GUI | `http://127.0.0.1:8000` |
 | Calibration GUI | `http://127.0.0.1:8111` |
 
@@ -107,3 +125,17 @@ Expected progression:
 ## Clear visualization only
 
 Use **Clear point cloud** to remove accumulated display points without resetting VIO or changing the current coordinate epoch.
+
+## FoundationPose operator workflow
+
+Start the core workspace, camera Provider, and FoundationPose tracking GUI:
+
+```powershell
+.\providers\foundation_pose\scripts\run_tracking_gui.ps1
+```
+
+Keep the arm still during initialization. Freeze a suitable RGB-D frame, request and review the Base and Gripper boxes and positive points, generate the cropped SAM2 masks, inspect the refined results, and submit tracking only when both masks cover the intended rigid surfaces without unrelated geometry.
+
+The tested Base refinement uses median Lab color distance 30 followed by radius-2 dilation. The tested neon-green Gripper-root refinement uses a median RGB seed with 10% per-channel drift followed by radius-2 dilation. These are empirical defaults, not universal segmentation guarantees.
+
+Base tracking is selectable up to 10 Hz. The experimental Gripper selector exposes rates up to 60 Hz, but actual throughput remains bounded by inference and hardware load; raising the requested rate did not correct the observed Gripper stability problem. Use the lowest stable rate that supplies timely measurements.

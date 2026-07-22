@@ -9,7 +9,8 @@
 - [x] Persistent robot configuration is outside the Provider directory.
 - [x] Default Base and Gripper roles are explicit in the model registry.
 - [x] Default reBot CAD provenance/source/license/modification notices retained.
-- [x] NVLabs checkout and weights are not committed to the Provider Git tree.
+- [x] NVLabs source checkout and compiled runtime artifacts are not committed to the Provider Git tree.
+- [x] The two required NVIDIA checkpoint files are published through Git LFS with the complete governing license.
 - [x] `.venv`, caches, logs, captures, backups, and runtime debug output excluded.
 - [x] CAD preparation is an offline helper.
 - [x] Native-Windows compatibility patch is guarded and tested.

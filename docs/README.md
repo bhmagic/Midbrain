@@ -16,6 +16,7 @@ This directory is the canonical reading order for the GitHub repository.
 | 10 | [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Known technical gaps and next milestones. |
 | 11 | [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Clean build, staged-file review, upload script, and release checklist. |
 | 12 | [Version History and Decisions](11_VERSION_HISTORY_AND_DECISIONS.md) | Milestone history and decisions that should be preserved. |
+| 13 | [FoundationPose Object Pose](12_FOUNDATIONPOSE_OBJECT_POSE.md) | Base/Gripper initialization, mask refinement, Fabric transforms, and camera-alignment boundary. |
 
 ## Reference material
 
@@ -23,6 +24,7 @@ Detailed framework contracts remain under [`contracts`](../contracts). Component
 
 - [`platform_core/docs`](../platform_core/docs)
 - [`providers/orbbec_femto_bolt/docs`](../providers/orbbec_femto_bolt/docs)
+- [`providers/foundation_pose/docs`](../providers/foundation_pose/docs)
 - [`test_agent/docs`](../test_agent/docs)
 
 Earlier planning, research, and handover notes are retained under [`docs/reference/project_notes`](reference/project_notes). They are historical references; the numbered documents above are the canonical operational documentation.

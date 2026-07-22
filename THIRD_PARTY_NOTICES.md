@@ -10,6 +10,14 @@ A complete source-origin and dependency-license audit has not yet been completed
 
 Package-manager manifests and lock files identify many direct and transitive dependencies, but they are not a substitute for a license audit.
 
+## FoundationPose Provider notices
+
+The FoundationPose Provider integrates with the NVLabs FoundationPose project and publishes two required NVIDIA checkpoint files through Git LFS. The complete governing license is included at `providers/foundation_pose/third_party/nvlabs_foundationpose_weights/NVIDIA_SOURCE_CODE_LICENSE.txt`. Those materials are licensed for non-commercial research and evaluation only; they are not covered by the Midbrain MIT License.
+
+The prepared Base and Gripper geometry and reference renders originate from reBot B601/ER1.6 CAD material. The corresponding CERN-OHL-W-2.0 license is retained at `providers/foundation_pose/defaults/rebot_b601_dm/licenses/CERN-OHL-W-2.0.txt`, with attribution and modification notices beside the prepared profile.
+
+The Provider can optionally use SAM2 and the OpenAI API during GUI-assisted mask initialization. Their code, model files, hosted services, and outputs remain subject to their respective licenses and service terms and are not relicensed by this repository.
+
 ## Audit checklist
 
 - Identify copied, adapted, generated, or vendored source and preserve its attribution and license text.

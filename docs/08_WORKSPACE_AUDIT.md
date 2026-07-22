@@ -39,3 +39,9 @@ The working workspace contained additional material not represented in the v0.3.
 ## Documentation corrections
 
 The package version files indicated Manager/Fabric `0.3.0`, camera Provider `0.3.1`, Local VIO `0.2.2`, and Test Agent `0.2.9`. Some older README release wording still referred to `0.2.0`; the GitHub-facing documentation and package README headings were corrected to the current component versions.
+
+## 2026-07-22 FoundationPose scope update
+
+The historical cleanup excluded unrelated arm Providers because the requested v0.3.10 publication scope was RGB-D plus brand-neutral VIO. That exclusion does not apply to the later, independently reviewed `providers/foundation_pose` publication.
+
+FoundationPose v0.3.0 is now retained as source, Provider documentation, prepared reBot Base/Gripper geometry, reference renders, two Git-LFS checkpoint files, and required license texts. The upstream NVLabs checkout, compiled CUDA extensions, Python environments, local configuration, API keys, runtime captures, debug masks, and caches remain excluded and must be recreated or supplied locally.

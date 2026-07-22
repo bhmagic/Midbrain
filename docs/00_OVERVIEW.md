@@ -4,7 +4,7 @@
 
 The project is a framework-neutral physical-agent runtime for robots. Persistent **Resource Providers** own hardware, computation, models, data streams, recording, visualization, or control. Finite **Skills** request those capabilities, perform bounded work, return structured results, and finish. The **Resource Provider Manager** is the control plane. The **World State Fabric** is the timestamped state plane.
 
-The current milestone concentrates on head sensing and local space cognition using an Orbbec Femto Bolt on Windows 10. It supplies RGB, depth, infrared, point cloud, calibrated IMU, transforms, an inertial-first local VIO reference backend, initialization/reset orchestration, and an orthographic point-cloud diagnostic GUI.
+The current baseline combines head sensing and local space cognition with GUI-assisted CAD-based object-pose tracking. It supplies RGB, depth, infrared, point cloud, calibrated IMU, transforms, an inertial-first local VIO reference backend, Base/Gripper pose measurements, initialization/reset orchestration, and diagnostic GUIs.
 
 ## Latest baseline
 
@@ -15,6 +15,7 @@ The latest integrated release is **Space Cognition v0.3.10**:
 - Local VIO Provider v0.2.2
 - Test Agent GUI v0.2.9
 - Contracts v0.3.8
+- FoundationPose Provider v0.3.0
 
 The operator reported v0.3.10 as performing well after the final startup correction. This is the best current practical baseline. It is not yet a production-qualified localization stack because formal trajectory measurements, deterministic replay, camera/IMU time-offset estimation, long-outage drift tests, and comparison with a mature native backend remain outstanding.
 
@@ -31,6 +32,9 @@ The operator reported v0.3.10 as performing well after the final startup correct
 - Inertial-first 15-state error-state filter with RGB-D corrections and optional synchronized IR/depth fallback.
 - Tuned quiet-IMU gravity leveling shown independently as OFF, READY, or ACTIVE.
 - Sample-rate-independent startup initialization verified in regression at 50 Hz.
+- Manager-discoverable FoundationPose tracking for independent Base and Gripper CAD targets.
+- Camera-relative Base and Gripper transforms published into the Fabric for consumption by other Skills and Agents.
+- Reviewed initialization from OpenAI visual boxes and positive points, cropped SAM2 masks, target-specific color refinement, and prepared-asset caching.
 
 ## The main architectural correction
 
@@ -40,4 +44,4 @@ Beginning with Local VIO v0.2.0 in Space Cognition v0.3.8, the core was replaced
 
 ## Safety boundary
 
-This milestone is perception and state infrastructure. It does not authorize robot motion. Motion inhibit is used during VIO initialization, but the accelerometer calibration GUI itself does not immobilize a robot. Any assembled robot must be physically secured or separately disabled before calibration or sensor-origin work.
+This milestone is perception and state infrastructure. It does not authorize robot motion. Motion inhibit is used during VIO initialization, but neither the accelerometer calibration GUI nor the FoundationPose tracking GUI immobilizes a robot. Any assembled robot must be physically secured or separately disabled before calibration, mask initialization, object-pose capture, or sensor-origin work.

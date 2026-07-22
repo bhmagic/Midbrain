@@ -10,12 +10,13 @@ Typical files:
 - `config/api_keys.env`
 - `config/providers.json`
 - `config/calibration/devices/...`
+- `config/foundation_pose/...`
 
 Setup scripts preserve existing configuration and create missing files from examples.
 
 ## API keys
 
-The Test Agent can use optional OpenAI and Gemini integrations. Keys must be placed only in `config/api_keys.env`:
+The Test Agent and FoundationPose tracking GUI can use optional hosted-model integrations. Keys must be placed only in `config/api_keys.env`:
 
 ```text
 OPENAI_API_KEY=
@@ -30,6 +31,12 @@ The canonical template is `platform_core/config_templates/providers.json.example
 
 - `camera.femto_bolt` at control port `7101`, auto-start enabled.
 - `localization.local_vio` at control port `7102`, auto-start disabled until requested.
+
+The FoundationPose `scripts\setup.ps1` installer merges its Provider registration into the machine-local configuration without overwriting unrelated entries. Its default control port is `7103`, and its persistent model/target settings live under `config/foundation_pose`.
+
+OpenAI visual localization sends the selected camera image and CAD reference renders to a hosted service. Treat those images as externally disclosed data, review the service retention and privacy terms for the deployment, and use manual boxes or a fully local detector when images cannot leave the machine. SAM2 segmentation runs locally when installed.
+
+The GUI uses `gpt-5.6-luna` by default. Set `OPENAI_VISION_MODEL` in the local environment only when intentionally evaluating a different compatible visual model.
 
 Environment placeholders are expanded by the Manager:
 
@@ -62,3 +69,4 @@ Review for:
 - native SDK binaries
 - `target`, `build`, `.venv`, `__pycache__`, and package metadata
 - unrelated providers or backup trees
+- raw FoundationPose captures, mask diagnostics, and hosted-model response logs

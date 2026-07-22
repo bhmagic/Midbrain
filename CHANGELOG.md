@@ -1,5 +1,16 @@
 # Changelog
 
+## FoundationPose Provider v0.3.0 publication (2026-07-22)
+
+- Added `providers/foundation_pose` as a Manager-discoverable CAD-based 6D object-pose Provider.
+- Added independent Base and Gripper targets for the reBot B601/ER1.6 arm, with camera-relative transforms published into the Fabric.
+- Added a GUI-assisted initialization workflow using OpenAI visual localization, two positive object points, cropped SAM2 segmentation, and operator review before tracking.
+- Added tested mask refinement defaults: median Lab distance 30 with radius-2 dilation for the Base, and median RGB 10% drift with radius-2 dilation for the neon-green Gripper root.
+- Added mesh preparation and renderer tooling, reusable reference renders, prepared-asset caching keyed by source content and preparation settings, and selectable tracking rates.
+- Validated 43 Provider tests plus live Manager/Fabric registration and transform publication checks.
+- Published the two required FoundationPose checkpoint files through Git LFS with the complete NVIDIA FoundationPose license. These checkpoints are restricted to non-commercial research and evaluation use.
+- Kept camera-to-world alignment outside the Provider: the Provider publishes measurements, while a future bounded Skill must aggregate stationary observations, resolve symmetry, and publish an independently authoritative alignment transform.
+
 ### Revision 4 packaging corrections
 
 - Applied the remaining Windows-gated `rustfmt` change in the Manager process launcher.

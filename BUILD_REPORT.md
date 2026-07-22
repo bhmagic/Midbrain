@@ -2,6 +2,16 @@
 
 Date: 2026-07-20
 
+## FoundationPose v0.3.0 publication supplement — 2026-07-22
+
+- Ran 43 FoundationPose Provider regression tests successfully.
+- Verified provider-package publication checks, including secret scanning, required assets, and the complete NVIDIA FoundationPose license.
+- Verified live registration with the real Manager and publication of Base and Gripper transform edges into the real Fabric.
+- Published the two required FoundationPose checkpoint files through Git LFS; together they are approximately 258 MB.
+- Kept the upstream NVLabs source checkout, generated CUDA artifacts, virtual environments, runtime captures, and API keys outside Git.
+- The repository-wide `scripts\validate.ps1` workflow still validates the original RGB-D/VIO baseline and does not yet invoke the FoundationPose-specific test suite. Run the Provider validation command documented in `docs\06_VALIDATION.md` in addition to the repository workflow.
+- No GitHub Actions result is claimed for this supplement; the recorded checks were run on the Windows development workspace before publication.
+
 ## Completed in the cleanup environment
 
 - Compared the documented v0.3.10 source workspace with the supplied working workspace.

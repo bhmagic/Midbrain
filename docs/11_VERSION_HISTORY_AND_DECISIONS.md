@@ -78,6 +78,16 @@ Local VIO v0.2.2 and Test Agent v0.2.9.
 - Regression reproduced the observed 1,198/1,198 histories at 50 Hz.
 - Operator subsequently reported the system as performing well.
 
+## FoundationPose Provider v0.3.0 — 2026-07-22
+
+- Added a Manager-discoverable CAD-based object-pose Provider for independent reBot Base and Gripper targets.
+- Added GUI-assisted OpenAI box/point localization, cropped SAM2 segmentation, operator review, and target-specific mask refinement.
+- Replaced defective face-sampled CAD references with full-geometry renders using correct triangle topology and consistent multi-angle scale.
+- Added prepared-asset caching keyed for future CAD models and selectable tracking-rate controls.
+- Published camera-relative object observations and transform edges into the Fabric, validated by 43 tests and a live Manager/Fabric integration check.
+- Published the required NVIDIA checkpoints with Git LFS and retained the complete non-commercial research/evaluation license.
+- Preserved the authority boundary: FoundationPose measures camera-relative object poses; a bounded alignment Skill must establish any camera-to-world transform.
+
 ## Decisions to preserve
 
 - Keep Manager, Fabric, Resource Provider, Skill, Observation, Capability, and BufferRef terminology.

@@ -4,7 +4,7 @@
 
 Midbrain is an experimental framework for building robotic systems in which AI agents, bounded skills, hardware interfaces, perception services, and shared world state operate through a common runtime.
 
-The project is intended to support the broader robotic agentic workload—not only RGB-D sensing. The current RGB-D camera, visual-inertial pose estimation, point-cloud viewer, and calibration tools serve as the first complete reference implementation of the architecture.
+The project is intended to support the broader robotic agentic workload—not only RGB-D sensing. The current RGB-D camera, visual-inertial pose estimation, CAD-based object-pose tracking, point-cloud viewer, and calibration tools serve as reference implementations of the architecture.
 
 The long-term goal is to provide a reusable foundation for robotic systems that combine:
 
@@ -205,6 +205,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | Contracts                  | `contracts`                                                                | Framework-neutral Provider, Fabric, Skill, calibration, VIO, and safety contracts                          |
 | Orbbec Femto Bolt Provider | `providers/orbbec_femto_bolt`                                              | Brand-specific RGB, depth, infrared, point-cloud, IMU, calibration, identity, and static-transform support |
 | Local VIO Provider         | `providers/local_vio`                                                      | Brand-neutral camera-plus-IMU pose estimation and dynamic body transforms                                  |
+| FoundationPose Provider    | `providers/foundation_pose`                                                | CAD-based 6D pose estimation for the robot base and gripper, with camera-relative transforms in the Fabric |
 | Test Agent                 | `test_agent`                                                               | Mock Agent and initialization Skill used to exercise the complete platform                                 |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Live world-frame point cloud, camera pose, reset controls, and estimator diagnostics                       |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |
@@ -212,6 +213,8 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 The current camera Provider publishes large RGB-D payloads through Windows named shared memory and publishes generation-checked references through the Fabric.
 
 The Local VIO Provider consumes ordered IMU history and synchronized camera observations. It maintains a dynamic pose estimate and publishes body transforms into the Fabric.
+
+The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
 
 These components demonstrate how a brand-specific hardware Provider and a brand-neutral computational Provider can participate in the same runtime.
 
@@ -358,6 +361,8 @@ The complete Orbbec hardware path currently targets Windows 10 or Windows 11 wit
 * Orbbec SDK 2.8.6
 * Orbbec Femto Bolt
 
+The optional FoundationPose path additionally requires an NVIDIA CUDA-capable environment and the upstream NVLabs FoundationPose runtime. SAM2 and an OpenAI API key are optional initialization aids for the tracking GUI; they are not required by consumers of already-published Fabric transforms.
+
 The Orbbec SDK, drivers, and runtime binaries are not included in this repository.
 
 Future Providers may support other operating systems, hardware devices, transports, and deployment environments.
@@ -375,6 +380,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\run_workspace.ps1
 ```
 
+Set up and launch the optional FoundationPose Provider separately:
+
+```powershell
+git lfs pull
+.\providers\foundation_pose\scripts\setup.ps1
+.\providers\foundation_pose\scripts\setup_sam2.ps1
+.\providers\foundation_pose\scripts\run_tracking_gui.ps1
+```
+
+The workspace setup does not build the full upstream NVLabs CUDA runtime. Follow the Provider guide for that environment before attempting live inference.
+
 Default local endpoints:
 
 | Service             | URL                     |
@@ -383,6 +399,7 @@ Default local endpoints:
 | Fabric              | `http://127.0.0.1:7002` |
 | Test Agent GUI      | `http://127.0.0.1:8000` |
 | IMU Calibration GUI | `http://127.0.0.1:8111` |
+| FoundationPose control API | `http://127.0.0.1:7103` |
 
 ---
 
@@ -418,6 +435,16 @@ The [IMU calibration tutorial](docs/05_TUTORIAL_IMU_CALIBRATION.md) demonstrates
 
 These examples are operational checks and development tools. They are not production qualification or safety certification.
 
+### Base and Gripper object pose
+
+The [FoundationPose object-pose guide](docs/12_FOUNDATIONPOSE_OBJECT_POSE.md) explains how to:
+
+* Initialize the Base and Gripper targets from reviewed VLM boxes and SAM2 masks
+* Refine the masks with the tested Base and Gripper color strategies
+* Publish both camera-relative transforms into the Fabric
+* Query the transforms from another Skill or Agent
+* Preserve the boundary between object-pose measurement and world/camera alignment
+
 ---
 
 ## Validation
@@ -440,6 +467,12 @@ The validation workflow:
 * Verifies repository hygiene
 * Regenerates integrity manifests
 
+The repository workflow does not yet invoke the FoundationPose-specific suite. Run it separately when that Provider changes:
+
+```powershell
+.\providers\foundation_pose\scripts\validate_publication.ps1
+```
+
 Generated validation and build outputs remain local and are excluded from Git.
 
 ---
@@ -454,7 +487,7 @@ Near-term platform development is expected to focus on:
 * Supporting Agent-to-Skill invocation
 * Improving persistent service supervision
 * Adding robot-arm and actuator Providers
-* Adding local object detection and tracking Providers
+* Adding complementary object detection, segmentation, and tracking Providers
 * Supporting multiple sensor and pose implementations
 * Improving synchronized observation access
 * Adding recording and deterministic replay
@@ -481,6 +514,8 @@ The following areas require additional development and validation:
 * Robot motion safety certification
 * Long-duration localization accuracy
 * Camera and IMU time-offset estimation
+* Formal object-pose repeatability, symmetry handling, and failure detection
+* A bounded camera-to-world alignment Skill that consumes object-pose measurements
 * Third-party source and dependency-license review
 * Deployment and upgrade management
 
@@ -528,6 +563,6 @@ New task workflows should preferably be implemented as bounded Skills that acqui
 
 Original Midbrain project code is released under the permissive [MIT License](LICENSE).
 
-Third-party libraries, SDKs, drivers, assets, and externally derived code remain subject to their original licenses and terms.
+Third-party libraries, SDKs, drivers, assets, and externally derived code remain subject to their original licenses and terms. In particular, the bundled NVIDIA FoundationPose checkpoints are governed by the included NVIDIA license and are limited to non-commercial research and evaluation use.
 
 The external-code and dependency-license audit is still pending. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

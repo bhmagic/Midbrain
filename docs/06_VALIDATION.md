@@ -19,6 +19,14 @@ The tests cover six-position accelerometer solving, calibration persistence, sam
 
 The script checks JSON and Python syntax, runs all Python tests, builds Python wheels into a temporary validation directory, checks Rust formatting/tests/release build when Cargo is available, and configures/builds CameraHost only when explicitly requested with valid Orbbec SDK paths.
 
+The repository workflow does not yet invoke the FoundationPose Provider suite. Run its validation separately from the repository root:
+
+```powershell
+.\providers\foundation_pose\scripts\validate_publication.ps1
+```
+
+The v0.3.0 publication passed 43 Provider tests and a live integration validator against the real Manager and Fabric. The live check confirmed Manager registration, capability discovery, status publication, and independent camera-to-Base and camera-to-Gripper transform edges.
+
 ## Hardware acceptance
 
 ### Startup
@@ -68,6 +76,11 @@ The current validation is not formal localization certification. Still required:
 - visual-outage drift and reacquisition discontinuity
 - camera/IMU time-offset estimation
 - CPU and scheduling measurements on the target Windows system
+- Base and Gripper pose repeatability against external 6D ground truth
+- CAD-symmetry disambiguation and explicit ambiguity reporting
+- mask perturbation, partial occlusion, lighting, and background-clutter trials
+- long-duration tracking loss, reacquisition, and stale-transform behavior
+- camera-alignment accuracy after stationary multi-sample aggregation
 
 ## Automatic Rust formatting
 

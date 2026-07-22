@@ -17,6 +17,16 @@
 - Control Authority Leases and safe relinquish remain contract/design work, not a verified robot-motion runtime.
 - The Test Agent is a diagnostic mockup, not a hardened operator console.
 
+## FoundationPose object-pose limits
+
+- Published Base and Gripper transforms are camera-relative measurements, not world-frame authority.
+- Tracking quality depends heavily on the initial mask; fragmented masks, unrelated pixels, partial occlusion, and symmetric CAD geometry can produce unstable or plausible-but-wrong poses.
+- The Gripper target remained less stable than the Base in the observed test setup. Increasing the requested rate to 60 Hz did not correct the pose behavior.
+- The Provider serializes expensive GPU work, so requested rates are upper bounds rather than guaranteed throughput.
+- OpenAI boxes and SAM2 masks are initialization aids, not safety-rated perception. Operator review remains required.
+- Color refinements are empirical for the present lighting and materials. Lab distance 30 plus radius-2 dilation worked for the Base; median RGB with 10% drift plus radius-2 dilation worked for the neon-green Gripper root.
+- A bounded camera-to-world alignment Skill is not yet implemented. It should aggregate stationary measurements, reject transients, resolve symmetry using robot geometry or joint context, estimate uncertainty, and publish a separately authoritative transform.
+
 ## Highest-priority milestone
 
 Add deterministic synchronized recording and replay for RGB, aligned/native depth, IR, accelerometer, gyroscope, calibration/transform revisions, and all timestamp domains.
