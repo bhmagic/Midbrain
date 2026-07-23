@@ -2,6 +2,15 @@
 
 Date: 2026-07-20
 
+## reBot arm Provider publication supplement — 2026-07-23
+
+- Added Basic 0.1.20 and Integrated 0.7.0 as source-only Providers; `.venv`, caches, runtime logs, and machine-local calibration remain excluded.
+- Validated Basic with 73 tests and Integrated with 52 tests using their source-only publication trees.
+- Added capability-specific Manager readiness and a provider-local operation catalog.
+- Advertised only usable MIT one-shot/continuous and limited unloaded POS_VEL one-shot.
+- Kept continuous POS_VEL and arm POS_TOR one-shot available only in the operator GUI as non-discoverable experimental/unstable modes.
+- No provider was started and no physical arm command was sent during publication validation.
+
 ## FoundationPose v0.3.0 publication supplement — 2026-07-22
 
 - Ran 43 FoundationPose Provider regression tests successfully.

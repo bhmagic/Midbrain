@@ -1,0 +1,113 @@
+{
+  "provider_type": "robot_arm.rebot_dm",
+  "version": "0.1.20",
+  "display_name": "reBot Arm DM Basic Controller",
+  "residency_modes": [
+    "HOT",
+    "WARM",
+    "COLD"
+  ],
+  "capabilities": [
+    "robot_arm.calibration",
+    "robot_arm.control.high_kp_floor_enforced",
+    "robot_arm.control.impedance",
+    "robot_arm.control.position_effort_limited",
+    "robot_arm.control.position_velocity_limited",
+    "robot_arm.control.velocity",
+    "robot_arm.fabric_publication",
+    "robot_arm.gravity_float",
+    "robot_arm.intrinsic_model",
+    "robot_arm.joint_state",
+    "robot_arm.manager_registration",
+    "robot_arm.safe_home",
+    "robot_arm.transforms.local",
+    "robot_arm.control.operational_api_v2",
+    "robot_arm.midbrain.motion_inhibit_consumer",
+    "robot_arm.midbrain.capability_readiness",
+    "robot_arm.payload_gravity_compensation",
+    "robot_arm.control.payload_api_v1",
+    "robot_arm.control.latched_endpoint_keepalive",
+    "robot_arm.serial.transient_semaphore_retry",
+    "robot_arm.serial.transient_device_command_retry",
+    "robot_arm.control.early_mit_mode_bridge",
+    "robot_arm.control.physical_pos_tor_peak_envelope"
+  ],
+  "published_streams": [
+    "robot_arm.model",
+    "robot_arm.joint_state",
+    "transform.robot_arm.<child>_from_<parent>"
+  ],
+  "package_layout": "providers/rebot_arm_dm",
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0",
+    "audited_commit": "e226a09",
+    "contract_set": "0.3.6-working-draft"
+  },
+  "runtime_dependencies": {
+    "python": ">=3.11",
+    "numpy": ">=1.26",
+    "motorbridge": {
+      "required_for_hardware": true,
+      "minimum_version": "0.4.9",
+      "optional_in_simulation": true
+    }
+  },
+  "operator_control": {
+    "auto_start_configurable": true,
+    "warm_releases_device": true,
+    "explicit_stop_supported": true,
+    "graceful_stop_runs_safe_home": true,
+    "ctrl_c_behavior": "SAFE_HOME_THEN_DISABLE_THEN_EXIT",
+    "explicit_read_only_flag": "--read-only"
+  },
+  "safety": {
+    "safe_hold_behavior": "GRAVITY_FLOAT_WITH_HIGH_KP_MEASURED_TARGET_TRACKING",
+    "graceful_termination": "SAFE_HOME_THEN_DISABLE",
+    "velocity_mode_exposed_to_calibration_gui": false,
+    "low_kp_load_bearing_mit_prohibited": true,
+    "safe_home_transition": "MEASURED_POSE_HIGH_KP_CAPTURE_THEN_RATE_LIMITED_HOME",
+    "powered_settle_before_disable_s": 0.25,
+    "mit_kp_rule": "IMPEDANCE commands below provider_test_caps.min_kp are rejected",
+    "no_lease_default": "SAFE_HOLD_GRAVITY_FLOAT",
+    "scheduler_overrun_behavior": "SKIP_MISSED_PERIODS; NEVER_CATCH_UP_WITH_BACK_TO_BACK_WRITE_BURSTS",
+    "ctrl_c_behavior": "SAFE_HOME_THEN_DISABLE_THEN_EXIT",
+    "runtime_lease_acquisition": "CONFLICT_ON_VALID_OWNER; NO_SILENT_REPLACEMENT",
+    "runtime_lease_release": "EXACT_LEASE_ID_AND_FENCING_GENERATION_REQUIRED",
+    "manager_disconnect": "REVOKE_PROVIDER_LOCAL_LEASE_AND_GRAVITY_FLOAT",
+    "global_motion_inhibit": "BLOCK_NEW_OPERATIONAL_LEASES_RENEWS_AND_COMMANDS; REVOKE_ACTIVE_LEASE",
+    "motor_endpoint_output": "CHANGED_ENDPOINT_IMMEDIATE; UNCHANGED_POS_VEL_POS_TOR_AT_10HZ",
+    "transient_serial_retry": "ONE_OS_ERROR_121_OR_22_RETRY_AFTER_5MS; REPEATED_FAILURE_FAULTS",
+    "physical_pos_tor_caps": "J1_J6_UP_TO_CONFIGURED_TMAX; J7_RATIO_0.2",
+    "mode_switch_support": "CTRL_MODE_WRITE_THEN_EARLY_MIT_FRAME_THEN_REGISTER_CONFIRMATION_THEN_CONFIRMED_MIT_FRAME"
+  },
+  "calibration_utility": {
+    "type": "standalone_local_gui",
+    "launcher": "scripts/run_calibration.ps1",
+    "collision_guard_location": "calibration_gui_only",
+    "external_obstacle_model": "desktop_plane_only",
+    "simulation_supported": true,
+    "automatic_excitation_profile": "FRICTION_TWO_SPEED_POS_VEL_V2",
+    "automatic_start_pose": "captured_measured_gravity_float_pose",
+    "automatic_control_mode": "POSITION_VELOCITY_LIMITED_ALL_JOINTS"
+  },
+  "known_limitations": [
+    "The supplied hard limits are observations from the provided Unity bridge and must be verified on the physical assembly.",
+    "DM-J4310 hardware revision and true configured TMAX must be confirmed per installed motor.",
+    "The calibration collision guard is not an operational workspace planner.",
+    "Total host power loss cannot execute safe-home without independent hardware power or braking.",
+    "Friction-only calibration retains factory mass, center-of-mass, inertia, and gravity parameters.",
+    "Windows user-space scheduling is not hard real-time; loop overrun telemetry must be reviewed before active manipulation."
+  ],
+  "operator_aliases": [
+    "Basic Controller",
+    "reBot Arm DM Basic Controller"
+  ],
+  "midbrain_conformance": {
+    "runtime_compatibility": "AUDITED_AGAINST_MAIN_E226A09",
+    "manager_authority_lease": "BLOCKED_BY_PLATFORM_API_GAP",
+    "provider_local_fencing": true,
+    "full_physical_control_contract": false
+  },
+  "notes": "0.1.20 adds fenced tool-payload gravity compensation, fast dedicated POS_VEL caps, motor-side endpoint keepalive semantics, and one bounded Windows semaphore-timeout retry; existing tracking-effort and torque limits remain active."
+}

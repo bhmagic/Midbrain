@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Physical Agent Robot Arm Calibration",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "model_id",
+    "calibration_revision",
+    "joints"
+  ],
+  "properties": {
+    "schema": {
+      "const": "physical_agent.robot_arm_calibration"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "calibration_revision": {
+      "type": "string"
+    },
+    "joints": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    }
+  },
+  "additionalProperties": true
+}

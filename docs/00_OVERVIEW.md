@@ -35,6 +35,9 @@ The operator reported v0.3.10 as performing well after the final startup correct
 - Manager-discoverable FoundationPose tracking for independent Base and Gripper CAD targets.
 - Camera-relative Base and Gripper transforms published into the Fabric for consumption by other Skills and Agents.
 - Reviewed initialization from OpenAI visual boxes and positive points, cropped SAM2 masks, target-specific color refinement, and prepared-asset caching.
+- reBot Arm DM Basic 0.1.20 with seven-joint feedback/control, fenced operational leases, gravity-float, safe-home, and tool-payload gravity compensation.
+- reBot Arm Integrated 0.7.0 with a hardware-test GUI, Cartesian IK target staging, latched gripper control, and Manager capability readiness.
+- Reviewed arm discovery labels: MIT one-shot and continuous usable; unloaded POS_VEL one-shot limited to paths ≤20 cm; continuous POS_VEL and arm POS_TOR one-shot hidden as experimental/unstable.
 
 ## The main architectural correction
 
@@ -44,4 +47,4 @@ Beginning with Local VIO v0.2.0 in Space Cognition v0.3.8, the core was replaced
 
 ## Safety boundary
 
-This milestone is perception and state infrastructure. It does not authorize robot motion. Motion inhibit is used during VIO initialization, but neither the accelerometer calibration GUI nor the FoundationPose tracking GUI immobilizes a robot. Any assembled robot must be physically secured or separately disabled before calibration, mask initialization, object-pose capture, or sensor-origin work.
+The perception milestone does not authorize robot motion. Motion inhibit is used during VIO initialization, but neither the accelerometer calibration GUI nor the FoundationPose tracking GUI immobilizes a robot. The reBot arm prototype has its own explicit operator gates, Basic lease fencing, gravity-float, and safe-home behavior. Upstream target staging is not autonomous physical authority; Integrated still requires local Engage + Xbox LB. Any assembled robot must be physically secured or separately disabled before calibration, mask initialization, object-pose capture, or sensor-origin work.

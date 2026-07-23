@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Physical Agent Robot Arm Command",
+  "type": "object",
+  "required": [
+    "command_id",
+    "lease_id",
+    "fencing_generation",
+    "mode",
+    "joint_indices",
+    "deadline_monotonic_ms"
+  ],
+  "properties": {
+    "mode": {
+      "enum": [
+        "IMPEDANCE",
+        "POSITION_VELOCITY_LIMITED",
+        "VELOCITY",
+        "POSITION_EFFORT_LIMITED"
+      ]
+    },
+    "joint_indices": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": true
+}

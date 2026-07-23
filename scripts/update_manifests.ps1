@@ -52,12 +52,19 @@ function Write-Manifest {
     $basePath = (Resolve-Path $BaseDirectory).Path -replace '[\\/]+$', ''
     $manifestPath = Join-Path $basePath 'FILE_MANIFEST.sha256'
     $manifestRelativePath = 'FILE_MANIFEST.sha256'
+    $providerManifest = (Split-Path $basePath -Leaf) -in @(
+        'rebot_arm_dm',
+        'rebot_arm_integrated'
+    )
     $lines = [System.Collections.Generic.List[string]]::new()
 
     $files = Get-ChildItem -Path $basePath -Recurse -File | Sort-Object FullName
     foreach ($file in $files) {
         $relativePath = $file.FullName.Substring($basePath.Length) -replace '^[\\/]+', ''
         $relativePath = $relativePath -replace '\\', '/'
+        if ($providerManifest -and $relativePath -eq 'SHA256SUMS.txt') {
+            continue
+        }
         if (Test-ManifestFileExcluded -RelativePath $relativePath -ManifestRelativePath $manifestRelativePath) {
             continue
         }
@@ -67,6 +74,13 @@ function Write-Manifest {
 
     $content = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { "" }
     [System.IO.File]::WriteAllText($manifestPath, $content, [System.Text.UTF8Encoding]::new($false))
+    if ($providerManifest) {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $basePath 'SHA256SUMS.txt'),
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
     Write-Host "Updated $manifestPath ($($lines.Count) files)"
 }
 
@@ -74,6 +88,8 @@ $componentDirectories = @(
     (Join-Path $workspace 'contracts'),
     (Join-Path $workspace 'docs\reference\project_notes'),
     (Join-Path $workspace 'platform_core'),
+    (Join-Path $workspace 'providers\rebot_arm_dm'),
+    (Join-Path $workspace 'providers\rebot_arm_integrated'),
     (Join-Path $workspace 'providers\local_vio'),
     (Join-Path $workspace 'providers\orbbec_femto_bolt'),
     (Join-Path $workspace 'test_agent')

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Physical Agent Robot Arm Joint State",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "observed_at_us",
+    "positions_rad",
+    "velocities_rad_s",
+    "torques_nm",
+    "provider_state"
+  ],
+  "properties": {
+    "schema": {
+      "const": "physical_agent.robot_arm_joint_state"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "positions_rad": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    },
+    "velocities_rad_s": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    },
+    "torques_nm": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    }
+  },
+  "additionalProperties": true
+}

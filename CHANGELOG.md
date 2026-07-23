@@ -1,5 +1,15 @@
 # Changelog
 
+## reBot arm Providers publication (2026-07-23)
+
+- Added reBot Arm DM Basic Controller 0.1.20 and Integrated Controller 0.7.0 as separate Providers with separate virtual environments.
+- Added Manager-discoverable capability readiness and a provider-local operation catalog for upstream Skills.
+- Marked MIT one-shot and continuous/HOLD_LB usable.
+- Marked POS_VEL one-shot limited to paths at or below 20 cm with no payload or high external load.
+- Kept POS_VEL continuous and arm POS_TOR one-shot as experimental/unstable local GUI tests and excluded both from Manager capability discovery.
+- Documented Fabric Cartesian target/settings staging, operator Engage + Xbox LB authority, latched MIT/POS_TOR gripper behavior, gravity-float, and authoritative safe-home termination.
+- Recorded offline validation separately from physical acceptance; no autonomous motion authority is claimed.
+
 ## FoundationPose Provider v0.3.0 publication (2026-07-22)
 
 - Added `providers/foundation_pose` as a Manager-discoverable CAD-based 6D object-pose Provider.

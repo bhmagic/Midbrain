@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "physical-ai-rebot-arm-dm-provider"
+version = "0.1.20"
+description = "reBot Arm DM Basic Controller and calibration utility"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+hardware = ["motorbridge>=0.4.9"]
+test = ["pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["rebot_arm_dm_provider"]
+
+[tool.setuptools.package-data]
+rebot_arm_dm_provider = ["calibration_web/*"]

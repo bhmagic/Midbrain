@@ -2,6 +2,8 @@
 config/*
 !config/.gitkeep
 !config/README.md
+providers/rebot_arm_dm/config/
+providers/rebot_arm_integrated/config/
 **/api_keys.env
 **/*.env
 !**/*.env.example

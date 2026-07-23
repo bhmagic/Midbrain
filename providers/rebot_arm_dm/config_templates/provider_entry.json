@@ -1,0 +1,29 @@
+{
+  "id": "robot_arm.rebot_dm",
+  "display_name": "reBot Arm DM Basic Controller",
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_dm/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_dm/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_dm/config/arm_model.json",
+    "--calibration",
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_dm/config/arm_calibration.json",
+    "--manager-url",
+    "http://127.0.0.1:7001",
+    "--fabric-url",
+    "http://127.0.0.1:7002",
+    "--listen-host",
+    "127.0.0.1",
+    "--listen-port",
+    "8791",
+    "--port",
+    "COM3",
+    "--allow-hardware-calibration"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:8791",
+  "auto_start": false,
+  "graceful_stop_timeout_ms": 35000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {}
+}

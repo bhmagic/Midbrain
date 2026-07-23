@@ -1,0 +1,152 @@
+{
+  "provider_type": "robot_arm.integrated_mit_cartesian_controller",
+  "version": "0.7.0",
+  "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
+  "residency_modes": [
+    "HOT",
+    "WARM",
+    "COLD"
+  ],
+  "capabilities": [
+    "robot_arm.integrated.physical_only",
+    "robot_arm.integrated.menu_engage_gate",
+    "robot.motion.arm.integrated.mit.one_shot",
+    "robot.motion.arm.integrated.mit.continuous",
+    "robot.motion.arm.integrated.pos_vel.one_shot_limited",
+    "robot_arm.integrated.manager_capability_catalog",
+    "robot_arm.integrated.one_shot_lb_commit",
+    "robot_arm.integrated.position_3dof_ik",
+    "robot_arm.integrated.pose_6dof_ik",
+    "robot_arm.integrated.controlled_frame_offset",
+    "robot_arm.integrated.payload_gravity_model",
+    "robot_arm.integrated.integrated_owned_smoothing",
+    "robot_arm.integrated.auto_float_after_one_shot",
+    "robot_arm.integrated.twenty_cm_commit_clamp",
+    "robot_arm.integrated.runtime_kp_multiplier",
+    "robot_arm.integrated.runtime_duration",
+    "robot_arm.integrated.measured_commanded_joint_telemetry",
+    "robot_arm.integrated.safe_terminate",
+    "robot_arm.integrated.verified_gravity_float",
+    "robot_arm.integrated.fenced_basic_lease",
+    "robot_arm.integrated.midbrain_lifecycle",
+    "robot_arm.integrated.motion_inhibit_consumer",
+    "robot_arm.integrated.capability_readiness",
+    "robot_arm.integrated.fabric_cartesian_target_consumer",
+    "robot_arm.integrated.fabric_freshness_and_duplicate_filter",
+    "robot_arm.integrated.semantic_scene_consumer",
+    "robot_arm.integrated.nonphysical_path_preview",
+    "robot_arm.integrated.operator_torque_baseline_capture",
+    "robot_arm.integrated.contact_residual_monitor",
+    "robot_arm.integrated.explicit_joint_torque_budgets",
+    "robot_arm.integrated.cartesian_wrench_budgets",
+    "robot_arm.integrated.isotropic_force_torque_budgets",
+    "robot_arm.integrated.gripper_mit_test",
+    "robot_arm.integrated.gripper_pos_tor_test",
+    "robot_arm.integrated.gripper_latched_endpoint_hold"
+  ],
+  "required_capabilities": [
+    "robot_arm.joint_state",
+    "robot_arm.gravity_float",
+    "robot_arm.control.operational_api_v2"
+  ],
+  "published_streams": [
+    "robot_arm.integrated.status",
+    "robot_arm.integrated.control_target"
+  ],
+  "consumed_streams": [
+    "robot_arm.primary.integrated.command",
+    "robot_arm.primary.integrated.scene"
+  ],
+  "package_layout": "providers/rebot_arm_integrated",
+  "compatible_basic_controller": ">=0.1.20",
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0",
+    "audited_commit": "e226a09",
+    "contract_set": "0.3.6-working-draft"
+  },
+  "operator_control": {
+    "physical_gates": [
+      "GUI_ENGAGE",
+      "XBOX_LB_ARM",
+      "XBOX_RB_RT_GRIPPER"
+    ],
+    "target_edit": "NON_PHYSICAL_WHILE_FLOATING",
+    "one_shot": "LB_RISING_EDGE_SOLVE_AND_STREAM_THEN_FLOAT",
+    "hold_lb": "RECEDING_HORIZON_REPLAN_WHILE_HELD_RELEASE_TO_FLOAT",
+    "trajectory": "INTEGRATED_OWNED_50HZ_MIT_OR_10HZ_LATCHED_POS_VEL_POS_TOR_ENDPOINT",
+    "maximum_translation_per_commit_m": 0.2,
+    "default_execution_mode": "IMPEDANCE"
+  },
+  "ik": {
+    "position": "SELECTABLE_3DOF_POSITION_IK",
+    "orientation": "SELECTABLE_6DOF_POSE_IK",
+    "controlled_frame": "TOOL_RELATIVE_OFFSET_TRANSFORM",
+    "rpy_matrix": "CORRECTED_STANDARD_RZ_RY_RX"
+  },
+  "limitations": [
+    "Physical hardware validation is required; this release is software-tested only",
+    "Obstacle avoidance and route planning are intentionally absent",
+    "TRANSIT_SPEED ONE_SHOT is limited to paths at or below 20 cm with no payload or high external load; stability beyond those constraints is not established",
+    "TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental and unstable and are excluded from Manager capability discovery",
+    "Cartesian wrench budgets are mapped to joint limits, but measured Cartesian force estimation remains absent; CONTACT_WORK monitors joint-torque residuals",
+    "Midbrain main at e226a09 does not expose a Manager-issued physical control-authority lease API; this release uses a fenced provider-local Basic lease gated by Manager connectivity and global motion inhibit"
+  ],
+  "midbrain_conformance": {
+    "runtime_compatibility": "AUDITED_AGAINST_MAIN_E226A09",
+    "manager_lifecycle_endpoints": true,
+    "global_motion_inhibit": true,
+    "manager_authority_lease": "BLOCKED_BY_PLATFORM_API_GAP",
+    "full_physical_control_contract": false
+  },
+  "execution_backends": {
+    "IMPEDANCE": {
+      "required_capability": "robot_arm.control.impedance",
+      "default": true,
+      "one_shot_maturity": "USABLE",
+      "continuous_maturity": "USABLE",
+      "discoverable": true
+    },
+    "POSITION_VELOCITY_LIMITED": {
+      "required_capability": "robot_arm.control.position_velocity_limited",
+      "default": false,
+      "one_shot_maturity": "LIMITED",
+      "one_shot_constraints": {
+        "maximum_path_length_m": 0.2,
+        "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD"
+      },
+      "continuous_maturity": "EXPERIMENTAL_UNSTABLE",
+      "continuous_discoverable": false
+    },
+    "GRIPPER_POSITION_EFFORT_LIMITED": {
+      "required_capability": "robot_arm.control.position_effort_limited",
+      "default": false,
+      "scope": "joint_7_operator_hold_test"
+    },
+    "ARM_POSITION_EFFORT_LIMITED": {
+      "required_capability": "robot_arm.control.position_effort_limited",
+      "default": false,
+      "scope": "six_joint_twenty_cm_contact_work_with_joint_or_cartesian_budgets",
+      "one_shot_maturity": "EXPERIMENTAL_UNSTABLE",
+      "discoverable": false
+    }
+  },
+  "capability_discovery": {
+    "manager_source": "heartbeat.details.capability_readiness",
+    "provider_catalog_endpoint": "GET /v1/capabilities",
+    "advertised_motion_capabilities": [
+      "robot.motion.arm.integrated.mit.one_shot",
+      "robot.motion.arm.integrated.mit.continuous",
+      "robot.motion.arm.integrated.pos_vel.one_shot_limited"
+    ],
+    "excluded_experiments": [
+      "TRANSIT_SPEED_HOLD_LB",
+      "CONTACT_WORK_ONE_SHOT_POS_TOR"
+    ]
+  },
+  "fabric_input": {
+    "stream": "robot_arm.primary.integrated.command",
+    "schema": "physical_agent.arm_integrated_command",
+    "motion_authority": "STAGING_ONLY_GUI_ENGAGE_AND_XBOX_LB_STILL_REQUIRED"
+  }
+}

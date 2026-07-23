@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reBot Arm DM Basic Controller Calibration</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>reBot Arm DM Basic Controller Calibration</h1>
+      <p>Basic Controller engineering utility · measured-state rendering · calibration-only collision guard</p>
+    </div>
+    <div class="status-grid">
+      <span id="connection" class="badge bad">Disconnected</span>
+      <span id="provider-state" class="badge">Unknown</span>
+      <span id="lease-state" class="badge">No lease</span>
+      <span id="collision-state" class="badge">Unchecked</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel visual-panel">
+      <div class="section-title">
+        <div><h2>Measured arm pose</h2><p>The solid arm is measured state. The desktop line belongs only to this calibration application.</p></div>
+        <div class="view-controls"><button data-view="iso">ISO</button><button data-view="front">Front</button><button data-view="top">Top</button></div>
+      </div>
+      <canvas id="arm-canvas" width="1100" height="520"></canvas>
+      <div class="telemetry" id="telemetry"></div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="manual">Manual control</button>
+      <button class="tab" data-tab="automatic">Automatic calibration</button>
+      <button class="tab" data-tab="configuration">Configuration</button>
+    </nav>
+
+    <section id="manual" class="panel tab-page active">
+      <div class="section-title">
+        <div><h2>Manual joint testing</h2><p>Raw velocity mode is intentionally unavailable. Each slider is a pointer deadman. Press and drag with the mouse or touch; releasing anywhere immediately enters gravity-float and snaps the target back to the measured angle.</p></div>
+        <div class="actions">
+          <button id="acquire-lease">Enable calibration control</button>
+          <button id="gravity-float" class="safe">Gravity float</button>
+          <button id="safe-home">Safe home</button>
+          <button id="reset-manual-defaults">Reset provided defaults</button>
+        </div>
+      </div>
+      <div class="warning compact">Use a mechanically supported arm for first hardware motion. Start with very small ranges. Low-kp MIT is prohibited. MIT spring stiffness uses the supplied working defaults; velocity damping may be low. POS_VEL and FORCE_POS remain velocity/torque capped by the provider.</div>
+      <div id="joint-table" class="joint-table"></div>
+      <div id="manual-motion-status" class="deadman" role="status" aria-live="polite">ENABLE CALIBRATION CONTROL TO UNLOCK THE SLIDERS</div>
+    </section>
+
+    <section id="automatic" class="panel tab-page">
+      <div class="section-title">
+        <div><h2>Automatic friction calibration</h2><p>Move the arm by hand in gravity-float to a clear pose. The factory mass, center-of-mass, inertia, and gravity model remain unchanged. All seven joints remain in POSITION_VELOCITY_LIMITED mode: six hold the captured pose while one performs two forward/reverse traverses at two speeds to estimate Coulomb and viscous friction. MIT is not used during automatic calibration.</p></div>
+        <div class="actions"><button id="reset-auto-defaults">Reset provided defaults</button></div>
+      </div>
+      <div class="warning severe">
+        <strong>Workspace confirmation required.</strong>
+        This utility detects only simplified robot self-collision and the configured desktop plane. It cannot detect people, monitors, walls, lamps, shelves, tools, cables, or any other external obstacle.
+      </div>
+      <label class="confirm"><input id="workspace-confirmed" type="checkbox"> I confirm that the complete reachable area is clear except for the desktop and fixed robot mount shown here.</label>
+      <div class="actions"><button id="capture-anchor">Capture current gravity-float pose</button></div>
+      <div id="anchor-pose" class="anchor-pose warn">No pose captured. Move the arm by hand in gravity-float, then capture it.</div>
+      <div class="form-grid">
+        <label>Desktop height from arm root (m)<input id="table-height" type="number" step="0.001" value="0"></label>
+        <label>Desktop safety clearance (m)<input id="table-clearance" type="number" step="0.005" min="0.01" value="0.025"></label>
+        <label>Slow sweep speed (rad/s)<input id="slow-speed" type="number" step="0.01" min="0.02" value="0.16"></label>
+        <label>Second sweep speed (rad/s)<input id="medium-speed" type="number" step="0.01" min="0.03" value="0.32"></label>
+
+      </div>
+      <label class="confirm"><input id="auto-save-accepted" type="checkbox" checked> Automatically save validated Coulomb and viscous friction values.</label>
+      <label class="confirm"><input id="save-raw-samples" type="checkbox"> Save one compact raw samples file for diagnostics. Off by default.</label>
+      <div id="auto-ranges" class="auto-ranges"></div>
+      <div class="actions automatic-actions">
+        <button id="check-ranges">Calculate safe ranges</button>
+        <button id="start-auto" class="primary">Capture current pose and start</button>
+        <button id="skip-joint">Skip current joint</button>
+        <button id="cancel-auto" class="danger">Pause into speed-limited hold</button>
+        <button id="stop-home">Stop and return home</button>
+      </div>
+      <div class="progress"><div id="progress-bar"></div></div>
+      <pre id="auto-log" class="log">Concise calibration events will appear here.</pre>
+      <div id="fit-results"></div>
+    </section>
+
+    <section id="configuration" class="panel tab-page">
+      <h2>Active model</h2>
+      <p>These values are published by the Basic Controller. Desktop and self-collision settings are not part of the Basic Controller.</p>
+      <pre id="model-view" class="log model"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

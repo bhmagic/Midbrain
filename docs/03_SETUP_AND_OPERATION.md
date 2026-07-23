@@ -20,6 +20,12 @@ Optional FoundationPose operation additionally requires:
 - Git LFS for the two published checkpoint files
 - SAM2 and an OpenAI API key only when using the assisted GUI initialization path
 
+Optional reBot arm operation additionally requires:
+
+- The supported reBot/Damiao seven-motor assembly and its reviewed local calibration
+- A Windows serial connection and `motorbridge>=0.4.9`
+- An Xbox-compatible controller for the current operator motion gate
+
 The Orbbec SDK is not redistributed in this repository.
 
 ## Workspace location
@@ -60,6 +66,17 @@ git lfs pull
 
 `setup.ps1` creates the Provider environment, installs Midbrain integration support, seeds missing local configuration, and registers the Provider. It does not compile the complete upstream FoundationPose runtime.
 
+Set up the two reBot arm Providers independently so each owns its own `.venv`:
+
+```powershell
+.\providers\rebot_arm_dm\scripts\setup.ps1 -WithMotorBridge
+.\providers\rebot_arm_integrated\scripts\setup.ps1
+.\providers\rebot_arm_dm\scripts\register.ps1
+.\providers\rebot_arm_integrated\scripts\register.ps1
+```
+
+The setup commands create the two private environments and seed missing local configuration. The registration commands add or update the two entries in local `config\providers.json`. The repository does not include machine-local arm calibration, runtime configuration, or either virtual environment.
+
 To set explicit SDK paths:
 
 ```powershell
@@ -89,6 +106,8 @@ Default endpoints:
 | Camera Provider control | `http://127.0.0.1:7101` |
 | Local VIO Provider control | `http://127.0.0.1:7102` |
 | FoundationPose Provider control | `http://127.0.0.1:7103` |
+| reBot Arm DM Basic control | `http://127.0.0.1:8791` |
+| reBot Arm Integrated control/GUI | `http://127.0.0.1:8793` |
 | Test Agent GUI | `http://127.0.0.1:8000` |
 | Calibration GUI | `http://127.0.0.1:8111` |
 
@@ -113,6 +132,14 @@ Default endpoints:
 ```
 
 Runtime logs are written under `platform_core\logs` and are intentionally ignored by Git.
+
+## reBot arm discovery and test operation
+
+When Integrated is HOT and ready, Manager `GET /v1/capabilities` advertises usable MIT one-shot/continuous and limited POS_VEL one-shot. Provider `GET http://127.0.0.1:8793/v1/capabilities` maps the discoverable capabilities and GUI operations to their HTTP or Fabric invocation.
+
+POS_VEL one-shot is labeled limited to paths at or below 20 cm with no payload or high external load. POS_VEL continuous and arm POS_TOR one-shot remain experimental/unstable GUI tests and are intentionally absent from Manager capability discovery.
+
+The current upstream flow is target/settings staging through Fabric stream `robot_arm.primary.integrated.command`, followed by the local operator's Engage + Xbox LB release. Use the provider's documented `stop_physical_gui_test.ps1` path for authoritative safe-home termination.
 
 ## Forced VIO reinitialization
 

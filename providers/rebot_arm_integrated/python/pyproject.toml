@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "physical-ai-rebot-arm-integrated-controller"
+version = "0.7.0"
+description = "reBot arm MIT Cartesian bring-up controller"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26,<3"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rebot_arm_integrated*"]
+
+[tool.setuptools.package-data]
+rebot_arm_integrated = ["web/*"]

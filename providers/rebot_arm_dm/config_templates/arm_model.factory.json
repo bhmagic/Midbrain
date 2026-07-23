@@ -1,0 +1,824 @@
+{
+  "schema": "physical_agent.robot_arm_model",
+  "schema_version": 1,
+  "model_id": "rebot_arm_b601_dm",
+  "model_revision": "rebot-official-fixed-end-0.1.20-pos-tor-peak-and-mode-bridge",
+  "display_name": "reBot Arm B601-DM",
+  "manufacturer": "Seeed Studio / reBot",
+  "coordinate_convention": {
+    "length": "m",
+    "angle": "rad",
+    "velocity": "rad/s",
+    "torque": "N*m",
+    "quaternion": "xyzw",
+    "root_frame": "rebot_arm_base"
+  },
+  "source_notes": [
+    "Kinematic origins and nominal inertial values transcribed from the official reBotArm_control_py fixed-end URDF.",
+    "Hard limits are observed hardware boundaries from the supplied Unity bridge notes and must be verified on the actual assembly.",
+    "DM-J4310 revision is unverified; configured TMAX=7 N*m is conservative and matches the supplied URDF effort limit.",
+    "Link weight is mass multiplied by standard gravity; nominal segment lengths are kinematic joint-to-joint spans and are not collision dimensions.",
+    "Manual MIT defaults follow the official rebotarm_dm.yaml values used by the supplied Unity bridge: 120/8 for DM-J4340P, 18/2 for arm DM-J4310, and 8/1 for the gripper.",
+    "Manual MIT tracking effort is limited using the supplied Unity bridge software limits: 60 N*m for joints 1-3 and 20 N*m for joints 4-7; gravity feedforward remains outside this tracking-effort limiter.",
+    "Default calibration angle ranges follow the supplied measured-boundary notes with conservative margins."
+  ],
+  "control": {
+    "internal_rate_hz": 50.0,
+    "fabric_rate_hz": 40.0,
+    "command_timeout_ms": 300,
+    "lease_timeout_ms": 700,
+    "safe_home_timeout_s": 25.0,
+    "safe_home_max_velocity_rad_s": 0.3,
+    "gravity_float_entry_ramp_s": 0.0,
+    "safe_home_kp": [
+      120.0,
+      120.0,
+      120.0,
+      18.0,
+      18.0,
+      18.0,
+      8.0
+    ],
+    "safe_home_kd": [
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      0.5
+    ],
+    "safe_home_settle_velocity_rad_s": 0.06,
+    "safe_home_settle_cycles": 10,
+    "transform_rate_hz": 30.0,
+    "load_bearing_mit_kp_rule": "kp_must_be_at_least_provided_default; kd_may_be_low",
+    "safe_home_transition_hold_cycles": 5,
+    "safe_home_powered_settle_s": 0.25,
+    "physical_test_pos_vel_cap_rad_s": [2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 0.5],
+    "physical_test_pos_tor_ratio_cap": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2],
+    "motor_endpoint_keepalive_hz": 10.0,
+    "transient_serial_retry_count": 2,
+    "transient_serial_retry_delay_ms": 10,
+    "mit_mode_confirmation_timeout_ms": 1000
+  },
+  "frames": {
+    "base": "rebot_arm_base",
+    "tool": "rebot_arm_tool",
+    "gripper_tcp": "rebot_arm_gripper_tcp"
+  },
+  "joints": [
+    {
+      "name": "joint1",
+      "index": 0,
+      "motor_id": 1,
+      "feedback_id": 17,
+      "motor_model": "4340P",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -2.6179938779914944,
+        2.6179938779914944
+      ],
+      "operational_limit_rad": [
+        -2.2689280275926285,
+        2.2689280275926285
+      ],
+      "default_calibration_range_rad": [
+        -2.2689280275926285,
+        2.2689280275926285
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 27,
+        "manufacturer_rated_torque_nm": 9,
+        "manufacturer_peak_torque_nm": 27,
+        "configured_vmax_rad_s": 5,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.5,
+        "max_torque_ratio": 0.25,
+        "max_kp": 500.0,
+        "max_kd": 8,
+        "mit_tracking_effort_limit_nm": 60,
+        "min_kp": 120.0
+      },
+      "default_test": {
+        "kp": 120,
+        "kd": 8,
+        "velocity_limit_rad_s": 0.25,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "base_link",
+        "child_link": "link1",
+        "origin_translation_m": [
+          -8.416e-05,
+          0,
+          0.08465
+        ],
+        "origin_rpy_rad": [
+          0,
+          0,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "joint2",
+      "index": 1,
+      "motor_id": 2,
+      "feedback_id": 18,
+      "motor_model": "4340P",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -3.141592653589793,
+        0.0
+      ],
+      "operational_limit_rad": [
+        -2.9670597283903604,
+        0.0
+      ],
+      "default_calibration_range_rad": [
+        -2.9670597283903604,
+        0.0
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 27,
+        "manufacturer_rated_torque_nm": 9,
+        "manufacturer_peak_torque_nm": 27,
+        "configured_vmax_rad_s": 5,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.5,
+        "max_torque_ratio": 0.25,
+        "max_kp": 500.0,
+        "max_kd": 8,
+        "mit_tracking_effort_limit_nm": 60,
+        "min_kp": 120.0
+      },
+      "default_test": {
+        "kp": 120,
+        "kd": 8,
+        "velocity_limit_rad_s": 0.25,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "link1",
+        "child_link": "link2",
+        "origin_translation_m": [
+          0.020084,
+          0.031625,
+          0.05555
+        ],
+        "origin_rpy_rad": [
+          -1.5708,
+          0,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          -1
+        ]
+      }
+    },
+    {
+      "name": "joint3",
+      "index": 2,
+      "motor_id": 3,
+      "feedback_id": 19,
+      "motor_model": "4340P",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -3.141592653589793,
+        0.0
+      ],
+      "operational_limit_rad": [
+        -2.9670597283903604,
+        0.0
+      ],
+      "default_calibration_range_rad": [
+        -2.9670597283903604,
+        0.0
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 27,
+        "manufacturer_rated_torque_nm": 9,
+        "manufacturer_peak_torque_nm": 27,
+        "configured_vmax_rad_s": 5,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.5,
+        "max_torque_ratio": 0.25,
+        "max_kp": 500.0,
+        "max_kd": 8,
+        "mit_tracking_effort_limit_nm": 60,
+        "min_kp": 120.0
+      },
+      "default_test": {
+        "kp": 120,
+        "kd": 8,
+        "velocity_limit_rad_s": 0.25,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "link2",
+        "child_link": "link3",
+        "origin_translation_m": [
+          -0.264,
+          0,
+          0
+        ],
+        "origin_rpy_rad": [
+          0,
+          0,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "joint4",
+      "index": 3,
+      "motor_id": 4,
+      "feedback_id": 20,
+      "motor_model": "4310",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -1.5707963267948966,
+        1.5707963267948966
+      ],
+      "operational_limit_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "default_calibration_range_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 7,
+        "manufacturer_rated_torque_nm": 3,
+        "manufacturer_peak_torque_nm": 7,
+        "configured_vmax_rad_s": 3,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.7,
+        "max_torque_ratio": 0.2,
+        "max_kp": 500.0,
+        "max_kd": 2,
+        "mit_tracking_effort_limit_nm": 20,
+        "min_kp": 18.0
+      },
+      "default_test": {
+        "kp": 18,
+        "kd": 2,
+        "velocity_limit_rad_s": 0.35,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "link3",
+        "child_link": "link4",
+        "origin_translation_m": [
+          0.2426,
+          -0.054,
+          -0.001625
+        ],
+        "origin_rpy_rad": [
+          0,
+          0,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "joint5",
+      "index": 4,
+      "motor_id": 5,
+      "feedback_id": 21,
+      "motor_model": "4310",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -1.5707963267948966,
+        1.5707963267948966
+      ],
+      "operational_limit_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "default_calibration_range_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 7,
+        "manufacturer_rated_torque_nm": 3,
+        "manufacturer_peak_torque_nm": 7,
+        "configured_vmax_rad_s": 3,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.7,
+        "max_torque_ratio": 0.2,
+        "max_kp": 500.0,
+        "max_kd": 2,
+        "mit_tracking_effort_limit_nm": 20,
+        "min_kp": 18.0
+      },
+      "default_test": {
+        "kp": 18,
+        "kd": 2,
+        "velocity_limit_rad_s": 0.35,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "link4",
+        "child_link": "link5",
+        "origin_translation_m": [
+          0.078308,
+          -0.0375,
+          -0.03
+        ],
+        "origin_rpy_rad": [
+          -1.5708,
+          0,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "joint6",
+      "index": 5,
+      "motor_id": 6,
+      "feedback_id": 22,
+      "motor_model": "4310",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -1.5707963267948966,
+        1.5707963267948966
+      ],
+      "operational_limit_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "default_calibration_range_rad": [
+        -1.3089969389957472,
+        1.3089969389957472
+      ],
+      "home_position_rad": 0,
+      "motor_limits": {
+        "configured_tmax_nm": 7,
+        "manufacturer_rated_torque_nm": 3,
+        "manufacturer_peak_torque_nm": 7,
+        "configured_vmax_rad_s": 3,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.7,
+        "max_torque_ratio": 0.2,
+        "max_kp": 500.0,
+        "max_kd": 2,
+        "mit_tracking_effort_limit_nm": 20,
+        "min_kp": 18.0
+      },
+      "default_test": {
+        "kp": 18,
+        "kd": 2,
+        "velocity_limit_rad_s": 0.35,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      },
+      "kinematics": {
+        "parent_link": "link5",
+        "child_link": "link6",
+        "origin_translation_m": [
+          0.028008,
+          0,
+          0.04
+        ],
+        "origin_rpy_rad": [
+          0,
+          1.5708,
+          0
+        ],
+        "axis_local": [
+          0,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "name": "gripper",
+      "index": 6,
+      "motor_id": 7,
+      "feedback_id": 23,
+      "motor_model": "4310",
+      "motor_revision": "UNVERIFIED",
+      "hard_limit_rad": [
+        -5.235987755982989,
+        -0.15707963267948966
+      ],
+      "operational_limit_rad": [
+        -4.886921905584122,
+        -0.3490658503988659
+      ],
+      "default_calibration_range_rad": [
+        -4.886921905584122,
+        -0.3490658503988659
+      ],
+      "home_position_rad": -0.3490658503988659,
+      "motor_limits": {
+        "configured_tmax_nm": 7,
+        "manufacturer_rated_torque_nm": 3,
+        "manufacturer_peak_torque_nm": 7,
+        "configured_vmax_rad_s": 3,
+        "mit_kp_protocol_range": [
+          0,
+          500
+        ],
+        "mit_kd_protocol_range": [
+          0,
+          5
+        ],
+        "force_pos_ratio_range": [
+          0,
+          1
+        ]
+      },
+      "provider_test_caps": {
+        "max_velocity_rad_s": 0.7,
+        "max_torque_ratio": 0.2,
+        "max_kp": 8,
+        "max_kd": 1,
+        "mit_tracking_effort_limit_nm": 20,
+        "min_kp": 8.0
+      },
+      "default_test": {
+        "kp": 8,
+        "kd": 1,
+        "velocity_limit_rad_s": 0.35,
+        "torque_limit_ratio": 0.15
+      },
+      "dynamics": {
+        "gravity_scale": 1.0,
+        "gravity_offset_nm": 0.0,
+        "coulomb_friction_nm": 0.0,
+        "viscous_friction_nm_per_rad_s": 0.0,
+        "effective_inertia_kg_m2": 0.0,
+        "torque_scale": 1.0,
+        "torque_bias_nm": 0.0,
+        "quality": "NOMINAL"
+      }
+    }
+  ],
+  "links": [
+    {
+      "name": "base_link",
+      "mass_kg": 0.8366,
+      "center_of_mass_m": [
+        -7.849e-06,
+        -1.1531e-06,
+        0.029841
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.0013304,
+        "ixy": 1e-08,
+        "ixz": 0,
+        "iyy": 0.00213119,
+        "iyz": 0,
+        "izz": 0.00275877
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 8.20424339,
+      "nominal_segment_length_m": 0.08465
+    },
+    {
+      "name": "link1",
+      "mass_kg": 0.1613,
+      "center_of_mass_m": [
+        0.000113614552951627,
+        -0.000616319527051323,
+        0.0236476372671394
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00025207,
+        "ixy": 0,
+        "ixz": -2.832e-05,
+        "iyy": 0.00015464,
+        "iyz": 0,
+        "izz": 0.00023416
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 1.5818126449999999,
+      "nominal_segment_length_m": 0.06700231474359673
+    },
+    {
+      "name": "link2",
+      "mass_kg": 1.3266,
+      "center_of_mass_m": [
+        -0.13225622308888,
+        -0.0030617036386309,
+        -0.0308306967030205
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00073374,
+        "ixy": -4.3e-07,
+        "ixz": 8.51e-06,
+        "iyy": 0.01255987,
+        "iyz": 1.28e-06,
+        "izz": 0.01281387
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 13.00950189,
+      "nominal_segment_length_m": 0.264
+    },
+    {
+      "name": "link3",
+      "mass_kg": 0.8353,
+      "center_of_mass_m": [
+        0.121040035791843,
+        -0.0536211076627949,
+        -0.0310137854608077
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00046807,
+        "ixy": -3.456e-05,
+        "ixz": -4.26e-05,
+        "iyy": 0.00632695,
+        "iyz": 6e-08,
+        "izz": 0.00648221
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 8.191494745,
+      "nominal_segment_length_m": 0.2485425529461706
+    },
+    {
+      "name": "link4",
+      "mass_kg": 0.52,
+      "center_of_mass_m": [
+        0.0608200956293136,
+        -0.0511711906613122,
+        -0.030299458623927
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00045986,
+        "ixy": 0.00024219,
+        "ixz": -6.72e-06,
+        "iyy": 0.00075258,
+        "iyz": -5.35e-06,
+        "izz": 0.00066742
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 5.099458,
+      "nominal_segment_length_m": 0.09186072536182152
+    },
+    {
+      "name": "link5",
+      "mass_kg": 0.383,
+      "center_of_mass_m": [
+        -0.00502802058982517,
+        1.73866206692364e-06,
+        0.0386233236326755
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00019772,
+        "ixy": -6.2e-07,
+        "ixz": -2.426e-05,
+        "iyy": 0.00021737,
+        "iyz": 2e-08,
+        "izz": 0.00017191
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 3.75594695,
+      "nominal_segment_length_m": 0.04883081060150446
+    },
+    {
+      "name": "link6",
+      "mass_kg": 0.3663,
+      "center_of_mass_m": [
+        3.76418727127126e-06,
+        -0.000100908819946677,
+        0.0253308606425965
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00015554,
+        "ixy": 0,
+        "ixz": 0,
+        "iyy": 0.00015554,
+        "iyz": 0,
+        "izz": 0.00013966
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 3.592175895,
+      "nominal_segment_length_m": 0.15539
+    },
+    {
+      "name": "end_link",
+      "mass_kg": 0.45,
+      "center_of_mass_m": [
+        -0.0737654295815033,
+        -9.5080995865868e-06,
+        7.04327840286845e-06
+      ],
+      "inertia_kg_m2": {
+        "ixx": 0.00037354,
+        "ixy": -1.1e-07,
+        "ixz": 5e-07,
+        "iyy": 0.0001583,
+        "iyz": 3.48e-06,
+        "izz": 0.00045353
+      },
+      "quality": "NOMINAL_URDF",
+      "weight_n_at_standard_gravity": 4.4129925,
+      "nominal_segment_length_m": null
+    }
+  ],
+  "fixed_tool": {
+    "parent_link": "link6",
+    "child_link": "end_link",
+    "translation_m": [
+      0,
+      0,
+      0.15539
+    ],
+    "rpy_rad": [
+      0,
+      -1.5708,
+      3.1415
+    ]
+  },
+  "home": {
+    "name": "safe_home",
+    "positions_rad": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      -0.3490658503988659
+    ],
+    "tolerance_rad": 0.06981317007977318,
+    "strategy": "MIT_RATE_LIMITED_TO_ZERO",
+    "reference": "Official Python/Unity safe-home behavior: rate-limit all joint targets toward the configured zero/home vector while the MIT loop remains powered."
+  },
+  "calibration_quality": {
+    "kinematics": "NOMINAL_URDF",
+    "gravity": "NOMINAL_URDF",
+    "friction": "UNMEASURED",
+    "effective_inertia": "UNMEASURED",
+    "torque_scale": "UNMEASURED"
+  }
+}

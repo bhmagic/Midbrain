@@ -1,0 +1,409 @@
+"""Hardware abstraction and deterministic simulation for reBot Arm DM."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Protocol
+import importlib
+import math
+import threading
+import time
+
+import numpy as np
+
+from .models import ArmConfiguration
+
+
+@dataclass
+class JointFeedback:
+    positions_rad: np.ndarray
+    velocities_rad_s: np.ndarray
+    torques_nm: np.ndarray
+    temperatures_c: np.ndarray
+    voltages_v: np.ndarray
+    status_codes: list[str]
+    observed_monotonic: float
+
+
+class HardwareBackend(Protocol):
+    def connect(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def enable(self) -> None: ...
+    def disable(self) -> None: ...
+    def read(self) -> JointFeedback: ...
+    def send_impedance(self, index: int, position: float, velocity: float, kp: float, kd: float, torque: float) -> None: ...
+    def send_position_velocity(self, index: int, position: float, velocity_limit: float) -> None: ...
+    def send_velocity(self, index: int, velocity: float) -> None: ...
+    def send_force_position(self, index: int, position: float, velocity_limit: float, torque_ratio: float) -> None: ...
+
+
+class SimulationBackend:
+    """Seven-joint low-order simulation suitable for UI and safety tests."""
+
+    def __init__(self, configuration: ArmConfiguration, gravity_function=None):
+        self.configuration = configuration
+        self.gravity_function = gravity_function
+        self.lock = threading.RLock()
+        self.connected = False
+        self.enabled = False
+        self.position = configuration.home_positions.copy()
+        self.velocity = np.zeros(7)
+        self.torque = np.zeros(7)
+        self.temperature = np.full(7, 28.0)
+        self.voltage = np.full(7, 24.0)
+        self.last_time = time.monotonic()
+        self.commands = [dict(mode="IDLE", position=float(self.position[i]), velocity=0.0, kp=0.0, kd=0.0, torque=0.0, vlim=0.2, ratio=0.0) for i in range(7)]
+        self.read_cycle_count = 0
+        self.command_frame_count = 0
+        self.started_monotonic = time.monotonic()
+
+    def connect(self) -> None:
+        with self.lock:
+            self.connected = True; self.last_time = time.monotonic()
+
+    def disconnect(self) -> None:
+        with self.lock:
+            self.connected = False; self.enabled = False
+
+    def enable(self) -> None:
+        if not self.connected: raise RuntimeError("simulation backend is disconnected")
+        self.enabled = True
+
+    def disable(self) -> None:
+        self.enabled = False
+
+    def _step(self) -> None:
+        now=time.monotonic(); dt=min(max(now-self.last_time, 0.0), 0.05); self.last_time=now
+        if not self.enabled or dt <= 0: return
+        physical_gravity = np.zeros(7) if self.gravity_function is None else np.asarray(self.gravity_function(self.position), dtype=float)
+        for i, command in enumerate(self.commands):
+            mode=command["mode"]
+            friction = 0.05 * math.tanh(self.velocity[i] / 0.03) + 0.03 * self.velocity[i]
+            if mode == "IMPEDANCE":
+                drive = command["kp"]*(command["position"]-self.position[i]) + command["kd"]*(command["velocity"]-self.velocity[i]) + command["torque"]
+                acceleration = (drive - physical_gravity[i] - friction) / 0.12
+                acceleration = float(np.clip(acceleration, -6.0, 6.0))
+            elif mode in {"POSITION_VELOCITY_LIMITED", "POSITION_EFFORT_LIMITED"}:
+                error=command["position"]-self.position[i]
+                desired=float(np.clip(error*4.0, -command["vlim"], command["vlim"]))
+                acceleration=float(np.clip((desired-self.velocity[i])*12.0, -5.0, 5.0))
+                if mode == "POSITION_EFFORT_LIMITED": acceleration *= max(0.05, command["ratio"])
+            elif mode == "VELOCITY":
+                acceleration=float(np.clip((command["velocity"]-self.velocity[i])*10.0, -5.0, 5.0))
+            else:
+                acceleration=-self.velocity[i]*8.0
+            self.velocity[i]+=acceleration*dt
+            self.position[i]+=self.velocity[i]*dt
+            hard=self.configuration.hard_limits[i]
+            if self.position[i] < hard[0] or self.position[i] > hard[1]:
+                self.position[i]=float(np.clip(self.position[i], hard[0], hard[1])); self.velocity[i]=0.0
+            self.torque[i]=physical_gravity[i] + 0.12*acceleration + friction
+            self.temperature[i]+=abs(self.torque[i])*dt*0.002
+
+    def read(self) -> JointFeedback:
+        with self.lock:
+            if not self.connected: raise RuntimeError("simulation backend is disconnected")
+            self.read_cycle_count += 1
+            self._step()
+            return JointFeedback(self.position.copy(), self.velocity.copy(), self.torque.copy(), self.temperature.copy(), self.voltage.copy(), ["OK"]*7, time.monotonic())
+
+    def send_impedance(self, index, position, velocity, kp, kd, torque):
+        with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="IMPEDANCE", position=position, velocity=velocity, kp=kp, kd=kd, torque=torque)
+    def send_position_velocity(self, index, position, velocity_limit):
+        with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="POSITION_VELOCITY_LIMITED", position=position, vlim=velocity_limit)
+    def send_velocity(self, index, velocity):
+        with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="VELOCITY", velocity=velocity)
+    def send_force_position(self, index, position, velocity_limit, torque_ratio):
+        with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="POSITION_EFFORT_LIMITED", position=position, vlim=velocity_limit, ratio=torque_ratio)
+
+    def diagnostics(self) -> dict[str, Any]:
+        elapsed = max(time.monotonic() - self.started_monotonic, 1e-6)
+        return {
+            "backend": "SIMULATION",
+            "read_cycles": self.read_cycle_count,
+            "command_frames": self.command_frame_count,
+            "read_cycles_per_s": self.read_cycle_count / elapsed,
+            "command_frames_per_s": self.command_frame_count / elapsed,
+        }
+
+
+class MotorBridgeBackend:
+    """Direct adapter for the MotorBridge 0.4.9 Python API."""
+
+    MODE_NAMES = {
+        "IMPEDANCE": "MIT",
+        "POSITION_VELOCITY_LIMITED": "POS_VEL",
+        "VELOCITY": "VEL",
+        "POSITION_EFFORT_LIMITED": "FORCE_POS",
+    }
+
+    def __init__(self, configuration: ArmConfiguration, port: str, baudrate: int = 921600):
+        self.configuration=configuration; self.port=port; self.baudrate=baudrate
+        self.controller=None; self.motors=[]; self.mode_enum=None; self.active_modes=[None]*7; self.enabled=False
+        self.started_monotonic=time.monotonic(); self.read_cycle_count=0; self.feedback_request_count=0
+        self.feedback_poll_count=0; self.command_frame_attempt_count=0; self.command_frame_count=0
+        self.mode_switch_count=0; self.mode_switch_attempt_count=0; self.mode_switch_failure_count=0
+        self.io_error_count=0; self.last_io_error=None; self.last_mode_switch_error=None
+        control=configuration.model.get("control",{})
+        self.transient_retry_limit=int(control.get("transient_serial_retry_count",0))
+        self.transient_retry_delay_s=float(control.get("transient_serial_retry_delay_ms",0.0))/1000.0
+        self.mit_mode_confirmation_timeout_ms=int(
+            control.get("mit_mode_confirmation_timeout_ms",250)
+        )
+        self.transient_retry_attempt_count=0; self.transient_retry_recovery_count=0
+        self.transient_retry_failure_count=0; self.last_transient_retry_error=None
+
+    def connect(self) -> None:
+        try:
+            module=importlib.import_module("motorbridge")
+        except ImportError as error:
+            raise RuntimeError("MotorBridge is not installed. Run setup.ps1 -WithMotorBridge.") from error
+        Controller=getattr(module,"Controller",None); self.mode_enum=getattr(module,"Mode",None)
+        if Controller is None or self.mode_enum is None:
+            raise RuntimeError("MotorBridge must export Controller and Mode")
+        if not hasattr(Controller,"from_dm_serial"):
+            raise RuntimeError("Controller.from_dm_serial is unavailable; MotorBridge 0.4.9 or later is required")
+        self.controller=Controller.from_dm_serial(self.port,self.baudrate)
+        self.started_monotonic=time.monotonic()
+        self.motors=[]; self.active_modes=[None]*7
+        for joint in self.configuration.joints:
+            self.motors.append(self.controller.add_damiao_motor(joint.motor_id,joint.feedback_id,joint.motor_model))
+
+    def disconnect(self) -> None:
+        if self.controller is not None:
+            try: self.controller.disable_all()
+            except Exception: pass
+            try: self.controller.shutdown()
+            except Exception: pass
+            try: self.controller.close()
+            except Exception: pass
+        self.controller=None; self.motors=[]; self.enabled=False
+
+    def enable(self) -> None:
+        if self.controller is None: raise RuntimeError("MotorBridge is disconnected")
+        self.controller.enable_all(); self.enabled=True
+
+    def disable(self) -> None:
+        if self.controller is not None:
+            try: self.controller.disable_all()
+            except Exception: pass
+        self.enabled=False
+
+    def _joint_from_motor(self,index:int,position:float,velocity:float,torque:float) -> tuple[float,float,float]:
+        calibration=self.configuration.calibration_by_name[self.configuration.joints[index].name]
+        sign=float(calibration.get("direction_sign",1.0)); offset=float(calibration.get("zero_offset_rad",0.0)); scale=max(abs(float(calibration.get("torque_scale",1.0))),1e-9)
+        return sign*position+offset,sign*velocity,sign*torque*scale
+
+    def _motor_position(self,index:int,joint_position:float) -> float:
+        calibration=self.configuration.calibration_by_name[self.configuration.joints[index].name]
+        sign=float(calibration.get("direction_sign",1.0)); offset=float(calibration.get("zero_offset_rad",0.0))
+        return (joint_position-offset)/sign
+
+    def _motor_velocity(self,index:int,joint_velocity:float) -> float:
+        sign=float(self.configuration.calibration_by_name[self.configuration.joints[index].name].get("direction_sign",1.0))
+        return joint_velocity/sign
+
+    def _motor_torque(self,index:int,joint_torque:float) -> float:
+        calibration=self.configuration.calibration_by_name[self.configuration.joints[index].name]
+        sign=float(calibration.get("direction_sign",1.0)); scale=max(abs(float(calibration.get("torque_scale",1.0))),1e-9)
+        return joint_torque/(sign*scale)
+
+    @staticmethod
+    def _is_transient_serial_error(exc: Exception) -> bool:
+        message=str(exc).lower()
+        return (
+            "semaphore timeout period has expired" in message
+            or "os error 121" in message
+            or "device does not recognize the command" in message
+            or "os error 22" in message
+            or ("register 10" in message and "not received" in message)
+        )
+
+    def _with_transient_retry(self, operation) -> Any:
+        attempts=0
+        while True:
+            try:
+                result=operation()
+                if attempts:
+                    self.transient_retry_recovery_count += 1
+                    self.last_transient_retry_error=None
+                return result
+            except Exception as exc:
+                if not self._is_transient_serial_error(exc) or attempts>=self.transient_retry_limit:
+                    if attempts:
+                        self.transient_retry_failure_count += 1
+                    raise
+                attempts += 1
+                self.transient_retry_attempt_count += 1
+                self.last_transient_retry_error=str(exc)
+                if self.transient_retry_delay_s>0.0:
+                    time.sleep(self.transient_retry_delay_s)
+
+    def read(self) -> JointFeedback:
+        if self.controller is None: raise RuntimeError("MotorBridge is disconnected")
+
+        # MotorBridge batches feedback reception: request the selected motors,
+        # then call poll_feedback_once() once to process the available replies.
+        # A request can occasionally be dropped by the serial/CAN bridge, so
+        # re-request only motors whose state is still missing instead of polling
+        # repeatedly without putting another request on the bus.
+        missing=list(range(len(self.motors)))
+        max_attempts=10
+        retry_delay_s=0.02
+        for attempt in range(max_attempts):
+            try:
+                for index in missing:
+                    self.feedback_request_count += 1
+                    self._with_transient_retry(self.motors[index].request_feedback)
+                self.feedback_poll_count += 1
+                self._with_transient_retry(self.controller.poll_feedback_once)
+            except Exception as exc:
+                self.io_error_count += 1
+                self.last_io_error = str(exc)
+                raise
+            missing=[index for index in missing if self.motors[index].get_state() is None]
+            if not missing:
+                break
+            if attempt+1<max_attempts:
+                time.sleep(retry_delay_s)
+
+        positions=[]; velocities=[]; torques=[]; status=[]
+        for index,motor in enumerate(self.motors):
+            state=motor.get_state()
+            if state is None: raise RuntimeError(f"no feedback from {self.configuration.joints[index].name}")
+            q,qd,tau=self._joint_from_motor(index,float(state.pos),float(state.vel),float(state.torq))
+            positions.append(q); velocities.append(qd); torques.append(tau); status.append(str(state.status_code))
+        values=np.asarray(positions,dtype=float)
+        if not np.all(np.isfinite(values)): raise RuntimeError("MotorBridge returned non-finite positions")
+        self.read_cycle_count += 1
+        return JointFeedback(values,np.asarray(velocities),np.asarray(torques),np.full(7,np.nan),np.full(7,np.nan),status,time.monotonic())
+
+    def _motor(self,index:int):
+        if index<0 or index>=len(self.motors): raise IndexError(index)
+        return self.motors[index]
+
+    def _ensure_mode(self,index:int,canonical_mode:str) -> bool:
+        mode_name=self.MODE_NAMES[canonical_mode]
+        if self.active_modes[index]==mode_name: return False
+        mode=getattr(self.mode_enum,mode_name,None)
+        if mode is None: raise RuntimeError(f"MotorBridge Mode.{mode_name} is unavailable")
+        self.mode_switch_attempt_count += 1
+        try:
+            self._with_transient_retry(
+                lambda: self._motor(index).ensure_mode(
+                    mode,
+                    self.mit_mode_confirmation_timeout_ms,
+                )
+            )
+        except Exception as exc:
+            # A missing confirmation means the motor's actual mode is unknown.
+            # Never retain the old cache value and then send a frame under that
+            # assumption during gravity-float recovery.
+            self.active_modes[index]=None
+            self.mode_switch_failure_count += 1
+            self.last_mode_switch_error=f"joint {index + 1} -> {mode_name}: {exc}"
+            raise RuntimeError(f"mode switch {self.last_mode_switch_error}") from exc
+        self.active_modes[index]=mode_name
+        self.mode_switch_count += 1
+        self.last_mode_switch_error=None
+        return True
+
+    def _send_frame(self, operation) -> None:
+        self.command_frame_attempt_count += 1
+        try:
+            self._with_transient_retry(operation)
+        except Exception as exc:
+            self.io_error_count += 1
+            self.last_io_error = str(exc)
+            raise
+        self.command_frame_count += 1
+
+    def send_impedance(self,index,position,velocity,kp,kd,torque):
+        operation=lambda: self._motor(index).send_mit(self._motor_position(index,position),self._motor_velocity(index,velocity),kp,kd,self._motor_torque(index,torque))
+        motor=self._motor(index)
+        mode_name=self.MODE_NAMES["IMPEDANCE"]
+        supports_early_bridge=(
+            self.active_modes[index] in {
+                self.MODE_NAMES["POSITION_VELOCITY_LIMITED"],
+                self.MODE_NAMES["POSITION_EFFORT_LIMITED"],
+            }
+            and hasattr(motor,"write_register_u32")
+            and hasattr(motor,"get_register_u32")
+        )
+        if supports_early_bridge:
+            self.mode_switch_attempt_count += 1
+            try:
+                # Register 10 is CTRL_MODE. The serial/CAN ordering places the
+                # supporting MIT frame directly after the mode write, before
+                # waiting for the read-back confirmation that previously left
+                # the motor with cleared command values.
+                self._with_transient_retry(
+                    lambda: motor.write_register_u32(10,int(self.mode_enum.MIT))
+                )
+                self._send_frame(operation)
+                observed=int(
+                    self._with_transient_retry(
+                        lambda: motor.get_register_u32(
+                            10,
+                            self.mit_mode_confirmation_timeout_ms,
+                        )
+                    )
+                )
+                if observed!=int(self.mode_enum.MIT):
+                    raise RuntimeError(
+                        f"register 10 confirmed unexpected mode {observed}"
+                    )
+            except Exception as exc:
+                self.active_modes[index]=None
+                self.mode_switch_failure_count += 1
+                self.last_mode_switch_error=f"joint {index + 1} -> {mode_name}: {exc}"
+                raise RuntimeError(f"mode switch {self.last_mode_switch_error}") from exc
+            self.active_modes[index]=mode_name
+            self.mode_switch_count += 1
+            self.last_mode_switch_error=None
+            changed=True
+        else:
+            changed=self._ensure_mode(index,"IMPEDANCE")
+        self._send_frame(operation)
+        # Older MotorBridge-compatible objects without the public register API
+        # still receive a duplicated first post-confirmation frame.
+        if changed and not supports_early_bridge:
+            self._send_frame(operation)
+
+    def send_position_velocity(self,index,position,velocity_limit):
+        self._ensure_mode(index,"POSITION_VELOCITY_LIMITED")
+        self._send_frame(lambda: self._motor(index).send_pos_vel(self._motor_position(index,position),abs(float(velocity_limit))))
+
+    def send_velocity(self,index,velocity):
+        self._ensure_mode(index,"VELOCITY")
+        self._send_frame(lambda: self._motor(index).send_vel(self._motor_velocity(index,velocity)))
+
+    def send_force_position(self,index,position,velocity_limit,torque_ratio):
+        self._ensure_mode(index,"POSITION_EFFORT_LIMITED")
+        self._send_frame(lambda: self._motor(index).send_force_pos(self._motor_position(index,position),abs(float(velocity_limit)),torque_ratio))
+
+    def diagnostics(self) -> dict[str, Any]:
+        elapsed = max(time.monotonic() - self.started_monotonic, 1e-6)
+        return {
+            "backend": "MOTORBRIDGE_DM_SERIAL",
+            "port": self.port,
+            "baudrate": self.baudrate,
+            "read_cycles": self.read_cycle_count,
+            "feedback_requests": self.feedback_request_count,
+            "feedback_polls": self.feedback_poll_count,
+            "command_frame_attempts": self.command_frame_attempt_count,
+            "command_frames": self.command_frame_count,
+            "mode_switches": self.mode_switch_count,
+            "mode_switch_attempts": self.mode_switch_attempt_count,
+            "mode_switch_failures": self.mode_switch_failure_count,
+            "last_mode_switch_error": self.last_mode_switch_error,
+            "transient_retry_limit": self.transient_retry_limit,
+            "mit_mode_confirmation_timeout_ms": self.mit_mode_confirmation_timeout_ms,
+            "transient_retry_attempts": self.transient_retry_attempt_count,
+            "transient_retry_recoveries": self.transient_retry_recovery_count,
+            "transient_retry_failures": self.transient_retry_failure_count,
+            "last_transient_retry_error": self.last_transient_retry_error,
+            "io_errors": self.io_error_count,
+            "last_io_error": self.last_io_error,
+            "read_cycles_per_s": self.read_cycle_count / elapsed,
+            "command_frames_per_s": self.command_frame_count / elapsed,
+        }

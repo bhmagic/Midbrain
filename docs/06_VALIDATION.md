@@ -27,6 +27,15 @@ The repository workflow does not yet invoke the FoundationPose Provider suite. R
 
 The v0.3.0 publication passed 43 Provider tests and a live integration validator against the real Manager and Fabric. The live check confirmed Manager registration, capability discovery, status publication, and independent camera-to-Base and camera-to-Gripper transform edges.
 
+The reBot arm Providers have separate offline validation entry points:
+
+```powershell
+.\providers\rebot_arm_dm\scripts\verify.ps1
+.\providers\rebot_arm_integrated\scripts\verify.ps1
+```
+
+The Integrated suite verifies the Manager capability map, provider-local operation catalog, exclusion of experimental POS_VEL continuous and arm POS_TOR one-shot profiles, command construction, IK, gripper latching, Fabric staging, and non-motion safety behavior. These tests do not move the arm and do not replace physical acceptance testing.
+
 ## Hardware acceptance
 
 ### Startup
@@ -81,6 +90,10 @@ The current validation is not formal localization certification. Still required:
 - mask perturbation, partial occlusion, lighting, and background-clutter trials
 - long-duration tracking loss, reacquisition, and stale-transform behavior
 - camera-alignment accuracy after stationary multi-sample aggregation
+- MIT one-shot and continuous physical acceptance across representative unloaded poses
+- POS_VEL one-shot acceptance only within the declared ≤20 cm/no-load envelope
+- resolution of continuous POS_VEL instability before capability publication
+- resolution of arm POS_TOR baseline/force instability before capability publication
 
 ## Automatic Rust formatting
 

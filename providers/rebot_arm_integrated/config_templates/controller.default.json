@@ -1,0 +1,158 @@
+{
+  "schema": "physical_agent.arm_integrated_mit_bringup_config",
+  "schema_version": 3,
+  "provider_id": "robot_arm.primary.integrated",
+  "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
+  "arm_id": "primary",
+  "basic_controller_url": "http://127.0.0.1:8791",
+  "listen_host": "127.0.0.1",
+  "listen_port": 8793,
+  "control_rate_hz": 50.0,
+  "basic_state_rate_hz": 50.0,
+  "lease_duration_ms": 6000,
+  "lease_renew_period_ms": 500,
+  "input_timeout_ms": 650,
+  "command_timeout_ms": 180,
+  "trajectory": {
+    "send_rate_hz": 50.0,
+    "maximum_command_gap_ms": 120,
+    "maximum_translation_per_commit_m": 0.2,
+    "minimum_translation_per_commit_m": 0.0005,
+    "continuous_horizon_min_s": 0.35,
+    "preview_sample_count": 81,
+    "link_radii_m": [0.07, 0.065, 0.06, 0.05, 0.045, 0.04, 0.035],
+    "latched_keepalive_hz": 10.0,
+    "stationary_joint_velocity_limit_rad_s": 0.02,
+    "arrival_stable_samples": 10,
+    "arrival_position_tolerance_rad": [0.025, 0.025, 0.025, 0.035, 0.035, 0.035],
+    "arrival_velocity_tolerance_rad_s": [0.04, 0.04, 0.04, 0.06, 0.06, 0.06]
+  },
+  "runtime": {
+    "execution_mode": "PRESS_MIT",
+    "interaction_mode": "ONE_SHOT",
+    "ik_mode": "POSITION_3DOF",
+    "duration_s": 3.0,
+    "replan_interval_s": 0.1,
+    "kp_multiplier": 1.0,
+    "controlled_frame_offset_xyz_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "controlled_frame_offset_rpy_rad": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "payload_mass_kg": 0.0,
+    "payload_com_tool_m": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "runtime_limits": {
+    "duration_min_s": 0.25,
+    "duration_max_s": 8.0,
+    "replan_interval_min_s": 0.05,
+    "replan_interval_max_s": 1.0,
+    "kp_multiplier_min": 1.0,
+    "kp_multiplier_max": 10.0
+  },
+  "teleop": {
+    "deadzone": 0.12,
+    "maximum_integration_dt_s": 0.06,
+    "translation_rate_m_s": 0.035,
+    "rotation_rate_rad_s": 0.35
+  },
+  "gripper": {
+    "mode": "MIT",
+    "open_position_rad": -4.886921905584122,
+    "closed_position_rad": -0.3490658503988659,
+    "velocity_limit_rad_s": 0.35,
+    "torque_limit_ratio": 0.15,
+    "mit_kp": 8.0,
+    "mit_kd": 1.0,
+    "keepalive_hz": 10.0
+  },
+  "ik": {
+    "position_tolerance_m": 0.0015,
+    "orientation_tolerance_rad": 0.035,
+    "orientation_weight_m_per_rad": 0.1,
+    "maximum_iterations": 180,
+    "damping": 0.025,
+    "maximum_iteration_step_rad": 0.035,
+    "joint_margin_rad": 0.03
+  },
+  "workspace": {
+    "abs_x_max_m": 0.72,
+    "abs_y_max_m": 0.72,
+    "z_min_m": 0.02,
+    "z_max_m": 0.72
+  },
+  "planning": {
+    "cartesian_waypoint_count": 20,
+    "minimum_jacobian_sigma": 0.01,
+    "maximum_waypoint_joint_step_rad": 0.20,
+    "maximum_endpoint_joint_delta_rad": [0.80, 0.80, 0.80, 1.00, 1.00, 1.00],
+    "maximum_total_joint_travel_rad": 3.0
+  },
+  "max_basic_state_age_ms": 300,
+  "safety": {
+    "float_verify_timeout_ms": 8000,
+    "require_manager_for_motion": true,
+    "require_fabric_for_motion": true,
+    "physically_enabled_execution_modes": ["PRESS_MIT", "TRANSIT_SPEED", "CONTACT_WORK"],
+    "preview_required_execution_modes": [],
+    "scene_required_execution_modes": []
+  },
+  "contact": {
+    "baseline_duration_s": 0.5,
+    "baseline_minimum_samples": 15,
+    "baseline_maximum_velocity_rad_s": [0.05, 0.05, 0.05, 0.08, 0.08, 0.08],
+    "baseline_maximum_mad_nm": [0.35, 0.35, 0.35, 0.18, 0.18, 0.18],
+    "task_torque_budget_nm": [2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+    "budget_mode": "JOINT_6",
+    "wrench_force_budget_n": null,
+    "wrench_torque_budget_nm": null,
+    "isotropic_force_budget_n": null,
+    "isotropic_torque_budget_nm": null,
+    "minimum_mapped_joint_budget_nm": [0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+    "maximum_translation_m": 0.20
+  },
+  "hybrid_approach": {
+    "handoff_position_error_rad": [0.025, 0.025, 0.025, 0.035, 0.035, 0.035],
+    "handoff_velocity_rad_s": [0.04, 0.04, 0.04, 0.06, 0.06, 0.06],
+    "completion_position_error_rad": [0.025, 0.025, 0.025, 0.035, 0.035, 0.035],
+    "completion_velocity_rad_s": [0.04, 0.04, 0.04, 0.06, 0.06, 0.06],
+    "required_stable_samples": 10,
+    "post_switch_stable_samples": 10,
+    "mit_settle_duration_s": 0.8,
+    "approach_timeout_multiplier": 2.0,
+    "approach_timeout_minimum_s": 2.0,
+    "physical_execution_enabled": true
+  },
+  "ui": {
+    "poll_ms": 100,
+    "gamepad_send_ms": 40
+  },
+  "platform": {
+    "motion_inhibit_poll_ms": 200,
+    "audited_midbrain_commit": "e226a09"
+  },
+  "fabric_input": {
+    "enabled": true,
+    "stream": "robot_arm.primary.integrated.command",
+    "schema": "physical_agent.arm_integrated_command",
+    "poll_ms": 50,
+    "max_age_ms": 650
+  },
+  "scene_input": {
+    "enabled": true,
+    "stream": "robot_arm.primary.integrated.scene",
+    "schema": "physical_agent.arm_semantic_sphere_scene",
+    "poll_ms": 100,
+    "max_age_ms": 1000,
+    "maximum_spheres": 20000
+  }
+}

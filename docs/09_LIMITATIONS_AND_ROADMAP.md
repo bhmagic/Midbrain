@@ -17,6 +17,16 @@
 - Control Authority Leases and safe relinquish remain contract/design work, not a verified robot-motion runtime.
 - The Test Agent is a diagnostic mockup, not a hardened operator console.
 
+## reBot arm prototype limits
+
+- Integrated MIT `ONE_SHOT` and MIT `HOLD_LB` are the only arm motion profiles currently marked usable.
+- POS_VEL `ONE_SHOT` is limited to paths at or below 20 cm with no payload or high external load. Greater distance or load is not considered stable.
+- POS_VEL `HOLD_LB` is experimental and unstable and is excluded from Manager capability discovery.
+- Arm POS_TOR `ONE_SHOT`/CONTACT_WORK is experimental and unstable and is excluded from Manager capability discovery.
+- Obstacle-route planning is not implemented. Semantic point-cloud objects can be staged, but the current preview is diagnostic rather than a route-search authority.
+- The audited Manager revision lacks a physical control-authority lease API, so upstream Skills can stage targets/settings but local Engage + Xbox LB remains the physical release boundary.
+- USB/serial transport timeouts and mode-confirmation faults remain physical qualification risks.
+
 ## FoundationPose object-pose limits
 
 - Published Base and Gripper transforms are camera-relative measurements, not world-frame authority.
@@ -48,10 +58,10 @@ Measure orientation latency, absolute/relative trajectory error, stationary drif
 
 ## Safety roadmap
 
-Before enabling robot motion:
+Before expanding autonomous robot motion:
 
 - implement fenced Control Authority Leases;
 - define safe relinquish on expiry, process failure, and Manager disconnect;
-- test control behavior in simulation;
+- complete physical acceptance for every advertised motion profile;
 - keep emergency stop independent from software recovery;
 - review every hardware-specific Provider separately.

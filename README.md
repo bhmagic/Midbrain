@@ -206,6 +206,8 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | Orbbec Femto Bolt Provider | `providers/orbbec_femto_bolt`                                              | Brand-specific RGB, depth, infrared, point-cloud, IMU, calibration, identity, and static-transform support |
 | Local VIO Provider         | `providers/local_vio`                                                      | Brand-neutral camera-plus-IMU pose estimation and dynamic body transforms                                  |
 | FoundationPose Provider    | `providers/foundation_pose`                                                | CAD-based 6D pose estimation for the robot base and gripper, with camera-relative transforms in the Fabric |
+| reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
+| reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Test Agent                 | `test_agent`                                                               | Mock Agent and initialization Skill used to exercise the complete platform                                 |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Live world-frame point cloud, camera pose, reset controls, and estimator diagnostics                       |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |
@@ -217,6 +219,20 @@ The Local VIO Provider consumes ordered IMU history and synchronized camera obse
 The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
 
 These components demonstrate how a brand-specific hardware Provider and a brand-neutral computational Provider can participate in the same runtime.
+
+### reBot arm provider status
+
+The reBot arm stack is split into two Providers, each with its own `.venv`. Basic 0.1.20 owns DM serial transport and final motor-command validation. Integrated 0.7.0 leases Basic and exposes Cartesian target staging, MIT/POS_VEL/POS_TOR experiments, gripper controls, gravity-float, safe termination, and a local hardware-test GUI.
+
+The reviewed Integrated discovery labels are:
+
+- MIT `ONE_SHOT`: **USABLE**
+- MIT `HOLD_LB`: **USABLE**
+- POS_VEL `ONE_SHOT`: **LIMITED** to paths at or below 20 cm with no payload or high external load
+- POS_VEL `HOLD_LB`: **EXPERIMENTAL / UNSTABLE**, local GUI only, not Manager-discoverable
+- Arm POS_TOR `ONE_SHOT`: **EXPERIMENTAL / UNSTABLE**, local GUI only, not Manager-discoverable
+
+Integrated publishes capability-specific readiness in its Manager heartbeat and exposes an operation map at provider `GET /v1/capabilities`. Upstream Skills can discover the reviewed profiles, stage Cartesian targets/settings through Fabric, and call the documented HTTP operations. Physical arm execution remains operator-gated by Engage + Xbox LB because the audited Manager revision does not yet provide the required physical control-authority lease.
 
 ---
 

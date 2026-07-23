@@ -1,0 +1,63 @@
+{
+  "schema": "physical_agent.rebot_calibration_collision_model",
+  "schema_version": 1,
+  "model_revision": "calibration-capsules-v1",
+  "table": {
+    "height_m": 0.0,
+    "clearance_m": 0.025,
+    "skip_capsule_indices": [
+      0
+    ]
+  },
+  "capsule_radii_m": [
+    0.04,
+    0.025,
+    0.03,
+    0.03,
+    0.025,
+    0.025,
+    0.025
+  ],
+  "allowed_adjacent_pairs": [
+    [
+      0,
+      1
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      2,
+      3
+    ],
+    [
+      3,
+      4
+    ],
+    [
+      4,
+      5
+    ],
+    [
+      5,
+      6
+    ]
+  ],
+  "extra_allowed_pairs": [
+    [
+      0,
+      2
+    ]
+  ],
+  "sampling": {
+    "joint_step_rad": 0.02,
+    "minimum_cartesian_clearance_m": 0.005
+  },
+  "warning": "Calibration-only conservative model. It is not used by the Basic Controller during normal operation.",
+  "pair_clearance_overrides_m": {
+    "2,4": -0.006,
+    "4,6": -0.006,
+    "1,3": 0.0
+  }
+}

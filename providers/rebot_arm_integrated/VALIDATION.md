@@ -1,0 +1,9 @@
+# Integrated 0.7.0 validation
+
+Software regression suite: 49/49 passes in the current provider venv; Basic Controller regression suite: 73/73 passes.
+
+Coverage includes Manager capability readiness, provider-local discovery/operation mapping, exclusion of experimental POS_VEL continuous and arm POS_TOR one-shot profiles from advertised motion capabilities, configured CONTACT_WORK POS_TOR command generation using a separately captured baseline, timed CONTACT_WORK completion without requiring endpoint arrival, IK residual telemetry without hard rejection, JOINT_6 and Cartesian/isotropic wrench-to-joint budget calculation, physical-ceiling ratio/residual saturation without early task abandonment, corrected gripper targets, latched gripper keepalive and joint-7 propagation into arm envelopes, distinct upstream IK location/tool offset/gravity offset staging, configuration migration, direct MIT execution, POS_VEL speed saturation, changed-target-only HOLD_LB replanning, TRANSIT_SPEED ONE_SHOT return-to-float, non-physical target editing, 3-DoF/6-DoF selection, 20 cm projection and CONTACT_WORK stroke, Kp/Kd clamping, payload forwarding, Fabric freshness/duplicate handling, and reachable 6-DoF kinematics. GUI JavaScript syntax, Python compilation, provider JSON parsing, and PowerShell script parsing pass.
+
+This is software validation only. Separate CONTACT_WORK baseline/execute behavior, physical-ceiling saturation, Cartesian-wrench CONTACT_WORK, automatic POS_VEL completion float, changed-target HOLD_LB replanning, corrected gripper direction, latched 10 Hz gripper endpoint keepalive, gripper propagation in arm envelopes, expanded transient serial retry, payload behavior, and the revised GUI safe termination remain to be tested on the real arm.
+
+The complete provider manifest covers and verifies 49 non-runtime files. Provider `.venv`, caches, generated egg-info, and checksum files are intentionally excluded.

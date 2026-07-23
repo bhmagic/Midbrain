@@ -1,0 +1,22 @@
+{
+  "id": "robot_arm.primary.integrated",
+  "display_name": "Arm Integrated Staged Trajectory Controller",
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_integrated/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_integrated/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_integrated/config/controller.json",
+    "--basic-url",
+    "http://127.0.0.1:8791",
+    "--manager-url",
+    "http://127.0.0.1:7001",
+    "--fabric-url",
+    "http://127.0.0.1:7002"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:8793",
+  "auto_start": false,
+  "graceful_stop_timeout_ms": 10000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {}
+}
