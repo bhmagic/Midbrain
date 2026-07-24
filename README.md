@@ -208,6 +208,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | FoundationPose Provider    | `providers/foundation_pose`                                                | CAD-based 6D pose estimation for the robot base and gripper, with camera-relative transforms in the Fabric |
 | reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
+| Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
 | Test Agent                 | `test_agent`                                                               | Mock Agent and initialization Skill used to exercise the complete platform                                 |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Live world-frame point cloud, camera pose, reset controls, and estimator diagnostics                       |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |
@@ -217,6 +218,8 @@ The current camera Provider publishes large RGB-D payloads through Windows named
 The Local VIO Provider consumes ordered IMU history and synchronized camera observations. It maintains a dynamic pose estimate and publishes body transforms into the Fabric.
 
 The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
+
+The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose Providers on demand, starts FoundationPose only for modes that need it, and stops FoundationPose after the bounded run when no foreign sessions remain. It publishes the stationary world-to-VIO and world-to-arm-base transforms, an RGB overlay with the projected base box and axes, and result-schema-v2 measurement provenance for upstream Skills.
 
 These components demonstrate how a brand-specific hardware Provider and a brand-neutral computational Provider can participate in the same runtime.
 
@@ -357,6 +360,7 @@ Providers, Skills, and Agents should expose status, health, diagnostics, and exe
 | `platform_core` | Manager, Fabric, workspace scripts, and core runtime services                |
 | `contracts`     | Provider, Fabric, Skill, calibration, pose, and safety contracts             |
 | `providers`     | Hardware and persistent computational Providers                              |
+| `skills`        | Bounded operations with isolated environments, contracts, tests, and artifacts |
 | `test_agent`    | Mock Agent, example Skill, point-cloud GUI, and functional checks            |
 | `docs`          | Architecture, setup, tutorials, contracts, audits, and release documentation |
 | `scripts`       | Repository validation, manifest generation, and GitHub publishing tools      |
@@ -407,6 +411,13 @@ git lfs pull
 
 The workspace setup does not build the full upstream NVLabs CUDA runtime. Follow the Provider guide for that environment before attempting live inference.
 
+Set up and open the alignment Skill monitor:
+
+```powershell
+.\skills\stationary_world_arm_alignment\scripts\setup.ps1
+.\skills\stationary_world_arm_alignment\scripts\run_gui.ps1
+```
+
 Default local endpoints:
 
 | Service             | URL                     |
@@ -414,6 +425,7 @@ Default local endpoints:
 | Manager             | `http://127.0.0.1:7001` |
 | Fabric              | `http://127.0.0.1:7002` |
 | Test Agent GUI      | `http://127.0.0.1:8000` |
+| Arm Alignment Skill GUI | `http://127.0.0.1:8011` |
 | IMU Calibration GUI | `http://127.0.0.1:8111` |
 | FoundationPose control API | `http://127.0.0.1:7103` |
 
@@ -460,6 +472,16 @@ The [FoundationPose object-pose guide](docs/12_FOUNDATIONPOSE_OBJECT_POSE.md) ex
 * Publish both camera-relative transforms into the Fabric
 * Query the transforms from another Skill or Agent
 * Preserve the boundary between object-pose measurement and world/camera alignment
+
+### Stationary world-space arm alignment
+
+The [Stationary World-Space Arm Finder](skills/stationary_world_arm_alignment/README.md) is the bounded consumer of those object-pose measurements. Its three concrete modes are:
+
+* `foundation_base_gripper`: FoundationPose base plus FoundationPose gripper, intended for dim scenes.
+* `foundation_base_vlm_gripper`: FoundationPose base plus a VLM RGB-D foremost-beak point.
+* `vlm_gripper_only`: a later VLM RGB-D translation adjustment that locks the prior rotation and does not start FoundationPose.
+
+Every schema-version-2 result repeats its mode contract and labels gripper evidence as either `FOUNDATIONPOSE_GRIPPER_POSE` at the gripper model origin or `VLM_RGBD_BEAK` at the foremost-beak mean. These positions are not directly comparable until calibrated tool geometry is applied.
 
 ---
 
@@ -531,7 +553,7 @@ The following areas require additional development and validation:
 * Long-duration localization accuracy
 * Camera and IMU time-offset estimation
 * Formal object-pose repeatability, symmetry handling, and failure detection
-* A bounded camera-to-world alignment Skill that consumes object-pose measurements
+* Metrology qualification and external ground-truth accuracy measurements for bounded camera-to-world alignment
 * Third-party source and dependency-license review
 * Deployment and upgrade management
 

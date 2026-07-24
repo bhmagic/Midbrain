@@ -1,0 +1,72 @@
+{
+  "skill_type": "stationary_world_arm_alignment",
+  "version": "0.4.0",
+  "display_name": "Stationary World-Space Arm Finder",
+  "lifecycle": "FINITE",
+  "entrypoints": {
+    "cli": "scripts/run.ps1",
+    "gui": "scripts/run_gui.ps1",
+    "stop_gui": "scripts/stop_gui.ps1",
+    "check": "scripts/check.ps1"
+  },
+  "modes": [
+    "auto",
+    "foundation_base_vlm_gripper",
+    "foundation_base_gripper",
+    "vlm_gripper_only"
+  ],
+  "mode_contracts": {
+    "foundation_base_vlm_gripper": {
+      "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
+      "gripper_alignment_source": "VLM_RGBD_BEAK",
+      "foundation_pose_models": [
+        "base"
+      ],
+      "requires_prior_alignment": false
+    },
+    "foundation_base_gripper": {
+      "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
+      "gripper_alignment_source": "FOUNDATIONPOSE_GRIPPER_POSE",
+      "foundation_pose_models": [
+        "base",
+        "gripper"
+      ],
+      "requires_prior_alignment": false
+    },
+    "vlm_gripper_only": {
+      "base_alignment_source": "PRIOR_ALIGNMENT_LOCKED_ROTATION",
+      "gripper_alignment_source": "VLM_RGBD_BEAK",
+      "foundation_pose_models": [],
+      "requires_prior_alignment": true
+    }
+  },
+  "result_schema_version": 2,
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "localization.vio.local_pose",
+    "robot_arm.transforms.local"
+  ],
+  "optional_capabilities": [
+    "perception.object_pose",
+    "robot_arm.joint_state"
+  ],
+  "published_streams": [
+    "skills.stationary_world_arm_alignment.status",
+    "skills.stationary_world_arm_alignment.result",
+    "skills.stationary_world_arm_alignment.pose_overlay",
+    "transform.stationary_world.vio",
+    "transform.stationary_world.arm_base"
+  ],
+  "provider_residency": {
+    "camera": "leave_running",
+    "local_vio": "leave_running",
+    "foundation_pose": "stop_after_skill_when_no_foreign_sessions_exist"
+  },
+  "environment": {
+    "type": "python_venv",
+    "path": ".venv",
+    "python": ">=3.11"
+  }
+}

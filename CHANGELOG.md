@@ -1,5 +1,14 @@
 # Changelog
 
+## Stationary World-Space Arm Finder v0.4.0 (2026-07-24)
+
+- Added `skills/stationary_world_arm_alignment` as a finite Skill with an isolated virtual environment, CLI, monitoring GUI, schemas, and regression tests.
+- Added the three concrete upstream modes `foundation_base_gripper`, `foundation_base_vlm_gripper`, and `vlm_gripper_only`, plus automatic selection.
+- Added upright base correction, projected 3D-box/axis VLM validation, one fresh FoundationPose retry, and three-inference closest-pair voting for large VLM adjustments.
+- Added immediate RGB-D shared-memory copying with fresh-bundle retries when a camera `BufferRef` slot is recycled.
+- Added result schema version 2 with explicit base/gripper source contracts and separate semantic labels for the FoundationPose gripper model origin and VLM RGB-D foremost-beak point.
+- Added on-demand Provider requests and bounded FoundationPose shutdown while retaining camera, VIO, and arm-pose inputs for other consumers.
+
 ## reBot arm Providers publication (2026-07-23)
 
 - Added reBot Arm DM Basic Controller 0.1.20 and Integrated Controller 0.7.0 as separate Providers with separate virtual environments.

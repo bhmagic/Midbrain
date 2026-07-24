@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stationary World-Space Arm Finder</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">MIDBRAIN / FINITE SKILL</p>
+      <h1>Stationary World-Space Arm Finder</h1>
+    </div>
+    <div id="state-pill" class="pill idle">IDLE</div>
+  </header>
+
+  <main>
+    <section class="control-panel panel">
+      <div class="intro">
+        <h2>Alignment controls</h2>
+        <p>The arm must remain still. Base + VLM runs FoundationPose only on the base, validates its projected 3D box and axes, and uses VLM RGB-D for the gripper.</p>
+      </div>
+      <div class="controls">
+        <button id="request-providers">Request providers</button>
+        <button id="run-auto" class="primary">Run auto</button>
+        <button id="run-base-vlm">Base + VLM gripper</button>
+        <button id="run-foundation-dual">FP base + gripper (dim / slow)</button>
+        <button id="run-refine">VLM gripper only</button>
+        <button id="cancel" class="danger">Cancel</button>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="arm-home"> Arm is at home</label>
+        <label><input type="checkbox" id="allow-active"> Allow active-control interruption</label>
+      </div>
+    </section>
+
+    <section class="panel provider-panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">MIDBRAIN RUNTIME</p>
+          <h2>Core and provider readiness</h2>
+        </div>
+        <span id="runtime-state" class="runtime-state">PENDING</span>
+      </div>
+      <p id="runtime-message" class="muted">Waiting to request the providers needed by this skill.</p>
+      <div id="provider-grid" class="provider-grid"></div>
+    </section>
+
+    <section class="progress-grid">
+      <article class="panel progress-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">LIVE OPERATION</p>
+            <h2 id="phase">IDLE</h2>
+          </div>
+          <span id="elapsed">0.0 s</span>
+        </div>
+        <div class="progress-track"><div id="progress-bar"></div></div>
+        <p id="message">No alignment is running.</p>
+        <div class="metrics">
+          <div><span>Base samples</span><strong id="base-samples">0</strong></div>
+          <div><span>FP attempt</span><strong id="pose-attempt">0 / 2</strong></div>
+          <div><span>Provider</span><strong id="provider-state">—</strong></div>
+          <div><span>Point cloud</span><strong id="point-count">0</strong></div>
+        </div>
+      </article>
+      <article class="panel sessions-card">
+        <div class="panel-head"><h2>FoundationPose sessions</h2><span class="muted">Direct health observer</span></div>
+        <div id="sessions" class="session-list"><p class="muted">No sessions.</p></div>
+      </article>
+    </section>
+
+    <section class="visual-grid">
+      <article class="panel viewport-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">VIO WORLD / RGB-D</p>
+            <h2>Spatial alignment</h2>
+          </div>
+          <button id="clear-cloud" class="quiet">Clear trail</button>
+        </div>
+        <canvas id="viewport" aria-label="Interactive 3D point cloud and alignment axes"></canvas>
+        <div class="legend">
+          <span><i class="dot red"></i>+X</span>
+          <span><i class="dot green"></i>+Y</span>
+          <span><i class="dot blue"></i>+Z</span>
+          <span><i class="dot coral"></i>VLM beak</span>
+          <span>Drag to orbit · wheel to zoom</span>
+        </div>
+      </article>
+      <article class="panel image-card">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">FOUNDATIONPOSE INPUT</p>
+            <h2>RGB + projected base box and axes</h2>
+          </div>
+          <div class="tabs">
+            <button data-image="overlay" class="active">Overlay</button>
+            <button data-image="rgb">RGB</button>
+            <button data-image="depth">Depth</button>
+          </div>
+        </div>
+        <div class="image-wrap">
+          <img id="diagnostic-image" alt="Alignment diagnostic image">
+          <p id="image-placeholder">An image appears after capture.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel result-card">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">PUBLISHED CALIBRATION</p>
+          <h2>Latest transform</h2>
+        </div>
+        <span id="alignment-id" class="mono">none</span>
+      </div>
+      <div id="result-summary" class="result-grid"><p class="muted">No calibration saved yet.</p></div>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

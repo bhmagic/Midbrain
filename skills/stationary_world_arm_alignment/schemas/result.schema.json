@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain.skill.stationary_world_arm_alignment.result",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "alignment_id",
+    "mode",
+    "world_frame",
+    "vio_session_epoch",
+    "world_from_vio",
+    "world_from_base",
+    "mode_contract",
+    "gripper_measurements",
+    "gripper_cross_source_comparison",
+    "valid"
+  ],
+  "properties": {
+    "schema": {
+      "const": "midbrain.skill.stationary_world_arm_alignment.result"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "alignment_id": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "foundation_base_vlm_gripper",
+        "foundation_base_gripper",
+        "vlm_gripper_only"
+      ]
+    },
+    "world_frame": {
+      "type": "string"
+    },
+    "vio_session_epoch": {
+      "type": "string"
+    },
+    "world_from_vio": {
+      "$ref": "#/$defs/transform"
+    },
+    "world_from_base": {
+      "$ref": "#/$defs/transform"
+    },
+    "mode_contract": {
+      "$ref": "#/$defs/modeContract"
+    },
+    "gripper_measurements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gripperMeasurement"
+      },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "gripper_cross_source_comparison": {
+      "type": "object",
+      "required": [
+        "applicable",
+        "directly_comparable",
+        "reason"
+      ],
+      "properties": {
+        "applicable": {
+          "type": "boolean"
+        },
+        "directly_comparable": {
+          "const": false
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "valid": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "transform": {
+      "type": "object",
+      "required": [
+        "translation_m",
+        "rotation_xyzw"
+      ],
+      "properties": {
+        "translation_m": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "rotation_xyzw": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      },
+      "additionalProperties": false
+    },
+    "modeContract": {
+      "type": "object",
+      "required": [
+        "base_alignment_source",
+        "gripper_alignment_source",
+        "foundation_pose_models",
+        "requires_prior_alignment"
+      ],
+      "properties": {
+        "base_alignment_source": {
+          "enum": [
+            "FOUNDATIONPOSE_BASE_POSE",
+            "PRIOR_ALIGNMENT_LOCKED_ROTATION"
+          ]
+        },
+        "gripper_alignment_source": {
+          "enum": [
+            "FOUNDATIONPOSE_GRIPPER_POSE",
+            "VLM_RGBD_BEAK"
+          ]
+        },
+        "foundation_pose_models": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "base",
+              "gripper"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "requires_prior_alignment": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "gripperMeasurement": {
+      "type": "object",
+      "required": [
+        "source_type",
+        "semantic_point",
+        "coordinate_frame",
+        "position_m",
+        "role",
+        "used_in_alignment"
+      ],
+      "properties": {
+        "source_type": {
+          "enum": [
+            "FOUNDATIONPOSE_GRIPPER_POSE",
+            "VLM_RGBD_BEAK"
+          ]
+        },
+        "semantic_point": {
+          "enum": [
+            "GRIPPER_MODEL_ORIGIN",
+            "FOREMOST_BEAK_MEAN"
+          ]
+        },
+        "coordinate_frame": {
+          "type": "string"
+        },
+        "position_m": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "role": {
+          "enum": [
+            "PRIMARY_ALIGNMENT_INPUT",
+            "AUXILIARY_TRANSLATION_INPUT"
+          ]
+        },
+        "used_in_alignment": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

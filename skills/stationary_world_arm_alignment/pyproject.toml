@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-stationary-world-arm-alignment-skill"
+version = "0.4.0"
+description = "Finite Midbrain Skill for stationary camera/world/robot-arm alignment"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "httpx>=0.27,<1",
+  "python-dotenv>=1.0,<2",
+  "numpy>=2.0,<3",
+  "opencv-python-headless>=4.10,<5",
+  "Pillow>=10,<13",
+  "pytest>=8,<10"
+]
+
+[project.scripts]
+stationary-world-arm-alignment = "stationary_world_arm_alignment.cli:main"
+stationary-world-arm-alignment-gui = "stationary_world_arm_alignment.app:main"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["stationary_world_arm_alignment*"]
+
+[tool.setuptools.package-data]
+stationary_world_arm_alignment = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

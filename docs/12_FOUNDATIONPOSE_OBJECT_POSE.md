@@ -86,18 +86,20 @@ Use the Gripper child frame for the second transform. Check timestamps, validity
 
 ## Camera-to-world alignment workflow
 
-A future alignment Skill should:
+The bounded `skills/stationary_world_arm_alignment` Skill now implements this boundary. It:
 
-1. Acquire motion inhibit or otherwise verify that the arm and camera are stationary.
-2. Collect a time window of Base and Gripper measurements with synchronized timestamps and quality metadata.
-3. Reject warm-up, lost-track, outlier, and stale samples.
-4. Aggregate translation and rotation robustly rather than accepting one frame.
-5. Resolve symmetric CAD solutions using known Base/Gripper geometry, robot joint state, or another independent constraint.
-6. Solve the camera-to-world transform and estimate uncertainty.
-7. Publish that alignment under the Skill's own source identity and coordinate-frame authority.
-8. Allow the Fabric transform graph to compose world, camera, Base, and Gripper relationships.
+1. Acquires motion inhibit and verifies that the arm and camera are stationary.
+2. Collects a time window of Base and Gripper measurements with synchronized timestamps and quality metadata.
+3. Rejects warm-up, lost-track, outlier, and stale samples.
+4. Aggregates translation and rotation robustly rather than accepting one frame.
+5. Resolves symmetric CAD solutions using known Base/Gripper geometry, robot joint state, or another independent constraint.
+6. Solves the camera-to-world and arm-base transforms and retains source diagnostics.
+7. Publishes that alignment under the Skill's own source identity and coordinate-frame authority.
+8. Allows the Fabric transform graph to compose world, camera, Base, and Gripper relationships.
 
 This separation prevents a perception Provider from silently redefining world space and makes the alignment procedure reproducible by another Agent.
+
+The Skill exposes `foundation_base_gripper`, `foundation_base_vlm_gripper`, and `vlm_gripper_only`. Result schema version 2 labels FoundationPose gripper evidence as the gripper model origin and VLM RGB-D evidence as the foremost-beak mean, so downstream consumers do not treat the raw positions as the same physical point.
 
 ## Validation and limitations
 

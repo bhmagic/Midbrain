@@ -27,6 +27,7 @@ Detailed framework contracts remain under [`contracts`](../contracts). Component
 - [`providers/foundation_pose/docs`](../providers/foundation_pose/docs)
 - [`providers/rebot_arm_dm`](../providers/rebot_arm_dm)
 - [`providers/rebot_arm_integrated/docs`](../providers/rebot_arm_integrated/docs)
+- [`skills/stationary_world_arm_alignment`](../skills/stationary_world_arm_alignment/README.md)
 - [`test_agent/docs`](../test_agent/docs)
 
 Earlier planning, research, and handover notes are retained under [`docs/reference/project_notes`](reference/project_notes). They are historical references; the numbered documents above are the canonical operational documentation.
