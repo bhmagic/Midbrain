@@ -208,6 +208,8 @@ class IntegratedController:
         self.max_send_lateness_ms = 0.0
         self.max_tracking_error_rad = 0.0
         self.last_tracking_error_rad = 0.0
+        self.operational_range_recovery_count = 0
+        self.last_operational_range_recovery_joint_indices: list[int] = []
         self.live_replan_count = 0
         self.last_replan_duration_ms: float | None = None
         self.max_replan_duration_ms = 0.0
@@ -1921,8 +1923,33 @@ class IntegratedController:
                     previous_q = self.commanded_q.copy() if self.commanded_q is not None else plan.q_start.copy()
                     caps = self._provider_rate_caps_locked()
                     maximum_step = caps * period
-                    q_command = previous_q + np.clip(q_raw - previous_q, -maximum_step, maximum_step)
-                    qd_command = np.clip((q_command - previous_q) / period, -caps, caps)
+                    if self.kinematics is None:
+                        raise RuntimeError(
+                            "kinematics are unavailable during trajectory execution"
+                        )
+                    lower = self.kinematics.limits[:, 0]
+                    upper = self.kinematics.limits[:, 1]
+                    recovery_indices = np.flatnonzero(
+                        (previous_q < lower) | (previous_q > upper)
+                    ).tolist()
+                    safe_previous_q = np.clip(previous_q, lower, upper)
+                    safe_q_raw = np.clip(q_raw, lower, upper)
+                    q_command = safe_previous_q + np.clip(
+                        safe_q_raw - safe_previous_q,
+                        -maximum_step,
+                        maximum_step,
+                    )
+                    q_command = np.clip(q_command, lower, upper)
+                    qd_command = np.clip(
+                        (q_command - safe_previous_q) / period,
+                        -caps,
+                        caps,
+                    )
+                    if recovery_indices:
+                        self.operational_range_recovery_count += 1
+                        self.last_operational_range_recovery_joint_indices = [
+                            int(index) for index in recovery_indices
+                        ]
                     self.commanded_q = q_command.copy()
                     self.commanded_qd = qd_command.copy()
                     measured = self._measured_positions_locked()[:6]
@@ -2790,6 +2817,7 @@ class IntegratedController:
                     "duration_s": self.duration_s,
                     "replan_interval_s": self.replan_interval_s,
                     "kp_multiplier": self.kp_multiplier,
+                    "workspace": copy.deepcopy(self.config["workspace"]),
                     "effective_gains": gains,
                     "controlled_frame_offset_xyz_m": self.tool_offset_xyz_m.tolist(),
                     "controlled_frame_offset_rpy_rad": self.tool_offset_rpy_rad.tolist(),
@@ -2911,6 +2939,12 @@ class IntegratedController:
                     "frames_skipped": None if plan is None else plan.frames_skipped,
                     "send_rate_hz": float(self.config["trajectory"]["send_rate_hz"]),
                     "max_send_lateness_ms": self.max_send_lateness_ms,
+                    "operational_range_recovery_count": (
+                        self.operational_range_recovery_count
+                    ),
+                    "last_operational_range_recovery_joint_indices": list(
+                        self.last_operational_range_recovery_joint_indices
+                    ),
                     "last_replan_duration_ms": self.last_replan_duration_ms,
                     "max_replan_duration_ms": self.max_replan_duration_ms,
                     "last_completed": copy.deepcopy(self.last_completed_trajectory),

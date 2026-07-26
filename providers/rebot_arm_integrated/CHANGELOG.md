@@ -2,6 +2,17 @@
 
 ## 0.7.0
 
+- Publishes the configured Cartesian workspace in runtime state so upstream
+  Skills can preflight a complete corrected path against the same envelope
+  enforced by Integrated.
+- Clamps the first outgoing trajectory command into Basic's existing
+  operational range when a measured joint begins slightly outside that range;
+  the Basic limits remain unchanged and recovery telemetry is published.
+- Documents controlled-frame target semantics and reliable Fabric
+  acknowledgement, retry, and terminal-rejection handling for upstream Skills.
+- Launches Windows safe termination in a hidden process, waits up to five
+  seconds for launch-ID acknowledgement, and reports unconfirmed startup
+  instead of claiming that safe-home began.
 - Publishes Manager `capability_readiness` and a provider-local `GET /v1/capabilities` operation map for upstream Skills.
 - Marks PRESS_MIT ONE_SHOT and HOLD_LB usable; marks POS_VEL ONE_SHOT limited to paths at or below 20 cm without payload/high external load.
 - Excludes experimental/unstable POS_VEL HOLD_LB and arm POS_TOR ONE_SHOT from Manager capability discovery while retaining them in the local hardware-test GUI.

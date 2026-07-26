@@ -385,34 +385,48 @@ class IntegratedService:
                 }
             creationflags = (
                 getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                | getattr(subprocess, "DETACHED_PROCESS", 0)
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0)
             )
-            process = subprocess.Popen(
-                [
-                    str(powershell),
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(helper),
-                    "-ProjectRoot",
-                    str(project_root),
-                    "-BasicUrl",
-                    str(self.config["basic_controller_url"]),
-                    "-IntegratedUrl",
-                    self.control_url,
-                    "-LaunchId",
-                    launch_id,
-                ],
-                cwd=str(project_root),
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+            startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+            try:
+                process = subprocess.Popen(
+                    [
+                        str(powershell),
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(helper),
+                        "-ProjectRoot",
+                        str(project_root),
+                        "-BasicUrl",
+                        str(self.config["basic_controller_url"]),
+                        "-IntegratedUrl",
+                        self.control_url,
+                        "-LaunchId",
+                        launch_id,
+                    ],
+                    cwd=str(project_root),
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                )
+            except OSError as error:
+                self._set_safe_termination(
+                    "FAILED",
+                    f"Safe termination helper failed to launch: {error}",
+                )
+                return {
+                    "status": "failed",
+                    "safe_termination": copy.deepcopy(self.safe_termination),
+                }
             acknowledgement = f"Authoritative safe termination started. launch_id={launch_id}"
             acknowledged = False
-            deadline = time.monotonic() + 1.5
+            deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 try:
                     if acknowledgement in log_path.read_text(

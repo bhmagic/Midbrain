@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import unittest
 import sys
+from typing import Any
 from unittest.mock import patch
 
 import numpy as np
@@ -218,8 +221,10 @@ class SafeTerminationTests(unittest.TestCase):
             )
             service = IntegratedService(object(), load_config(), None, None)
             service.provider_root = provider_root
+            launch_kwargs: dict[str, Any] = {}
 
             def acknowledged_process(arguments, **kwargs):
+                launch_kwargs.update(kwargs)
                 launch_id = arguments[arguments.index("-LaunchId") + 1]
                 log_path = provider_root / "runtime_logs" / "safe_terminate.log"
                 with log_path.open("a", encoding="utf-8") as log:
@@ -246,6 +251,71 @@ class SafeTerminationTests(unittest.TestCase):
             self.assertEqual(result["status"], "accepted")
             self.assertEqual(result["safe_termination"]["state"], "RUNNING")
             self.assertEqual(result["safe_termination"]["process_id"], 12345)
+            self.assertFalse(
+                int(launch_kwargs["creationflags"])
+                & int(getattr(subprocess, "DETACHED_PROCESS", 0))
+            )
+            self.assertTrue(
+                int(launch_kwargs["creationflags"])
+                & int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            )
+
+    @unittest.skipUnless(os.name == "nt", "Windows helper launch test")
+    def test_hidden_powershell_helper_acknowledges_real_launch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            provider_root = (
+                Path(temp) / "providers" / "rebot_arm_integrated"
+            )
+            scripts = provider_root / "scripts"
+            scripts.mkdir(parents=True)
+            helper = scripts / "safe_terminate_detached.ps1"
+            helper.write_text(
+                "\n".join(
+                    [
+                        "param(",
+                        "  [string]$ProjectRoot,",
+                        "  [string]$BasicUrl,",
+                        "  [string]$IntegratedUrl,",
+                        "  [string]$LaunchId",
+                        ")",
+                        "$logPath = Join-Path "
+                        "(Split-Path $PSScriptRoot -Parent) "
+                        "'runtime_logs\\safe_terminate.log'",
+                        "Add-Content -LiteralPath $logPath -Value "
+                        "\"Authoritative safe termination started. "
+                        "launch_id=$LaunchId\"",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            service = IntegratedService(
+                object(),
+                load_config(),
+                None,
+                None,
+            )
+            service.provider_root = provider_root
+            real_popen = subprocess.Popen
+            launched_processes: list[subprocess.Popen[Any]] = []
+
+            def capture_process(arguments, **kwargs):
+                process = real_popen(arguments, **kwargs)
+                launched_processes.append(process)
+                return process
+
+            with patch(
+                "rebot_arm_integrated.service.subprocess.Popen",
+                side_effect=capture_process,
+            ):
+                result = service.start_safe_termination()
+            for process in launched_processes:
+                process.wait(timeout=5.0)
+
+            self.assertEqual(result["status"], "accepted")
+            self.assertEqual(
+                result["safe_termination"]["state"],
+                "RUNNING",
+            )
 
 
 class ControllerTests(unittest.TestCase):
@@ -734,6 +804,55 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: controller.trajectory is None))
         self.assertTrue(basic.commands)
         self.assertEqual({item["mode"] for frame in basic.commands for item in frame}, {MODE_MIT})
+
+    def test_press_mit_recovers_when_measured_start_is_outside_operational_range(self):
+        config = load_config()
+        config["runtime"]["duration_s"] = 0.25
+        config["trajectory"]["send_rate_hz"] = 100.0
+        basic = FakeBasic()
+        joint4_low = float(
+            basic._model["joints"][3]["operational_limit_rad"][0]
+        )
+        basic._state["positions_rad"][3] = joint4_low - 0.08
+        controller = IntegratedController(config, basic)
+        controller.enter_hot()
+        controller.update_platform_status(
+            True,
+            True,
+            {},
+            motion_inhibited=False,
+        )
+        controller.set_engaged(True)
+        with controller.lock:
+            controller.staged_target = controller.kinematics.controlled_frame(
+                controller._measured_positions_locked()[:6],
+                controller._tool_to_control_locked(),
+            )
+            controller.staged_target[2, 3] += 0.002
+        controller.preview_staged_target()
+        controller.update_input({"lb": True})
+        controller._tick()
+        self.assertTrue(wait_until(lambda: len(basic.commands) >= 1))
+        first_arm_frame = basic.commands[0][:6]
+        for index, command in enumerate(first_arm_frame):
+            low, high = basic._model["joints"][index][
+                "operational_limit_rad"
+            ]
+            target = float(command["values"]["position_rad"])
+            self.assertGreaterEqual(target, float(low))
+            self.assertLessEqual(target, float(high))
+        state = controller.snapshot()
+        self.assertGreater(
+            state["trajectory"]["operational_range_recovery_count"],
+            0,
+        )
+        self.assertEqual(
+            state["trajectory"][
+                "last_operational_range_recovery_joint_indices"
+            ],
+            [3],
+        )
+        controller.request_float()
 
     def test_kp_multiplier_exposes_protocol_clamping(self):
         controller, _ = prepared_controller()

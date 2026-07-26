@@ -26,6 +26,9 @@ class ProviderCliTests(unittest.TestCase):
     def test_physical_start_and_gui_termination_use_deterministic_paths(self):
         start_script = (INTEGRATED_ROOT / "scripts" / "start_physical_gui_test.ps1").read_text()
         stop_script = (INTEGRATED_ROOT / "scripts" / "stop_physical_gui_test.ps1").read_text()
+        workspace_stop = (
+            INTEGRATED_ROOT.parents[1] / "platform_core" / "scripts" / "stop_workspace.ps1"
+        ).read_text()
         service = (INTEGRATED_ROOT / "python" / "rebot_arm_integrated" / "service.py").read_text()
         web = (INTEGRATED_ROOT / "python" / "rebot_arm_integrated" / "web" / "app.js").read_text()
 
@@ -39,6 +42,11 @@ class ProviderCliTests(unittest.TestCase):
         self.assertIn("Authoritative shutdown helper acknowledged", service)
         self.assertIn("-LaunchId", service)
         self.assertNotIn("window.confirm", web)
+        self.assertIn("Get-ProviderStopPriority", workspace_stop)
+        self.assertIn("graceful_stop_timeout_ms", workspace_stop)
+        self.assertIn("Safety-critical provider", workspace_stop)
+        self.assertIn("$providerResponse.GetEnumerator()", workspace_stop)
+        self.assertIn("invalid provider identifier", workspace_stop)
 
 
 if __name__ == "__main__":

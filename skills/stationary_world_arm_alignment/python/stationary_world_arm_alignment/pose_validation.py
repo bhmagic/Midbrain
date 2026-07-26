@@ -196,3 +196,40 @@ def pose_verdict_accepted(verdict: dict[str, Any], minimum_confidence: float) ->
         and verdict.get("box_fit") != "BAD"
         and verdict.get("orientation_fit") != "BAD"
     )
+
+
+def pose_verdict_best_of_two_acceptable(
+    verdict: dict[str, Any],
+    fallback_minimum_confidence: float,
+) -> bool:
+    return bool(
+        verdict.get("pose_reasonable")
+        and float(verdict.get("confidence", 0.0))
+        >= fallback_minimum_confidence
+        and verdict.get("box_fit") in {"GOOD", "ACCEPTABLE"}
+        and verdict.get("orientation_fit") in {"GOOD", "ACCEPTABLE"}
+    )
+
+
+def select_best_pose_validation(
+    validations: list[dict[str, Any]],
+) -> int:
+    if not validations:
+        raise ValueError("at least one pose validation is required")
+    fit_rank = {"BAD": 0, "ACCEPTABLE": 1, "GOOD": 2}
+
+    def quality(record: dict[str, Any]) -> tuple[int, int, int, float, int]:
+        verdict = record.get("verdict") or {}
+        projection = record.get("projection") or {}
+        return (
+            int(bool(verdict.get("pose_reasonable"))),
+            int(fit_rank.get(str(verdict.get("box_fit")), -1)),
+            int(fit_rank.get(str(verdict.get("orientation_fit")), -1)),
+            float(verdict.get("confidence") or 0.0),
+            int(projection.get("visible_corner_count") or 0),
+        )
+
+    return max(
+        range(len(validations)),
+        key=lambda index: quality(validations[index]),
+    )

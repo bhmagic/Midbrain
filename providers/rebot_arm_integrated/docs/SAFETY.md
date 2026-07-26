@@ -13,4 +13,10 @@
 - CONTACT_WORK is ONE_SHOT-only and requires 6-DoF, a maximum 20 cm baseline-relative stroke, and a complete JOINT_6, WRENCH_6, or ISOTROPIC_2 budget. Baseline capture is a separate operator command performed in verified float; a later Engage + LB action uses that stored posture-local baseline. IK residuals are reported but do not reject the action. Required ratios and live residual overruns saturate affected joints at the reviewed physical POS_TOR ceilings instead of ending the action early.
 - Releasing RB/RT latches the last gripper MIT or POS_TOR endpoint. LT, Float, and Safe terminate explicitly release the gripper latch.
 - Payload mass/COM must be set only when known. Basic clips combined gravity feed-forward to configured motor TMAX.
-- GUI Safe Terminate remains physically unverified; the standalone `stop_physical_gui_test.ps1` sequence is authoritative until proven on hardware.
+- GUI Safe Terminate launches the authoritative PowerShell helper in a hidden
+  process and waits for a launch-ID acknowledgement in
+  `runtime_logs/safe_terminate.log`. Callers must treat only
+  `status=accepted` with `safe_termination.state=RUNNING` as evidence that
+  safe-home started. `LAUNCH_UNCONFIRMED` is a failure to start, not successful
+  homing; use the standalone `stop_physical_gui_test.ps1` sequence and inspect
+  the log.

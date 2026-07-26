@@ -36,6 +36,7 @@
   },
   "pose_validation": {
     "minimum_confidence": 0.7,
+    "best_of_two_fallback_minimum_confidence": 0.6,
     "axis_length_m": 0.1
   },
   "vlm_refine": {

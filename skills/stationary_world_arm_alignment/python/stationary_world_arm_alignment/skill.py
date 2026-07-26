@@ -41,8 +41,10 @@ from .models import (
 from .persistence import CalibrationStore
 from .pose_validation import (
     load_model_geometry,
+    pose_verdict_best_of_two_acceptable,
     pose_verdict_accepted,
     render_pose_overlay,
+    select_best_pose_validation,
 )
 from .progress import ProgressReporter
 from .vlm import GripperVision
@@ -897,11 +899,17 @@ class AlignmentSkill:
         validation_config = self.config["pose_validation"]
         maximum_attempts = 2
         minimum_confidence = float(validation_config["minimum_confidence"])
+        fallback_minimum_confidence = float(
+            validation_config["best_of_two_fallback_minimum_confidence"]
+        )
         mesh_minimum, mesh_maximum, mesh_from_semantic = load_model_geometry(
             str(WORKSPACE_ROOT),
             self.config["foundation_base_model_id"],
         )
         validations: list[dict[str, Any]] = []
+        attempt_samples: list[
+            dict[str, dict[str, list[np.ndarray]]]
+        ] = []
         for attempt in range(1, maximum_attempts + 1):
             session_ids = await self._start_foundation_sessions(
                 skill_id,
@@ -1000,6 +1008,7 @@ class AlignmentSkill:
                 "overlay": artifact,
             }
             validations.append(record)
+            attempt_samples.append(samples)
             (run_dir / f"foundation_pose_attempt_{attempt}_validation.json").write_text(
                 json.dumps(record, indent=2) + "\n",
                 encoding="utf-8",
@@ -1039,13 +1048,78 @@ class AlignmentSkill:
                         }
                     },
                 )
-        reasons = [
-            reason
-            for record in validations
-            for reason in record["verdict"].get("reasons", [])
-        ]
+        best_index = select_best_pose_validation(validations)
+        best_record = validations[best_index]
+        best_record["selected_as_best_attempt"] = True
+        best_record["strict_acceptance"] = False
+        best_verdict = best_record["verdict"]
+        best_overlay_path = Path(
+            best_record["overlay"]["local_path"]
+        )
+        if best_overlay_path.is_file():
+            await self.artifacts.set_overlay(best_overlay_path.read_bytes())
+        if pose_verdict_best_of_two_acceptable(
+            best_verdict,
+            fallback_minimum_confidence,
+        ):
+            best_record["accepted"] = True
+            best_record["acceptance_mode"] = "BEST_OF_TWO_FALLBACK"
+            best_record["fallback_minimum_confidence"] = (
+                fallback_minimum_confidence
+            )
+            (run_dir / "foundation_pose_best_of_two.json").write_text(
+                json.dumps(best_record, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            await self.progress.update(
+                phase="POSE_VALIDATION",
+                message=(
+                    f"Neither attempt met the strict threshold; attempt "
+                    f"{best_record['attempt']} was retained as the bounded "
+                    "best-of-two acceptable result."
+                ),
+                details={
+                    "pose_validation": {
+                        "attempt": best_record["attempt"],
+                        "maximum_attempts": maximum_attempts,
+                        "state": "BEST_OF_TWO_FALLBACK_ACCEPTED",
+                        "strict_minimum_confidence": minimum_confidence,
+                        "fallback_minimum_confidence": (
+                            fallback_minimum_confidence
+                        ),
+                        "verdict": best_verdict,
+                        "overlay": best_record["overlay"],
+                    }
+                },
+            )
+            return attempt_samples[best_index], validations
+        best_record["acceptance_mode"] = "BEST_OF_TWO_REJECTED"
+        (run_dir / "foundation_pose_best_of_two.json").write_text(
+            json.dumps(best_record, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        await self.progress.update(
+            phase="POSE_VALIDATION",
+            message=(
+                f"Both pose attempts were rejected. Attempt "
+                f"{best_record['attempt']} is retained as the better diagnostic "
+                "result, but it is not safe to publish as a valid alignment."
+            ),
+            details={
+                "pose_validation": {
+                    "attempt": best_record["attempt"],
+                    "maximum_attempts": maximum_attempts,
+                    "state": "BEST_OF_TWO_REJECTED",
+                    "verdict": best_verdict,
+                    "overlay": best_record["overlay"],
+                }
+            },
+        )
+        reasons = best_verdict.get("reasons", [])
         raise RuntimeError(
-            "VLM rejected the projected FoundationPose base after two attempts: "
+            "VLM rejected both projected FoundationPose base attempts; "
+            f"attempt {best_record['attempt']} was better but still failed "
+            "the absolute geometry gate: "
             + ("; ".join(reasons) if reasons else "pose or 3D box was unreasonable")
         )
 
@@ -1124,6 +1198,7 @@ class AlignmentSkill:
             frame=frame,
             world_from_vio=world_from_vio,
             world_from_base=world_from_base,
+            vio_from_camera_reference=vio_from_camera,
             learned_tool_beak=learned_tool_beak,
             gripper_measurements=[
                 {
@@ -1258,6 +1333,7 @@ class AlignmentSkill:
             frame=frame,
             world_from_vio=world_from_vio,
             world_from_base=world_from_vio @ oriented,
+            vio_from_camera_reference=vio_from_camera,
             learned_tool_beak=learned_tool_beak,
             gripper_measurements=[
                 {
@@ -1406,6 +1482,7 @@ class AlignmentSkill:
             frame=frame,
             world_from_vio=prior_world_from_vio,
             world_from_base=world_from_base,
+            vio_from_camera_reference=vio_from_camera,
             learned_tool_beak=np.asarray(learned, np.float64),
             gripper_measurements=[
                 {
@@ -1439,6 +1516,7 @@ class AlignmentSkill:
         frame: Any,
         world_from_vio: np.ndarray,
         world_from_base: np.ndarray,
+        vio_from_camera_reference: np.ndarray,
         learned_tool_beak: np.ndarray,
         gripper_measurements: list[dict[str, Any]],
         diagnostics: dict[str, Any],
@@ -1521,6 +1599,9 @@ class AlignmentSkill:
             "camera_reference_timestamp_us": frame.timestamp_us,
             "camera_reference_frame_number": frame.frame_number,
             "camera_calibration_revision": frame.calibration_revision,
+            "vio_from_camera_reference": transform_payload(
+                vio_from_camera_reference
+            ),
             "world_from_vio": transform_payload(world_from_vio),
             "world_from_base": transform_payload(world_from_base),
             "learned_tool_to_beak_translation_m": learned_tool_beak.tolist(),

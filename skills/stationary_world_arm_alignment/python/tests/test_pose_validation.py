@@ -7,8 +7,10 @@ import numpy as np
 
 from stationary_world_arm_alignment.pose_validation import (
     load_model_geometry,
+    pose_verdict_best_of_two_acceptable,
     pose_verdict_accepted,
     render_pose_overlay,
+    select_best_pose_validation,
 )
 from stationary_world_arm_alignment.models import (
     PUBLIC_RUN_MODES,
@@ -90,6 +92,49 @@ def test_verdict_requires_reasonable_confident_non_bad_pose() -> None:
     assert not pose_verdict_accepted({**acceptable, "confidence": 0.69}, 0.7)
     assert not pose_verdict_accepted({**acceptable, "box_fit": "BAD"}, 0.7)
     assert not pose_verdict_accepted({**acceptable, "pose_reasonable": False}, 0.7)
+
+
+def test_best_of_two_selects_geometry_before_rejection_confidence() -> None:
+    validations = [
+        {
+            "verdict": {
+                "pose_reasonable": False,
+                "confidence": 0.99,
+                "box_fit": "BAD",
+                "orientation_fit": "BAD",
+            },
+            "projection": {"visible_corner_count": 8},
+        },
+        {
+            "verdict": {
+                "pose_reasonable": True,
+                "confidence": 0.65,
+                "box_fit": "ACCEPTABLE",
+                "orientation_fit": "GOOD",
+            },
+            "projection": {"visible_corner_count": 6},
+        },
+    ]
+    selected = select_best_pose_validation(validations)
+    assert selected == 1
+    assert pose_verdict_best_of_two_acceptable(
+        validations[selected]["verdict"],
+        0.6,
+    )
+    assert not pose_verdict_accepted(
+        validations[selected]["verdict"],
+        0.7,
+    )
+
+
+def test_best_of_two_never_accepts_bad_geometry() -> None:
+    verdict = {
+        "pose_reasonable": False,
+        "confidence": 0.99,
+        "box_fit": "BAD",
+        "orientation_fit": "ACCEPTABLE",
+    }
+    assert not pose_verdict_best_of_two_acceptable(verdict, 0.6)
 
 
 def test_base_geometry_comes_from_foundation_pose_registry() -> None:

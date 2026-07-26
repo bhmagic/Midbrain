@@ -19,7 +19,20 @@ Two physical test interactions are available:
 - `ONE_SHOT`: edit the staged target while floating, Engage, click LB once, and solve from fresh physical joints. PRESS_MIT streams and returns to float. TRANSIT_SPEED returns to float after stable measured arrival. CONTACT_WORK applies POS_TOR for the configured duration and then returns to float whether or not the IK goal was reached.
 - `HOLD_LB`: while LB is held, PRESS_MIT or TRANSIT_SPEED replans only after the staged target revision changes; an unchanged target is not repeatedly resubmitted. Releasing LB floats. CONTACT_WORK is intentionally forced to `ONE_SHOT`.
 
-IK can be `POSITION_3DOF` or `POSE_6DOF`. The controlled frame can be offset from the tool frame, so upstream targets may represent a tool tip or other acting point. The GUI displays measured and staged frame axes plus separate position/orientation residuals.
+## Operational-limit recovery at trajectory start
+
+Basic rejects any commanded joint target outside its calibrated operational
+range. A physical joint can nevertheless be measured slightly outside that
+range after compliant contact or gravity-float. Integrated therefore clamps
+the first outgoing trajectory target to the Basic operational range and then
+continues inward toward the IK goal. It never expands or bypasses the Basic
+limit. Inspect `trajectory.operational_range_recovery_count` and
+`trajectory.last_operational_range_recovery_joint_indices` when diagnosing
+this recovery. Skill authors should still avoid IK goals near a joint limit;
+this recovery handles the otherwise unrecoverable first command, not a poor
+task posture.
+
+IK can be `POSITION_3DOF` or `POSE_6DOF`. The controlled frame can be offset from the tool frame, so upstream targets may represent a tool tip or other acting point. Cartesian targets are poses of that controlled frame; upstream callers must not pre-apply the configured tool-to-controlled offset. The GUI displays measured and staged frame axes plus separate position/orientation residuals.
 
 The Kp field is a multiplier of Basic's nominal per-joint Kp profile. Requested and effective Kp/Kd are shown explicitly. Basic remains the final hard-safety authority.
 

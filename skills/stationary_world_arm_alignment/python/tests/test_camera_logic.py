@@ -108,14 +108,14 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
             self.requests.append(stream)
             if stream == "camera.calibration":
                 return {
+                    "calibration_revision": "test",
                     "data": {
                         "rgb_intrinsic": {
                             "fx": 100.0,
                             "fy": 100.0,
                             "cx": 0.0,
                             "cy": 0.0,
-                        },
-                        "calibration_revision": "test",
+                        }
                     }
                 }
             if stream == "localization.body.pose":
@@ -172,6 +172,7 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
     )
 
     assert captured.frame_number == 2
+    assert captured.calibration_revision == "test"
     assert captured.rgb.tolist() == [[[1, 2, 3]]]
     assert captured.depth_m[0, 0] == pytest.approx(1.0)
     assert captured.observations["capture"] == {

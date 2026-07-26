@@ -53,6 +53,16 @@ def load_skill_config(path: Path | None = None) -> dict[str, Any]:
             config,
             json.loads(configured.read_text(encoding="utf-8")),
         )
+    validation = config["pose_validation"]
+    strict_confidence = float(validation["minimum_confidence"])
+    fallback_confidence = float(
+        validation["best_of_two_fallback_minimum_confidence"]
+    )
+    if not 0.0 < fallback_confidence <= strict_confidence <= 1.0:
+        raise ValueError(
+            "pose-validation confidence thresholds must satisfy "
+            "0 < fallback <= strict <= 1"
+        )
     return config
 
 

@@ -109,8 +109,14 @@ class RgbdCapture:
                 session_epoch=epoch,
                 world_frame=world,
                 calibration_revision=(
-                    str(calibration.get("calibration_revision"))
-                    if calibration.get("calibration_revision") is not None
+                    str(
+                        calibration.get("calibration_revision")
+                        or calibration_observation.get("calibration_revision")
+                    )
+                    if (
+                        calibration.get("calibration_revision") is not None
+                        or calibration_observation.get("calibration_revision") is not None
+                    )
                     else None
                 ),
                 observations={

@@ -219,7 +219,7 @@ The Local VIO Provider consumes ordered IMU history and synchronized camera obse
 
 The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
 
-The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose Providers on demand, starts FoundationPose only for modes that need it, and stops FoundationPose after the bounded run when no foreign sessions remain. It publishes the stationary world-to-VIO and world-to-arm-base transforms, an RGB overlay with the projected base box and axes, and result-schema-v2 measurement provenance for upstream Skills.
+The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose Providers on demand, starts FoundationPose only for modes that need it, and stops FoundationPose after the bounded run when no foreign sessions remain. It publishes the stationary world-to-VIO and world-to-arm-base transforms, the full VIO-to-camera reference pose captured by the alignment, an RGB overlay with the projected base box and axes, and result-schema-v2 measurement provenance for upstream Skills. When neither of two FoundationPose attempts meets the strict VLM threshold, a bounded fallback may retain the geometrically better attempt only if it still satisfies the documented non-BAD geometry and fallback-confidence gates.
 
 These components demonstrate how a brand-specific hardware Provider and a brand-neutral computational Provider can participate in the same runtime.
 
@@ -236,6 +236,12 @@ The reviewed Integrated discovery labels are:
 - Arm POS_TOR `ONE_SHOT`: **EXPERIMENTAL / UNSTABLE**, local GUI only, not Manager-discoverable
 
 Integrated publishes capability-specific readiness in its Manager heartbeat and exposes an operation map at provider `GET /v1/capabilities`. Upstream Skills can discover the reviewed profiles, stage Cartesian targets/settings through Fabric, and call the documented HTTP operations. Physical arm execution remains operator-gated by Engage + Xbox LB because the audited Manager revision does not yet provide the required physical control-authority lease.
+
+The global `platform_core\scripts\stop_workspace.ps1` shutdown orders
+Integrated before Basic, honors each Provider's graceful-stop timeout, and
+requires safety-critical arm Providers to confirm that they stopped. If
+Manager is unavailable while either arm endpoint remains reachable, the script
+refuses a force-stop so powered gravity support is not removed accidentally.
 
 ---
 

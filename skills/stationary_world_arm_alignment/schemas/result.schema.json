@@ -42,6 +42,9 @@
     "world_from_vio": {
       "$ref": "#/$defs/transform"
     },
+    "vio_from_camera_reference": {
+      "$ref": "#/$defs/transform"
+    },
     "world_from_base": {
       "$ref": "#/$defs/transform"
     },

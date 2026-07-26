@@ -50,9 +50,24 @@ The manifest exposes these three concrete modes to upstream Skills:
 
 Result schema version 2 publishes `mode_contract`, `gripper_measurements`, and `gripper_cross_source_comparison`. Every gripper measurement identifies its `source_type`, physical `semantic_point`, coordinate frame, position, and role. `VLM_RGBD_BEAK` measures the foremost beak mean, while `FOUNDATIONPOSE_GRIPPER_POSE` measures the gripper model origin. They are intentionally not declared directly comparable; an upstream Skill must apply calibrated tool geometry before treating their difference as an adjustment.
 
+New version-2 results also publish the backward-compatible optional
+`vio_from_camera_reference` full pose captured at the alignment RGB-D
+timestamp. A downstream fixed-camera Skill should use this saved translation
+and rotation instead of a later live VIO pose, then it may stop VIO for its own
+finite session. Older version-2 results without this field require an explicit
+legacy fallback or a new alignment.
+
 ## Validation
 
 Run `scripts\check.ps1` for compilation and unit tests. Hardware validation should first use an empty, stationary workspace, then compare the published arm-base transform against a measured fiducial or known contact point before allowing downstream motion planning to trust it.
+
+Base-pose validation allows two fresh FoundationPose attempts. A strict pass
+returns immediately. If both miss the strict threshold, the Skill ranks them
+by geometric reasonableness, box fit, orientation fit, confidence, and visible
+projection coverage. The better attempt is accepted only when its box and
+orientation remain non-BAD and it clears the configured fallback confidence;
+otherwise its overlay is retained for diagnosis while the alignment stays
+invalid.
 
 ## Runtime files
 
