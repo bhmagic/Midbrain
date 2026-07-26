@@ -35,6 +35,15 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\stop_workspace.ps1
 ```
 
+## Provider stop escalation
+
+Provider entries may set `force_kill_on_stop_timeout`. The default is `true`
+for backward compatibility: after `graceful_stop_timeout_ms`, Manager
+terminates a provider process that has not exited. Set it to `false` for a
+provider whose process supplies safety-critical powered support. In that mode,
+Manager reports the timeout without terminating the process; only the explicit
+`/v1/providers/{id}/kill` operation bypasses the policy.
+
 ## New v0.2 interfaces
 
 - Manager capability catalog: `http://127.0.0.1:7001/v1/capabilities`

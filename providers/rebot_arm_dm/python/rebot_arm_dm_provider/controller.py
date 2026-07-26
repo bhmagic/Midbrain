@@ -398,7 +398,12 @@ class ArmController:
         if envelope.deadline_monotonic <= now:
             raise TimeoutError("command deadline has expired")
         state=self.state
-        if state in {ProviderState.FAULTED,ProviderState.EMERGENCY_DISABLED,ProviderState.DISCONNECTED}:
+        if state in {
+            ProviderState.SAFE_HOME,
+            ProviderState.FAULTED,
+            ProviderState.EMERGENCY_DISABLED,
+            ProviderState.DISCONNECTED,
+        }:
             raise RuntimeError(f"commands are blocked in {state.value}")
         validated={}
         for index, command in envelope.commands.items():
@@ -530,7 +535,16 @@ class ArmController:
         transition_hold_cycles=max(1,int(self.configuration.model["control"].get("safe_home_transition_hold_cycles",5)))
         home=self.configuration.home_positions
         with self.ingress_lock:
+            active_lease=self.lease
+            self.lease=None
             self.pending=None
+            if active_lease is not None:
+                self.fencing_generation += 1
+                self._record_lease_event_ingress_locked(
+                    "REVOKED",
+                    "safe-home preempted operational control",
+                    lease=active_lease,
+                )
         with self.lock:
             if self.feedback is None: return False
             if self.state == ProviderState.READ_ONLY:

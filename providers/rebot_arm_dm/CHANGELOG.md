@@ -22,3 +22,8 @@
 - Adds payload gravity torque to MIT, gravity-float, and safe-home support.
 - Clips combined gravity feed-forward to configured motor TMAX.
 - Raises arm-joint MIT max-Kp validation caps to the recorded protocol ceiling of 500 while retaining existing minimum Kp, Kd, torque, tracking-effort, lease, timeout, gravity-float, and safe-home protections.
+- Revokes and fences the active operational lease before safe-home sends its
+  first supported MIT frame.
+- Rejects late operational commands while the controller is in `SAFE_HOME`.
+- Disables automatic Manager force termination for the supplied Basic provider
+  registration so a graceful-stop timeout preserves powered support.

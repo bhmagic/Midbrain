@@ -242,6 +242,9 @@ Integrated before Basic, honors each Provider's graceful-stop timeout, and
 requires safety-critical arm Providers to confirm that they stopped. If
 Manager is unavailable while either arm endpoint remains reachable, the script
 refuses a force-stop so powered gravity support is not removed accidentally.
+Basic's supplied Manager registration also disables automatic process
+termination after a graceful-stop timeout; an explicit force kill remains
+available for emergency recovery.
 
 ---
 

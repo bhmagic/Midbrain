@@ -24,6 +24,7 @@
   "control_url": "http://127.0.0.1:8791",
   "auto_start": false,
   "graceful_stop_timeout_ms": 35000,
+  "force_kill_on_stop_timeout": false,
   "heartbeat_timeout_ms": 3500,
   "env": {}
 }

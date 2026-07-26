@@ -43,6 +43,8 @@ struct ProviderConfig {
     auto_start: bool,
     #[serde(default = "default_stop_timeout")]
     graceful_stop_timeout_ms: u64,
+    #[serde(default = "default_force_kill_on_stop_timeout")]
+    force_kill_on_stop_timeout: bool,
     #[serde(default = "default_heartbeat_timeout")]
     heartbeat_timeout_ms: u64,
     #[serde(default)]
@@ -53,8 +55,20 @@ fn default_stop_timeout() -> u64 {
     5_000
 }
 
+fn default_force_kill_on_stop_timeout() -> bool {
+    true
+}
+
 fn default_heartbeat_timeout() -> u64 {
     3_500
+}
+
+fn should_force_terminate(
+    explicit_force: bool,
+    timeout_elapsed: bool,
+    force_kill_on_stop_timeout: bool,
+) -> bool {
+    explicit_force || (timeout_elapsed && force_kill_on_stop_timeout)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -752,8 +766,14 @@ async fn stop_provider_inner(state: &AppState, id: &str, force: bool) -> Result<
         if exited {
             return Ok(json!({"provider_id": id, "status": "stopped"}));
         }
-        if force || Instant::now() >= deadline {
+        let timeout_elapsed = Instant::now() >= deadline;
+        if should_force_terminate(force, timeout_elapsed, config.force_kill_on_stop_timeout) {
             break;
+        }
+        if timeout_elapsed {
+            return Err(anyhow!(
+                "provider {id} did not exit after graceful stop; automatic force termination is disabled"
+            ));
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -950,4 +970,41 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Jso
 fn internal_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     error!(error = %error, "request failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_config_json() -> Value {
+        json!({
+            "id": "example",
+            "display_name": "Example",
+            "command": "example.exe"
+        })
+    }
+
+    #[test]
+    fn provider_config_defaults_to_force_kill_after_timeout() {
+        let config: ProviderConfig =
+            serde_json::from_value(provider_config_json()).expect("provider config should parse");
+        assert!(config.force_kill_on_stop_timeout);
+    }
+
+    #[test]
+    fn provider_config_can_disable_automatic_force_kill() {
+        let mut value = provider_config_json();
+        value["force_kill_on_stop_timeout"] = json!(false);
+        let config: ProviderConfig =
+            serde_json::from_value(value).expect("provider config should parse");
+        assert!(!config.force_kill_on_stop_timeout);
+    }
+
+    #[test]
+    fn automatic_force_kill_policy_preserves_safety_critical_processes() {
+        assert!(!should_force_terminate(false, false, true));
+        assert!(should_force_terminate(false, true, true));
+        assert!(!should_force_terminate(false, true, false));
+        assert!(should_force_terminate(true, false, false));
+    }
 }

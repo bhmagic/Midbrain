@@ -15,3 +15,6 @@
 - Added generic provider request forwarding.
 - Added motion-inhibit acquire/status/release and Fabric publication.
 - Added combined camera and Local VIO provider configuration template.
+- Added per-provider `force_kill_on_stop_timeout` policy. It defaults to
+  enabled for compatibility and may be disabled for safety-critical providers
+  that must retain powered support after a graceful-stop timeout.

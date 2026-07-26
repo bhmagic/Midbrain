@@ -14,10 +14,15 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | POST | `/v1/providers/{id}/start` | Start the configured provider process |
 | POST | `/v1/providers/{id}/hot` | Ensure process is running and request HOT residency |
 | POST | `/v1/providers/{id}/warm` | Request WARM residency |
-| POST | `/v1/providers/{id}/stop` | Request graceful stop, then terminate on timeout |
+| POST | `/v1/providers/{id}/stop` | Request graceful stop; terminate on timeout only when that provider permits automatic force termination |
 | POST | `/v1/providers/{id}/kill` | Force process-tree termination |
 
 A provider heartbeat is expired after its configured `heartbeat_timeout_ms`. Expiry forces `ready=false`, marks the report `UNHEALTHY`, removes capability availability, and publishes an unavailable status observation to the Fabric.
+
+Provider configuration accepts `graceful_stop_timeout_ms` and
+`force_kill_on_stop_timeout`. The latter defaults to `true`. When it is
+`false`, a graceful-stop timeout returns an error and leaves the process
+running; an explicit `/kill` request is still authoritative.
 
 ## World State Fabric — `http://127.0.0.1:7002`
 

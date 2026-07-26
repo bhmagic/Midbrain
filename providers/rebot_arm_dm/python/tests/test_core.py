@@ -480,6 +480,62 @@ class CoreTests(unittest.TestCase):
         controller.submit(CommandEnvelope('move',lease.lease_id,lease.fencing_generation,{3:JointCommand('POSITION_VELOCITY_LIMITED',{'position_rad':0.2,'velocity_limit_rad_s':0.3})},time.monotonic()+1.5))
         time.sleep(0.8); self.assertTrue(controller.safe_home(8.0)); self.assertLess(abs(controller.snapshot()['positions_rad'][3]),0.08); controller.close(force=True)
 
+    def test_safe_home_fences_active_lease_before_first_supported_frame(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        lease=controller.acquire_lease('integrated-gripper-latch',6000)
+        observed_leases=[]
+        original=controller._send_supported_mit_target_locked
+        def wrapped(target,kp,kd):
+            with controller.ingress_lock:
+                observed_leases.append(controller.lease)
+            return original(target,kp,kd)
+        controller._send_supported_mit_target_locked=wrapped
+        self.assertTrue(controller.safe_home(8.0))
+        self.assertTrue(observed_leases)
+        self.assertTrue(all(active is None for active in observed_leases))
+        self.assertEqual(controller.last_lease_event['event'],'REVOKED')
+        stale=CommandEnvelope(
+            'stale-gripper-keepalive',
+            lease.lease_id,
+            lease.fencing_generation,
+            {6:JointCommand('IMPEDANCE',{
+                'position_rad':float(self.config.home_positions[6]),
+                'velocity_rad_s':0.0,
+                'target_rate_limit_rad_s':0.25,
+                'kp':8.0,
+                'kd':1.0,
+                'feedforward_torque_nm':0.0,
+            })},
+            time.monotonic()+0.5,
+        )
+        with self.assertRaises(LeasePermissionError):
+            controller.submit(stale)
+        controller.close(force=True)
+
+    def test_safe_home_state_rejects_new_operational_commands(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.state=ProviderState.SAFE_HOME
+        lease=controller.acquire_lease('late-integrated-command',6000)
+        command=CommandEnvelope(
+            'late-gripper-keepalive',
+            lease.lease_id,
+            lease.fencing_generation,
+            {6:JointCommand('IMPEDANCE',{
+                'position_rad':float(self.config.home_positions[6]),
+                'velocity_rad_s':0.0,
+                'target_rate_limit_rad_s':0.25,
+                'kp':8.0,
+                'kd':1.0,
+                'feedforward_torque_nm':0.0,
+            })},
+            time.monotonic()+0.5,
+        )
+        with self.assertRaisesRegex(RuntimeError,'SAFE_HOME'):
+            controller.submit(command)
+
     def test_warm_release_and_hot_reconnect(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque); controller=ArmController(self.config,backend,self.dyn); controller.start()
         self.assertTrue(controller.enter_warm()); self.assertEqual(controller.state,ProviderState.DISCONNECTED)

@@ -20,7 +20,17 @@ Automatic friction calibration never uses MIT. All seven motors are commanded in
 
 ## Graceful termination
 
-A normal stop rejects new commands, cancels the active operation, executes the configured safe-home movement, verifies tolerance, then disables motors and releases the device. If homing fails, powered support is retained when possible instead of deliberately removing support.
+A normal stop fences the active operational lease, clears pending commands,
+rejects new commands while `SAFE_HOME` is active, executes the configured
+safe-home movement, verifies tolerance, then disables motors and releases the
+device. If homing fails, powered support is retained when possible instead of
+deliberately removing support.
+
+The supplied Manager registration disables automatic force termination after a
+graceful-stop timeout. The Manager reports the timeout and leaves the Basic
+process running so powered support is not silently removed. An operator can
+still request the explicit force-kill endpoint when the physical situation
+requires it.
 
 ## Non-graceful failure
 
