@@ -63,6 +63,5 @@
         "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}"
       }
     }
-
   ]
 }

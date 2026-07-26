@@ -9,9 +9,9 @@
     "--basic-url",
     "http://127.0.0.1:8791",
     "--manager-url",
-    "http://127.0.0.1:7001",
+    "${MANAGER_URL}",
     "--fabric-url",
-    "http://127.0.0.1:7002"
+    "${FABRIC_URL}"
   ],
   "cwd": "${PHYSICAL_AGENT_ROOT}",
   "control_url": "http://127.0.0.1:8793",

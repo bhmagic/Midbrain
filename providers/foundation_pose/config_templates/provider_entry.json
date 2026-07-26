@@ -5,9 +5,9 @@
   "args": [
     "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/provider.py",
     "--manager-url",
-    "http://127.0.0.1:7001",
+    "${MANAGER_URL}",
     "--fabric-url",
-    "http://127.0.0.1:7002",
+    "${FABRIC_URL}",
     "--control-port",
     "7103",
     "--backend",

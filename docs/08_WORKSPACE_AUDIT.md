@@ -20,7 +20,7 @@ The working workspace contained additional material not represented in the v0.3.
 | Python generated output | `build`, `*.egg-info`, `__pycache__`, `.pytest_cache` | Excluded. |
 | Virtual environments | `.venv` trees | Excluded. |
 | Runtime state | logs, PID JSON, captures | Excluded. |
-| Machine-local configuration | `config/providers.json`, `config/system.env` | Excluded; examples retained. |
+| Machine-local configuration | `config/providers.json`, `config/system.env`, `config/api_keys.env` | Active files excluded; clean root examples and package fallbacks retained. |
 | Device-specific calibration | serial-bound Orbbec calibration and backup | Excluded to protect device identity and local measurements. |
 | Opaque archive | `config/config.rar` | Excluded because its contents and provenance were not documented. |
 | Unrelated providers | `rebot_arm_dm`, `rebot_arm_integrated`, backups and environments | Excluded because the requested GitHub scope is RGB-D camera plus brand-neutral pose. |
@@ -45,3 +45,7 @@ The package version files indicated Manager/Fabric `0.3.0`, camera Provider `0.3
 The historical cleanup excluded unrelated arm Providers because the requested v0.3.10 publication scope was RGB-D plus brand-neutral VIO. That exclusion does not apply to the later, independently reviewed `providers/foundation_pose` publication.
 
 FoundationPose v0.3.0 is now retained as source, Provider documentation, prepared reBot Base/Gripper geometry, reference renders, two Git-LFS checkpoint files, and required license texts. The upstream NVLabs checkout, compiled CUDA extensions, Python environments, local configuration, API keys, runtime captures, debug masks, and caches remain excluded and must be recreated or supplied locally.
+
+## 2026-07-26 clean-configuration follow-up
+
+A repository-wide read-path and setup-path audit classified every active configuration family. Root recovery examples now cover `system.env`, blank `api_keys.env`, and `providers.json`; package copies are required to match them. Provider-local arm files retain factory/unverified templates, Integrated retains startup repair, FoundationPose retains its complete sanitized runtime profile, and serial-bound calibration plus runtime evidence remain generated rather than templated. `scripts/test_config_baselines.ps1` enforces this contract in local validation and CI.

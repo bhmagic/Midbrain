@@ -14,6 +14,9 @@
 - Made repository manifest generation deterministic across Windows and Linux by canonicalizing text to LF before hashing; repaired 33 stale root-manifest entries left by the two implementation commits.
 - Exposed the already-published sanitized FoundationPose reBot CAD profile and Base/Gripper reference atlases from the main README. Added a root API-key template and documented why serial-bound calibration, absolute local paths, and camera captures remain excluded.
 - Added an identical sanitized FoundationPose runtime/restore profile under `config/foundation_pose`, matching the path used by the supplied Manager configuration so fresh checkouts do not depend on a seeding prompt.
+- Added root recovery examples for `system.env` and `providers.json`, made the core initializer create a blank `api_keys.env`, synchronized package fallback templates, and made canonical Provider entries inherit Manager/Fabric endpoints plus the camera mapping name from `system.env`.
+- Added a configuration-baseline inventory and automated clean-checkout audit covering generation, preservation, blank secrets, ignore rules, Provider-entry consistency, arm/Skill templates, and FoundationPose runtime references.
+- Added active `providers.json` to the publication blocklist so a force-added machine-local Provider registry cannot be uploaded accidentally.
 - Recorded the corrective validation and remaining hardware boundary in `BUILD_REPORT.md`. The local vegetable-cutting experiment remains non-deployable and is intentionally not published as a production Skill.
 
 ## Stationary World-Space Arm Finder v0.4.0 (2026-07-24)

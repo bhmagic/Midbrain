@@ -15,6 +15,7 @@ $configRoot = Join-Path $workspace "config\foundation_pose"
 $modelRoot = Join-Path $configRoot "models"
 $sourceRoot = Join-Path $configRoot "source"
 $licenseRoot = Join-Path $configRoot "licenses"
+$referenceRoot = Join-Path $configRoot "references"
 $registry = Join-Path $configRoot "models.json"
 $seedRegistry = Join-Path $seedRoot "models.json"
 
@@ -22,7 +23,8 @@ foreach ($directory in @(
     $configRoot,
     $modelRoot,
     $sourceRoot,
-    $licenseRoot
+    $licenseRoot,
+    $referenceRoot
 )) {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
 }
@@ -67,17 +69,28 @@ foreach ($name in @(
         -Destination (Join-Path $sourceRoot $name)
 }
 
+foreach ($name in @(
+    "Base_reference_atlas.json",
+    "Base_reference_atlas.png",
+    "Gripper_reference_atlas.json",
+    "Gripper_reference_atlas.png"
+)) {
+    Copy-IfMissing `
+        -Source (Join-Path $seedRoot "references\$name") `
+        -Destination (Join-Path $referenceRoot $name)
+}
+
 Copy-IfMissing `
     -Source (Join-Path $seedRoot "licenses\CERN-OHL-W-2.0.txt") `
-    -Destination (Join-Path $licenseRoot "reBot-CERN-OHL-W-2.0.txt")
+    -Destination (Join-Path $licenseRoot "CERN-OHL-W-2.0.txt")
 
 Copy-IfMissing `
     -Source (Join-Path $seedRoot "UPSTREAM.md") `
-    -Destination (Join-Path $configRoot "rebot_UPSTREAM.md")
+    -Destination (Join-Path $configRoot "UPSTREAM.md")
 
 Copy-IfMissing `
     -Source (Join-Path $seedRoot "MODIFICATIONS.md") `
-    -Destination (Join-Path $configRoot "rebot_MODIFICATIONS.md")
+    -Destination (Join-Path $configRoot "MODIFICATIONS.md")
 
 if ($ForceRegistry -or -not (Test-Path -LiteralPath $registry -PathType Leaf)) {
     Copy-Item `

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Made `CAMERA_MAPPING_NAME` from the generated workspace configuration drive both the Manager Provider entry and the accelerometer-calibration launcher.
+
 ## 0.2.0
 
 - Expands the hardware-confirmed 0.1.6 RGB-D path into a full sensory profile.

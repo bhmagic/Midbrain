@@ -31,7 +31,11 @@ if ($LASTEXITCODE -ne 0) { throw "Test-agent package installation failed." }
 
 $keyFile = Join-Path $configDir "api_keys.env"
 if (-not (Test-Path $keyFile)) {
-    Copy-Item (Join-Path $agent "config_templates\api_keys.env.example") $keyFile
+    $keyTemplate = Join-Path $configDir "api_keys.env.example"
+    if (-not (Test-Path -LiteralPath $keyTemplate)) {
+        $keyTemplate = Join-Path $agent "config_templates\api_keys.env.example"
+    }
+    Copy-Item -LiteralPath $keyTemplate -Destination $keyFile
     Write-Host "Created $keyFile"
 }
 else {
@@ -39,6 +43,10 @@ else {
 }
 $systemFile = Join-Path $configDir "system.env"
 if (-not (Test-Path $systemFile)) {
-    Copy-Item (Join-Path $agent "config_templates\system.env.example") $systemFile
+    $systemTemplate = Join-Path $configDir "system.env.example"
+    if (-not (Test-Path -LiteralPath $systemTemplate)) {
+        $systemTemplate = Join-Path $agent "config_templates\system.env.example"
+    }
+    Copy-Item -LiteralPath $systemTemplate -Destination $systemFile
 }
 Write-Host "Test-agent setup complete."

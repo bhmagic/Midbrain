@@ -75,7 +75,7 @@ Set up the two reBot arm Providers independently so each owns its own `.venv`:
 .\providers\rebot_arm_integrated\scripts\register.ps1
 ```
 
-The setup commands create the two private environments and seed missing local configuration. The registration commands add or update the two entries in local `config\providers.json`. The repository does not include machine-local arm calibration, runtime configuration, or either virtual environment.
+The setup commands create the two private environments and seed missing active configuration from the checked-in clean templates. The registration commands add or update the two entries in local `config\providers.json`. The repository includes factory/unverified arm templates, but it does not include an operator's active measured calibration, active controller tuning, or either virtual environment.
 
 To set explicit SDK paths:
 

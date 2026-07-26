@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Made default-profile seeding reproduce the canonical `config/foundation_pose` layout, including reference atlases and the canonical license/provenance filenames.
+- Preserved existing registries and files; this changes repair completeness only and does not change pose inference.
+
 ## 0.3.0
 
 - Added validated bounding-box initialization for `estimate`, `track`, and `relocalize` requests. Gemini-compatible `box_2d` coordinates use `[ymin, xmin, ymax, xmax]` normalized to 0–1000 and are rasterized as a binary mask at the live RGB resolution.

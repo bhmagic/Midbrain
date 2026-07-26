@@ -2,6 +2,10 @@
 config/*
 !config/.gitkeep
 !config/README.md
+!config/BASELINE_INVENTORY.md
+!config/api_keys.env.example
+!config/system.env.example
+!config/providers.json.example
 providers/rebot_arm_dm/config/
 providers/rebot_arm_integrated/config/
 **/api_keys.env

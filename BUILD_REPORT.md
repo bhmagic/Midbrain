@@ -2,6 +2,36 @@
 
 Date: 2026-07-26
 
+## Clean-configuration completeness audit - 2026-07-26
+
+### Scope and corrections
+
+- Traced active configuration reads, defaults, directory creation, and setup/registration behavior across Manager, Fabric, Test Agent, camera, Local VIO, FoundationPose, Basic arm, Integrated arm, and Stationary World-Space Arm Finder.
+- Added root recovery examples for `system.env` and `providers.json`. The non-interactive core initializer now also creates a blank `api_keys.env`; all three active files are preserved when already present.
+- Synchronized root, platform-core, and Test Agent fallbacks. Canonical Provider entries now inherit Manager/Fabric URLs and the camera shared-memory mapping name from `system.env`.
+- Corrected FoundationPose repair seeding to reproduce the canonical license/provenance names and reference atlases instead of its older partial/legacy layout.
+- Added `config/BASELINE_INVENTORY.md` to classify required baselines, optional overrides, serial/device-bound generated calibration, runtime evidence, external dependencies, and build artifacts.
+- Added `scripts/test_config_baselines.ps1` to local validation. It verifies 28 required clean sources, JSON/template consistency, blank secrets, unique Provider entries, generation contracts, FoundationPose runtime references, Git ignore policy, deterministic initialization, and preservation of existing files.
+- Added active `providers.json` to both publishing-script blocklists.
+
+### Validation completed
+
+- The clean-configuration audit passed, including create/re-run preservation tests in an isolated temporary directory.
+- All 37 publication JSON files and all 3 YAML files parsed.
+- All 77 publication PowerShell files passed parser validation; all 121 Python files compiled.
+- 238 Python tests passed: camera 2, Local VIO 30, Test Agent 5, FoundationPose 43, Basic arm 75, Integrated arm 54, and Stationary World-Space Arm Finder 29.
+- The isolated FoundationPose default-profile migration/seeding regression passed with the canonical meshes, source, reference atlases, license, and provenance files.
+- Manager 3 and Fabric 3 Rust tests passed; Rust formatting passed.
+- All 12 repository/component/profile manifests were regenerated; the 467-entry root manifest includes the clean examples and audit, and a second updater run was byte-identical.
+- No Provider was started and no robot motion command was submitted during this audit.
+
+### Generated or external state intentionally left without populated templates
+
+- Orbbec accelerometer calibration remains generated only after a valid physical device serial is observed.
+- Alignment calibration revisions, captures, masks, screenshots, debug bundles, Basic calibration sessions, logs, and PID files remain runtime evidence/state.
+- The FoundationPose upstream checkout/CUDA build, Orbbec SDK/CameraHost binaries, virtual environments, and compiled output remain install/build products.
+- API keys remain blank and hosted-model features still require an operator-supplied local key.
+
 ## Cross-provider hardening and publication correction — 2026-07-26
 
 ### Published implementation corrections

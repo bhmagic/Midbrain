@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Synchronized standalone Test Agent environment templates with the root/core clean baseline and made setup prefer the root recovery copies.
+
 ## 0.2.9
 
 - Show initialization accel/gyro window counts and inferred sample rates in the Pose propagation card.

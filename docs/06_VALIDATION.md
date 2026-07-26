@@ -17,7 +17,13 @@ The tests cover six-position accelerometer solving, calibration persistence, sam
 .\scripts\validate.ps1
 ```
 
-The script checks JSON and Python syntax, runs all Python tests, builds Python wheels into a temporary validation directory, checks Rust formatting/tests/release build when Cargo is available, and configures/builds CameraHost only when explicitly requested with valid Orbbec SDK paths.
+The script first runs the clean-configuration contract audit. It then checks JSON and Python syntax, runs all Python tests, builds Python wheels into a temporary validation directory, checks Rust formatting/tests/release build when Cargo is available, and configures/builds CameraHost only when explicitly requested with valid Orbbec SDK paths.
+
+The configuration-only audit is also available independently and does not start Providers:
+
+```powershell
+.\scripts\test_config_baselines.ps1
+```
 
 The repository workflow does not yet invoke the FoundationPose Provider suite. Run its validation separately from the repository root:
 

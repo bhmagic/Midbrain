@@ -417,6 +417,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\run_workspace.ps1
 ```
 
+Core setup and launch both run a non-interactive initializer. A clean checkout receives `config\system.env`, blank `config\api_keys.env`, and `config\providers.json` from the checked-in root examples; existing local files are preserved. The audited baseline/generation matrix is documented in [`config/BASELINE_INVENTORY.md`](config/BASELINE_INVENTORY.md).
+
 Set up and launch the optional FoundationPose Provider separately:
 
 ```powershell

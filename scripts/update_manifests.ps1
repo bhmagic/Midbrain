@@ -21,7 +21,10 @@ function Test-ManifestFileExcluded {
         $safeConfigFiles = @(
             'config/.gitkeep',
             'config/README.md',
+            'config/BASELINE_INVENTORY.md',
             'config/api_keys.env.example',
+            'config/providers.json.example',
+            'config/system.env.example',
             'config/foundation_pose/FILE_MANIFEST.sha256',
             'config/foundation_pose/MODIFICATIONS.md',
             'config/foundation_pose/UPSTREAM.md',

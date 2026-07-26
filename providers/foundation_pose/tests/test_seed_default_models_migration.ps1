@@ -156,7 +156,14 @@ try {
 
     foreach ($RequiredFile in @(
         (Join-Path $ConfigRoot "models\Base_clean_centered.obj"),
-        (Join-Path $ConfigRoot "models\Gripper_clean_centered.obj")
+        (Join-Path $ConfigRoot "models\Gripper_clean_centered.obj"),
+        (Join-Path $ConfigRoot "references\Base_reference_atlas.json"),
+        (Join-Path $ConfigRoot "references\Base_reference_atlas.png"),
+        (Join-Path $ConfigRoot "references\Gripper_reference_atlas.json"),
+        (Join-Path $ConfigRoot "references\Gripper_reference_atlas.png"),
+        (Join-Path $ConfigRoot "licenses\CERN-OHL-W-2.0.txt"),
+        (Join-Path $ConfigRoot "UPSTREAM.md"),
+        (Join-Path $ConfigRoot "MODIFICATIONS.md")
     )) {
         if (-not (
             Test-Path `

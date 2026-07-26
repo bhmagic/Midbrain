@@ -158,6 +158,7 @@ else {
     $blockedPatterns = @(
         '(^|/)api_keys\.env$',
         '(^|/)system\.env$',
+        '(^|/)providers\.json$',
         '(^|/)calibration/devices/',
         '(^|/)\.validation/',
         '(^|/)\.venv/',
