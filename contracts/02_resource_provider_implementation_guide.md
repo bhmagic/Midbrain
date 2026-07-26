@@ -1,6 +1,6 @@
 # Resource Provider Implementation Guide
 
-Version: 0.2 Working Draft
+Version: 0.3.9 Working Draft
 
 This guide describes a preferred implementation pattern. It is not part of the wire contract unless a rule is explicitly repeated in the Resource Provider Contract.
 
@@ -159,6 +159,14 @@ On lease loss:
 
 Safety-critical hold or stop behavior should be implemented as close to the hardware controller as practical.
 
+Before entering a Provider-owned safe-home or controlled-stop sequence:
+
+1. Revoke or fence the active operational lease.
+2. Clear queued operational commands that have not been committed.
+3. Reject new operational submissions while the protective sequence is active.
+4. Run the protective sequence under an internal safety authority state.
+5. Publish completion, timeout, or operator-recovery status before accepting a new operational owner.
+
 ## 9. GUI and visualization providers
 
 Many GUI frameworks require the main operating-system thread. A GUI provider may therefore use:
@@ -187,7 +195,9 @@ The Manager should launch each provider inside an owned process tree:
 - Windows: Job Object or equivalent
 - Linux/macOS: dedicated process group or session
 
-The Manager must reap children and kill the complete process tree after a missed deadline.
+After a missed deadline, the Manager must reap and kill the complete process tree only when the Provider's registered automatic-termination policy permits it. A safety-critical Provider that requires its process to maintain powered gravity support, braking, or payload retention should set that policy to false. In that case, the Manager reports the missed deadline and preserves the process until an authorized explicit force-stop or recovery action occurs.
+
+An explicit force-stop must remain capable of terminating the complete owned process tree. The distinction is between automatic timeout escalation and an authorized explicit force action, not between partial and complete process cleanup.
 
 ## 11. Logging and diagnostics
 

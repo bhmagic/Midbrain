@@ -9,4 +9,5 @@
 - Define feature-level visual update schemas if backend diagnostics are exposed beyond pose-level corrections.
 - Define neck/body kinematic authority when articulated hardware exists.
 - Add expiry/fencing and hard enforcement to motion-inhibit and physical Control Authority Leases.
+- Hardware-validate policy-aware graceful-stop timeout behavior, safety-critical process preservation, and explicit complete process-tree force termination.
 - Define transform covariance tangent convention and conflict-selection policy beyond rejection.

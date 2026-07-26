@@ -1,5 +1,20 @@
 # Changelog
 
+## Cross-provider alignment and shutdown hardening (2026-07-26)
+
+- Updated the Stationary World-Space Arm Finder to publish the immutable full `vio_from_camera_reference` pose captured with alignment RGB-D evidence. Downstream fixed-camera Skills no longer need to combine a saved alignment with a later, drifted VIO pose.
+- Changed the two-attempt FoundationPose fallback to retain the geometrically better bounded observation when neither attempt reaches the strict VLM threshold, while preserving non-BAD geometry, projection-coverage, orientation, and confidence gates.
+- Documented Integrated controlled-frame semantics: `ik_location` names the desired acting-point pose, and Integrated applies `ik_offset` internally. Upstream Skills must not apply the tool offset a second time.
+- Added reliable Fabric command staging guidance using producer/boot/sequence identity, `accepted_count`, bounded republishing with fresh sequence and timestamps, and terminal rejection handling.
+- Added Integrated workspace-envelope publication, first-command recovery for a measured joint slightly outside its operational range, and acknowledged safe-termination launch behavior.
+- Made global Stop All dependency-aware: Integrated is stopped before Basic, safety-critical stop confirmation is required, and powered arm support is preserved when Manager-based safe shutdown cannot be confirmed.
+- Added Manager `force_kill_on_stop_timeout` as a per-Provider policy. It remains enabled by default, while the supplied Basic arm registration disables automatic timeout escalation so a missed graceful stop does not silently remove powered support.
+- Updated Basic safe-home to revoke and fence the operational lease, clear pending work, and reject late operational commands before the first protective MIT frame.
+- Updated formal Contracts to distinguish automatic graceful-timeout escalation from authorized explicit force-stop and to require fencing before Provider-owned protective motion.
+- Made repository manifest generation deterministic across Windows and Linux by canonicalizing text to LF before hashing; repaired 33 stale root-manifest entries left by the two implementation commits.
+- Exposed the already-published sanitized FoundationPose reBot CAD profile and Base/Gripper reference atlases from the main README. Added a root API-key template and documented why serial-bound calibration, absolute local paths, and camera captures remain excluded.
+- Recorded the corrective validation and remaining hardware boundary in `BUILD_REPORT.md`. The local vegetable-cutting experiment remains non-deployable and is intentionally not published as a production Skill.
+
 ## Stationary World-Space Arm Finder v0.4.0 (2026-07-24)
 
 - Added `skills/stationary_world_arm_alignment` as a finite Skill with an isolated virtual environment, CLI, monitoring GUI, schemas, and regression tests.
@@ -56,4 +71,4 @@
 - Orbbec Femto Bolt Provider 0.3.1
 - Local VIO Provider 0.2.2
 - Test Agent 0.2.9
-- Contracts working draft 0.3.8
+- Contracts working draft 0.3.9

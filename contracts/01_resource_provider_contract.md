@@ -1,6 +1,6 @@
 # Resource Provider Contract
 
-Version: 0.2 Working Draft
+Version: 0.3.9 Working Draft
 
 ## 1. Purpose
 
@@ -48,6 +48,8 @@ Required fields:
 - Fabric streams consumed and published
 - Physical-control resources required
 - Compatible fallback providers or fallback classes
+- Graceful-stop timeout and automatic process-termination policy
+- Safety consequence of process loss when the Provider supplies powered support, braking, holding force, or another stable waiting state
 
 Unknown values must be represented explicitly as `UNKNOWN`, not as zero or an empty string.
 
@@ -68,7 +70,7 @@ Transition states may be reported as:
 
 A provider being busy is not a residency mode. It may remain `HOT` while handling one or more requests.
 
-The Manager owns process launch and forced process-tree termination. Forced kill is not a provider command.
+The Manager owns process launch and any explicitly authorized forced process-tree termination. Forced kill is not a provider command. Automatic termination after a graceful-stop timeout is a per-Provider policy and must not be assumed safe.
 
 ### 4.1 Entering WARM
 
@@ -108,7 +110,9 @@ On graceful stop, a provider must:
 - Close Fabric publications
 - Exit
 
-If the deadline expires, the Manager may fence the provider, revoke authority, and terminate its complete process tree.
+If the deadline expires, the Manager must fence the Provider's operational authority and report the timeout. It may automatically terminate the complete process tree only when the Provider's registered policy permits that escalation.
+
+When automatic termination is disabled because process loss could remove powered gravity support, braking, payload retention, or another stable waiting state, the Manager must preserve the process, report degraded or timed-out shutdown, and require explicit operator or safety-controller recovery. An explicit force-stop request remains available to an authorized operator or emergency procedure.
 
 ## 5. Fast-reaction behavior
 
@@ -254,6 +258,8 @@ When the lease is released, revoked, expired, or lost through disconnection, the
 Examples include controlled deceleration, position hold, brake engagement, gravity compensation, safe gripper-force hold, or transfer to a designated safety controller.
 
 Disabling torque is not an acceptable default for an arm that may fall or drop an object.
+
+Before a hardware Provider begins an internal safe-home, controlled stop, or other protective trajectory, it must fence the outgoing operational owner, invalidate pending commands from that owner, and reject late frames from the old lease. Internal safety-controller commands must use a distinct authority state so normal operational submissions cannot fight the protective trajectory.
 
 ## 11. Failure format
 

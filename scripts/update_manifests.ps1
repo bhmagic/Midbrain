@@ -44,6 +44,72 @@ function Test-ManifestFileExcluded {
     return $false
 }
 
+function Get-CanonicalFileHash {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileInfo]$File
+    )
+
+    $textExtensions = @(
+        '.bat', '.c', '.cc', '.cfg', '.cmake', '.cmd', '.cpp', '.css', '.csv',
+        '.env', '.example', '.gitattributes', '.gitignore', '.h', '.hpp', '.html',
+        '.ini', '.js', '.json', '.jsx', '.lock', '.md', '.obj', '.ps1', '.py',
+        '.rs', '.schema', '.sh', '.step', '.toml', '.ts', '.tsx', '.txt', '.xml',
+        '.yaml', '.yml'
+    )
+    $textNames = @(
+        'cargo.lock', 'cargo.toml', 'cmakelists.txt', 'dockerfile', 'license',
+        'notice', 'version'
+    )
+    $extension = $File.Extension.ToLowerInvariant()
+    $name = $File.Name.ToLowerInvariant()
+
+    if (($textExtensions -contains $extension) -or ($textNames -contains $name)) {
+        $sourceBytes = [System.IO.File]::ReadAllBytes($File.FullName)
+        $encoding = [System.Text.UTF8Encoding]::new($false)
+        $bom = [byte[]]@()
+        $offset = 0
+        if ($sourceBytes.Length -ge 3 -and
+            $sourceBytes[0] -eq 0xEF -and
+            $sourceBytes[1] -eq 0xBB -and
+            $sourceBytes[2] -eq 0xBF) {
+            $bom = [byte[]]@(0xEF, 0xBB, 0xBF)
+            $offset = 3
+        }
+        elseif ($sourceBytes.Length -ge 2 -and
+            $sourceBytes[0] -eq 0xFF -and
+            $sourceBytes[1] -eq 0xFE) {
+            $encoding = [System.Text.UnicodeEncoding]::new($false, $false)
+            $bom = [byte[]]@(0xFF, 0xFE)
+            $offset = 2
+        }
+        elseif ($sourceBytes.Length -ge 2 -and
+            $sourceBytes[0] -eq 0xFE -and
+            $sourceBytes[1] -eq 0xFF) {
+            $encoding = [System.Text.UnicodeEncoding]::new($true, $false)
+            $bom = [byte[]]@(0xFE, 0xFF)
+            $offset = 2
+        }
+
+        $text = $encoding.GetString($sourceBytes, $offset, $sourceBytes.Length - $offset)
+        $canonicalText = $text.Replace("`r`n", "`n")
+        $payloadBytes = $encoding.GetBytes($canonicalText)
+        $bytes = [byte[]]::new($bom.Length + $payloadBytes.Length)
+        if ($bom.Length -gt 0) {
+            [System.Array]::Copy($bom, 0, $bytes, 0, $bom.Length)
+        }
+        [System.Array]::Copy($payloadBytes, 0, $bytes, $bom.Length, $payloadBytes.Length)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $File.FullName).Hash.ToLowerInvariant()
+}
+
 function Write-Manifest {
     param(
         [Parameter(Mandatory = $true)][string]$BaseDirectory
@@ -56,9 +122,13 @@ function Write-Manifest {
         'rebot_arm_dm',
         'rebot_arm_integrated'
     )
+    $relativePaths = [System.Collections.Generic.List[string]]::new()
+    $filesByRelativePath = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new(
+        [System.StringComparer]::Ordinal
+    )
     $lines = [System.Collections.Generic.List[string]]::new()
 
-    $files = Get-ChildItem -Path $basePath -Recurse -File | Sort-Object FullName
+    $files = Get-ChildItem -Path $basePath -Recurse -File
     foreach ($file in $files) {
         $relativePath = $file.FullName.Substring($basePath.Length) -replace '^[\\/]+', ''
         $relativePath = $relativePath -replace '\\', '/'
@@ -68,7 +138,14 @@ function Write-Manifest {
         if (Test-ManifestFileExcluded -RelativePath $relativePath -ManifestRelativePath $manifestRelativePath) {
             continue
         }
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+        $relativePaths.Add($relativePath)
+        $filesByRelativePath.Add($relativePath, $file)
+    }
+
+    $relativePaths.Sort([System.StringComparer]::Ordinal)
+    foreach ($relativePath in $relativePaths) {
+        $file = $filesByRelativePath[$relativePath]
+        $hash = Get-CanonicalFileHash -File $file
         $lines.Add("$hash  $relativePath")
     }
 

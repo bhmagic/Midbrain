@@ -19,6 +19,8 @@ The long-term goal is to provide a reusable foundation for robotic systems that 
 
 > **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack. It is not yet a production-certified robotics control system.
 
+The latest cross-provider hardening is recorded in the [Changelog](CHANGELOG.md) and [Build and Validation Report](BUILD_REPORT.md). It covers immutable alignment-camera references, reliable Fabric command staging, controlled-frame semantics, policy-aware arm shutdown, and safe-home lease fencing. The vegetable-cutting experiment that motivated part of this validation remains experimental workspace code and is not included as a deployable Skill in this repository.
+
 ---
 
 ## Core model
@@ -218,6 +220,12 @@ The current camera Provider publishes large RGB-D payloads through Windows named
 The Local VIO Provider consumes ordered IMU history and synchronized camera observations. It maintains a dynamic pose estimate and publishes body transforms into the Fabric.
 
 The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
+
+The sanitized reBot B601-DM FoundationPose profile is published under [`providers/foundation_pose/defaults/rebot_b601_dm`](providers/foundation_pose/defaults/rebot_b601_dm). It includes retained STEP/OBJ source, prepared centered meshes, portable metadata, provenance, licenses, and the following reusable multi-view CAD atlases. Machine-local copies under `config`, active calibration, and camera captures remain excluded.
+
+| Base reference atlas | Gripper-slider-support reference atlas |
+| --- | --- |
+| [![reBot base CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png) | [![reBot gripper CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png) |
 
 The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose Providers on demand, starts FoundationPose only for modes that need it, and stops FoundationPose after the bounded run when no foreign sessions remain. It publishes the stationary world-to-VIO and world-to-arm-base transforms, the full VIO-to-camera reference pose captured by the alignment, an RGB overlay with the projected base box and axes, and result-schema-v2 measurement provenance for upstream Skills. When neither of two FoundationPose attempts meets the strict VLM threshold, a bounded fallback may retain the geometrically better attempt only if it still satisfies the documented non-BAD geometry and fallback-confidence gates.
 

@@ -1,6 +1,6 @@
 # Safety and Lease Policy
 
-Version: 0.2 Working Draft
+Version: 0.3.9 Working Draft
 
 ## 1. Purpose
 
@@ -88,6 +88,14 @@ Possible behaviors include:
 The default must not be uncontrolled torque removal when that can cause a robot, payload, or tool to fall.
 
 The provider may claim this behavior only while the required controller, drive, power, and hardware safety functions remain operational.
+
+### 6.1 Process supervision during safe relinquish
+
+Process termination is not automatically a safe state. If a Provider process is required to maintain gravity support, braking, payload retention, bounded gripper force, or another stable waiting state, its registration must disable automatic force-kill after a graceful-stop timeout.
+
+For such a Provider, a missed graceful-stop deadline must produce a visible timeout or recovery-required state while the process remains alive. An authorized explicit force-stop remains available for emergency or operator-directed recovery.
+
+Before an internal safe-home, controlled stop, or hold transition begins, the Provider must fence the outgoing operational authority, discard uncommitted commands from that owner, and reject late operational frames. The protective sequence must not compete with a still-valid task lease.
 
 ## 7. Lease expiry and renewal
 

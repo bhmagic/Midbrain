@@ -1,6 +1,6 @@
 # Resource Provider Conformance Test Suite
 
-Version: 0.2 Working Draft
+Version: 0.3.9 Working Draft
 
 ## 1. Purpose
 
@@ -78,7 +78,10 @@ Required for GUI or visualization providers.
 - Exits before the graceful deadline under normal conditions
 - Releases exclusive resources
 - Leaves no orphan child process
-- Manager can terminate the entire process tree after deadline failure
+- Manager automatically terminates the entire process tree after deadline failure when the registered policy enables escalation
+- Manager preserves a timed-out process and reports recovery-required state when automatic escalation is disabled
+- Explicit authorized force-stop terminates the complete process tree regardless of the automatic-timeout policy
+- Safety-critical process preservation is tested without falsely reporting a successful stop
 
 ### Crash and restart
 
@@ -172,6 +175,8 @@ Required for GUI or visualization providers.
 - Revocation triggers safe relinquish behavior
 - Manager disconnect triggers declared safe behavior
 - Skill completion releases or transfers authority through the Manager
+- Provider-owned safe-home fences the outgoing operational lease before its first protective command
+- Pending and late operational commands are rejected throughout safe-home or controlled stop
 
 ### Safe relinquish
 
@@ -237,7 +242,7 @@ Automate these first:
 2. Heartbeat timeout
 3. Residency transitions
 4. Idempotent commands
-5. Graceful and forced process-tree stop
+5. Policy-aware graceful timeout and explicit forced process-tree stop
 6. Shared-memory generation rejection
 7. Read-lease expiry
 8. Control-authority expiry and fencing

@@ -1,6 +1,43 @@
 # Build and Validation Report
 
-Date: 2026-07-20
+Date: 2026-07-26
+
+## Cross-provider hardening and publication correction — 2026-07-26
+
+### Published implementation corrections
+
+- Commit `171fa1b458835d855c7c6b2d80bfffb08d72cb0b` published immutable alignment-camera reference poses, bounded best-of-two alignment fallback, Integrated controlled-frame and reliable Fabric-command guidance, trajectory-start joint recovery, acknowledged safe-termination launch, and dependency-aware Stop All behavior.
+- Commit `12ad6d26d24dbe55093b2733fab357674501f74f` published Basic safe-home lease fencing and late-command rejection plus Manager per-Provider `force_kill_on_stop_timeout` behavior.
+- This follow-up publication updates the formal Contracts, root changelog, main-page status, configuration guidance, reusable FoundationPose asset discovery, and this report.
+
+### Validation completed
+
+- 37 existing camera, Local VIO, and Test Agent regression tests passed.
+- 75 reBot Arm DM Basic tests passed.
+- 54 reBot Arm Integrated tests passed.
+- 29 Stationary World-Space Arm Finder tests passed.
+- 3 Resource Provider Manager Rust tests and 3 World State Fabric Rust tests passed.
+- The latest GitHub source-validation workflow for the implementation correction passed.
+- Global Stop All completed after testing, and ports `7001`, `7002`, `7101`, `7102`, `7104`, `7105`, `7106`, `7107`, `8011`, `8012`, `8791`, and `8793` were confirmed closed.
+- A clean repository-manifest audit found and repaired 33 stale root entries from the two implementation commits. The updater now hashes canonical LF text on both Windows and Linux.
+- All 32 tracked JSON files parsed, all 121 tracked Python files compiled, and all 806 entries across the root and nine component/profile manifests verified without a missing file or hash mismatch.
+- Two consecutive manifest-updater runs produced identical output. The 19-file publication set passed Git whitespace checks and a targeted secret, credential, device-serial, private-path, and vegetable-cutter-path scan.
+
+These checks were offline software and shutdown validations. No physical arm command was submitted during the publication correction. The earlier supervised vegetable-cutting experiments exposed the transform, staging, and termination problems, but the vegetable-cutting Skill itself remains experimental, incomplete, and outside this public release.
+
+### Contract and asset audit
+
+- Contracts working draft 0.3.9 now requires policy-aware graceful-timeout escalation, explicit-force separation, and operational-lease fencing before Provider-owned safe-home or controlled-stop motion.
+- The reusable reBot B601-DM STEP/OBJ sources and prepared meshes in local `config/foundation_pose` were compared with the sanitized canonical profile under `providers/foundation_pose/defaults/rebot_b601_dm`.
+- The mesh geometry and retained STEP sources match after text line-ending normalization. The public metadata intentionally replaces absolute workstation paths with portable relative paths and adds publication provenance.
+- The Base and Gripper reference atlases were visually inspected and are linked from the main README.
+- API keys, active `providers.json`, `system.env`, serial-bound calibration, runtime captures, installation caches, model archives, logs, and absolute-path machine metadata remain excluded. A blank `config/api_keys.env.example` is published instead.
+
+### Remaining validation boundary
+
+- Repeat controlled hardware validation before treating the new safe-home and shutdown behavior as physically accepted across power loss, USB loss, Manager loss, and a missed graceful-stop deadline.
+- Verify explicit force-stop behavior only in a prepared recovery scenario because it may intentionally remove powered support.
+- Validate a future decomposed cutting workflow independently for world-axis registration, RGB-D registration, VLM-guided correction, and bounded cutting execution before publishing it as deployable.
 
 ## reBot arm Provider publication supplement — 2026-07-23
 
