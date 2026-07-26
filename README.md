@@ -221,7 +221,7 @@ The Local VIO Provider consumes ordered IMU history and synchronized camera obse
 
 The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
 
-The sanitized reBot B601-DM FoundationPose profile is published under [`providers/foundation_pose/defaults/rebot_b601_dm`](providers/foundation_pose/defaults/rebot_b601_dm). It includes retained STEP/OBJ source, prepared centered meshes, portable metadata, provenance, licenses, and the following reusable multi-view CAD atlases. Machine-local copies under `config`, active calibration, and camera captures remain excluded.
+The canonical sanitized reBot B601-DM FoundationPose profile is published under [`providers/foundation_pose/defaults/rebot_b601_dm`](providers/foundation_pose/defaults/rebot_b601_dm). An identical runtime/restore copy is also published at [`config/foundation_pose`](config/foundation_pose), the registry location used by the supplied Manager configuration. Both contain retained STEP/OBJ source, prepared centered meshes, portable metadata, provenance, licenses, and the following reusable multi-view CAD atlases. Active calibration, local registry changes, caches, and camera captures remain excluded.
 
 | Base reference atlas | Gripper-slider-support reference atlas |
 | --- | --- |

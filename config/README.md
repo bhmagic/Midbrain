@@ -1,6 +1,6 @@
 # Local Configuration
 
-This directory is intentionally excluded from Git except for this file and `.gitkeep`.
+Most of this directory is intentionally excluded from Git. The exceptions are this guidance, blank templates, and the sanitized FoundationPose runtime/restore profile.
 
 The setup scripts create machine-local files here, including:
 
@@ -15,6 +15,9 @@ Safe starting points:
 
 - Copy `config/api_keys.env.example` to `config/api_keys.env` and fill the local copy only.
 - Copy `platform_core/config_templates/system.env.example` and `platform_core/config_templates/providers.json.example` when creating a machine-local runtime configuration.
-- Run `providers/foundation_pose/scripts/seed_default_models.ps1` to seed the sanitized reBot CAD profile into `config/foundation_pose`. Do not commit the seeded copy.
+- The FoundationPose Provider already reads `config/foundation_pose/models.json`; a complete sanitized registry, CAD profile, and reference-atlas copy is shipped at that location.
+- If the shipped profile is deleted or damaged in a Git checkout, restore it with `git restore --source=HEAD -- config/foundation_pose`. The Provider seeding script remains a secondary repair path for missing files.
 
-The canonical reusable FoundationPose assets are tracked under `providers/foundation_pose/defaults/rebot_b601_dm`. That profile contains the retained STEP/OBJ sources, prepared meshes, portable metadata, model registry, provenance, licenses, and rendered reference atlases. Machine-local FoundationPose metadata may contain absolute paths, and captures may contain private room imagery, so neither belongs in Git.
+The canonical reusable FoundationPose assets remain under `providers/foundation_pose/defaults/rebot_b601_dm`. The checked-in `config/foundation_pose` tree deliberately duplicates that sanitized profile so a fresh checkout already satisfies the runtime path and users can restore it locally without reconstructing assets.
+
+Only the named restore-profile files are allowed by `.gitignore`. Active `providers.json`, `system.env`, API keys, serial-bound calibration, runtime captures, masks, backups, installation caches, generated archives, and metadata containing absolute workstation paths remain machine-local.

@@ -1,0 +1,111 @@
+{
+  "input_file": "source/Base.obj",
+  "coordinate_units": "millimeters",
+  "scale_to_m": 0.001,
+  "merge_distance_mm": 0.001,
+  "source_obj": {
+    "vertices": 239142,
+    "faces": 475753,
+    "bounds_mm": {
+      "minimum": [
+        -70.0,
+        -100.0,
+        3.3
+      ],
+      "maximum": [
+        70.0,
+        100.0,
+        85.949997
+      ]
+    },
+    "bounds_center_mm": [
+      0.0,
+      0.0,
+      44.6249985
+    ]
+  },
+  "clean_original_frame_obj": {
+    "vertices": 238980,
+    "faces": 475717,
+    "bounds_mm": {
+      "minimum": [
+        -70.0,
+        -100.0,
+        3.299992
+      ],
+      "maximum": [
+        70.0,
+        100.0,
+        85.949997
+      ]
+    },
+    "bounds_center_mm": [
+      0.0,
+      0.0,
+      44.6249945
+    ]
+  },
+  "clean_centered_obj": {
+    "vertices": 238980,
+    "faces": 475717,
+    "bounds_mm": {
+      "minimum": [
+        -70.0,
+        -100.0,
+        -41.325005
+      ],
+      "maximum": [
+        70.0,
+        100.0,
+        41.325001
+      ]
+    },
+    "bounds_center_mm": [
+      0.0,
+      0.0,
+      -1.999999998503199e-06
+    ]
+  },
+  "blender_internal_cleanup": {
+    "vertices_before": 239142,
+    "vertices_after": 238980,
+    "faces_before": 475753,
+    "faces_after": 475717,
+    "center_removed_in_blender_axes_mm": [
+      0.0,
+      -44.624996185302734,
+      0.0
+    ]
+  },
+  "center_transform_in_original_obj_axes": {
+    "mesh_center_in_original_frame_mm": [
+      0.0,
+      0.0,
+      44.6249945
+    ],
+    "centered_from_original_translation_mm": [
+      -0.0,
+      -0.0,
+      -44.6249945
+    ],
+    "original_from_centered_translation_mm": [
+      0.0,
+      0.0,
+      44.6249945
+    ]
+  },
+  "validation": {
+    "source_and_clean_original_bounds_match": true,
+    "centered_bounds_center_near_zero": true
+  },
+  "outputs": {
+    "clean_original_frame": "models/Base_clean_original_frame.obj",
+    "clean_centered": "models/Base_clean_centered.obj"
+  },
+  "publication_provenance": {
+    "robot": "Seeed reBot Arm B601-DM",
+    "upstream_repository": "https://github.com/Seeed-Projects/reBot-DevArm",
+    "upstream_commit": "0d74520357b46be02e07104c0d1bbb4e46789aef",
+    "preparation": "Rigid target isolated from reBot B601-DM CAD, exported as OBJ, minimally cleaned and bounding-box centered with tools/cad_prepare/prepare_mesh_blender.py."
+  }
+}

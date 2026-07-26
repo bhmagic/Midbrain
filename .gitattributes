@@ -1,0 +1,10 @@
+# Keep the published FoundationPose runtime/restore profile byte-stable.
+config/foundation_pose/FILE_MANIFEST.sha256 text eol=lf
+config/foundation_pose/*.json text eol=lf
+config/foundation_pose/*.md text eol=lf
+config/foundation_pose/**/*.json text eol=lf
+config/foundation_pose/**/*.md text eol=lf
+config/foundation_pose/**/*.txt text eol=lf
+config/foundation_pose/**/*.obj text eol=lf -diff
+config/foundation_pose/**/*.step text eol=lf -diff
+config/foundation_pose/**/*.png -text

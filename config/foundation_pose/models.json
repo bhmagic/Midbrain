@@ -1,0 +1,76 @@
+{
+  "revision": "rebot-b601-dm-foundationpose-v3",
+  "profile": {
+    "id": "rebot_b601_dm",
+    "robot": "Seeed reBot Arm B601-DM",
+    "notes": "Default publication profile. Object orientation can be ambiguous for approximately symmetric geometry; consumers should treat these as visual measurements."
+  },
+  "models": [
+    {
+      "model_id": "robot_arm_root",
+      "role": "robot_base",
+      "description": "Rigid reBot B601-DM Base Platform + Base Link visual reference.",
+      "mesh_path": "models/Base_clean_centered.obj",
+      "semantic_frame": "robot/arm_root",
+      "default_child_frame": "observed_object/rebot_b601_dm/base",
+      "mesh_from_semantic": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        -0.0446249945,
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale_to_m": 0.001,
+      "symmetry": {
+        "type": "NONE",
+        "note": "Geometry is approximately 180-degree yaw symmetric. The Provider reports the selected visual hypothesis; consuming Skills may resolve ambiguity using gripper pose, joint state, or task context."
+      },
+      "enabled": true,
+      "revision": "rebot-b601-dm-base-v1"
+    },
+    {
+      "model_id": "robot_gripper_slider_support",
+      "role": "robot_gripper",
+      "description": "Rigid reBot B601-DM Gripper Slider Support / 01_Rail_Bracket visual reference.",
+      "mesh_path": "models/Gripper_clean_centered.obj",
+      "semantic_frame": "robot/gripper_slider_support_center",
+      "default_child_frame": "observed_object/rebot_b601_dm/gripper_slider_support",
+      "mesh_from_semantic": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "scale_to_m": 0.001,
+      "symmetry": {
+        "type": "NONE",
+        "note": "Geometry is visually close to symmetric and may initialize in a reversed orientation. This is an observational reporter frame, not a claimed TCP frame."
+      },
+      "enabled": true,
+      "revision": "rebot-b601-dm-gripper-slider-support-v1"
+    }
+  ]
+}

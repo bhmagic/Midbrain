@@ -93,9 +93,12 @@ measurement instead of forcing an arbitrary semantic direction. A Skill may
 combine Base pose, Gripper pose, joint state, or task context to resolve
 orientation ambiguity.
 
-Default CAD assets are under `defaults/rebot_b601_dm`. `scripts/setup.ps1` or
-`scripts/seed_default_models.ps1` copies them into persistent
-`config/foundation_pose` only when files are missing.
+Default CAD assets are under `defaults/rebot_b601_dm`. The repository also
+ships an identical sanitized runtime/restore profile under
+`config/foundation_pose`, which is the registry path used by the supplied
+Manager configuration. `scripts/setup.ps1` or
+`scripts/seed_default_models.ps1` repairs individual files when they are
+missing.
 
 ## Model assets and training
 
@@ -110,18 +113,23 @@ dependencies installed under the replaceable Provider directory.
 
 ## Runtime data ownership
 
-Robot-specific persistent data belongs outside the Provider:
+The supplied runtime registry and user-generated persistent data live outside
+the replaceable Provider:
 
 `config/foundation_pose`
 
-Typical contents:
+The checked-in sanitized subset contains:
 
 - `models.json`
 - prepared centered meshes
 - original-frame meshes
 - mesh-preparation metadata
 - source CAD/OBJ files
-- user masks, captures, and calibration artifacts
+- reference atlases
+- provenance and the hardware-source license
+
+User masks, captures, calibration artifacts, caches, and local registry
+changes remain ignored machine-local data.
 
 The Provider directory is replaceable. A clean Provider reinstall must not
 delete `config/foundation_pose`.

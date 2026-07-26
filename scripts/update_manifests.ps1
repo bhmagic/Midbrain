@@ -17,6 +17,35 @@ function Test-ManifestFileExcluded {
         return $true
     }
 
+    if ($normalized.StartsWith('config/')) {
+        $safeConfigFiles = @(
+            'config/.gitkeep',
+            'config/README.md',
+            'config/api_keys.env.example',
+            'config/foundation_pose/FILE_MANIFEST.sha256',
+            'config/foundation_pose/MODIFICATIONS.md',
+            'config/foundation_pose/UPSTREAM.md',
+            'config/foundation_pose/models.json',
+            'config/foundation_pose/licenses/CERN-OHL-W-2.0.txt',
+            'config/foundation_pose/models/Base_clean_centered.obj',
+            'config/foundation_pose/models/Base_clean_original_frame.obj',
+            'config/foundation_pose/models/Base_mesh_metadata.json',
+            'config/foundation_pose/models/Gripper_clean_centered.obj',
+            'config/foundation_pose/models/Gripper_clean_original_frame.obj',
+            'config/foundation_pose/models/Gripper_mesh_metadata.json',
+            'config/foundation_pose/references/Base_reference_atlas.json',
+            'config/foundation_pose/references/Base_reference_atlas.png',
+            'config/foundation_pose/references/Gripper_reference_atlas.json',
+            'config/foundation_pose/references/Gripper_reference_atlas.png',
+            'config/foundation_pose/source/01_BASE_Link.step',
+            'config/foundation_pose/source/01_BASE_Plate.step',
+            'config/foundation_pose/source/01_Rail_Bracket.step',
+            'config/foundation_pose/source/Base.obj',
+            'config/foundation_pose/source/Gripper.obj'
+        )
+        return -not ($safeConfigFiles -contains $normalized)
+    }
+
     $segments = $normalized -split '/'
     $excludedDirectories = @(
         '.git', '.validation', '.venv', 'venv', 'target', 'build', 'dist',
@@ -53,7 +82,7 @@ function Get-CanonicalFileHash {
         '.bat', '.c', '.cc', '.cfg', '.cmake', '.cmd', '.cpp', '.css', '.csv',
         '.env', '.example', '.gitattributes', '.gitignore', '.h', '.hpp', '.html',
         '.ini', '.js', '.json', '.jsx', '.lock', '.md', '.obj', '.ps1', '.py',
-        '.rs', '.schema', '.sh', '.step', '.toml', '.ts', '.tsx', '.txt', '.xml',
+        '.rs', '.schema', '.sh', '.sha256', '.step', '.toml', '.ts', '.tsx', '.txt', '.xml',
         '.yaml', '.yml'
     )
     $textNames = @(

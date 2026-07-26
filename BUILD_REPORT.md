@@ -20,8 +20,8 @@ Date: 2026-07-26
 - The latest GitHub source-validation workflow for the implementation correction passed.
 - Global Stop All completed after testing, and ports `7001`, `7002`, `7101`, `7102`, `7104`, `7105`, `7106`, `7107`, `8011`, `8012`, `8791`, and `8793` were confirmed closed.
 - A clean repository-manifest audit found and repaired 33 stale root entries from the two implementation commits. The updater now hashes canonical LF text on both Windows and Linux.
-- All 32 tracked JSON files parsed, all 121 tracked Python files compiled, and all 806 entries across the root and nine component/profile manifests verified without a missing file or hash mismatch.
-- Two consecutive manifest-updater runs produced identical output. The 19-file publication set passed Git whitespace checks and a targeted secret, credential, device-serial, private-path, and vegetable-cutter-path scan.
+- All 37 publication JSON files parsed, all 121 publication Python files compiled, and all 856 entries across the root and eleven component/profile manifests verified without a missing file or hash mismatch.
+- Two consecutive manifest-updater runs produced identical output. The 32-file publication set passed Git whitespace checks and a targeted secret, credential, device-serial, private-path, and vegetable-cutter-path scan.
 
 These checks were offline software and shutdown validations. No physical arm command was submitted during the publication correction. The earlier supervised vegetable-cutting experiments exposed the transform, staging, and termination problems, but the vegetable-cutting Skill itself remains experimental, incomplete, and outside this public release.
 
@@ -31,6 +31,8 @@ These checks were offline software and shutdown validations. No physical arm com
 - The reusable reBot B601-DM STEP/OBJ sources and prepared meshes in local `config/foundation_pose` were compared with the sanitized canonical profile under `providers/foundation_pose/defaults/rebot_b601_dm`.
 - The mesh geometry and retained STEP sources match after text line-ending normalization. The public metadata intentionally replaces absolute workstation paths with portable relative paths and adds publication provenance.
 - The Base and Gripper reference atlases were visually inspected and are linked from the main README.
+- An identical sanitized copy of the complete 20-file reBot profile is published under `config/foundation_pose`, matching the Provider's configured runtime registry path and providing a directly restorable local baseline.
+- The two 20-file profiles are byte-identical (89,211,623 bytes each), and their text assets are pinned to LF so the checked manifests and restore behavior are stable across Windows and Linux Git settings.
 - API keys, active `providers.json`, `system.env`, serial-bound calibration, runtime captures, installation caches, model archives, logs, and absolute-path machine metadata remain excluded. A blank `config/api_keys.env.example` is published instead.
 
 ### Remaining validation boundary
