@@ -10,9 +10,11 @@ LB gating, the fenced Basic lease, motion inhibit, and the proven safe
 termination helper remain authoritative. No physical arm or camera test was
 performed as part of this implementation.
 
-The frozen reference is
-`.reference_baselines/pre_phase1_20260726`. Runtime source and configuration do
-not reference that directory.
+A frozen reference was initially created at
+`.reference_baselines/pre_phase1_20260726`. After the project was backed up
+externally, the operator authorized removal and the complete
+`.reference_baselines` directory was deleted on 2026-07-29. Runtime source and
+configuration never referenced that directory.
 
 ## Implemented
 

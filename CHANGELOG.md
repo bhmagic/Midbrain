@@ -23,6 +23,9 @@
 - Passed the exact stopped `469/469` publication matrix and the wider
   `578/578` local matrix, plus source parsers, Rust formatting, and Rust
   release build.
+- Removed the local pre-Phase 1 frozen reference after the operator confirmed
+  an external project backup; no runtime source or configuration referenced
+  the deleted directory.
 
 ## Cross-provider alignment and shutdown hardening (2026-07-26)
 

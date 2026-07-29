@@ -15,9 +15,11 @@ The Basic arm provider's local fenced lease, watchdog, gravity-float behavior,
 safe-home sequence, and the Integrated controller's upstream-loss handling
 remain the load-bearing safety mechanisms.
 
-The frozen reference remains
-`.reference_baselines/pre_phase1_20260726`. A source/configuration scan confirms
-that runtime code does not import, execute, or otherwise reference it.
+The earlier frozen reference at
+`.reference_baselines/pre_phase1_20260726` was removed on 2026-07-29 after the
+operator confirmed an external project backup. A source/configuration scan
+confirmed that runtime code did not import, execute, or otherwise reference
+it.
 
 ## Implemented separations
 
