@@ -71,10 +71,24 @@ Write-Host "[2/7] Checking Python component environment isolation"
 & (Join-Path $PSScriptRoot "test_python_environment_isolation.ps1")
 
 Write-Host "[3/7] Checking JSON files"
-$jsonFiles = Get-ChildItem -Path $workspace -Recurse -File -Filter "*.json" |
-    Where-Object {
-        $_.FullName -notmatch "[\\/](\.validation|target|build|\.venv|__pycache__)[\\/]"
-    }
+$jsonRelativePaths = @(
+    & git -C $workspace ls-files --cached --others --exclude-standard -- "*.json"
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to enumerate repository-controlled JSON files."
+}
+
+$activeProvidersConfig = "config/providers.json"
+if ((Test-Path (Join-Path $workspace $activeProvidersConfig)) -and
+    $jsonRelativePaths -notcontains $activeProvidersConfig) {
+    $jsonRelativePaths += $activeProvidersConfig
+}
+
+$jsonFiles = @(
+    $jsonRelativePaths |
+        Sort-Object -Unique |
+        ForEach-Object { Get-Item -LiteralPath (Join-Path $workspace $_) }
+)
 foreach ($jsonFile in $jsonFiles) {
     Get-Content -Raw $jsonFile.FullName | ConvertFrom-Json | Out-Null
 }
