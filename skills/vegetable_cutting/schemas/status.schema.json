@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain.skill.vegetable_cutting.status",
+  "type": "object",
+  "required": [
+    "skill_id",
+    "state",
+    "phase",
+    "motion_submission_enabled",
+    "motion_submitted"
+  ],
+  "properties": {
+    "skill_id": {
+      "type": "string"
+    },
+    "plan_id": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "IDLE",
+        "RUNNING",
+        "WAITING_FOR_OPERATOR",
+        "READY_FOR_OPERATOR_TAKEOVER",
+        "COMPLETED",
+        "ABORTED",
+        "FAILED"
+      ]
+    },
+    "phase": {
+      "enum": [
+        "IDLE",
+        "PREFLIGHT",
+        "WAIT_TOOL_LOAD",
+        "WAIT_WORKPIECE_LOAD",
+        "PERCEIVING",
+        "PLANNING",
+        "READY_FOR_OPERATOR_TAKEOVER",
+        "TRANSFER_TO_FIRST_CUT",
+        "WAIT_FIRST_CUT_CONFIRMATION",
+        "CUTTING",
+        "TRACKING_CHECK",
+        "WAIT_TOOL_REMOVAL",
+        "SAFE_TERMINATING",
+        "ABORTED",
+        "FAILED"
+      ]
+    },
+    "motion_submission_enabled": {
+      "type": "boolean"
+    },
+    "motion_submitted": {
+      "type": "boolean"
+    },
+    "operator_tool_loaded": {
+      "type": "boolean"
+    },
+    "operator_workpiece_loaded": {
+      "type": "boolean"
+    },
+    "operator_outside_workspace": {
+      "type": "boolean"
+    },
+    "execution": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

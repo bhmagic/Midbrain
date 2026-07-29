@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — Canonical monorepo Git workflow
+
+- Replaced publication-snapshot development with a normal branch-based monorepo workflow rooted in the existing GitHub history.
+- Added the supervised vegetable-cutting prototype as a manual-only, non-discoverable experimental Skill while excluding generated plans, runtime captures, logs, environments, and package metadata.
+- Expanded repository ignores for local orchestration state, publication copies, variant Rust targets, runtime audit data, replay payloads, and external FoundationPose/SAM2 checkouts.
+- Restored explicit Git LFS attributes for the two bundled FoundationPose checkpoint files.
+- Added vegetable-cutting compilation, tests, and wheel creation to local validation and its unit tests to hosted CI.
+- Preserved the local Windows `mycpp` compatibility implementation as reviewed source instead of leaving it only inside an untracked upstream checkout.
+
 ## 0.3.16 — Phase 5 guarded-agent checkpoint (2026-07-29)
 
 - Added formal Agent Skill discovery and large-data route-advertisement contracts. Agent selection follows descriptive Skill metadata, with explicit provider IDs retained as a fallback.

@@ -15,14 +15,15 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest numpy httpx Pillow opencv-python-headless fastapi python-dotenv
+          python -m pip install pytest numpy httpx Pillow opencv-python-headless fastapi uvicorn python-dotenv
       - name: Run Python tests
         env:
-          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:test_agent/python
+          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:skills/spatial_registration_rgbd/python:skills/vegetable_cutting/python:test_agent/python
         run: |
           python -m pytest -q \
             providers/orbbec_femto_bolt/python/tests \
             providers/local_vio/python/tests \
+            skills/vegetable_cutting/python/tests \
             test_agent/python/tests
 
   rust-build:

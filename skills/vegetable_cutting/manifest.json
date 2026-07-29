@@ -1,0 +1,124 @@
+{
+  "skill_type": "vegetable_cutting",
+  "version": "0.3.0",
+  "display_name": "Supervised Vegetable Cutting Skill",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": false,
+    "tool_name": "vegetable_cutting_legacy_local",
+    "description": "Run the current local supervised vegetable-cutting prototype for guarded development diagnostics. This legacy Skill is retained as reference evidence and is not eligible for normal automatic agent selection.",
+    "when_to_use": [
+      "A developer explicitly starts the preserved local cutting prototype for diagnostics."
+    ],
+    "when_not_to_use": [
+      "An agent requests autonomous cutting or slicing.",
+      "The workcell is outside the safeguarded development environment.",
+      "The request can be satisfied by calibration, perception, registration, or motion planning independently."
+    ],
+    "side_effects": [
+      "May command physical arm motion after its existing operator takeover gates.",
+      "May start hardware and perception providers.",
+      "Writes local plans, diagnostics, and failure captures."
+    ],
+    "safety_class": "MANUAL_ONLY",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "operator.supervision",
+      "robot.motion",
+      "camera.read"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "description": "Explicit developer request for the legacy local prototype."
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.vegetable_cutting.manual_local.v1",
+      "kind": "MANUAL_LOCAL_ONLY",
+      "entrypoint": "scripts/run_gui.ps1"
+    },
+    "disabled_reason": "Kept local while calibration, perception, registration, controller planning, audit, and authorization boundaries are extracted."
+  },
+  "entrypoints": {
+    "gui": "scripts/run_gui.ps1",
+    "stop_gui": "scripts/stop_gui.ps1",
+    "check": "scripts/check.ps1"
+  },
+  "execution_boundary": {
+    "motion_submission": "ENABLED_AFTER_SESSION_CALIBRATION_AND_OPERATOR_TAKEOVER",
+    "integrated_provider_access": "OPERATOR_SUPERVISED_CONTROL",
+    "provider_lifecycle_start_allowed": true,
+    "motion_engage_allowed": true,
+    "motion_commit_allowed": true,
+    "gripper_command_allowed": false,
+    "gravity_float_command_allowed": true
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "robot_arm.transforms.local",
+    "robot_arm.joint_state",
+    "robot.motion.arm.integrated.mit.one_shot",
+    "robot.motion.arm.integrated.nonphysical_preview",
+    "robot.motion.arm.integrated.gravity_float"
+  ],
+  "required_inputs": [
+    "valid_stationary_world_arm_alignment",
+    "operator_tool_loaded_confirmation",
+    "operator_workpiece_loaded_confirmation"
+  ],
+  "optional_capabilities": [
+    "localization.vio.local_pose",
+    "perception.vision_language",
+    "robot.motion.arm.integrated.plan.transit_path.shadow"
+  ],
+  "published_streams": [
+    "skills.vegetable_cutting.status",
+    "skills.vegetable_cutting.plan"
+  ],
+  "provider_residency": {
+    "camera": "leave_running",
+    "local_vio": "stop_after_fixed_camera_transform_lock",
+    "basic_arm": "leave_running",
+    "integrated_arm": "leave_running"
+  },
+  "decision_policy": {
+    "vlm_initial_localization": true,
+    "vlm_after_each_cut": false,
+    "fast_rgbd_tracking_after_each_cut": false,
+    "vlm_requery_only_on_tracking_degradation": false,
+    "tool_registration_mode": "FIXED_HARD_MOUNT",
+    "fixed_controlled_frame_offset_xyz_m": [0.18, 0.0, -0.02],
+    "payload_mass_kg": 0.07,
+    "vlm_blade_registration_enabled": false,
+    "blade_registration_repeat_consistency_required": false,
+    "blade_registration_required_observations": 0,
+    "execution_sequence_preview_before_each_physical_commit": true,
+    "first_cut_vlm_alignment_gate_count": 1,
+    "first_cut_operator_requested_vlm_rounds": "UNBOUNDED",
+    "first_cut_alignment_output": "BOUNDED_ARM_BASE_6D_OFFSET_WITH_HUMAN_FINAL_AUTHORITY",
+    "first_cut_alignment_correction_motion_usable_after_takeover": true,
+    "fixed_camera_transform_policy": "LOCK_FULL_ARM_FROM_CAMERA_POSE_THEN_STOP_LOCAL_VIO",
+    "later_cut_default_perception": "NO_COORDINATE_RECHECK_AFTER_HUMAN_APPROVAL",
+    "motion_parameters_are_model_selectable": false,
+    "safety_gates_are_model_overridable": false,
+    "controller_path_planning": {
+      "phase": "SHADOW_COMPARISON",
+      "owner": "robot_arm.primary.integrated",
+      "transport": "DIRECT_HTTP",
+      "required": false,
+      "physical_motion_authorized": false,
+      "legacy_skill_interpolation_still_executes": true
+    }
+  }
+}

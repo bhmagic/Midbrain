@@ -8,3 +8,7 @@ config/foundation_pose/**/*.txt text eol=lf
 config/foundation_pose/**/*.obj text eol=lf -diff
 config/foundation_pose/**/*.step text eol=lf -diff
 config/foundation_pose/**/*.png -text
+
+# Keep FoundationPose checkpoints outside normal Git object history.
+providers/foundation_pose/third_party/nvlabs_foundationpose_weights/weights/2023-10-28-18-33-37/model_best.pth filter=lfs diff=lfs merge=lfs -text
+providers/foundation_pose/third_party/nvlabs_foundationpose_weights/weights/2024-01-11-20-02-45/model_best.pth filter=lfs diff=lfs merge=lfs -text
