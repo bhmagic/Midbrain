@@ -12,6 +12,9 @@
   `.venv` ownership for every Python Provider, Skill, and the Test
   Agent/OpenAI Agents SDK; added isolated setup scripts and a validation guard
   against shared-interpreter regressions.
+- Made checksum-manifest generation use Git-controlled inputs so ignored
+  virtual environments and external FoundationPose/SAM2 checkouts cannot enter
+  release manifests after local setup.
 
 ## 0.3.16 — Phase 5 guarded-agent checkpoint (2026-07-29)
 
