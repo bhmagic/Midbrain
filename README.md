@@ -23,7 +23,7 @@ The latest system-housecleaning and guarded physical validation are recorded in 
 
 Cartesian direction understanding remains an open safety and correctness problem. Natural-language directions such as "up", "front", and axis names must not be assumed to map directly across camera, world, arm-base, controlled-frame, tool, and object frames. The current workcell's observed mapping is installation-specific. See [Cartesian Axis and Alignment Open Issue](docs/reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
 
-The vegetable-cutting experiment that motivated part of this validation remains experimental local workspace code and is not published as a deployable Skill. Slice cutting is deferred until the systemic work is stable.
+The vegetable-cutting experiment that motivated part of this validation is retained in the monorepo as a manual-only, non-discoverable experimental Skill. It does not grant autonomous motion authority and is not a production deployment.
 
 ---
 
@@ -215,6 +215,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
+| Supervised Vegetable Cutting Skill | `skills/vegetable_cutting`                                           | Manual-only, non-discoverable experimental cutting workflow with explicit operator takeover, reviewed motion gates, and external hard-stop requirements |
 | Test Agent                 | `test_agent`                                                               | Mock Agent and initialization Skill used to exercise the complete platform                                 |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Live world-frame point cloud, camera pose, reset controls, and estimator diagnostics                       |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |

@@ -22,6 +22,19 @@ config/calibration/
 # Validation output
 .validation/
 
+# Workspace-local orchestration, staging, and recovery data
+/.agents/
+/.codex/
+/.artifact_work/
+/.github_publication_*/
+/.github_upload_*/
+/.midbrain_docs/
+/.publication_staging/
+/archival/
+/backups/
+/debug/
+/outputs/
+
 # Python
 .venv/
 **/.venv/
@@ -40,6 +53,8 @@ dist/
 # Rust
 platform_core/target/
 **/target/
+**/target_*/
+**/target-*/
 
 # Native/CMake and proprietary runtime output
 providers/orbbec_femto_bolt/native_host/build/
@@ -60,6 +75,9 @@ cmake_install.cmake
 !**/logs/.gitkeep
 **/run/*
 !**/run/.gitkeep
+**/runtime_logs/
+skills/vegetable_cutting/config/plans/
+test_agent/replay_bundles/
 *.log
 *.pid
 pids.json
@@ -79,6 +97,10 @@ desktop.ini
 *.bak
 *.tmp
 *~
+
+# External source checkouts installed into the local runtime
+providers/foundation_pose/nvlabs/FoundationPose/
+providers/foundation_pose/sam2/
 
 # Sanitized FoundationPose runtime/restore profile
 !config/foundation_pose/

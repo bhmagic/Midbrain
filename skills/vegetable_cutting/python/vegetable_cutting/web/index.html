@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vegetable Cutting Skill</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">MIDBRAIN · FINITE SKILL · SUPERVISED EXECUTION</p>
+      <h1>Vegetable Cutting Skill</h1>
+      <p class="subtitle">Two-point RGB-D planning, fixed hard-mount MIT execution, and human first-cut authority.</p>
+    </div>
+    <div class="motion-lock">
+      <span class="lock-dot"></span>
+      <div>
+        <strong>MOTION GATED</strong>
+        <small>Fixed tool calibration and operator takeover required</small>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-grid">
+      <article class="panel status-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">CURRENT STATE</p>
+            <h2 id="phase">Loading…</h2>
+          </div>
+          <span id="stateBadge" class="badge">IDLE</span>
+        </div>
+        <p id="message" class="message">Connecting to the Skill.</p>
+        <p id="persistentError" class="persistent-error" hidden></p>
+        <div class="safety-strip">
+          <span>Motion API</span><strong>Takeover gated</strong>
+          <span>Integrated access</span><strong>Supervised control</strong>
+          <span>Plan status</span><strong id="planStatus">Not generated</strong>
+        </div>
+      </article>
+
+      <article class="panel readiness-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">RUNTIME</p>
+            <h2>Provider readiness</h2>
+          </div>
+          <div class="panel-title-actions">
+            <button id="bootstrapButton" class="button button-secondary">Start / refresh</button>
+            <button id="resetFailedSessionButton" class="button button-secondary">Reset failed session</button>
+            <button id="restartGuiButton" class="button button-secondary">Reload GUI</button>
+          </div>
+        </div>
+        <div id="readinessGrid" class="readiness-grid"></div>
+        <div class="inline-actions">
+          <button id="captureButton" class="button button-secondary">Capture camera</button>
+          <button id="alignmentButton" class="button button-secondary">Start / open alignment</button>
+          <a class="text-link" href="http://127.0.0.1:8793" target="_blank" rel="noreferrer">Open Integrated operator GUI ↗</a>
+        </div>
+      </article>
+    </section>
+
+    <section class="workflow-grid">
+      <article class="panel controls-panel">
+        <p class="eyebrow">OPERATOR WORKFLOW</p>
+        <h2>Plan and execute</h2>
+        <div class="parameter-grid">
+          <label>Slice spacing <span>mm</span><input id="spacing" type="number" value="15" min="1" max="200" step="1"></label>
+          <label>Blade yaw <span>deg</span><input id="yaw" type="number" value="0" min="-180" max="180" step="1"></label>
+          <label>Maximum cuts <span>count</span><input id="maxCuts" type="number" value="40" min="1" max="100" step="1"></label>
+        </div>
+        <ol class="steps">
+          <li><button id="startButton" class="step-button"><span>1</span><b>Start session</b><small>Verify alignment and controller readiness</small></button></li>
+          <li>
+            <label class="withdraw-check"><input id="toolAttached" type="checkbox"> I confirm the knife is physically attached to the gripper or tool mount.</label>
+            <button id="toolButton" class="step-button"><span>2</span><b>Confirm knife attached</b><small>Human confirmation; no gripper-latch telemetry required</small></button>
+          </li>
+          <li>
+            <label class="withdraw-check"><input id="withdrawn" type="checkbox"> I confirm the operator is outside the robot workspace.</label>
+            <button id="workpieceButton" class="step-button"><span>3</span><b>Confirm vegetable placed</b><small>Unlock perception only after withdrawal</small></button>
+          </li>
+          <li><button id="planButton" class="step-button step-primary"><span>4</span><b>Run VLM and plan</b><small>One initial call, then metric RGB-D geometry</small></button></li>
+          <li>
+            <label class="withdraw-check"><input id="takeoverConfirmed" type="checkbox"> I am present, the workspace is clear, and I authorize this physical run.</label>
+            <button id="executeButton" class="step-button step-primary"><span>5</span><b>Move to first-cut review</b><small>Bounded MIT approach; no cutting before human review</small></button>
+          </li>
+          <li>
+            <div class="button-row">
+              <button id="firstCutYesButton" class="button button-secondary">First cut: YES</button>
+              <button id="firstCutReadjustButton" class="button button-secondary">NO — ask VLM to readjust</button>
+              <button id="firstCutStopButton" class="button button-danger">Full stop</button>
+            </div>
+          </li>
+          <li><button id="toolRemovedButton" class="step-button"><span>6</span><b>Knife removed — safe home / stop</b><small>Human confirmation after the knife is physically detached and removed</small></button></li>
+        </ol>
+        <div class="button-row">
+          <button id="abortButton" class="button button-danger">STOP AND REQUEST FLOAT</button>
+          <span>This cancels the sequence and requests Integrated gravity-float.</span>
+        </div>
+      </article>
+
+      <article class="panel vision-panel">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">VISUAL EVIDENCE</p>
+            <h2>Camera and cut overlay</h2>
+          </div>
+          <div class="view-switch">
+            <button data-view="overlay" class="active">Overlay</button>
+            <button data-view="rgb">RGB</button>
+            <button data-view="depth">Depth</button>
+          </div>
+        </div>
+        <div class="image-stage">
+          <img id="visionImage" alt="Camera evidence will appear after planning">
+          <div id="imageEmpty" class="image-empty">
+            <strong>No visual plan yet</strong>
+            <span>Complete the operator checkpoints, then run perception.</span>
+          </div>
+        </div>
+        <div class="legend">
+          <span><i class="board"></i>Board</span>
+          <span><i class="vegetable"></i>Vegetable</span>
+          <span><i class="cut"></i>Cut paths</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="lower-grid">
+      <article class="panel">
+        <p class="eyebrow">PLAN SUMMARY</p>
+        <h2>Operator handoff</h2>
+        <dl id="planSummary" class="data-list">
+          <div><dt>Plan</dt><dd>Not generated</dd></div>
+          <div><dt>Motion submitted</dt><dd class="safe">False</dd></div>
+        </dl>
+      </article>
+      <article class="panel">
+        <p class="eyebrow">BETWEEN-CUT POLICY</p>
+        <h2>Human-approved sequence</h2>
+        <dl id="trackingSummary" class="data-list">
+          <div><dt>VLM after each cut</dt><dd class="safe">False</dd></div>
+          <div><dt>Coordinate recheck after approval</dt><dd class="safe">False</dd></div>
+          <div><dt>Sequence authority</dt><dd>Human-approved first-cut placement</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel sequence-panel">
+      <div class="panel-title">
+        <div>
+          <p class="eyebrow">EXECUTION SEQUENCE</p>
+          <h2>Reviewed physical stages</h2>
+        </div>
+        <a class="text-link" href="/api/plan" target="_blank" rel="noreferrer">Open complete plan JSON ↗</a>
+      </div>
+      <p class="sequence-note">Rows remain non-physical until the fixed hard-mount calibration exists and the operator explicitly authorizes takeover.</p>
+      <div id="executionSequence" class="sequence-list">
+        <div class="sequence-empty">Generate a plan to inspect the proposed stages.</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

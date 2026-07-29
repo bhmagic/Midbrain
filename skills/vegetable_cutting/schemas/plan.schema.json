@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain.skill.vegetable_cutting.plan",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "skill_id",
+    "plan_id",
+    "plan_revision",
+    "dry_run",
+    "operator_takeover_required",
+    "motion_submission_enabled",
+    "motion_submitted",
+    "execution_ready",
+    "alignment",
+    "camera",
+    "board",
+    "vegetable",
+    "blade_observation",
+    "tool_calibration",
+    "planning_parameters",
+    "cuts",
+    "handoff_profile"
+  ],
+  "properties": {
+    "schema": {
+      "const": "midbrain.skill.vegetable_cutting.plan"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "skill_id": {
+      "type": "string"
+    },
+    "plan_id": {
+      "type": "string"
+    },
+    "plan_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dry_run": {
+      "const": true
+    },
+    "operator_takeover_required": {
+      "const": true
+    },
+    "motion_submission_enabled": {
+      "const": false
+    },
+    "motion_submitted": {
+      "const": false
+    },
+    "execution_ready": {
+      "const": false
+    },
+    "execution_blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "alignment": {
+      "type": "object"
+    },
+    "camera": {
+      "type": "object"
+    },
+    "board": {
+      "type": "object"
+    },
+    "vegetable": {
+      "type": "object"
+    },
+    "blade_observation": {
+      "type": "object"
+    },
+    "blade_registration_candidate": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "CANDIDATE_REVIEW_REQUIRED",
+            "REJECTED_OBSERVATION",
+            "UNAVAILABLE"
+          ]
+        },
+        "motion_usable": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "blade_registration_consistency": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "MORE_OBSERVATIONS_REQUIRED",
+            "OBSERVATION_WINDOW_REJECTED",
+            "INCONSISTENT_OBSERVATIONS",
+            "SINGLE_OBSERVATION_REVIEW_REQUIRED",
+            "CONSISTENT_REVIEW_REQUIRED"
+          ]
+        },
+        "motion_usable": {
+          "const": false
+        },
+        "operator_review_required": {
+          "const": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "first_cut_alignment_contract": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "HUMAN_REVIEW_FIRST_VLM_ONLY_AFTER_REJECTION"
+        },
+        "motion_usable": {
+          "const": false
+        },
+        "motion_submission_enabled": {
+          "const": false
+        },
+        "correction_semantics": {
+          "const": "BOUNDED_ARM_BASE_6D_OFFSET"
+        }
+      },
+      "additionalProperties": true
+    },
+    "execution_preview": {
+      "type": "object",
+      "required": [
+        "status",
+        "motion_submission_enabled",
+        "motion_submitted",
+        "pose_semantics",
+        "approach_board_offset_mm",
+        "segments",
+        "completion_protocol",
+        "abort_protocol"
+      ],
+      "properties": {
+        "status": {
+          "const": "REVIEW_REQUIRED_BEFORE_SUBMISSION"
+        },
+        "motion_submission_enabled": {
+          "const": false
+        },
+        "motion_submitted": {
+          "const": false
+        },
+        "motion_submission_available_after_takeover": {
+          "const": true
+        },
+        "pose_semantics": {
+          "const": "DESIRED_BLADE_FRAME_REQUIRES_TOOL_CALIBRATION"
+        },
+        "approach_board_offset_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "action",
+              "sequence",
+              "motion_submitted"
+            ],
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "motion_submitted": {
+                "const": false
+              }
+            },
+            "additionalProperties": true
+          },
+          "minItems": 1
+        },
+        "completion_protocol": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "abort_protocol": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    },
+    "tool_calibration": {
+      "type": "object"
+    },
+    "planning_parameters": {
+      "type": "object"
+    },
+    "cuts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "entry_arm_base_m",
+          "exit_arm_base_m",
+          "blade_yaw_deg",
+          "execution_status"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entry_arm_base_m": {
+            "$ref": "#/$defs/vector3"
+          },
+          "exit_arm_base_m": {
+            "$ref": "#/$defs/vector3"
+          },
+          "center_arm_base_m": {
+            "$ref": "#/$defs/vector3"
+          },
+          "blade_yaw_deg": {
+            "type": "number"
+          },
+          "execution_status": {
+            "const": "PLANNED_NOT_SUBMITTED"
+          }
+        },
+        "additionalProperties": true
+      },
+      "minItems": 1
+    },
+    "handoff_profile": {
+      "type": "object",
+      "required": [
+        "dry_run_required",
+        "motion_backend",
+        "operator_takeover_required",
+        "informational_only"
+      ],
+      "properties": {
+        "dry_run_required": {
+          "const": true
+        },
+        "motion_backend": {
+          "const": "PRESS_MIT"
+        },
+        "operator_takeover_required": {
+          "const": true
+        },
+        "informational_only": {
+          "const": false
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  },
+  "additionalProperties": true
+}

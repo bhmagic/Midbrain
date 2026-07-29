@@ -1,0 +1,173 @@
+{
+  "schema": "midbrain.skill.vegetable_cutting.config",
+  "schema_version": 1,
+  "providers": {
+    "camera": "camera.femto_bolt",
+    "local_vio": "localization.local_vio",
+    "basic_arm": "robot_arm.rebot_dm",
+    "integrated_arm": "robot_arm.primary.integrated"
+  },
+  "provider_startup": {
+    "start_camera": true,
+    "start_local_vio": true,
+    "start_basic_arm": true,
+    "start_integrated_arm": true,
+    "timeout_s": 75.0
+  },
+  "frames": {
+    "camera": "femto_bolt_color_optical_frame",
+    "arm_base": "rebot_arm_base",
+    "arm_tool": "rebot_arm_tool"
+  },
+  "alignment": {
+    "result_stream": "skills.stationary_world_arm_alignment.result",
+    "maximum_age_s": 86400.0,
+    "require_valid": true,
+    "require_reviewed_motion_usable": true,
+    "require_same_vio_epoch": true,
+    "require_same_camera_calibration_revision": true,
+    "transform_max_extrapolation_us": 500000,
+    "fixed_camera": true,
+    "stop_local_vio_after_transform_lock": true
+  },
+  "planning": {
+    "slice_spacing_mm": 15.0,
+    "vegetable_end_margin_mm": 10.0,
+    "board_entry_exit_margin_mm": 5.0,
+    "minimum_cut_count": 1,
+    "maximum_cut_count": 40,
+    "cut_visual_half_span_mm": 50.0,
+    "board_plane_sample_stride_px": 6,
+    "board_plane_minimum_points": 300,
+    "board_plane_maximum_rmse_mm": 4.0,
+    "minimum_valid_board_depth_fraction": 0.65,
+    "minimum_board_image_margin_px": 8,
+    "vegetable_depth_refinement": {
+      "minimum_height_mm": 5.0,
+      "maximum_height_mm": 150.0,
+      "minimum_component_pixels": 250,
+      "minimum_vlm_overlap_pixels": 40
+    }
+  },
+  "tracking": {
+    "enabled": true,
+    "vlm_after_each_cut": false,
+    "minimum_mask_iou": 0.55,
+    "maximum_centroid_shift_mm": 4.0,
+    "maximum_axis_change_deg": 4.0,
+    "minimum_confidence": 0.7,
+    "minimum_valid_depth_fraction": 0.65,
+    "maximum_vlm_requeries": 2,
+    "lab_distance_threshold": 28.0,
+    "search_padding_fraction": 0.2
+  },
+  "vlm": {
+    "initial_attempts": 2,
+    "minimum_board_confidence": 0.75,
+    "minimum_vegetable_confidence": 0.75,
+    "minimum_blade_confidence": 0.7
+  },
+  "handoff": {
+    "dry_run_required": true,
+    "motion_backend": "PRESS_MIT",
+    "interaction_mode": "ONE_SHOT",
+    "ik_mode": "POSE_6DOF",
+    "requested_transfer_speed_m_s": 0.4,
+    "transfer_speed_validated": false,
+    "minimum_approach_board_offset_mm": 60.0,
+    "first_cut_review_board_offset_mm": 150.0,
+    "approach_clearance_above_vegetable_mm": 20.0,
+    "mit_kp_multiplier": 10.0,
+    "cut_duration_s": 3.0,
+    "cut_target_board_offset_mm": 0.0,
+    "allow_below_board_target": false,
+    "first_cut_human_confirmation_required": true,
+    "first_cut_alignment": {
+      "minimum_vlm_confidence": 0.5,
+      "no_correction_tolerance_mm": 3.0,
+      "maximum_translation_mm": 500.0,
+      "no_correction_rotation_tolerance_deg": 1.0,
+      "maximum_rotation_deg": 20.0,
+      "operator_confirmation_required": true
+    },
+    "operator_takeover_required": true
+  },
+  "tool": {
+    "registration_mode": "FIXED_HARD_MOUNT",
+    "vlm_blade_registration_optional": true,
+    "fixed_controlled_frame_offset_xyz_m": [0.18, 0.0, -0.02],
+    "fixed_controlled_frame_offset_rpy_rad": [0.0, 0.0, 0.0],
+    "calibration_id": null,
+    "tool_to_blade_translation_m": null,
+    "tool_to_blade_rotation_xyzw": null,
+    "blade_tip_from_controlled_frame_m": null,
+    "payload_mass_kg": 0.07,
+    "payload_com_tool_m": [0.0, 0.0, 0.0],
+    "observation_registration": {
+      "acting_point_from_tip_mm": 50.0,
+      "minimum_edge_length_mm": 80.0,
+      "maximum_edge_length_mm": 350.0,
+      "minimum_remaining_edge_after_acting_point_mm": 10.0,
+      "minimum_blade_width_mm": 3.0,
+      "maximum_blade_width_mm": 90.0,
+      "maximum_local_depth_range_mm": 80.0,
+      "allow_edge_interpolated_spine_depth": true,
+      "spine_depth_interpolation_trigger_mm": 25.0,
+      "maximum_spine_depth_correction_mm": 350.0,
+      "allow_reflective_blade_kinematic_fallback": true,
+      "maximum_ray_to_tool_axis_miss_mm": 80.0,
+      "maximum_lateral_offset_magnitude_mm": 500.0,
+      "maximum_lateral_offset_disagreement_mm": 500.0,
+      "minimum_handle_anchor_from_junction_px": 4.0,
+      "maximum_handle_anchor_from_junction_px": 160.0,
+      "maximum_tool_to_acting_point_m": 0.8,
+      "tool_forward_axis_xyz": [1.0, 0.0, 0.0],
+      "minimum_tool_forward_axis_cosine": 0.25,
+      "consistency": {
+        "required_observations": 1,
+        "maximum_acting_point_deviation_mm": 8.0,
+        "maximum_edge_length_range_mm": 15.0,
+        "maximum_blade_width_range_mm": 12.0,
+        "maximum_orientation_deviation_deg": 8.0
+      }
+    }
+  },
+  "execution": {
+    "enabled": true,
+    "command_stream": "robot_arm.primary.integrated.command",
+    "command_schema": "physical_agent.arm_integrated_command",
+    "command_freshness_ms": 500,
+    "stage_accept_timeout_s": 3.0,
+    "motion_start_timeout_s": 4.0,
+    "motion_completion_margin_s": 12.0,
+    "poll_interval_s": 0.05,
+    "maximum_translation_per_commit_m": 0.05,
+    "maximum_orientation_per_commit_deg": 15.0,
+    "nearby_review_reapproach_m": 0.05,
+    "initial_clearance_lift_m": 0.15,
+    "minimum_clearance_above_approach_m": 0.10,
+    "maximum_clearance_z_m": 0.65,
+    "minimum_transfer_duration_s": 0.75,
+    "transfer_kp_multiplier": 1.5,
+    "retract_kp_multiplier": 10.0,
+    "post_cut_retract_m": 0.1,
+    "require_preview_every_commit": true,
+    "controller_path_planning_shadow": {
+      "enabled": true,
+      "required": false,
+      "transport": "DIRECT_HTTP",
+      "physical_motion_authorized": false
+    },
+    "first_cut_maximum_translation_per_iteration_mm": 50.0,
+    "first_cut_minimum_consecutive_direction_cosine": -0.25,
+    "first_cut_minimum_pixel_servo_improvement_mm": 2.0,
+    "first_cut_maximum_automatic_corrections": 4,
+    "first_cut_maximum_vlm_attempts": 5,
+    "fast_revalidate_between_cuts": false
+  },
+  "gui": {
+    "host": "127.0.0.1",
+    "port": 8012,
+    "alignment_url": "http://127.0.0.1:8011"
+  }
+}

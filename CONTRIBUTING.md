@@ -30,7 +30,9 @@ Never commit:
 - `config/system.env` or `config/api_keys.env`
 - device serial numbers or serial-bound calibration
 - captures, point clouds, logs, PID files, or crash dumps
+- generated Skill plans, failure captures, runtime audit cursors, or replay payloads
 - virtual environments, package build directories, Rust `target`, or CMake output
+- external FoundationPose or SAM2 source checkouts
 - Orbbec SDK binaries or other third-party proprietary runtime files
 
 ## Contracts

@@ -5,7 +5,7 @@
 From Developer PowerShell:
 
 ```powershell
-cd C:\Projects\testing_physical_ai
+cd C:\Projects\Midbrain
 .\scripts\validate.ps1
 ```
 
@@ -29,21 +29,39 @@ git diff --cached --stat
 
 Confirm no secrets, local configuration, calibration, serial numbers, SDK binaries, builds, virtual environments, logs, captures, PID files, or unrelated providers are staged.
 
-## Upload
+## Branch workflow
 
 ```powershell
-.\scripts\publish_github.ps1 `
-  -RepositoryUrl "https://github.com/bhmagic/Midbrain.git" `
-  -CommitMessage "Publish RGB-D physical AI platform baseline"
+git switch main
+git pull --ff-only
+git switch -c feature/<short-description>
 ```
 
-The script initializes Git if required, validates by default, creates or updates `origin`, stages files, runs staged-file checks, commits when needed, renames the branch to `main`, and pushes.
+Stage only reviewed files. Do not use `git add --all` until ignored and untracked
+content has been inspected.
 
-Authentication is not embedded. Use Git Credential Manager or authenticate the GitHub CLI before running the script.
+```powershell
+git status --short --ignored
+git add <reviewed-paths>
+git diff --cached --check
+git diff --cached --stat
+git commit -m "<area>: <outcome>"
+git push -u origin HEAD
+```
 
-## Empty remote behavior
+Open a pull request and merge only after required validation succeeds. `main` is
+the accepted baseline and must not be force-pushed.
 
-The target repository was empty at the time of cleanup. The first push therefore creates the `main` branch. If content is added to the remote independently before upload, fetch and reconcile it instead of forcing a push.
+The historical `scripts/publish_github.ps1` helper exists only for the original
+one-time publication path. It is not the normal development or release workflow.
+Authentication is not embedded; use Git Credential Manager or GitHub CLI.
+
+## Large assets
+
+- Keep required FoundationPose checkpoints in Git LFS using the exact tracked paths.
+- Put installers, release bundles, compiled binaries, and validation reports in a GitHub Release.
+- Keep captures, point clouds, generated plans, logs, and replay payloads outside Git.
+- Commit checksums, provenance, licenses, and download instructions for externally stored artifacts.
 
 ## Release checklist
 
