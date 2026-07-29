@@ -67,6 +67,78 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("trajectory.preview_sample_count must be at least 3")
     if int(config["trajectory"].get("arrival_stable_samples", 10)) < 2:
         raise ValueError("trajectory.arrival_stable_samples must be at least 2")
+    if int(
+        config["trajectory"].get(
+            "intermediate_arrival_stable_samples",
+            2,
+        )
+    ) < 1:
+        raise ValueError(
+            "trajectory.intermediate_arrival_stable_samples must be "
+            "at least 1"
+        )
+    stage_timeout_multiplier = float(
+        config["trajectory"].get(
+            "authorized_stage_timeout_multiplier",
+            4.0,
+        )
+    )
+    stage_timeout_min_s = float(
+        config["trajectory"].get(
+            "authorized_stage_timeout_min_s",
+            3.0,
+        )
+    )
+    stage_timeout_max_s = float(
+        config["trajectory"].get(
+            "authorized_stage_timeout_max_s",
+            8.0,
+        )
+    )
+    if stage_timeout_multiplier < 1.0:
+        raise ValueError(
+            "trajectory.authorized_stage_timeout_multiplier must be "
+            "at least 1"
+        )
+    if (
+        stage_timeout_min_s <= 0.0
+        or stage_timeout_max_s < stage_timeout_min_s
+    ):
+        raise ValueError(
+            "trajectory authorized stage timeout bounds are invalid"
+        )
+    stage_stall_timeout_s = float(
+        config["trajectory"].get(
+            "authorized_stage_stall_timeout_s",
+            2.5,
+        )
+    )
+    if (
+        stage_stall_timeout_s <= 0.0
+        or stage_stall_timeout_s > stage_timeout_max_s
+    ):
+        raise ValueError(
+            "trajectory.authorized_stage_stall_timeout_s must be "
+            "positive and no greater than the maximum stage timeout"
+        )
+    if float(
+        config["trajectory"].get(
+            "authorized_stage_progress_epsilon_rad",
+            0.002,
+        )
+    ) <= 0.0:
+        raise ValueError(
+            "trajectory.authorized_stage_progress_epsilon_rad must be "
+            "positive"
+        )
+    if float(config["trajectory"]["arrival_cartesian_position_tolerance_m"]) <= 0.0:
+        raise ValueError(
+            "trajectory.arrival_cartesian_position_tolerance_m must be positive"
+        )
+    if float(config["trajectory"]["arrival_cartesian_orientation_tolerance_rad"]) <= 0.0:
+        raise ValueError(
+            "trajectory.arrival_cartesian_orientation_tolerance_rad must be positive"
+        )
     if not 0.0 <= float(config["teleop"]["deadzone"]) < 1.0:
         raise ValueError("teleop.deadzone must be in [0, 1)")
     if float(config["teleop"]["translation_rate_m_s"]) <= 0.0:
@@ -141,11 +213,62 @@ def validate_controller_config(config: dict[str, Any]) -> None:
     planning = config["planning"]
     if int(planning["cartesian_waypoint_count"]) < 2:
         raise ValueError("planning.cartesian_waypoint_count must be at least 2")
+    if int(planning["maximum_cartesian_waypoints_per_leg"]) < int(
+        planning["cartesian_waypoint_count"]
+    ):
+        raise ValueError(
+            "planning.maximum_cartesian_waypoints_per_leg must be at least "
+            "planning.cartesian_waypoint_count"
+        )
     if float(planning["minimum_jacobian_sigma"]) <= 0.0 or float(planning["maximum_waypoint_joint_step_rad"]) <= 0.0:
         raise ValueError("planning singularity and continuity thresholds must be positive")
+    if not bool(planning["transit_shadow_enabled"]):
+        raise ValueError("planning.transit_shadow_enabled must remain true in Phase 2")
+    if float(planning["transit_clearance_margin_m"]) <= 0.0:
+        raise ValueError("planning.transit_clearance_margin_m must be positive")
+    if float(planning["singularity_escape_lateral_m"]) <= 0.0:
+        raise ValueError("planning.singularity_escape_lateral_m must be positive")
+    if not 0.0 < float(planning["cartesian_speed_min_m_s"]) <= float(
+        planning["cartesian_speed_max_m_s"]
+    ):
+        raise ValueError("planning Cartesian speed limits are invalid")
     endpoint_delta = planning["maximum_endpoint_joint_delta_rad"]
     if not isinstance(endpoint_delta, list) or len(endpoint_delta) != 6 or any(float(value) <= 0.0 for value in endpoint_delta):
         raise ValueError("planning.maximum_endpoint_joint_delta_rad must contain six positive values")
+    transit_endpoint_delta = planning[
+        "maximum_transit_endpoint_joint_delta_rad"
+    ]
+    if (
+        not isinstance(transit_endpoint_delta, list)
+        or len(transit_endpoint_delta) != 6
+        or any(float(value) <= 0.0 for value in transit_endpoint_delta)
+    ):
+        raise ValueError(
+            "planning.maximum_transit_endpoint_joint_delta_rad must contain "
+            "six positive values"
+        )
+    if float(planning["maximum_transit_total_joint_travel_rad"]) <= 0.0:
+        raise ValueError(
+            "planning.maximum_transit_total_joint_travel_rad must be positive"
+        )
+    if not 0.0 < float(
+        planning["maximum_transit_joint_velocity_rad_s"]
+    ) <= 0.25:
+        raise ValueError(
+            "planning.maximum_transit_joint_velocity_rad_s must be in (0, 0.25]"
+        )
+    if float(planning["maximum_transit_start_joint_drift_rad"]) <= 0.0:
+        raise ValueError(
+            "planning.maximum_transit_start_joint_drift_rad must be positive"
+        )
+    if float(planning["maximum_transit_duration_s"]) <= 0.0:
+        raise ValueError(
+            "planning.maximum_transit_duration_s must be positive"
+        )
+    if not 1000 <= int(planning["transit_preview_ttl_ms"]) <= 30000:
+        raise ValueError(
+            "planning.transit_preview_ttl_ms must be in [1000, 30000]"
+        )
     fabric_input = config["fabric_input"]
     if not str(fabric_input["stream"]).strip():
         raise ValueError("fabric_input.stream must be non-empty")
@@ -160,6 +283,25 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("scene_input stream and schema must be non-empty")
     if int(scene_input["poll_ms"]) < 20 or int(scene_input["maximum_spheres"]) <= 0:
         raise ValueError("scene_input polling and sphere limits are invalid")
+    control_audit = config["control_audit"]
+    if str(control_audit["mode"]) not in {"SHADOW_BEST_EFFORT", "STRICT_LOCAL"}:
+        raise ValueError("control_audit.mode is unsupported")
+    for key in ("fabric_stream", "path", "cursor_path"):
+        if not str(control_audit[key]).strip():
+            raise ValueError(f"control_audit.{key} must be non-empty")
+    if int(control_audit["maximum_pending"]) < 64:
+        raise ValueError("control_audit.maximum_pending must be at least 64")
+    if int(control_audit["maximum_replay"]) < 0:
+        raise ValueError("control_audit.maximum_replay must be non-negative")
+    manager_authority = config["manager_authority"]
+    if str(manager_authority["mode"]) != "SHADOW_OBSERVE":
+        raise ValueError(
+            "manager_authority.mode must remain SHADOW_OBSERVE during Phase 2 evaluation"
+        )
+    if not str(manager_authority["resource_id"]).strip():
+        raise ValueError("manager_authority.resource_id must be non-empty")
+    if int(manager_authority["poll_ms"]) < 100:
+        raise ValueError("manager_authority.poll_ms must be at least 100")
 
 
 def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRepairResult:
@@ -179,7 +321,7 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
         if key in active:
             preserved[key] = active[key]
     if active.get("schema") == defaults.get("schema"):
-        for key in ("trajectory", "runtime", "runtime_limits", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "fabric_input", "scene_input"):
+        for key in ("trajectory", "runtime", "runtime_limits", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "manager_authority", "control_audit", "fabric_input", "scene_input"):
             if isinstance(active.get(key), dict):
                 preserved[key] = active[key]
     if isinstance(active.get("platform"), dict):

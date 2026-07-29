@@ -13,6 +13,9 @@
 - Per-frame SDK metadata attached to BufferRefs when Windows registration and the stream expose it.
 - Host-domain global timestamps when device/firmware support them.
 - Provider RGB-D bundles and Fabric timestamp-nearest lookup.
+- One atomic `camera.rgbd.data_routes` observation containing a preferred
+  flexible-grid generic shared-memory route and the direct Orbbec
+  compatibility fallback.
 - Capability-specific readiness and operator-controlled HOT/WARM/stop lifecycle.
 - Windows named shared memory v2 with generation-validated BufferRefs.
 

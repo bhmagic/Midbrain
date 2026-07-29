@@ -40,7 +40,12 @@ The public mode is `vlm_gripper_only`. It requires a valid prior alignment, the 
 
 ## Upstream measurement labels
 
-Result schema version 2 makes the three concrete modes discoverable through the manifest and repeats the selected source contract in every result. VLM-derived gripper evidence is labeled `VLM_RGBD_BEAK` with semantic point `FOREMOST_BEAK_MEAN`. FoundationPose-derived evidence is labeled `FOUNDATIONPOSE_GRIPPER_POSE` with semantic point `GRIPPER_MODEL_ORIGIN`.
+Result schema version 3 makes the three concrete modes discoverable through
+the manifest, repeats the selected source contract in every result, and embeds
+an expiring calibration candidate that is not motion-usable before review.
+VLM-derived gripper evidence is labeled `VLM_RGBD_BEAK` with semantic point
+`FOREMOST_BEAK_MEAN`. FoundationPose-derived evidence is labeled
+`FOUNDATIONPOSE_GRIPPER_POSE` with semantic point `GRIPPER_MODEL_ORIGIN`.
 
 The dual-FoundationPose result carries both records because its VLM beak remains a low-weight translation input. The result explicitly marks the two positions as not directly comparable: an upstream adjustment must transform the model origin to the physical beak using calibrated tool geometry first.
 

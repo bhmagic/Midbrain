@@ -1,0 +1,4 @@
+interface:
+  display_name: "Locate Effector Front"
+  short_description: "Find the depth-reliable effector front point"
+  default_prompt: "Use $locate-effector-front to locate the depth-reliable front point of the current robot effector."

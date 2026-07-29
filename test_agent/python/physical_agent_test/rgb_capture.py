@@ -9,6 +9,7 @@ from typing import Any
 from PIL import Image
 
 from .fabric_client import FabricClient
+from .route_resolver import routes_from_observation, select_rgbd_route
 from orbbec_femto_provider.shared_memory_access import CameraSharedMemory
 
 
@@ -18,6 +19,7 @@ class CapturedRgb:
     mime_type: str
     path: Path
     observation: dict[str, Any]
+    data_route: dict[str, Any] | None
 
 
 class RgbCapture:
@@ -25,10 +27,28 @@ class RgbCapture:
         self.fabric = fabric
         self.screenshot_dir = screenshot_dir
 
-    async def capture_latest(self) -> CapturedRgb:
+    async def capture_latest(
+        self,
+        *,
+        provider_id: str | None = None,
+        binding_id: str | None = None,
+    ) -> CapturedRgb:
+        route_observation = await self.fabric.latest_optional(
+            "camera.rgbd.data_routes"
+        )
+        route = select_rgbd_route(
+            routes_from_observation(route_observation),
+            provider_id=provider_id,
+        )
         last_error: Exception | None = None
         for _ in range(3):
             observation = await self.fabric.latest("camera.rgb.frame_ref")
+            observed_provider_id = str(observation.get("provider_id") or "")
+            if provider_id and observed_provider_id != provider_id:
+                raise RuntimeError(
+                    "camera binding/provider mismatch: "
+                    f"expected {provider_id}, observed {observed_provider_id or 'unknown'}"
+                )
             reference = observation["data"]
             mapping_name = reference["mapping_name"]
             reader = CameraSharedMemory(mapping_name).open()
@@ -48,6 +68,14 @@ class RgbCapture:
                 mime_type=mime_type,
                 path=path,
                 observation=observation,
+                data_route=(
+                    {
+                        **route.as_dict(),
+                        "binding_id": binding_id,
+                    }
+                    if route is not None
+                    else None
+                ),
             )
         raise RuntimeError(f"latest RGB BufferRef expired before it could be read: {last_error}")
 

@@ -1,0 +1,56 @@
+{
+  "skill_type": "identify_pointed_object",
+  "version": "0.1.0",
+  "display_name": "Identify Pointed Object",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "identify_pointed_object",
+    "description": "Identify the object a person is pointing at in the current RGB camera scene. Use this read-only finite Skill for visible-scene or pointing questions; it reports evidence and uncertainty but does not infer depth or move the robot.",
+    "when_to_use": [
+      "The user asks which visible object a person is pointing at.",
+      "A test needs one read-only VLM interpretation of the current RGB frame."
+    ],
+    "when_not_to_use": [
+      "The task requires a 3D point, registered depth, motion, contact, or manipulation.",
+      "No current camera scene is available."
+    ],
+    "side_effects": [
+      "Reads one current RGB frame from provider shared memory.",
+      "Calls the configured VLM once.",
+      "Writes a local diagnostic screenshot."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "vlm.call"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The complete scene-specific identification request."
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.identify_pointed_object.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "published_streams": []
+}

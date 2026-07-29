@@ -127,6 +127,8 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
                 }
             if stream == "localization.vio.status":
                 return {"data": {"session_epoch": "epoch"}}
+            if stream == "camera.rgbd.data_routes":
+                return None
             if stream == "camera.rgbd.bundle":
                 self.bundle_requests += 1
                 generation = self.bundle_requests

@@ -1,0 +1,77 @@
+{
+  "skill_type": "verify_rgbd_alignment",
+  "version": "0.1.0",
+  "display_name": "Verify RGB-D Image Content and Alignment",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "verify_rgbd_image_alignment",
+    "description": "Validate one synchronized RGB-D bundle by checking its actual grids, frame timestamps, registered-depth boundary, shared-memory route, numeric edge correspondence, and a VLM review of the RGB, registered-depth, and overlay image content. Use this read-only Skill before metric registration when image presence alone is insufficient.",
+    "when_to_use": [
+      "RGB, depth, IR, or registered depth may have different resolution, aspect ratio, boundary, timestamp, or frame rate.",
+      "A spatial or motion-related operation needs evidence that registered depth depicts and aligns with the RGB scene.",
+      "The operator requests visual inspection of RGB-D content rather than a file-presence check."
+    ],
+    "when_not_to_use": [
+      "No synchronized RGB-D bundle or registered-depth product is available.",
+      "A historical validation is being treated as proof for a new camera boot or calibration revision.",
+      "The request requires physical motion."
+    ],
+    "side_effects": [
+      "Reads one synchronized shared-memory RGB-D bundle.",
+      "Writes local RGB, registered-depth, and composite diagnostic images.",
+      "Calls one configured VLM route with bounded fallback.",
+      "Does not move hardware or publish a motion-usable transform."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "vlm.call"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "description": "Why the current RGB-D alignment must be validated."
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.verify_rgbd_alignment.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd.bundle",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "result_policy": {
+    "image_review_required": true,
+    "images_present_is_not_sufficient": true,
+    "motion_usable_only_when_numeric_and_vlm_checks_pass": true
+  },
+  "published_streams": []
+}

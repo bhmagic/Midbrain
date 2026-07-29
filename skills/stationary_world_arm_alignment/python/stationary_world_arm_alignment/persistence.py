@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,14 @@ class CalibrationStore:
         self._atomic_json(target, result)
         self._atomic_json(self.root / "latest.json", result)
         return target
+
+    def get(self, alignment_id: str) -> dict[str, Any] | None:
+        if not re.fullmatch(r"[0-9A-Za-z-]+", alignment_id):
+            return None
+        path = self.root / f"{alignment_id}.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def latest(self) -> dict[str, Any] | None:
         path = self.root / "latest.json"

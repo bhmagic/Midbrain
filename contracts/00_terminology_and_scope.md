@@ -5,11 +5,15 @@ Version: 0.2 Working Draft
 ## Canonical names
 
 - **Resource Provider Manager** or **Manager**: provider lifecycle, supervision, resource admission, selection, fallback, and physical-control authority.
-- **World State Fabric** or **Fabric**: timestamped observations, state metadata, temporal queries, transforms, fusion, freshness, and subscriptions.
+- **World State Fabric** or **Fabric**: passive low-latency transport and
+  history for timestamped observations, state metadata, temporal association,
+  transforms, fusion, and subscriptions. It reports temporal evidence but does
+  not impose one consumer-independent freshness policy.
 - **Resource Provider**: persistent or reusable service for hardware, data, computation, models, recording, visualization, or control.
 - **Skill**: finite task-oriented orchestration that uses Resource Providers and returns a structured result.
 - **Capability**: semantic function or data service offered by a Resource Provider; not a process.
-- **Observation**: timestamped provider-produced state statement with provenance, schema, validity, and freshness.
+- **Observation**: timestamped provider-produced state statement with
+  provenance, schema, structural validity, and temporal evidence.
 - **BufferRef**: metadata for a large payload stored outside the Fabric.
 - **Control Authority Lease**: expiring, fenced Manager authorization for a protected physical resource.
 
@@ -25,6 +29,9 @@ Version: 0.2 Working Draft
 8. The Fabric should own the framework-neutral transform graph; ROS 2 transforms enter through a Resource Provider.
 9. Hardware Resource Providers enforce Control Authority Leases and safe relinquish.
 10. Emergency stop remains independent of the Manager, Fabric, agent, Skills, and normal operating-system scheduling.
+11. Freshness is a relation between an observation, a consumer operation, and
+    the time of use. Each Skill declares and records its temporal acceptance
+    policy; the Fabric remains passive.
 
 ## Current document scope
 

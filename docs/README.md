@@ -2,6 +2,8 @@
 
 This directory is the canonical reading order for the GitHub repository.
 
+The 2026-07-29 guarded-agent checkpoint is summarized in the canonical [Validation](06_VALIDATION.md), [Workspace Audit](08_WORKSPACE_AUDIT.md), [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md), and [Version History](11_VERSION_HISTORY_AND_DECISIONS.md) documents. Detailed evidence is retained in [Phase 5 Agent SDK Completion and Shutdown](reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md), [Agent SDK Roadblocks](reference/project_notes/OPENAI_AGENT_SDK_ROADBLOCKS_20260729.md), [Component Changes](reference/project_notes/COMPONENT_CHANGES_20260729.md), and [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+
 | Order | Document | Purpose |
 |---|---|---|
 | 1 | [Overview](00_OVERVIEW.md) | Scope, current baseline, safety boundary, and working capabilities. |

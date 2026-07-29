@@ -30,9 +30,24 @@ class Settings:
     package_root: Path = PACKAGE_ROOT
     manager_url: str = os.getenv("MANAGER_URL", "http://127.0.0.1:7001")
     fabric_url: str = os.getenv("FABRIC_URL", "http://127.0.0.1:7002")
+    integrated_controller_url: str = os.getenv(
+        "INTEGRATED_CONTROLLER_URL",
+        "http://127.0.0.1:8793",
+    )
+    integrated_preview_timeout_s: float = float(
+        os.getenv("INTEGRATED_PREVIEW_TIMEOUT_S", "5")
+    )
     ui_host: str = os.getenv("UI_HOST", "127.0.0.1")
     ui_port: int = int(os.getenv("UI_PORT", "8000"))
-    openai_model: str = os.getenv("OPENAI_AGENT_MODEL", "gpt-5-mini")
+    openai_model: str = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6-terra")
+    openai_agent_tool_choice: str = os.getenv(
+        "OPENAI_AGENT_TOOL_CHOICE",
+        "required",
+    )
+    authorization_signing_secret: str = os.getenv(
+        "MIDBRAIN_AUTHORIZATION_SECRET",
+        "",
+    )
     gemini_model: str = os.getenv("GEMINI_ROBOTICS_MODEL", "gemini-robotics-er-1.6-preview")
     head_camera_provider_id: str = os.getenv("HEAD_CAMERA_PROVIDER_ID", "camera.femto_bolt")
     local_vio_provider_id: str = os.getenv("LOCAL_VIO_PROVIDER_ID", "localization.local_vio")
@@ -42,9 +57,52 @@ class Settings:
     point_cloud_sample_stride: int = int(os.getenv("POINT_CLOUD_SAMPLE_STRIDE", "10"))
     point_cloud_hz: float = float(os.getenv("POINT_CLOUD_HZ", "5"))
     point_cloud_max_points: int = int(os.getenv("POINT_CLOUD_MAX_POINTS", "180000"))
+    phase4_agent_run_timeout_s: float = float(
+        os.getenv("PHASE4_AGENT_RUN_TIMEOUT_S", "90")
+    )
+    phase5_spatial_binding_mode: str = os.getenv(
+        "PHASE5_SPATIAL_BINDING_MODE",
+        "SHADOW",
+    ).strip().upper()
+    phase5_spatial_generic_route_mode: str = os.getenv(
+        "PHASE5_SPATIAL_GENERIC_ROUTE_MODE",
+        "SHADOW",
+    ).strip().upper()
+    head_camera_frame: str = os.getenv(
+        "HEAD_CAMERA_FRAME",
+        "femto_bolt_color_optical_frame",
+    )
+    arm_transform_provider_id: str = os.getenv(
+        "ARM_TRANSFORM_PROVIDER_ID",
+        "robot_arm.rebot_dm",
+    )
+    arm_base_frame: str = os.getenv("ARM_BASE_FRAME", "rebot_arm_base")
+    arm_tool_frame: str = os.getenv("ARM_TOOL_FRAME", "rebot_arm_tool")
+    agent_skill_defer_loading: bool = os.getenv(
+        "AGENT_SKILL_DEFER_LOADING",
+        "true",
+    ).lower() in {"1", "true", "yes", "on"}
+    phase4_eligible_tools: tuple[str, ...] = tuple(
+        item.strip()
+        for item in os.getenv(
+            "PHASE4_ELIGIBLE_TOOLS",
+            (
+                "identify_pointed_object,"
+                "analyze_visual_scene,"
+                "verify_rgbd_image_alignment"
+            ),
+        ).split(",")
+        if item.strip()
+    )
 
     @property
     def screenshot_dir(self) -> Path:
         path = self.package_root / "screenshots"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def replay_bundle_dir(self) -> Path:
+        path = self.package_root / "replay_bundles"
         path.mkdir(parents=True, exist_ok=True)
         return path

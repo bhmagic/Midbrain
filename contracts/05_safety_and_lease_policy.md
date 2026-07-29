@@ -1,6 +1,6 @@
 # Safety and Lease Policy
 
-Version: 0.3.9 Working Draft
+Version: 0.3.10 Working Draft
 
 ## 1. Purpose
 
@@ -9,6 +9,18 @@ This policy defines software ownership of physical-control authority. It does no
 ## 2. Control-authority rule
 
 A Resource Provider must not command a protected moving part without a valid Manager-issued control-authority lease.
+
+### 2.1 Phase 1 migration profile
+
+The current implementation exposes Manager control-authority leases in
+`ADVISORY` mode so their state can be compared with existing provider-local
+fencing before enforcement. This mode does not satisfy the final
+control-authority rule above and must not be interpreted as permission to
+remove existing operator gates or provider-local leases.
+
+Enforcement is enabled only after every relevant interconnection has been
+observed, expiry and preemption behavior have been tested, and provider command
+rejection is changed in a separate reviewed phase.
 
 Protected resources may include:
 
@@ -68,6 +80,37 @@ Transfer sequence:
 5. Validate the new owner and generation.
 6. Permit new commands.
 
+### 5.1 Layered authority lineage during migration
+
+The Manager authority generation and a hardware Provider's local operational
+lease generation are separate fencing namespaces. Their numeric values must
+not be compared, copied, or treated as proof that the two leases belong to the
+same authority chain.
+
+During shadow migration, an intermediary controller must report both views and
+bind them with explicit lineage:
+
+- Manager resource, owner, authority lease ID, and Manager fencing generation;
+- local Provider lease ID and local fencing generation;
+- the upstream owner and Manager authority lease ID under which the local
+  lease was acquired;
+- controller residency and local control state;
+- motion-inhibit, authorization, and relinquishment state; and
+- a versioned comparison state plus stable disagreement reasons.
+
+Holding a Provider-local lease for HOT residency or gravity-supported standby
+does not by itself mean that an operational writer is active. An active
+operational writer is coordinated only when its upstream owner and Manager
+authority lease ID exactly match the current Manager record. Numeric generation
+equality alone has no meaning. Missing lineage for an active writer must be
+reported as uncorrelated rather than inferred; an idle local lease must be
+reported separately as standby, not as a conflict.
+
+Shadow comparison is observation only. It must not replace the Provider-local
+lease, switch a control mode, submit a motor command, or weaken an existing
+fence. Poll, transition, state, and disagreement counts must be exposed before
+any non-motion authority transition is considered for enforcement.
+
 ## 6. Safe relinquish
 
 When a lease is released, expires, is revoked, or becomes unreachable, the hardware provider must perform the configured safe relinquish behavior.
@@ -96,6 +139,19 @@ Process termination is not automatically a safe state. If a Provider process is 
 For such a Provider, a missed graceful-stop deadline must produce a visible timeout or recovery-required state while the process remains alive. An authorized explicit force-stop remains available for emergency or operator-directed recovery.
 
 Before an internal safe-home, controlled stop, or hold transition begins, the Provider must fence the outgoing operational authority, discard uncommitted commands from that owner, and reject late operational frames. The protective sequence must not compete with a still-valid task lease.
+
+### 6.2 Global shutdown ownership
+
+The Manager owns the intended global shutdown order. A compliant sequence
+fences new authority, requests motion-provider safe relinquishment, confirms
+the Basic controller's stable state, stops non-safety providers, stops
+safety-critical providers only when doing so is confirmed safe, flushes
+provider-local audit outboxes, and stops the Fabric. The workspace supervisor
+stops the Manager last.
+
+During Phase 1 the Manager publishes this sequence as `SHADOW_DRY_RUN` and does
+not terminate processes. Existing proven safe-termination paths remain active
+and must not wait for Manager or Fabric observation.
 
 ## 7. Lease expiry and renewal
 

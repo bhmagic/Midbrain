@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain.skill.stationary_world_arm_alignment.calibration_candidate",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "candidate_id",
+    "workcell_calibration_revision",
+    "created_at_us",
+    "expires_at_us",
+    "review_state",
+    "review_mode",
+    "motion_usable",
+    "method",
+    "frame_contract",
+    "confidence",
+    "bounded_error_estimate",
+    "camera_provenance",
+    "vio_provenance",
+    "transforms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "midbrain.skill.stationary_world_arm_alignment.calibration_candidate"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workcell_calibration_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_us": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_at_us": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_state": {
+      "const": "CANDIDATE_REVIEW_REQUIRED"
+    },
+    "review_mode": {
+      "enum": [
+        "SHADOW",
+        "ENFORCED"
+      ]
+    },
+    "motion_usable": {
+      "const": false
+    },
+    "method": {
+      "type": "object"
+    },
+    "frame_contract": {
+      "type": "object",
+      "required": [
+        "world_frame",
+        "vio_world_frame",
+        "arm_base_frame",
+        "transform_semantics"
+      ],
+      "properties": {
+        "world_frame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vio_world_frame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arm_base_frame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transform_semantics": {
+          "const": "PARENT_FROM_CHILD"
+        }
+      },
+      "additionalProperties": false
+    },
+    "confidence": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "bounded_error_estimate": {
+      "type": "object"
+    },
+    "camera_provenance": {
+      "type": "object"
+    },
+    "vio_provenance": {
+      "type": "object"
+    },
+    "transforms": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

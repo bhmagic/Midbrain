@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from .artifacts import MonitorArtifacts
+from .candidate_review import canonical_sha256
 from .camera import (
     RgbdCapture,
     encode_depth_png,
@@ -22,6 +23,12 @@ from .camera import (
 )
 from .clients import FabricClient, FoundationPoseHealthClient, ManagerClient
 from .config import Settings, WORKSPACE_ROOT, load_skill_config
+from .foundation_engine import (
+    LocalFoundationPoseEngine,
+    PROVIDER_COMPATIBILITY_ROUTE,
+    SKILL_LOCAL_ROUTE,
+    normalize_base_pose_engine_route,
+)
 from .lease import MotionInhibitKeeper
 from .math3d import (
     apply_transform,
@@ -47,7 +54,12 @@ from .pose_validation import (
     select_best_pose_validation,
 )
 from .progress import ProgressReporter
-from .vlm import GripperVision
+from .vlm import (
+    OPENAI_API_ROUTE,
+    REVIEWED_FILE_ROUTE,
+    GripperVision,
+    ReviewedFileVision,
+)
 
 
 TERMINAL_POSE_STATES = {"FAILED", "STOPPED", "EXPIRED", "COMPLETED"}
@@ -70,6 +82,21 @@ class AlignmentSkill:
         self.progress = ProgressReporter(self.fabric)
         self.artifacts = artifacts or MonitorArtifacts()
         self.store = CalibrationStore(self.settings.calibration_root)
+        self.base_pose_engine_route = normalize_base_pose_engine_route(
+            self.config
+        )
+        self.local_foundation_engine: LocalFoundationPoseEngine | None = None
+        self.last_base_pose_engine_lifecycle: dict[str, Any] = {
+            "route": self.base_pose_engine_route,
+            "state": "NOT_STARTED",
+            "owned_session_count_after": 0,
+            "gpu_resources_released": (
+                self.base_pose_engine_route != SKILL_LOCAL_ROUTE
+            ),
+            "backend_closed": (
+                self.base_pose_engine_route != SKILL_LOCAL_ROUTE
+            ),
+        }
         self.cancel_event = asyncio.Event()
         self.running_lock = asyncio.Lock()
         self.provider_request_lock = asyncio.Lock()
@@ -88,6 +115,8 @@ class AlignmentSkill:
         *,
         arm_is_home: bool = False,
         allow_active_control_interrupt: bool = False,
+        vision_route: str = OPENAI_API_ROUTE,
+        review_timeout_s: float = 300.0,
     ) -> asyncio.Task[dict[str, Any]]:
         if self.current_task is not None and not self.current_task.done():
             raise RuntimeError("an alignment run is already active")
@@ -97,6 +126,8 @@ class AlignmentSkill:
                 mode,
                 arm_is_home=arm_is_home,
                 allow_active_control_interrupt=allow_active_control_interrupt,
+                vision_route=vision_route,
+                review_timeout_s=review_timeout_s,
             ),
             name="stationary-world-arm-alignment",
         )
@@ -111,6 +142,8 @@ class AlignmentSkill:
         *,
         arm_is_home: bool = False,
         allow_active_control_interrupt: bool = False,
+        vision_route: str = OPENAI_API_ROUTE,
+        review_timeout_s: float = 300.0,
     ) -> dict[str, Any]:
         if self.running_lock.locked():
             raise RuntimeError("an alignment run is already active")
@@ -119,6 +152,8 @@ class AlignmentSkill:
                 mode,
                 arm_is_home=arm_is_home,
                 allow_active_control_interrupt=allow_active_control_interrupt,
+                vision_route=vision_route,
+                review_timeout_s=review_timeout_s,
             )
 
     async def _run_locked(
@@ -127,6 +162,8 @@ class AlignmentSkill:
         *,
         arm_is_home: bool,
         allow_active_control_interrupt: bool,
+        vision_route: str,
+        review_timeout_s: float,
     ) -> dict[str, Any]:
         mode = canonical_run_mode(RunMode(mode))
         skill_id = f"skill-align-{uuid.uuid4()}"
@@ -136,7 +173,7 @@ class AlignmentSkill:
         run_dir.mkdir(parents=True, exist_ok=False)
         own_sessions: list[str] = []
         keeper: MotionInhibitKeeper | None = None
-        vision: GripperVision | None = None
+        vision: GripperVision | ReviewedFileVision | None = None
         selected_mode = mode
         await self.progress.update(
             skill_id=skill_id,
@@ -155,8 +192,14 @@ class AlignmentSkill:
             result=None,
         )
         try:
-            prior = self.store.latest()
-            await asyncio.gather(self.manager.health(), self.fabric.health())
+            _, _, workcell_calibrations = await asyncio.gather(
+                self.manager.health(),
+                self.fabric.health(),
+                self.manager.workcell_calibrations(),
+            )
+            prior = self._manager_verified_prior_alignment(
+                workcell_calibrations
+            )
             provider_state = await self._provider_state()
             inhibit_config = self.config["motion_inhibit"]
             keeper = MotionInhibitKeeper(
@@ -193,6 +236,10 @@ class AlignmentSkill:
                 prior_is_current = bool(
                     prior
                     and prior.get("vio_session_epoch") == frame.session_epoch
+                    and self._prior_alignment_review_usable(
+                        prior,
+                        workcell_calibrations,
+                    )
                 )
                 prior_is_upright = False
                 if prior_is_current:
@@ -225,10 +272,33 @@ class AlignmentSkill:
                 message="Locating the base, gripper, and foremost beak point.",
                 completed_units=2,
             )
-            vision = GripperVision(
-                self.settings.openai_api_key,
-                self.settings.openai_vision_model,
-                WORKSPACE_ROOT,
+            selected_vision_route = str(vision_route).strip().upper()
+            if selected_vision_route == OPENAI_API_ROUTE:
+                vision = GripperVision(
+                    self.settings.openai_api_key,
+                    self.settings.openai_vision_model,
+                    WORKSPACE_ROOT,
+                )
+            elif selected_vision_route == REVIEWED_FILE_ROUTE:
+                vision = ReviewedFileVision(
+                    WORKSPACE_ROOT,
+                    run_dir,
+                    timeout_s=review_timeout_s,
+                )
+            else:
+                raise ValueError(
+                    f"unsupported vision route: {vision_route}"
+                )
+            await self.progress.update(
+                details={
+                    "vision_route": selected_vision_route,
+                    "review_timeout_s": (
+                        float(review_timeout_s)
+                        if selected_vision_route == REVIEWED_FILE_ROUTE
+                        else None
+                    ),
+                    "automatic_fallback": False,
+                }
             )
             vlm = await vision.locate(
                 frame.rgb,
@@ -276,7 +346,7 @@ class AlignmentSkill:
                 result = await self._vlm_gripper_only(
                     prior=prior,
                     frame=frame,
-                    vio_beak=vio_beak,
+                    camera_beak=camera_beak,
                     base_from_tool=base_from_tool,
                     alignment_id=alignment_id,
                     skill_id=skill_id,
@@ -287,10 +357,11 @@ class AlignmentSkill:
                     vio_from_camera=vio_from_camera,
                 )
             else:
-                await self.manager.ensure_hot(
-                    self.config["foundation_pose_provider_id"],
-                    timeout_s=90.0,
-                )
+                if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+                    await self.manager.ensure_hot(
+                        self.config["foundation_pose_provider_id"],
+                        timeout_s=90.0,
+                    )
                 use_foundation_gripper = (
                     selected_mode == RunMode.FOUNDATION_BASE_GRIPPER
                 )
@@ -321,6 +392,7 @@ class AlignmentSkill:
                         vlm=vlm,
                         arm_is_home=arm_is_home,
                         keeper=keeper,
+                        vio_from_camera=vio_from_camera,
                     )
             path = self.store.save(result)
             await self._publish_result(result)
@@ -386,28 +458,34 @@ class AlignmentSkill:
             )
             raise
         finally:
-            for session_id in own_sessions:
+            if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+                for session_id in own_sessions:
+                    try:
+                        await self.manager.provider_request(
+                            self.config["foundation_pose_provider_id"],
+                            action="stop",
+                            payload={
+                                "session_id": session_id,
+                                "reason": "alignment skill cleanup",
+                            },
+                            related_skill_id=skill_id,
+                        )
+                    except Exception:
+                        pass
                 try:
-                    await self.manager.provider_request(
-                        self.config["foundation_pose_provider_id"],
-                        action="stop",
-                        payload={"session_id": session_id, "reason": "alignment skill cleanup"},
-                        related_skill_id=skill_id,
-                    )
+                    health = await self.foundation_health.health()
+                    active_foreign = [
+                        session
+                        for session in self._health_sessions(health)
+                        if str(session.get("session_id")) not in own_sessions
+                        and str(session.get("state")) not in TERMINAL_POSE_STATES
+                    ]
+                    if not active_foreign:
+                        await self.manager.stop_provider(
+                            self.config["foundation_pose_provider_id"]
+                        )
                 except Exception:
                     pass
-            try:
-                health = await self.foundation_health.health()
-                active_foreign = [
-                    session
-                    for session in self._health_sessions(health)
-                    if str(session.get("session_id")) not in own_sessions
-                    and str(session.get("state")) not in TERMINAL_POSE_STATES
-                ]
-                if not active_foreign:
-                    await self.manager.stop_provider(self.config["foundation_pose_provider_id"])
-            except Exception:
-                pass
             if keeper:
                 try:
                     await keeper.release()
@@ -418,17 +496,20 @@ class AlignmentSkill:
 
     async def _provider_state(self) -> list[dict[str, Any]]:
         providers = await self.manager.providers()
-        await self.progress.update(
-            selected_providers={
-                key: self.config[key]
-                for key in (
-                    "camera_provider_id",
-                    "vio_provider_id",
-                    "foundation_pose_provider_id",
-                    "arm_provider_id",
-                )
-            }
-        )
+        selected = {
+            key: self.config[key]
+            for key in (
+                "camera_provider_id",
+                "vio_provider_id",
+                "arm_provider_id",
+            )
+        }
+        selected["base_pose_engine"] = self.base_pose_engine_route
+        if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+            selected["foundation_pose_provider_id"] = self.config[
+                "foundation_pose_provider_id"
+            ]
+        await self.progress.update(selected_providers=selected)
         return providers
 
     async def request_runtime_inputs(self, *, wait_for_vio_tracking: bool = False) -> dict[str, Any]:
@@ -447,11 +528,20 @@ class AlignmentSkill:
                 providers = await self.manager.providers()
                 self.runtime_status["providers"] = self._provider_views(providers)
                 for role, provider_id in required.items():
-                    self._set_runtime_status(
-                        "REQUESTING",
-                        f"Requesting {role} provider {provider_id}.",
-                    )
-                    await self.manager.ensure_hot(provider_id, timeout_s=60.0)
+                    if self._provider_was_hot(providers, provider_id):
+                        self._set_runtime_status(
+                            "REQUESTING",
+                            (
+                                f"Reusing current Manager-registered HOT {role} "
+                                f"provider {provider_id}."
+                            ),
+                        )
+                    else:
+                        self._set_runtime_status(
+                            "REQUESTING",
+                            f"Requesting {role} provider {provider_id}.",
+                        )
+                        await self.manager.ensure_hot(provider_id, timeout_s=60.0)
                     providers = await self.manager.providers()
                     self.runtime_status["providers"] = self._provider_views(providers)
                 if wait_for_vio_tracking:
@@ -558,16 +648,31 @@ class AlignmentSkill:
                 provider.get("process_state") or provider.get("state") or "unknown"
             )
             process_active = process_state.lower() in {"running", "starting"}
+            report_active = (
+                str(report.get("residency") or "").upper() == "HOT"
+                and str(report.get("health") or "").upper() == "HEALTHY"
+                and report.get("ready") is True
+                and report.get("expired") is not True
+            )
+            provider_active = process_active or report_active
             result[provider_id] = {
                 "provider_id": provider_id,
                 "process_state": process_state,
+                "activity_source": (
+                    "MANAGER_PROCESS"
+                    if process_active
+                    else "REGISTERED_PROVIDER_REPORT"
+                    if report_active
+                    else "NONE"
+                ),
+                "provider_active": provider_active,
                 "residency": (
                     report.get("residency") or provider.get("residency")
-                    if process_active
+                    if provider_active
                     else None
                 ),
-                "health": report.get("health") if process_active else None,
-                "ready": process_active and bool(report.get("ready", False)),
+                "health": report.get("health") if provider_active else None,
+                "ready": provider_active and bool(report.get("ready", False)),
                 "expired": bool(report.get("expired", False)),
                 "last_exit": provider.get("last_exit"),
                 "tracking_state": details.get("tracking_state"),
@@ -588,8 +693,9 @@ class AlignmentSkill:
         for label, provider_id in required.items():
             provider = providers.get(provider_id) or {}
             ready = (
-                str(provider.get("process_state", "")).lower() == "running"
+                provider.get("provider_active") is True
                 and str(provider.get("residency", "")).upper() == "HOT"
+                and str(provider.get("health", "")).upper() == "HEALTHY"
                 and provider.get("ready") is True
                 and provider.get("expired") is not True
             )
@@ -606,8 +712,13 @@ class AlignmentSkill:
             current_id = config.get("id") or provider.get("id")
             if current_id == provider_id:
                 residency = str(report.get("residency") or provider.get("residency") or "").upper()
-                process_state = str(provider.get("process_state") or provider.get("state") or "").upper()
-                return residency == "HOT" and process_state in {"RUNNING", "STARTING"}
+                report_active = (
+                    residency == "HOT"
+                    and str(report.get("health") or "").upper() == "HEALTHY"
+                    and report.get("ready") is True
+                    and report.get("expired") is not True
+                )
+                return report_active
         return False
 
     async def _verify_arm_stationary(self, allow_active_control_interrupt: bool) -> None:
@@ -716,6 +827,159 @@ class AlignmentSkill:
                 self._find_value(response, "session_id") or session_id
             )
         return sessions
+
+    async def _collect_skill_local_foundation(
+        self,
+        *,
+        skill_id: str,
+        run_dir: Path,
+        attempt: int,
+        frame: Any,
+        keeper: MotionInhibitKeeper,
+        include_gripper: bool,
+    ) -> tuple[
+        dict[str, dict[str, list[np.ndarray]]],
+        dict[str, str],
+    ]:
+        if self.local_foundation_engine is not None:
+            raise RuntimeError(
+                "a SKILL_LOCAL base-pose engine is already active"
+            )
+        engine = LocalFoundationPoseEngine.from_config(
+            self.config,
+            WORKSPACE_ROOT,
+        )
+        self.local_foundation_engine = engine
+        backend_name = getattr(
+            engine.backend,
+            "name",
+            type(engine.backend).__name__,
+        )
+        self.last_base_pose_engine_lifecycle = {
+            "route": SKILL_LOCAL_ROUTE,
+            "state": "ACTIVE",
+            "backend": backend_name,
+            "owned_session_count_after": None,
+            "gpu_resources_released": False,
+            "backend_closed": False,
+        }
+        roles = ["base", *(["gripper"] if include_gripper else [])]
+        masks: dict[str, np.ndarray] = {}
+        for role in roles:
+            mask = cv2.imread(
+                str(run_dir / f"{role}_mask.png"),
+                cv2.IMREAD_GRAYSCALE,
+            )
+            if mask is None:
+                raise RuntimeError(
+                    f"Skill-local base-pose mask is unavailable for {role}"
+                )
+            masks[role] = mask
+        base_config = self.config["base_alignment"]
+        required_counts = {
+            "base": int(base_config["minimum_base_samples"]),
+        }
+        model_ids = {
+            "base": self.config["foundation_base_model_id"],
+        }
+        if include_gripper:
+            required_counts["gripper"] = int(
+                base_config["minimum_gripper_samples"]
+            )
+            model_ids["gripper"] = self.config[
+                "foundation_gripper_model_id"
+            ]
+
+        async def guard() -> None:
+            await self._check_cancel()
+            await keeper.ensure_valid()
+
+        async def progress(
+            counts: dict[str, int],
+            diagnostics: dict[str, Any],
+        ) -> None:
+            await self.progress.update(
+                phase="BASE_POSE_SKILL_LOCAL",
+                message=(
+                    "The finite calibration Skill is estimating the stationary "
+                    "base pose locally; no FoundationPose Provider session is active."
+                ),
+                progress_kind="indeterminate",
+                completed_units=3,
+                total_units=8,
+                provider_responsive=None,
+                provider_sessions=[],
+                details={
+                    "samples": {
+                        **counts,
+                        "required_total": sum(required_counts.values()),
+                        "received_total": sum(counts.values()),
+                    },
+                    "base_pose_engine": diagnostics,
+                    "pose_validation": {
+                        "attempt": attempt,
+                        "maximum_attempts": 2,
+                        "state": "WAITING_FOR_BASE_POSE",
+                    },
+                    "motion_inhibit": keeper.status(),
+                },
+            )
+
+        local_config = (
+            (self.config.get("base_pose_engine") or {}).get("skill_local")
+            or {}
+        )
+        capture = RgbdCapture(self.fabric, self.config["camera_frame"])
+        primary_error: BaseException | None = None
+        sessions: dict[str, str] = {}
+        try:
+            samples, sessions = await engine.collect_samples(
+                skill_id=skill_id,
+                attempt=attempt,
+                initial_frame=frame,
+                capture=capture,
+                fabric=self.fabric,
+                masks=masks,
+                model_ids=model_ids,
+                required_counts=required_counts,
+                hard_timeout_s=float(base_config["hard_timeout_s"]),
+                minimum_sample_interval_s=float(
+                    local_config.get("minimum_sample_interval_s") or 0.2
+                ),
+                guard=guard,
+                progress=progress,
+            )
+            return samples, sessions
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            close_error: str | None = None
+            try:
+                await engine.close()
+            except Exception as error:
+                close_error = str(error)
+                if primary_error is None:
+                    raise RuntimeError(
+                        "SKILL_LOCAL FoundationPose backend cleanup failed: "
+                        f"{error}"
+                    ) from error
+            finally:
+                self.local_foundation_engine = None
+                self.last_base_pose_engine_lifecycle = {
+                    "route": SKILL_LOCAL_ROUTE,
+                    "state": (
+                        "CLOSED"
+                        if close_error is None
+                        else "CLEANUP_FAILED"
+                    ),
+                    "backend": backend_name,
+                    "owned_session_count_after": 0,
+                    "owned_sessions": sorted(sessions.values()),
+                    "gpu_resources_released": close_error is None,
+                    "backend_closed": close_error is None,
+                    "cleanup_error": close_error,
+                }
 
     async def _wait_for_foundation(
         self,
@@ -911,20 +1175,30 @@ class AlignmentSkill:
             dict[str, dict[str, list[np.ndarray]]]
         ] = []
         for attempt in range(1, maximum_attempts + 1):
-            session_ids = await self._start_foundation_sessions(
-                skill_id,
-                run_dir,
-                attempt,
-                include_gripper=include_gripper,
-            )
-            own_sessions.extend(session_ids.values())
-            samples = await self._wait_for_foundation(
-                session_ids=session_ids,
-                attempt=attempt,
-                frame=frame,
-                vio_beak=vio_beak,
-                keeper=keeper,
-            )
+            if self.base_pose_engine_route == SKILL_LOCAL_ROUTE:
+                samples, session_ids = await self._collect_skill_local_foundation(
+                    skill_id=skill_id,
+                    run_dir=run_dir,
+                    attempt=attempt,
+                    frame=frame,
+                    keeper=keeper,
+                    include_gripper=include_gripper,
+                )
+            else:
+                session_ids = await self._start_foundation_sessions(
+                    skill_id,
+                    run_dir,
+                    attempt,
+                    include_gripper=include_gripper,
+                )
+                own_sessions.extend(session_ids.values())
+                samples = await self._wait_for_foundation(
+                    session_ids=session_ids,
+                    attempt=attempt,
+                    frame=frame,
+                    vio_beak=vio_beak,
+                    keeper=keeper,
+                )
             raw_vio_from_base, _ = robust_average_transforms(
                 samples["base"]["vio"]
             )
@@ -1004,6 +1278,7 @@ class AlignmentSkill:
                 "camera_pose_samples": camera_diagnostics,
                 "upright_normalization": upright_diagnostics,
                 "foundation_pose_sessions": session_ids,
+                "base_pose_engine_route": self.base_pose_engine_route,
                 "fresh_registration_from_mask": True,
                 "overlay": artifact,
             }
@@ -1015,26 +1290,27 @@ class AlignmentSkill:
             )
             if accepted:
                 return samples, validations
-            for session_id in session_ids.values():
-                await self.manager.provider_request(
-                    self.config["foundation_pose_provider_id"],
-                    action="stop",
-                    payload={
-                        "session_id": session_id,
-                        "reason": (
-                            "VLM rejected projected base pose; reset estimator "
-                            "before fresh registration"
-                        ),
-                    },
-                    related_skill_id=skill_id,
-                )
+            if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+                for session_id in session_ids.values():
+                    await self.manager.provider_request(
+                        self.config["foundation_pose_provider_id"],
+                        action="stop",
+                        payload={
+                            "session_id": session_id,
+                            "reason": (
+                                "VLM rejected projected base pose; reset estimator "
+                                "before fresh registration"
+                            ),
+                        },
+                        related_skill_id=skill_id,
+                    )
             if attempt < maximum_attempts:
                 await self.progress.update(
                     phase="POSE_RETRY",
                     message=(
                         "VLM rejected the first projected base box/axes. The "
-                        "FoundationPose estimator was reset; starting a new "
-                        "session and a fresh register-from-mask attempt."
+                        "The base-pose estimator was reset; starting a new "
+                        "finite session and a fresh register-from-mask attempt."
                     ),
                     details={
                         "pose_validation": {
@@ -1136,6 +1412,7 @@ class AlignmentSkill:
         vlm: dict[str, Any],
         arm_is_home: bool,
         keeper: MotionInhibitKeeper,
+        vio_from_camera: np.ndarray,
     ) -> dict[str, Any]:
         await keeper.ensure_valid()
         await self.progress.update(
@@ -1179,15 +1456,6 @@ class AlignmentSkill:
         oriented[:3, 3] = sum(point * weight for _, point, weight in translation_candidates) / total_weight
         learned_tool_beak = apply_transform(np.linalg.inv(base_from_tool), apply_transform(np.linalg.inv(oriented), vio_beak))
         world_from_vio = np.eye(4, dtype=np.float64)
-        vio_from_camera = transform_from_payload(
-            await self.fabric.transform(
-                from_frame=frame.camera_frame,
-                to_frame=frame.world_frame,
-                at_us=frame.timestamp_us,
-                max_extrapolation_us=750_000,
-                session_epoch=frame.session_epoch,
-            )
-        )
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
         world_from_base = world_from_vio @ oriented
         world_from_beak = apply_transform(world_from_vio, vio_beak)
@@ -1242,6 +1510,7 @@ class AlignmentSkill:
         vlm: dict[str, Any],
         arm_is_home: bool,
         keeper: MotionInhibitKeeper,
+        vio_from_camera: np.ndarray,
     ) -> dict[str, Any]:
         await keeper.ensure_valid()
         await self.progress.update(
@@ -1311,15 +1580,6 @@ class AlignmentSkill:
             apply_transform(np.linalg.inv(oriented), vio_beak),
         )
         world_from_vio = np.eye(4, dtype=np.float64)
-        vio_from_camera = transform_from_payload(
-            await self.fabric.transform(
-                from_frame=frame.camera_frame,
-                to_frame=frame.world_frame,
-                at_us=frame.timestamp_us,
-                max_extrapolation_us=750_000,
-                session_epoch=frame.session_epoch,
-            )
-        )
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
         world_foundation_gripper = apply_transform(
             world_from_vio,
@@ -1385,7 +1645,7 @@ class AlignmentSkill:
         *,
         prior: dict[str, Any],
         frame: Any,
-        vio_beak: np.ndarray,
+        camera_beak: np.ndarray,
         base_from_tool: np.ndarray,
         alignment_id: str,
         skill_id: str,
@@ -1396,24 +1656,44 @@ class AlignmentSkill:
         vio_from_camera: np.ndarray,
     ) -> dict[str, Any]:
         await keeper.ensure_valid()
+        if not self._same_stationary_camera_identity(prior, frame):
+            raise RuntimeError(
+                "VLM-only refinement requires the same stationary camera "
+                "provider, instance, boot, calibration, and frame as its "
+                "Manager-verified prior alignment"
+            )
+        vio_epoch_changed = prior["vio_session_epoch"] != frame.session_epoch
         if (
             self.config["vlm_refine"]["require_same_vio_epoch"]
-            and prior["vio_session_epoch"] != frame.session_epoch
+            and vio_epoch_changed
+            and not self._same_stationary_camera_identity(prior, frame)
         ):
-            raise RuntimeError("VLM-only refinement cannot cross a VIO session reset")
+            raise RuntimeError(
+                "VLM-only refinement cannot cross a VIO session reset unless "
+                "the stationary camera identity, boot, calibration, and frame "
+                "match exactly"
+            )
         learned = prior.get("learned_tool_to_beak_translation_m")
         if learned is None:
             raise RuntimeError("prior alignment has no learned tool-to-beak geometry")
-        prior_world_from_vio = transform_from_payload(prior["world_from_vio"])
         prior_world_from_base = transform_from_payload(prior["world_from_base"])
-        vio_from_base_prior = np.linalg.inv(prior_world_from_vio) @ prior_world_from_base
+        prior_world_from_camera = transform_from_payload(
+            prior["world_from_camera_reference"]
+        )
+        world_from_vio = (
+            prior_world_from_camera @ np.linalg.inv(vio_from_camera)
+        )
         base_beak = apply_transform(base_from_tool, np.asarray(learned, np.float64))
-        rotation_offset = vio_from_base_prior[:3, :3] @ base_beak
-        translation_candidates = [vio_beak - rotation_offset]
-        beak_candidates = [vio_beak]
+        rotation_offset = prior_world_from_base[:3, :3] @ base_beak
+        world_beak = apply_transform(
+            prior_world_from_camera,
+            camera_beak,
+        )
+        translation_candidates = [world_beak - rotation_offset]
+        beak_candidates = [world_beak]
         vlm_candidates = [vlm]
         estimated_translation = translation_candidates[0]
-        delta = estimated_translation - vio_from_base_prior[:3, 3]
+        delta = estimated_translation - prior_world_from_base[:3, 3]
         magnitude = float(np.linalg.norm(delta))
         trigger = float(self.config["vlm_refine"]["consensus_trigger_m"])
         consensus_diagnostics: dict[str, Any] = {
@@ -1439,19 +1719,19 @@ class AlignmentSkill:
                     encoding="utf-8",
                 )
                 candidate_camera_beak, _ = self._camera_beak(frame, candidate_vlm)
-                candidate_vio_beak = apply_transform(
-                    vio_from_camera,
+                candidate_world_beak = apply_transform(
+                    prior_world_from_camera,
                     candidate_camera_beak,
                 )
                 vlm_candidates.append(candidate_vlm)
-                beak_candidates.append(candidate_vio_beak)
+                beak_candidates.append(candidate_world_beak)
                 translation_candidates.append(
-                    candidate_vio_beak - rotation_offset
+                    candidate_world_beak - rotation_offset
                 )
             estimated_translation, pair_diagnostics = closest_pair_consensus(
                 translation_candidates
             )
-            selected_vio_beak = estimated_translation + rotation_offset
+            selected_world_beak = estimated_translation + rotation_offset
             consensus_diagnostics = {
                 **consensus_diagnostics,
                 **pair_diagnostics,
@@ -1460,27 +1740,22 @@ class AlignmentSkill:
                 "translation_candidates_m": [
                     value.tolist() for value in translation_candidates
                 ],
-                "beak_candidates_vio_m": [
+                "beak_candidates_world_m": [
                     value.tolist() for value in beak_candidates
                 ],
             }
         else:
-            selected_vio_beak = vio_beak
-        delta = estimated_translation - vio_from_base_prior[:3, 3]
+            selected_world_beak = world_beak
+        delta = estimated_translation - prior_world_from_base[:3, 3]
         magnitude = float(np.linalg.norm(delta))
-        refined_vio_from_base = vio_from_base_prior.copy()
-        refined_vio_from_base[:3, 3] = estimated_translation
-        world_from_base = prior_world_from_vio @ refined_vio_from_base
-        selected_world_beak = apply_transform(
-            prior_world_from_vio,
-            selected_vio_beak,
-        )
+        world_from_base = prior_world_from_base.copy()
+        world_from_base[:3, 3] = estimated_translation
         return self._result(
             mode=str(RunMode.VLM_GRIPPER_ONLY),
             alignment_id=alignment_id,
             skill_id=skill_id,
             frame=frame,
-            world_from_vio=prior_world_from_vio,
+            world_from_vio=world_from_vio,
             world_from_base=world_from_base,
             vio_from_camera_reference=vio_from_camera,
             learned_tool_beak=np.asarray(learned, np.float64),
@@ -1503,8 +1778,68 @@ class AlignmentSkill:
                 "vlm": vlm,
                 "vlm_consensus": consensus_diagnostics,
                 "vlm_inferences": vlm_candidates,
+                "vio_epoch_bridge": {
+                    "used": vio_epoch_changed,
+                    "prior_session_epoch": prior["vio_session_epoch"],
+                    "current_session_epoch": frame.session_epoch,
+                    "basis": (
+                        "EXACT_STATIONARY_CAMERA_IDENTITY"
+                        if vio_epoch_changed
+                        else "SAME_VIO_SESSION"
+                    ),
+                },
                 "motion_inhibit": keeper.status(),
             },
+        )
+
+    @staticmethod
+    def _same_stationary_camera_identity(
+        prior: dict[str, Any],
+        frame: Any,
+    ) -> bool:
+        candidate = prior.get("candidate")
+        if not isinstance(candidate, dict):
+            return False
+        prior_camera = candidate.get("camera_provenance")
+        frame_contract = candidate.get("frame_contract")
+        observations = getattr(frame, "observations", None)
+        route_observation = (
+            observations.get("route")
+            if isinstance(observations, dict)
+            else None
+        )
+        if (
+            not isinstance(prior_camera, dict)
+            or not isinstance(frame_contract, dict)
+            or not isinstance(route_observation, dict)
+        ):
+            return False
+        comparisons = (
+            (
+                prior_camera.get("provider_id"),
+                route_observation.get("provider_id"),
+            ),
+            (
+                prior_camera.get("provider_instance_id"),
+                route_observation.get("provider_instance_id"),
+            ),
+            (
+                prior_camera.get("boot_id"),
+                route_observation.get("boot_id"),
+            ),
+            (
+                prior_camera.get("calibration_revision"),
+                getattr(frame, "calibration_revision", None),
+            ),
+            (
+                frame_contract.get("camera_frame"),
+                getattr(frame, "camera_frame", None),
+            ),
+        )
+        return all(
+            bool(str(expected or "").strip())
+            and str(expected) == str(observed)
+            for expected, observed in comparisons
         )
 
     def _result(
@@ -1585,12 +1920,41 @@ class AlignmentSkill:
                 "directly_comparable": False,
                 "reason": "This result contains only one gripper measurement source.",
             }
+        normalized_diagnostics = dict(diagnostics)
+        normalized_diagnostics["base_pose_engine"] = {
+            "route": self.base_pose_engine_route,
+            "lifecycle": dict(self.last_base_pose_engine_lifecycle),
+        }
+        created_at_us = time.time_ns() // 1000
+        candidate_review = self.config.get("candidate_review") or {}
+        review_mode = str(
+            candidate_review.get("mode") or "SHADOW"
+        ).upper()
+        expires_at_us = created_at_us + int(
+            float(candidate_review.get("ttl_s") or 900) * 1_000_000
+        )
+        candidate = self._calibration_candidate(
+            alignment_id=alignment_id,
+            mode=mode,
+            created_at_us=created_at_us,
+            expires_at_us=expires_at_us,
+            frame=frame,
+            world_from_vio=world_from_vio,
+            world_from_base=world_from_base,
+            vio_from_camera_reference=vio_from_camera_reference,
+            diagnostics=normalized_diagnostics,
+            review_mode=review_mode,
+        )
+        world_from_camera_reference = (
+            world_from_vio @ vio_from_camera_reference
+        )
         return {
             "schema": "midbrain.skill.stationary_world_arm_alignment.result",
-            "schema_version": 2,
+            "schema_version": 3,
             "alignment_id": alignment_id,
             "skill_id": skill_id,
-            "created_at_us": time.time_ns() // 1000,
+            "created_at_us": created_at_us,
+            "expires_at_us": expires_at_us,
             "mode": mode,
             "world_frame": world_frame,
             "vio_world_frame": frame.world_frame,
@@ -1602,6 +1966,9 @@ class AlignmentSkill:
             "vio_from_camera_reference": transform_payload(
                 vio_from_camera_reference
             ),
+            "world_from_camera_reference": transform_payload(
+                world_from_camera_reference
+            ),
             "world_from_vio": transform_payload(world_from_vio),
             "world_from_base": transform_payload(world_from_base),
             "learned_tool_to_beak_translation_m": learned_tool_beak.tolist(),
@@ -1609,9 +1976,403 @@ class AlignmentSkill:
             "gripper_measurements": normalized_measurements,
             "gripper_cross_source_comparison": cross_source_comparison,
             "valid": True,
-            "diagnostics": diagnostics,
+            "review_state": "CANDIDATE_REVIEW_REQUIRED",
+            "candidate_review_mode": review_mode,
+            "motion_usable": False,
+            "candidate": candidate,
+            "diagnostics": normalized_diagnostics,
             "monitor_geometry": geometry,
         }
+
+    def _calibration_candidate(
+        self,
+        *,
+        alignment_id: str,
+        mode: str,
+        created_at_us: int,
+        expires_at_us: int,
+        frame: Any,
+        world_from_vio: np.ndarray,
+        world_from_base: np.ndarray,
+        vio_from_camera_reference: np.ndarray,
+        diagnostics: dict[str, Any],
+        review_mode: str,
+    ) -> dict[str, Any]:
+        frame_observations = getattr(frame, "observations", None)
+        observations = (
+            frame_observations
+            if isinstance(frame_observations, dict)
+            else {}
+        )
+        route_observation = observations.get("route")
+        route_data = (
+            route_observation.get("data")
+            if isinstance(route_observation, dict)
+            else None
+        )
+        routes = (
+            route_data.get("routes")
+            if isinstance(route_data, dict)
+            and isinstance(route_data.get("routes"), list)
+            else []
+        )
+        preferred_route_id = str(
+            (
+                route_data.get("preferred_route_id")
+                if isinstance(route_data, dict)
+                else None
+            )
+            or ""
+        )
+        selected_route = next(
+            (
+                route
+                for route in routes
+                if isinstance(route, dict)
+                and str(route.get("route_id") or "")
+                == preferred_route_id
+            ),
+            next(
+                (
+                    route
+                    for route in routes
+                    if isinstance(route, dict)
+                    and str(route.get("capability") or "")
+                    == "camera.rgbd.route.generic_shared_memory"
+                ),
+                None,
+            ),
+        )
+        bundle_observation = observations.get("bundle")
+        bundle = (
+            bundle_observation.get("data")
+            if isinstance(bundle_observation, dict)
+            else None
+        )
+        source_buffer_refs = {
+            key: dict(value)
+            for key, value in (
+                (bundle.items() if isinstance(bundle, dict) else [])
+            )
+            if isinstance(value, dict)
+        }
+
+        confidence_values: list[float] = []
+        for validation in diagnostics.get(
+            "foundation_pose_validation",
+            [],
+        ):
+            verdict = (
+                validation.get("verdict")
+                if isinstance(validation, dict)
+                else None
+            )
+            if isinstance(verdict, dict):
+                value = verdict.get("confidence")
+                if isinstance(value, (int, float)):
+                    confidence_values.append(float(value))
+        base_samples = diagnostics.get("base_samples") or {}
+        translation_bound = base_samples.get(
+            "translation_max_residual_m"
+        )
+        rotation_bound = base_samples.get(
+            "rotation_max_residual_rad"
+        )
+        quality_basis = "ROBUST_SAMPLE_MAX_RESIDUAL"
+        quality_provenance: dict[str, Any] = {
+            "source": "CURRENT_FOUNDATIONPOSE_SAMPLES",
+        }
+        if mode == str(RunMode.VLM_GRIPPER_ONLY):
+            ancestor_quality = self._ancestor_candidate_quality(
+                diagnostics.get("parent_alignment_id")
+            )
+            vlm_inferences = diagnostics.get("vlm_inferences")
+            if not isinstance(vlm_inferences, list) or not vlm_inferences:
+                vlm_inferences = [diagnostics.get("vlm")]
+            gripper_confidences = [
+                float(inference["gripper"]["confidence"])
+                for inference in vlm_inferences
+                if isinstance(inference, dict)
+                and isinstance(inference.get("gripper"), dict)
+                and isinstance(
+                    inference["gripper"].get("confidence"),
+                    (int, float),
+                )
+            ]
+            if ancestor_quality is not None and gripper_confidences:
+                confidence_values.extend(
+                    [
+                        float(ancestor_quality["confidence"]),
+                        min(gripper_confidences),
+                    ]
+                )
+                consensus = diagnostics.get("vlm_consensus") or {}
+                consensus_distance = consensus.get(
+                    "selected_pair_distance_m"
+                )
+                translation_floor = float(
+                    self.config["vlm_refine"].get(
+                        "single_observation_translation_error_bound_m",
+                        0.01,
+                    )
+                )
+                translation_components = [
+                    translation_floor,
+                    float(ancestor_quality["translation_m"]),
+                ]
+                if isinstance(consensus_distance, (int, float)):
+                    translation_components.append(
+                        float(consensus_distance) / 2.0
+                    )
+                translation_bound = max(translation_components)
+                rotation_bound = float(
+                    ancestor_quality["rotation_rad"]
+                )
+                quality_basis = (
+                    "ANCESTOR_ROTATION_AND_VLM_TRANSLATION_FLOOR"
+                )
+                quality_provenance = {
+                    "source": "VLM_GRIPPER_ONLY_LINEAGE",
+                    "ancestor_alignment_id": ancestor_quality[
+                        "alignment_id"
+                    ],
+                    "ancestor_candidate_id": ancestor_quality[
+                        "candidate_id"
+                    ],
+                    "single_observation_translation_error_bound_m": (
+                        translation_floor
+                    ),
+                    "vlm_inference_count": len(gripper_confidences),
+                    "vlm_minimum_gripper_confidence": min(
+                        gripper_confidences
+                    ),
+                    "consensus_selected_pair_distance_m": (
+                        float(consensus_distance)
+                        if isinstance(consensus_distance, (int, float))
+                        else None
+                    ),
+                }
+        return {
+            "schema": (
+                "midbrain.skill.stationary_world_arm_alignment."
+                "calibration_candidate"
+            ),
+            "schema_version": 2,
+            "candidate_id": alignment_id,
+            "workcell_calibration_revision": alignment_id,
+            "created_at_us": created_at_us,
+            "expires_at_us": expires_at_us,
+            "review_state": "CANDIDATE_REVIEW_REQUIRED",
+            "review_mode": review_mode,
+            "motion_usable": False,
+            "method": {
+                "skill_version": "0.7.0",
+                "base_pose_engine_route": self.base_pose_engine_route,
+                "run_mode": mode,
+            },
+            "frame_contract": {
+                "world_frame": f"world/stationary_camera/{alignment_id}",
+                "vio_world_frame": frame.world_frame,
+                "camera_frame": frame.camera_frame,
+                "arm_base_frame": self.config["arm_base_frame"],
+                "transform_semantics": "PARENT_FROM_CHILD",
+            },
+            "confidence": (
+                min(confidence_values) if confidence_values else None
+            ),
+            "bounded_error_estimate": {
+                "translation_m": (
+                    float(translation_bound)
+                    if isinstance(translation_bound, (int, float))
+                    else None
+                ),
+                "rotation_rad": (
+                    float(rotation_bound)
+                    if isinstance(rotation_bound, (int, float))
+                    else None
+                ),
+                "basis": quality_basis,
+            },
+            "quality_provenance": quality_provenance,
+            "camera_provenance": {
+                "provider_id": (
+                    route_observation.get("provider_id")
+                    if isinstance(route_observation, dict)
+                    else None
+                ),
+                "provider_instance_id": (
+                    route_observation.get("provider_instance_id")
+                    if isinstance(route_observation, dict)
+                    else None
+                ),
+                "boot_id": (
+                    route_observation.get("boot_id")
+                    if isinstance(route_observation, dict)
+                    else None
+                ),
+                "route_id": (
+                    selected_route.get("route_id")
+                    if isinstance(selected_route, dict)
+                    else None
+                ),
+                "calibration_revision": frame.calibration_revision,
+                "reference_timestamp_us": frame.timestamp_us,
+                "reference_frame_number": frame.frame_number,
+                "source_buffer_refs": source_buffer_refs,
+            },
+            "vio_provenance": {
+                "world_frame": frame.world_frame,
+                "session_epoch": frame.session_epoch,
+            },
+            "transforms": {
+                "world_from_camera": transform_payload(
+                    world_from_vio @ vio_from_camera_reference
+                ),
+                "world_from_vio": transform_payload(world_from_vio),
+                "world_from_base": transform_payload(world_from_base),
+            },
+        }
+
+    def _ancestor_candidate_quality(
+        self,
+        parent_alignment_id: Any,
+    ) -> dict[str, Any] | None:
+        """Find the nearest finite candidate quality record in the lineage."""
+
+        current_id = str(parent_alignment_id or "").strip()
+        visited: set[str] = set()
+        while current_id and current_id not in visited and len(visited) < 16:
+            visited.add(current_id)
+            result = self.store.get(current_id)
+            if not isinstance(result, dict):
+                return None
+            candidate = result.get("candidate")
+            bounds = (
+                candidate.get("bounded_error_estimate")
+                if isinstance(candidate, dict)
+                else None
+            )
+            confidence = (
+                candidate.get("confidence")
+                if isinstance(candidate, dict)
+                else None
+            )
+            translation = (
+                bounds.get("translation_m")
+                if isinstance(bounds, dict)
+                else None
+            )
+            rotation = (
+                bounds.get("rotation_rad")
+                if isinstance(bounds, dict)
+                else None
+            )
+            values = (confidence, translation, rotation)
+            if all(
+                isinstance(value, (int, float))
+                and np.isfinite(float(value))
+                for value in values
+            ):
+                return {
+                    "alignment_id": str(
+                        result.get("alignment_id") or current_id
+                    ),
+                    "candidate_id": str(
+                        candidate.get("candidate_id") or current_id
+                    ),
+                    "confidence": float(confidence),
+                    "translation_m": float(translation),
+                    "rotation_rad": float(rotation),
+                }
+            diagnostics = result.get("diagnostics")
+            current_id = str(
+                (
+                    diagnostics.get("parent_alignment_id")
+                    if isinstance(diagnostics, dict)
+                    else None
+                )
+                or ""
+            ).strip()
+        return None
+
+    def _prior_alignment_review_usable(
+        self,
+        prior: dict[str, Any],
+        workcell_calibrations: dict[str, Any],
+    ) -> bool:
+        review_mode = str(
+            (self.config.get("candidate_review") or {}).get("mode")
+            or "SHADOW"
+        ).upper()
+        if review_mode == "SHADOW":
+            return True
+        candidate_id = str(
+            (prior.get("candidate") or {}).get("candidate_id")
+            or prior.get("alignment_id")
+            or ""
+        )
+        session_epoch = str(prior.get("vio_session_epoch") or "")
+        now_us = time.time_ns() // 1000
+        for activation in workcell_calibrations.get("activations") or []:
+            if (
+                activation.get("state") == "ACTIVE"
+                and activation.get("motion_usable") is True
+                and str(activation.get("candidate_id") or "") == candidate_id
+                and str(activation.get("session_epoch") or "") == session_epoch
+                and int(activation.get("expires_at_us") or 0) > now_us
+            ):
+                return True
+        return False
+
+    def _manager_verified_prior_alignment(
+        self,
+        workcell_calibrations: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Select a prior that Manager previously activated after exact review."""
+
+        review_mode = str(
+            (self.config.get("candidate_review") or {}).get("mode")
+            or "SHADOW"
+        ).upper()
+        if review_mode == "SHADOW":
+            return self.store.latest()
+
+        activations = sorted(
+            workcell_calibrations.get("activations") or [],
+            key=lambda activation: (
+                int(activation.get("expires_at_us") or 0),
+                str(activation.get("activated_at") or ""),
+            ),
+            reverse=True,
+        )
+        for activation in activations:
+            if str(activation.get("state") or "") not in {
+                "ACTIVE",
+                "EXPIRED",
+            }:
+                continue
+            if str(activation.get("enforcement") or "") != "ENFORCED":
+                continue
+            if not str(activation.get("review_decision_id") or "").strip():
+                continue
+            candidate_id = str(activation.get("candidate_id") or "").strip()
+            candidate_sha256 = str(
+                activation.get("candidate_sha256") or ""
+            ).strip()
+            if not candidate_id or not candidate_sha256:
+                continue
+            prior = self.store.get(candidate_id)
+            if prior is None:
+                continue
+            candidate = prior.get("candidate")
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("candidate_id") or "") != candidate_id:
+                continue
+            if canonical_sha256(candidate) != candidate_sha256:
+                continue
+            return prior
+        return None
 
     async def _publish_pose_overlay(
         self,
@@ -1660,9 +2421,13 @@ class AlignmentSkill:
     async def _publish_result(self, result: dict[str, Any]) -> None:
         now_us = time.time_ns() // 1000
         self.sequence += 1
+        review_mode = str(
+            result.get("candidate_review_mode") or "SHADOW"
+        ).upper()
+        transform_suffix = ".candidate" if review_mode == "ENFORCED" else ""
         observations = [
             self._observation(
-                stream="transform.stationary_world.vio",
+                stream=f"transform.stationary_world.vio{transform_suffix}",
                 schema="physical_agent.transform",
                 observed_at_us=now_us,
                 coordinate_frame=result["world_frame"],
@@ -1675,11 +2440,16 @@ class AlignmentSkill:
                     "session_epoch": result["vio_session_epoch"],
                     "calibration_revision": result["alignment_id"],
                     "continuity": "CALIBRATION",
+                    "review_state": result["review_state"],
+                    "motion_usable": False,
+                    "expires_at_us": result["expires_at_us"],
                 },
                 related_skill_id=result["skill_id"],
             ),
             self._observation(
-                stream="transform.stationary_world.arm_base",
+                stream=(
+                    f"transform.stationary_world.arm_base{transform_suffix}"
+                ),
                 schema="physical_agent.transform",
                 observed_at_us=now_us,
                 coordinate_frame=result["world_frame"],
@@ -1692,6 +2462,9 @@ class AlignmentSkill:
                     "session_epoch": result["vio_session_epoch"],
                     "calibration_revision": result["alignment_id"],
                     "continuity": "CALIBRATION",
+                    "review_state": result["review_state"],
+                    "motion_usable": False,
+                    "expires_at_us": result["expires_at_us"],
                 },
                 related_skill_id=result["skill_id"],
             ),
@@ -1765,8 +2538,11 @@ class AlignmentSkill:
             raise asyncio.CancelledError
 
     async def close(self) -> None:
-        await asyncio.gather(
+        closers = [
             self.manager.close(),
             self.fabric.close(),
             self.foundation_health.close(),
-        )
+        ]
+        if self.local_foundation_engine is not None:
+            closers.append(self.local_foundation_engine.close())
+        await asyncio.gather(*closers)

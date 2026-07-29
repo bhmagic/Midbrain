@@ -14,14 +14,19 @@
     "mode_contract",
     "gripper_measurements",
     "gripper_cross_source_comparison",
-    "valid"
+    "valid",
+    "expires_at_us",
+    "review_state",
+    "candidate_review_mode",
+    "motion_usable",
+    "candidate"
   ],
   "properties": {
     "schema": {
       "const": "midbrain.skill.stationary_world_arm_alignment.result"
     },
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "alignment_id": {
       "type": "string"
@@ -81,6 +86,25 @@
     },
     "valid": {
       "const": true
+    },
+    "expires_at_us": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "review_state": {
+      "const": "CANDIDATE_REVIEW_REQUIRED"
+    },
+    "candidate_review_mode": {
+      "enum": [
+        "SHADOW",
+        "ENFORCED"
+      ]
+    },
+    "motion_usable": {
+      "const": false
+    },
+    "candidate": {
+      "$ref": "calibration_candidate.schema.json"
     }
   },
   "$defs": {

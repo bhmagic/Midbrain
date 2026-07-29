@@ -22,12 +22,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
+LOCAL_PYTHON_ROOT = Path(__file__).resolve().parent / "python"
+if str(LOCAL_PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(LOCAL_PYTHON_ROOT))
+
 import httpx
+import numpy as np
 
 from orbbec_femto_provider.device_calibration import (
     AccelerometerCalibration,
     DeviceIdentityError,
     load_or_create_accelerometer_calibration,
+)
+from orbbec_femto_provider.data_routes import (
+    DIRECT_RGBD_ROUTE_CAPABILITY,
+    GENERIC_RGBD_ROUTE_CAPABILITY,
+    build_direct_rgbd_route,
+    build_generic_rgbd_route,
+    build_rgbd_route_set,
 )
 from orbbec_femto_provider.shared_memory_access import (
     BufferRef,
@@ -64,6 +76,7 @@ class FemtoBoltProvider:
         self.ready = False
         self.last_error: Optional[str] = None
         self.manager_error: Optional[str] = None
+        self.route_publish_error: Optional[str] = None
         self.native_process: Optional[subprocess.Popen[str]] = None
         self.reader: Optional[CameraSharedMemory] = None
         self.http = httpx.Client(timeout=3.0)
@@ -85,6 +98,8 @@ class FemtoBoltProvider:
         self.bundle_sequence = 0
         self.last_rgbd_bundle_key: Optional[tuple[int, int, int]] = None
         self.last_imu_bundle_key: Optional[tuple[int, int]] = None
+        self.data_route_sequence = 0
+        self.last_data_route_publish_monotonic = 0.0
         self.latest_refs: dict[str, BufferRef] = {}
         self.latest_imu: dict[str, ImuSample] = {}
         self.readiness_details = self._empty_readiness()
@@ -112,6 +127,7 @@ class FemtoBoltProvider:
             json=self._status_payload(),
         )
         response.raise_for_status()
+        self._publish_rgbd_routes_best_effort(force=True)
 
     def start_hot(self) -> dict[str, Any]:
         with self.lock:
@@ -153,6 +169,7 @@ class FemtoBoltProvider:
             self.latest_imu.clear()
             self.last_rgbd_bundle_key = None
             self.last_imu_bundle_key = None
+            self.last_data_route_publish_monotonic = 0.0
             self._close_reader()
             self._stop_native(force=True)
 
@@ -225,6 +242,7 @@ class FemtoBoltProvider:
             self.last_error = "waiting for RGB and depth frames"
             self._refresh_readiness()
             self._heartbeat()
+            self._publish_rgbd_routes_best_effort(force=True)
             return {
                 "status": "hot",
                 "native_pid": self.native_process.pid,
@@ -238,6 +256,7 @@ class FemtoBoltProvider:
             self.residency = "WARM"
             self._close_reader()
             self._stop_native(force=False)
+            self._publish_rgbd_routes_best_effort(force=True)
             return {"status": "warm"}
 
     def stop(self) -> dict[str, Any]:
@@ -247,6 +266,7 @@ class FemtoBoltProvider:
             self.residency = "STOPPING"
             self._close_reader()
             self._stop_native(force=False)
+            self._publish_rgbd_routes_best_effort(force=True)
         return {"status": "stopping"}
 
     def run(self) -> int:
@@ -657,6 +677,7 @@ class FemtoBoltProvider:
             return
 
         self._refresh_readiness()
+        self._publish_rgbd_routes_best_effort()
         observations: list[dict[str, Any]] = []
 
         stream_specs = [
@@ -1043,6 +1064,152 @@ class FemtoBoltProvider:
             "data": data,
         }
 
+    def _direct_rgbd_route(self) -> dict[str, Any]:
+        readiness = self.readiness_details
+        return build_direct_rgbd_route(
+            provider_id=self.provider_id,
+            provider_instance_id=self.instance_id,
+            boot_id=self.boot_id,
+            mapping_name=self.args.mapping_name,
+            calibration_revision=self.calibration_revision,
+            rgb_ready=bool(readiness["rgb"] and self.residency == "HOT"),
+            depth_ready=bool(readiness["depth"] and self.residency == "HOT"),
+        )
+
+    def _generic_rgbd_route(self) -> dict[str, Any]:
+        def reference(name: str) -> dict[str, Any] | None:
+            current = self.latest_refs.get(name)
+            return current.to_dict() if current is not None else None
+
+        aligned_depth = self.latest_refs.get("aligned_depth")
+        custom_alignment = {
+            "implementation": "ORBBEC_ALIGN_FILTER",
+            "processing_location": "CAMERA_HOST_BEFORE_SHARED_MEMORY_PUBLISH",
+            "provider_writes_registered_product": True,
+            "note": aligned_depth.note if aligned_depth is not None else None,
+        }
+        if aligned_depth is not None:
+            custom_alignment.update(
+                self._aligned_depth_validity_metadata(aligned_depth)
+            )
+        return build_generic_rgbd_route(
+            provider_id=self.provider_id,
+            provider_instance_id=self.instance_id,
+            boot_id=self.boot_id,
+            mapping_name=self.args.mapping_name,
+            calibration_revision=self.calibration_revision,
+            rgb_reference=reference("rgb"),
+            depth_reference=reference("depth"),
+            ir_reference=reference("ir"),
+            aligned_depth_reference=reference("aligned_depth"),
+            custom_alignment=custom_alignment,
+        )
+
+    def _aligned_depth_validity_metadata(
+        self,
+        reference: BufferRef,
+    ) -> dict[str, Any]:
+        if self.reader is None:
+            return {
+                "validity_status": "SHARED_MEMORY_READER_UNAVAILABLE",
+            }
+        try:
+            payload = self.reader.read_ref(reference)
+            width = int(reference.width)
+            height = int(reference.height)
+            stride_bytes = int(reference.stride_bytes)
+            if min(width, height, stride_bytes) <= 0 or stride_bytes % 2 != 0:
+                raise RuntimeError("aligned-depth grid or stride is invalid")
+            required_bytes = height * stride_bytes
+            if len(payload) < required_bytes:
+                raise RuntimeError(
+                    "aligned-depth payload is shorter than its declared stride"
+                )
+            stride_values = stride_bytes // 2
+            values = np.frombuffer(
+                payload,
+                dtype="<u2",
+                count=height * stride_values,
+            ).reshape(height, stride_values)[:, :width]
+            valid = values > 0
+            valid_count = int(np.count_nonzero(valid))
+            if valid_count == 0:
+                return {
+                    "validity_status": "NO_VALID_DEPTH",
+                    "valid_fraction": 0.0,
+                    "source_generation": int(reference.generation),
+                    "source_frame_number": int(reference.frame_number),
+                }
+            rows, columns = np.nonzero(valid)
+            x0 = int(columns.min())
+            x1 = int(columns.max()) + 1
+            y0 = int(rows.min())
+            y1 = int(rows.max()) + 1
+            return {
+                "validity_status": "OBSERVED",
+                "valid_boundary": {
+                    "x": x0,
+                    "y": y0,
+                    "width": x1 - x0,
+                    "height": y1 - y0,
+                },
+                "valid_fraction": float(valid_count / (width * height)),
+                "boundary_method": "NONZERO_ALIGNED_DEPTH_AXIS_ALIGNED_BOUNDS",
+                "source_generation": int(reference.generation),
+                "source_frame_number": int(reference.frame_number),
+                "source_global_timestamp_us": int(
+                    reference.global_timestamp_us
+                ),
+                "source_system_timestamp_us": int(
+                    reference.system_timestamp_us
+                ),
+                "source_device_timestamp_us": int(
+                    reference.device_timestamp_us
+                ),
+            }
+        except Exception as error:
+            return {
+                "validity_status": "UNAVAILABLE",
+                "validity_error": str(error),
+                "source_generation": int(reference.generation),
+                "source_frame_number": int(reference.frame_number),
+            }
+
+    def _rgbd_routes(self) -> list[dict[str, Any]]:
+        return [self._direct_rgbd_route(), self._generic_rgbd_route()]
+
+    def _publish_rgbd_routes_best_effort(self, *, force: bool = False) -> None:
+        now_monotonic = time.monotonic()
+        if (
+            not force
+            and now_monotonic - self.last_data_route_publish_monotonic < 5.0
+        ):
+            return
+        self.last_data_route_publish_monotonic = now_monotonic
+        now_us = int(time.time() * 1_000_000)
+        routes = self._rgbd_routes()
+        route_set = build_rgbd_route_set(routes[0], routes[1])
+        observation = self._observation(
+            stream="camera.rgbd.data_routes",
+            schema="physical_agent.data_route_set",
+            sequence=self.data_route_sequence + 1,
+            observed_at_us=now_us,
+            calibration_revision=self.calibration_revision,
+            data=route_set,
+            freshness_ms=15_000,
+        )
+        try:
+            response = self.http.post(
+                f"{self.args.fabric_url}/v1/observations",
+                json=observation,
+            )
+            response.raise_for_status()
+        except Exception as error:
+            self.route_publish_error = f"RGB-D data-route publish failed: {error}"
+            return
+        self.data_route_sequence += 1
+        self.route_publish_error = None
+
     def _heartbeat(self) -> None:
         try:
             response = self.http.post(
@@ -1104,8 +1271,16 @@ class FemtoBoltProvider:
                     "camera.rgbd_geometry": r["calibration"],
                     "camera.rgbd.synchronized": r["rgbd_sync"],
                     "camera.rgbd.bundle": r["rgbd_sync"],
+                    GENERIC_RGBD_ROUTE_CAPABILITY: bool(
+                        self.residency == "HOT" and r["rgb"] and r["depth"]
+                    ),
+                    DIRECT_RGBD_ROUTE_CAPABILITY: bool(
+                        self.residency == "HOT" and r["rgb"] and r["depth"]
+                    ),
                     "camera.device_info": r["device_info"],
                 },
+                "data_routes": self._rgbd_routes(),
+                "route_publish_error": self.route_publish_error,
                 "configured_features": self._configured_features(),
                 "calibration_revision": self.calibration_revision,
                 "accelerometer_calibration": (

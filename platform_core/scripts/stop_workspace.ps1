@@ -1,4 +1,8 @@
-param([switch]$Quiet)
+param(
+    [switch]$Quiet,
+    [switch]$UseManagerShutdownExecution,
+    [switch]$UseLocalShutdownFallback
+)
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $workspace = Get-WorkspaceRoot
@@ -64,7 +68,117 @@ catch {
     }
 }
 
-if ($managerReachable) {
+$managerSequenceComplete = $false
+if ($UseManagerShutdownExecution -and $UseLocalShutdownFallback) {
+    throw (
+        "-UseManagerShutdownExecution and -UseLocalShutdownFallback are " +
+        "mutually exclusive."
+    )
+}
+
+$managerExecutionRequested = [bool]$UseManagerShutdownExecution
+$managerHealth = $null
+if ($managerReachable -and -not $UseLocalShutdownFallback) {
+    $managerHealth = Invoke-RestMethod `
+        -Uri "http://127.0.0.1:7001/health" `
+        -TimeoutSec 3
+    if ([bool]$managerHealth.shutdown_execution_enabled) {
+        $managerExecutionRequested = $true
+    }
+}
+elseif ($UseManagerShutdownExecution -and -not $managerReachable) {
+    throw "Manager shutdown execution was explicitly requested, but Manager is unavailable."
+}
+
+if ($managerReachable -and $managerExecutionRequested) {
+    if ($null -eq $managerHealth) {
+        $managerHealth = Invoke-RestMethod `
+            -Uri "http://127.0.0.1:7001/health" `
+            -TimeoutSec 3
+    }
+    if (-not [bool]$managerHealth.shutdown_execution_enabled) {
+        throw (
+            "Manager shutdown execution is disabled. " +
+            "The local safety fallback remains available with " +
+            "-UseLocalShutdownFallback."
+        )
+    }
+
+    $requestId = [guid]::NewGuid().ToString()
+    $planRequest = @{
+        owner_id = "workspace-supervisor"
+        reason = "ordered workspace shutdown"
+        request_id = $requestId
+    } | ConvertTo-Json
+    $plan = Invoke-RestMethod `
+        -Method Post `
+        -Uri "http://127.0.0.1:7001/v1/shutdown/plan" `
+        -ContentType "application/json" `
+        -Body $planRequest `
+        -TimeoutSec 5
+    if (@($plan.blockers).Count -gt 0) {
+        throw (
+            "Manager shutdown plan is blocked. Core remains active. Details: " +
+            (@($plan.blockers) -join "; ")
+        )
+    }
+
+    $executionRequest = @{
+        request_id = [guid]::NewGuid().ToString()
+        confirmation = "EXECUTE_MANAGER_PROVIDER_SHUTDOWN"
+    } | ConvertTo-Json
+    $execution = Invoke-RestMethod `
+        -Method Post `
+        -Uri "http://127.0.0.1:7001/v1/shutdown/$($plan.shutdown_id)/execute" `
+        -ContentType "application/json" `
+        -Body $executionRequest `
+        -TimeoutSec 5
+
+    $providerTimeoutSeconds = 0
+    foreach ($provider in $providers) {
+        $providerTimeoutSeconds += Get-ProviderStopTimeoutSeconds $provider
+        $safeStateTimeout = $provider.config.PSObject.Properties["safe_state_timeout_ms"]
+        if ($null -ne $safeStateTimeout) {
+            $providerTimeoutSeconds += [Math]::Ceiling(
+                [Math]::Max(1000, [int]$safeStateTimeout.Value) / 1000.0
+            )
+        }
+    }
+    $executionDeadline = (Get-Date).AddSeconds(
+        [Math]::Min(180, [Math]::Max(20, $providerTimeoutSeconds + 10))
+    )
+    do {
+        $execution = Invoke-RestMethod `
+            -Uri "http://127.0.0.1:7001/v1/shutdown/executions/$($execution.execution_id)" `
+            -TimeoutSec 3
+        if ($execution.state -in @("AWAITING_SUPERVISOR")) {
+            $managerSequenceComplete = $true
+            break
+        }
+        if (
+            $execution.state -in @(
+                "BLOCKED_SAFETY_SUPPORT_RETAINED",
+                "PARTIAL_FAILURE_AWAITING_SUPERVISOR"
+            )
+        ) {
+            throw (
+                "Manager shutdown execution did not fully complete. " +
+                "Core remains active. state=$($execution.state), failures=" +
+                (@($execution.failures) -join "; ")
+            )
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $executionDeadline)
+
+    if (-not $managerSequenceComplete) {
+        throw (
+            "Timed out waiting for Manager shutdown execution. " +
+            "Core remains active; last state=$($execution.state)"
+        )
+    }
+}
+
+if ($managerReachable -and -not $managerSequenceComplete) {
     $orderedProviders = @(
         $providers | Sort-Object `
             @{ Expression = { Get-ProviderStopPriority ([string]$_.config.id) } }, `

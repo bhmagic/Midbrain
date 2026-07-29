@@ -1,6 +1,43 @@
 # Build and Validation Report
 
-Date: 2026-07-26
+Date: 2026-07-29
+
+## Phase 5 guarded-agent checkpoint — 2026-07-29
+
+### System changes
+
+- Added descriptive Skill discovery, policy-enforced authorization decisions, fenced lease lineage, auditable direct control submission, and bounded service lifecycle helpers.
+- Moved reusable arm path planning and motion-quality enforcement into the Integrated Controller.
+- Added shared-memory RGB-D route advertisement with independent RGB, depth, and IR geometry plus alignment metadata and an Orbbec-specific direct fallback.
+- Added stationary workcell alignment, RGB-D registration, tool-to-control-frame registration, and general VLM observation boundaries.
+- Kept large image/depth payloads out of Fabric. Fabric carries timestamps, shared-memory references, route metadata, transforms, decisions, and audit state.
+- Added detailed component changelogs and phase records under `docs/reference/project_notes`.
+
+### Guarded physical evidence
+
+- A real OpenAI Agents SDK run selected `execute_reviewed_observation_motion` with only a reviewed decision identifier exposed as the action argument.
+- The reviewed no-contact toilet-paper standoff plan completed all 40 trajectory stages with a reported 0.07943 m minimum clearance, 0.001185 m terminal position error, and approximately 0.099942 m remaining standoff.
+- A later operator-authorized vertical lift was limited by preview: 20 cm was outside the workspace and 19/15/14 cm plans were rejected by singularity, residual, or joint-travel gates. The accepted 13 cm plan produced approximately 12.67 cm measured displacement.
+- The arm then completed safe-home, confirmed gravity float, and all Midbrain/Test Agent processes and endpoints were shut down.
+- The observed physical vertical for this installation mapped primarily to arm-base `+X`; that observation is not a general frame contract.
+
+### Remaining boundary
+
+- Cartesian direction understanding and alignment are not solved generally. Every motion request still needs explicit source/target frames, timestamped transform provenance, uncertainty, and a resolved numeric vector before autonomous use.
+- Natural-language directional commands remain a reviewed development feature rather than an autonomous safety boundary.
+- The slice-cutting Skill and structured task-specific action-point VLM prompts remain deferred.
+- Machine-local API keys, active configuration, device-specific calibration, captures, logs, and runtime state are not publication artifacts.
+
+### Publication validation
+
+- Clean-configuration baseline audit passed after synchronizing the root, platform-core, and Test Agent public templates; all API-key fields remain blank.
+- Python compilation passed for 183 publication files, JSON parsing passed for 52 publication files, and PowerShell parsing passed for 80 publication files.
+- The exact publication candidate passed all 439 Python tests across all 62 published test files: RGB-D/Local VIO 41, Basic/Integrated arm 178, publishable finite Skills 84, Test Agent 93, and FoundationPose 43.
+- All 30 Rust tests passed, Rust formatting passed, and the release workspace build succeeded.
+- The complete stopped publication floor is `469/469`.
+- The wider local workspace also passed 109 vegetable-cutting tests. Those tests and the prototype remain local, producing a full local stopped floor of `578/578`.
+- CI now installs the Agents SDK and Google GenAI dependencies, exposes all current cross-package source roots, and uses isolated pytest imports.
+- Credential screening found no active configuration files, key-shaped tokens, or private-key material in the publication set. The two files over 50 MB are the existing Git-LFS FoundationPose model checkpoints.
 
 ## Clean-configuration completeness audit - 2026-07-26
 

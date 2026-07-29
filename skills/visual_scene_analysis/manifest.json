@@ -1,0 +1,63 @@
+{
+  "skill_type": "visual_scene_analysis",
+  "version": "0.1.0",
+  "display_name": "Current Visual Scene Analysis",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "analyze_visual_scene",
+    "description": "Answer a bounded visual question from one current RGB camera frame through the configured vision-language router. Use this read-only Skill when visible evidence is sufficient; it reports backend provenance and uncertainty and does not infer depth or move the robot.",
+    "when_to_use": [
+      "The user asks a visual question about the current camera scene.",
+      "A finite Skill needs one routed VLM interpretation with backend provenance."
+    ],
+    "when_not_to_use": [
+      "The task requires metric depth, a registered 3D point, continuous tracking, or physical motion.",
+      "Deterministic geometry or a non-VLM sensor can answer more reliably."
+    ],
+    "side_effects": [
+      "Reads one current RGB frame from provider shared memory.",
+      "Calls one configured VLM backend, with ordered fallback on failure.",
+      "Writes a local diagnostic screenshot."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "vlm.call"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The complete bounded question about visible evidence."
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.visual_scene_analysis.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "vlm_routing": {
+    "selection": "ORDERED_CONFIGURED_BACKENDS",
+    "fallback": "NEXT_BACKEND_ON_FAILURE",
+    "result_provenance_required": true,
+    "quality_control_voting": "OFF_FUTURE"
+  },
+  "published_streams": []
+}

@@ -30,10 +30,13 @@ if ($LASTEXITCODE -ne 0 -or -not $SitePackages) {
     throw "Could not resolve the Skill virtual environment's site-packages folder."
 }
 $OrbbecPython = (Resolve-Path (Join-Path $WorkspaceRoot "providers\orbbec_femto_bolt\python")).Path
-$PathFile = Join-Path $SitePackages "midbrain_orbbec_femto_local.pth"
+$FoundationPosePython = (
+    Resolve-Path (Join-Path $WorkspaceRoot "providers\foundation_pose\python")
+).Path
+$PathFile = Join-Path $SitePackages "midbrain_stationary_local_dependencies.pth"
 [System.IO.File]::WriteAllText(
     $PathFile,
-    "$OrbbecPython`n",
+    "$OrbbecPython`n$FoundationPosePython`n",
     [System.Text.UTF8Encoding]::new($false)
 )
 

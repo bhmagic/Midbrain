@@ -1,0 +1,80 @@
+{
+  "skill_type": "locate_effector_front",
+  "version": "0.1.0",
+  "display_name": "Locate Effector Front",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "locate_effector_front",
+    "description": "Locate the most distal visible point of the current robot effector, mounted tool, or held tool that still has reliable registered-depth evidence. Returns one registered front point, or two points and their 3D mean for a bare two-jaw gripper. This is general alignment evidence, not a task-specific drill, hammer, blade, or other action point.",
+    "when_to_use": [
+      "A stationary alignment or registration task needs the general front reference of the visible effector assembly.",
+      "A reflective or thin tool tip has missing depth and the most distal reliable point on the same rigid tool body is needed.",
+      "A bare two-jaw gripper needs both front points registered before their 3D average is used."
+    ],
+    "when_not_to_use": [
+      "The task needs a drill tip, hammer face, cutting edge, nozzle, or another task-specific action point.",
+      "The effector or held tool is moving relative to the captured frame.",
+      "The result would be treated as motion authorization or a published control frame."
+    ],
+    "side_effects": [
+      "Reads one synchronized RGB and registered-depth frame plus timestamped transform evidence.",
+      "Calls one configured VLM route with bounded backend fallback.",
+      "Returns read-only point evidence and does not command or authorize motion."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "vlm.invoke"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target_frame": {
+          "type": "string",
+          "description": "Calibrated target frame in which to return the registered front reference."
+        }
+      },
+      "required": [
+        "target_frame"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.locate_effector_front.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/locate_effector_front/landmark.py"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "world.transforms.timestamped",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "result_policy": {
+    "motion_usable": false,
+    "publishes_control_frame": false,
+    "specialized_action_point": false,
+    "paired_gripper_reference": "MEAN_OF_REGISTERED_3D_POINTS",
+    "source_timestamp_preserved": true
+  },
+  "published_streams": []
+}

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.16 — Phase 5 guarded-agent checkpoint (2026-07-29)
+
+- Added formal Agent Skill discovery and large-data route-advertisement contracts. Agent selection follows descriptive Skill metadata, with explicit provider IDs retained as a fallback.
+- Kept RGB-D payloads in shared memory while publishing timestamps, buffer references, channel geometry, alignment metadata, and direct Orbbec fallback routes through Fabric.
+- Added Manager authorization decisions, lease lineage, denial/invalidation handling, and global safe-termination ownership.
+- Moved reusable Cartesian planning, velocity limiting, singularity checks, workspace checks, collision preview, endpoint-jump checks, and command audit into the Integrated Controller.
+- Added a durable audit copy of submitted control intent and the controller/provider acknowledgements without routing the latency-sensitive control loop through Fabric.
+- Added the Stationary World-Space Arm Alignment, RGB-D Registration, Tool-to-Control-Frame Registration, and General VLM Observation Skills, with browser-based development interfaces following the neutral dark theme.
+- Narrowed the OpenAI Agents SDK execution surface to a reviewed decision ID. The model selected the Skill; policy and motion authority remained deterministic and server-side.
+- Completed an operator-observed no-contact toilet-paper standoff trial, a measured 12.67 cm vertical lift from the tested pose, safe-home, gravity-float verification, and full service shutdown.
+- Preserved error behavior in which loss/fault paths prefer gravity float, while non-error control retains the current mode until a later command.
+- Documented remaining Agent SDK roadblocks, component changes, authority lineage, and the unresolved Cartesian-axis/alignment problem under `docs/reference/project_notes`.
+- Kept machine-local `config/api_keys.env`, `config/system.env`, active `config/providers.json`, calibration, captures, logs, and runtime state outside the publication.
+- Synchronized public configuration templates with blank secret fields, fixed
+  an ambiguous Orbbec test import, expanded CI to the current component graph,
+  and enabled isolated pytest imports for same-named package tests.
+- Passed the exact stopped `469/469` publication matrix and the wider
+  `578/578` local matrix, plus source parsers, Rust formatting, and Rust
+  release build.
+
 ## Cross-provider alignment and shutdown hardening (2026-07-26)
 
 - Updated the Stationary World-Space Arm Finder to publish the immutable full `vio_from_camera_reference` pose captured with alignment RGB-D evidence. Downstream fixed-camera Skills no longer need to combine a saved alignment with a later, drifted VIO pose.

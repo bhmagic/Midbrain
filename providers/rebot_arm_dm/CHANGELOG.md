@@ -1,7 +1,13 @@
 # Changelog
 
-## 0.1.20
+## 0.1.20 - 2026-07-29
 
+- Treats a gripper FORCE_POS `velocity_limit_rad_s` request as a physical
+  ceiling, translates it to the hardware-native velocity field with an
+  explicit conservative scale, and applies a measured-feedback hysteretic
+  brake/hold until speed falls below the resume threshold.
+- Exposes gripper speed-guard requested/native limits, measured and peak speed,
+  hold position, trip count, and last-trip telemetry.
 - Treats missing register-10 mode confirmation as a bounded transient serial error and retries up to twice with a 10 ms gap before declaring the motor mode unknown.
 - Adds a dedicated physical-test POS_TOR ratio ceiling of 1.0 for J1-J6 and 0.2 for the gripper. Arm requests may now use the configured motor peak envelope (27 Nm on J1-J3 and 7 Nm on J4-J6), while each command still carries the smaller ratio calculated from baseline plus the operator's external-force budget.
 - Retries exact Windows serial `device does not recognize the command` / `os error 22` and semaphore-timeout failures up to twice with the same bounded 10 ms retry.
@@ -16,6 +22,16 @@
 - Records and prints control-fault counts, timestamps, fallback failures, and hardware-I/O counters.
 - Stages motor-side mode changes one joint per control tick and refreshes every other joint hold before the register confirmation. Endpoint motion begins only after all requested modes are confirmed.
 - Exposes active modes, pending float transitions, mode-switch attempts/failures, and transition telemetry.
+- Physically exercised gripper motion, lease transfer, controller handover,
+  upstream-loss behavior, bounded Cartesian raises, and return-to-safe-home
+  behavior in the padded guarded workcell. No uncontrolled drop was observed
+  during the completed handovers.
+- Preserved powered endpoint support through normal non-error handovers. Error
+  handling continues to prefer the existing gravity-supported fallback.
+  Safe-home preserves the measured gripper angle instead of forcing a clamp.
+- Confirmed the final Basic safe-home after the Agent SDK checkpoint and
+  bounded shutdown lift. The authoritative helper stopped the Basic process
+  only after safe-home success.
 
 - Preserves the 0.1.19 Basic hardware/safety architecture.
 - Adds fenced payload mass/tool-frame COM API under the operational lease.

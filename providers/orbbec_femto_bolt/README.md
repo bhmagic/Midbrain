@@ -20,9 +20,22 @@ This replaceable package exposes the camera's complete practical sensory data pl
 
 Large payloads remain in Windows named shared memory. The Fabric carries generation-validated `BufferRef` metadata only.
 
+The provider publishes one atomic `camera.rgbd.data_routes` route-set
+observation. It contains both the generic flexible-grid shared-memory
+descriptor and the Orbbec-specific named-memory reader. The generic route is
+preferred when the consumer supports it; the branded route remains an
+explicit-provider compatibility fallback. Publishing both in one observation
+prevents the Fabric's latest-value stream semantics from hiding either route.
+
+The generic descriptor does not require RGB, IR, native depth, or registered
+depth to share resolution, aspect ratio, valid boundary, or capture timestamp.
+It carries provider-written alignment metadata, including custom valid-region
+information. Discovery goes through the Fabric, while all large RGB-D payloads
+remain in shared memory.
+
 ## Release status
 
-Version 0.3.1 is the current integrated source baseline. The native C++ paths, shared-memory layout v2, IR, aligned-depth, point-cloud, metadata, transforms, and calibration utility must be built and verified on the target Windows/Femto Bolt machine before they are used as a safety-relevant perception source.
+Version 0.2.0 is a source-level release candidate. Version 0.1.6 remains the last hardware-confirmed rollback baseline. The new native C++ paths, shared-memory layout v2, IR, aligned-depth, point-cloud, metadata, and calibration extensions must be built and verified on the target Windows/Femto Bolt machine before they are used as a safety-relevant perception source.
 
 ## Install or replace
 

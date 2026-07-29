@@ -27,6 +27,15 @@ def configuration():
     return ArmConfiguration.load(ROOT/'config_templates'/'arm_model.factory.json',ROOT/'config_templates'/'arm_calibration.initial.json')
 
 
+def wait_for(predicate, timeout=1.5):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 class CoreTests(unittest.TestCase):
     def test_hardware_io_telemetry_counts_feedback_and_command_frames(self):
         backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
@@ -268,6 +277,175 @@ class CoreTests(unittest.TestCase):
         controller._apply_pending_locked(envelope)
         self.assertEqual(backend.pos_vel_calls, 2)
 
+    def test_gripper_position_effort_uses_provider_owned_rate_ramp(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.active_command_modes = ["IMPEDANCE"] * 7
+        controller.active_command_modes[6] = "POSITION_EFFORT_LIMITED"
+        start = float(controller.feedback.positions_rad[6])
+        velocity_limit = 0.1
+        target = start - 0.5
+        command = JointCommand(
+            "POSITION_EFFORT_LIMITED",
+            self.config.validate_joint_command(
+                6,
+                "POSITION_EFFORT_LIMITED",
+                {
+                    "position_rad": target,
+                    "velocity_limit_rad_s": velocity_limit,
+                    "torque_limit_ratio": 0.1,
+                },
+            ),
+        )
+        envelope = CommandEnvelope(
+            "gripper-rate-ramp",
+            "unused",
+            0,
+            {6: command},
+            time.monotonic() + 1.0,
+        )
+
+        controller._apply_pending_locked(envelope)
+        first = float(backend.commands[6]["position"])
+        controller._apply_pending_locked(envelope)
+        second = float(backend.commands[6]["position"])
+
+        step = velocity_limit * controller.period
+        self.assertAlmostEqual(first, start - step, delta=1e-12)
+        self.assertAlmostEqual(second, start - 2.0 * step, delta=1e-12)
+        self.assertAlmostEqual(
+            float(backend.commands[6]["vlim"]),
+            velocity_limit
+            * controller.gripper_force_position_native_velocity_scale,
+            delta=1e-12,
+        )
+        telemetry = controller.snapshot()["latched_endpoint_output"]
+        self.assertEqual(
+            telemetry["gripper_position_effort_rate_policy"],
+            "PROVIDER_RAMP_NATIVE_TRANSLATION_AND_MEASURED_SPEED_GUARD",
+        )
+        guard = telemetry["gripper_measured_speed_guard"]
+        self.assertFalse(guard["active"])
+        self.assertEqual(guard["trip_count"], 0)
+        self.assertAlmostEqual(guard["requested_limit_rad_s"], velocity_limit)
+        self.assertAlmostEqual(
+            guard["native_limit_rad_s"],
+            velocity_limit
+            * controller.gripper_force_position_native_velocity_scale,
+        )
+
+    def test_gripper_position_effort_brakes_on_measured_speed_and_resumes_with_hysteresis(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.active_command_modes = ["IMPEDANCE"] * 7
+        controller.active_command_modes[6] = "POSITION_EFFORT_LIMITED"
+        velocity_limit = 0.2
+        start = float(controller.feedback.positions_rad[6])
+        target = start - 0.5
+        command = JointCommand(
+            "POSITION_EFFORT_LIMITED",
+            self.config.validate_joint_command(
+                6,
+                "POSITION_EFFORT_LIMITED",
+                {
+                    "position_rad": target,
+                    "velocity_limit_rad_s": velocity_limit,
+                    "torque_limit_ratio": 0.1,
+                },
+            ),
+        )
+        envelope = CommandEnvelope(
+            "gripper-measured-speed-guard",
+            "unused",
+            0,
+            {6: command},
+            time.monotonic() + 1.0,
+        )
+
+        controller.feedback.velocities_rad_s[6] = velocity_limit + 0.01
+        controller._apply_pending_locked(envelope)
+        hold_position = float(controller.feedback.positions_rad[6])
+        self.assertTrue(controller.gripper_velocity_guard_active)
+        self.assertAlmostEqual(
+            float(backend.commands[6]["position"]),
+            hold_position,
+            delta=1e-12,
+        )
+
+        controller.feedback.positions_rad[6] = hold_position - 0.02
+        controller.feedback.velocities_rad_s[6] = velocity_limit * 0.9
+        controller._apply_pending_locked(envelope)
+        self.assertTrue(controller.gripper_velocity_guard_active)
+        self.assertAlmostEqual(
+            float(backend.commands[6]["position"]),
+            hold_position,
+            delta=1e-12,
+        )
+
+        controller.feedback.velocities_rad_s[6] = velocity_limit * 0.7
+        controller._apply_pending_locked(envelope)
+        expected = (
+            float(controller.feedback.positions_rad[6])
+            - velocity_limit * controller.period
+        )
+        self.assertFalse(controller.gripper_velocity_guard_active)
+        self.assertAlmostEqual(
+            float(backend.commands[6]["position"]),
+            expected,
+            delta=1e-12,
+        )
+        guard = controller.snapshot()["latched_endpoint_output"][
+            "gripper_measured_speed_guard"
+        ]
+        self.assertEqual(guard["trip_count"], 1)
+        self.assertGreaterEqual(
+            guard["peak_measured_rad_s"],
+            velocity_limit + 0.01,
+        )
+
+    def test_arm_position_effort_retains_latched_native_endpoint(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.active_command_modes = ["IMPEDANCE"] * 7
+        controller.active_command_modes[3] = "POSITION_EFFORT_LIMITED"
+        target = float(controller.feedback.positions_rad[3]) + 0.1
+        command = JointCommand(
+            "POSITION_EFFORT_LIMITED",
+            self.config.validate_joint_command(
+                3,
+                "POSITION_EFFORT_LIMITED",
+                {
+                    "position_rad": target,
+                    "velocity_limit_rad_s": 0.1,
+                    "torque_limit_ratio": 0.1,
+                },
+            ),
+        )
+        envelope = CommandEnvelope(
+            "arm-native-endpoint",
+            "unused",
+            0,
+            {3: command},
+            time.monotonic() + 1.0,
+        )
+
+        controller._apply_pending_locked(envelope)
+
+        self.assertAlmostEqual(
+            float(backend.commands[3]["position"]),
+            target,
+            delta=1e-12,
+        )
+
     def test_snapshot_returns_cached_fault_telemetry_while_motor_io_holds_control_lock(self):
         backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
         backend.connect()
@@ -480,6 +658,22 @@ class CoreTests(unittest.TestCase):
         controller.submit(CommandEnvelope('move',lease.lease_id,lease.fencing_generation,{3:JointCommand('POSITION_VELOCITY_LIMITED',{'position_rad':0.2,'velocity_limit_rad_s':0.3})},time.monotonic()+1.5))
         time.sleep(0.8); self.assertTrue(controller.safe_home(8.0)); self.assertLess(abs(controller.snapshot()['positions_rad'][3]),0.08); controller.close(force=True)
 
+    def test_safe_home_caller_can_only_reduce_configured_velocity_limit(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        self.assertTrue(controller.safe_home(1.0,max_velocity_rad_s=0.125))
+        result=controller.snapshot()['last_safe_home_result']
+        self.assertAlmostEqual(result['requested_max_velocity_rad_s'],0.125)
+        self.assertAlmostEqual(result['effective_max_velocity_rad_s'],0.125)
+        configured=float(self.config.model['control']['safe_home_max_velocity_rad_s'])
+        self.assertTrue(controller.safe_home(1.0,max_velocity_rad_s=configured+1.0))
+        result=controller.snapshot()['last_safe_home_result']
+        self.assertAlmostEqual(result['effective_max_velocity_rad_s'],configured)
+        with self.assertRaisesRegex(ValueError,'max_velocity_rad_s'):
+            controller.safe_home(1.0,max_velocity_rad_s=0.0)
+        controller.close(force=True)
+
     def test_safe_home_fences_active_lease_before_first_supported_frame(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
@@ -518,23 +712,98 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         controller.state=ProviderState.SAFE_HOME
-        lease=controller.acquire_lease('late-integrated-command',6000)
-        command=CommandEnvelope(
-            'late-gripper-keepalive',
-            lease.lease_id,
-            lease.fencing_generation,
-            {6:JointCommand('IMPEDANCE',{
-                'position_rad':float(self.config.home_positions[6]),
-                'velocity_rad_s':0.0,
-                'target_rate_limit_rad_s':0.25,
-                'kp':8.0,
-                'kd':1.0,
-                'feedforward_torque_nm':0.0,
-            })},
-            time.monotonic()+0.5,
+        with self.assertRaises(LeasePermissionError) as raised:
+            controller.acquire_lease('late-integrated-command',6000)
+        self.assertEqual(raised.exception.error_code,'OPERATIONAL_CONTROL_BLOCKED')
+        self.assertIsNone(controller.lease)
+
+    def test_safe_home_excludes_concurrent_operational_reacquisition(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        with backend.lock:
+            backend.position[5]=-0.35
+            backend.velocity[5]=0.0
+        self.assertTrue(
+            wait_for(
+                lambda: abs(controller.snapshot()['positions_rad'][5]+0.35)<0.03,
+                1.0,
+            )
         )
-        with self.assertRaisesRegex(RuntimeError,'SAFE_HOME'):
-            controller.submit(command)
+        result=[]
+        worker=threading.Thread(target=lambda:result.append(controller.safe_home(8.0)))
+        worker.start()
+        self.assertTrue(
+            wait_for(
+                lambda: controller.snapshot()['last_safe_home_result']['active'],
+                1.0,
+            )
+        )
+        with self.assertRaises(LeasePermissionError) as raised:
+            controller.acquire_lease('integrated-background-reacquire',6000)
+        self.assertEqual(raised.exception.error_code,'OPERATIONAL_CONTROL_BLOCKED')
+        worker.join(10.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result,[True])
+        state=controller.snapshot()
+        self.assertIsNone(state['lease'])
+        self.assertIsNone(state['lease_diagnostics']['operational_control_block_reason'])
+        self.assertTrue(state['last_safe_home_result']['success'])
+        controller.close(force=True)
+
+    def test_gravity_float_explicitly_cancels_safe_home_writer(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        with backend.lock:
+            backend.position[5]=-0.35
+            backend.velocity[5]=0.0
+        self.assertTrue(
+            wait_for(
+                lambda: abs(controller.snapshot()['positions_rad'][5]+0.35)<0.03,
+                1.0,
+            )
+        )
+        result=[]
+        worker=threading.Thread(target=lambda:result.append(controller.safe_home(8.0)))
+        worker.start()
+        self.assertTrue(
+            wait_for(
+                lambda: controller.snapshot()['last_safe_home_result']['active'],
+                1.0,
+            )
+        )
+        controller.request_gravity_float('explicit safety cancellation')
+        worker.join(2.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result,[False])
+        state=controller.snapshot()
+        self.assertEqual(state['provider_state'],ProviderState.SAFE_HOLD_GRAVITY_FLOAT.value)
+        self.assertIn('cancelled',state['last_safe_home_result']['reason'])
+        self.assertIsNone(state['lease_diagnostics']['operational_control_block_reason'])
+        controller.close(force=True)
+
+    def test_service_lease_acquisition_cannot_replace_active_safe_home(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.state=ProviderState.SAFE_HOME
+        with tempfile.TemporaryDirectory() as temp:
+            service=ArmProviderService(
+                self.config,controller,self.kin,Path(temp)/'calibration.json',
+                '127.0.0.1',0,None,None,True,True
+            )
+            service.manager_registered=True
+            with patch.object(
+                controller,
+                'request_gravity_float',
+                side_effect=AssertionError('rejected acquisition must not change control state'),
+            ):
+                with self.assertRaises(LeasePermissionError) as raised:
+                    service.acquire_operational_lease(
+                        {'holder':'integrated-background-reacquire','duration_ms':6000}
+                    )
+            self.assertEqual(raised.exception.error_code,'OPERATIONAL_CONTROL_BLOCKED')
+            self.assertEqual(controller.state,ProviderState.SAFE_HOME)
 
     def test_warm_release_and_hot_reconnect(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque); controller=ArmController(self.config,backend,self.dyn); controller.start()
@@ -1051,6 +1320,33 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(np.all(first_kp>=floors))
         self.assertTrue(np.all(first_kd>=0.0))
         controller.close(force=True)
+
+    def test_safe_home_preserves_gripper_angle_instead_of_clamping(self):
+        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
+        backend.connect(); backend.enable()
+        preserved=-1.2
+        with backend.lock:
+            backend.position[6]=preserved
+            backend.velocity[6]=0.0
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.feedback=backend.read()
+        controller.state=ProviderState.READ_ONLY
+        records=[]
+        original=controller._send_supported_mit_target_locked
+
+        def wrapped(target,kp,kd):
+            records.append(np.asarray(target,dtype=float).copy())
+            return original(target,kp,kd)
+
+        controller._send_supported_mit_target_locked=wrapped
+        self.assertTrue(controller.safe_home(1.0))
+        self.assertTrue(records)
+        self.assertTrue(
+            all(abs(float(target[6])-preserved)<1e-12 for target in records)
+        )
+        result=controller.snapshot()["last_safe_home_result"]
+        self.assertEqual(result["gripper_policy"],"PRESERVE_MEASURED_ANGLE")
+        self.assertAlmostEqual(result["gripper_target_rad"],preserved,delta=1e-12)
 
     def test_graceful_stop_sends_supported_frame_immediately_before_disable(self):
         class RecordingBackend(SimulationBackend):

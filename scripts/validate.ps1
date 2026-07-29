@@ -80,16 +80,39 @@ Write-Host "JSON files parsed: $($jsonFiles.Count)"
 if (-not $SkipPython) {
     Write-Host "[3/6] Running Python checks and tests"
     $python = Get-ValidationPython
-    Invoke-Checked -FilePath $python -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel", "build", "pytest")
-    Invoke-Checked -FilePath $python -Arguments @("-m", "pip", "install", "-e", (Join-Path $workspace "providers\orbbec_femto_bolt\python"))
-    Invoke-Checked -FilePath $python -Arguments @("-m", "pip", "install", "-e", (Join-Path $workspace "providers\local_vio\python"))
-    Invoke-Checked -FilePath $python -Arguments @("-m", "pip", "install", "-e", (Join-Path $workspace "test_agent\python"))
+    Invoke-Checked -FilePath $python -Arguments @(
+        "-m", "pip", "install", "--upgrade",
+        "pip", "setuptools", "wheel", "build", "pytest",
+        "numpy", "httpx", "Pillow", "opencv-python-headless", "fastapi",
+        "uvicorn", "python-dotenv", "openai-agents", "google-genai"
+    )
+    foreach ($package in @(
+        "providers\orbbec_femto_bolt\python",
+        "providers\local_vio\python",
+        "providers\rebot_arm_dm\python",
+        "providers\rebot_arm_integrated\python",
+        "skills\spatial_registration_rgbd",
+        "skills\locate-effector-front",
+        "skills\register_tool_to_control_frame",
+        "skills\stationary_world_arm_alignment",
+        "test_agent\python"
+    )) {
+        Invoke-Checked -FilePath $python -Arguments @(
+            "-m", "pip", "install", "-e", (Join-Path $workspace $package)
+        )
+    }
 
     $pythonPathEntries = @(
         (Join-Path $workspace "providers\local_vio"),
         (Join-Path $workspace "providers\local_vio\python"),
         (Join-Path $workspace "providers\orbbec_femto_bolt"),
         (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
+        (Join-Path $workspace "providers\rebot_arm_dm\python"),
+        (Join-Path $workspace "providers\rebot_arm_integrated\python"),
+        (Join-Path $workspace "skills\locate-effector-front\python"),
+        (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
+        (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
+        (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
         (Join-Path $workspace "test_agent\python")
     )
     $previousPythonPath = $env:PYTHONPATH
@@ -99,12 +122,24 @@ if (-not $SkipPython) {
             "-m", "compileall", "-q",
             (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
             (Join-Path $workspace "providers\local_vio\python"),
+            (Join-Path $workspace "providers\rebot_arm_dm\python"),
+            (Join-Path $workspace "providers\rebot_arm_integrated\python"),
+            (Join-Path $workspace "skills\locate-effector-front\python"),
+            (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
+            (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
+            (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
             (Join-Path $workspace "test_agent\python")
         )
         Invoke-Checked -FilePath $python -Arguments @(
-            "-m", "pytest", "-q",
+            "-m", "pytest", "-q", "--import-mode=importlib",
             (Join-Path $workspace "providers\orbbec_femto_bolt\python\tests"),
             (Join-Path $workspace "providers\local_vio\python\tests"),
+            (Join-Path $workspace "providers\rebot_arm_dm\python\tests"),
+            (Join-Path $workspace "providers\rebot_arm_integrated\python\tests"),
+            (Join-Path $workspace "skills\locate-effector-front\python\tests"),
+            (Join-Path $workspace "skills\register_tool_to_control_frame\python\tests"),
+            (Join-Path $workspace "skills\spatial_registration_rgbd\python\tests"),
+            (Join-Path $workspace "skills\stationary_world_arm_alignment\python\tests"),
             (Join-Path $workspace "test_agent\python\tests")
         )
     }
@@ -120,6 +155,12 @@ if (-not $SkipPython) {
     foreach ($package in @(
         "providers\orbbec_femto_bolt\python",
         "providers\local_vio\python",
+        "providers\rebot_arm_dm\python",
+        "providers\rebot_arm_integrated\python",
+        "skills\spatial_registration_rgbd",
+        "skills\locate-effector-front",
+        "skills\register_tool_to_control_frame",
+        "skills\stationary_world_arm_alignment",
         "test_agent\python"
     )) {
         Invoke-Checked -FilePath $python -Arguments @(

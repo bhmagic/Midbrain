@@ -1,0 +1,94 @@
+{
+  "skill_type": "spatial_registration_rgbd",
+  "version": "0.1.0",
+  "display_name": "RGB-D Spatial Registration",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "register_rgbd_pixel_to_world",
+    "description": "Register a selected RGB image point into a requested 3D frame using provider-aligned depth, independent channel grids, calibration, and a timestamped transform. Use this read-only Skill after a visual Skill identifies a pixel or small region.",
+    "when_to_use": [
+      "A visual result must be converted from an RGB pixel into a metric 3D point.",
+      "A reflective target needs a nearby valid depth policy with explicit provenance.",
+      "RGB, IR, and depth channels may have different grids or valid boundaries."
+    ],
+    "when_not_to_use": [
+      "No calibrated depth or timestamped transform is available.",
+      "A model label alone is sufficient and no metric position is required.",
+      "The request is to register a full rigid tool pose from multiple observations."
+    ],
+    "side_effects": [
+      "Reads referenced RGB-D and calibration metadata.",
+      "Queries a timestamped transform.",
+      "Does not move hardware or publish a transform."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "LOW",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pixel_yx": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "RGB pixel as [y, x] in the source grid."
+        },
+        "target_frame": {
+          "type": "string",
+          "description": "Requested output coordinate frame."
+        },
+        "depth_policy": {
+          "type": "string",
+          "enum": [
+            "ROBUST_MEDIAN",
+            "CLOSEST_TO_CAMERA",
+            "NEAREST_VALID_PIXEL"
+          ]
+        }
+      },
+      "required": [
+        "pixel_yx",
+        "target_frame",
+        "depth_policy"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.spatial_registration_rgbd.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/spatial_registration_rgbd/registration.py"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "world.transforms.timestamped"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "payload_policy": {
+    "large_payload_transport": "SHARED_MEMORY",
+    "fabric_role": "TIMESTAMPS_REFERENCES_ALIGNMENT_AND_SMALL_METADATA"
+  },
+  "published_streams": []
+}

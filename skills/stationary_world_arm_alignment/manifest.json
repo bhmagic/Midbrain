@@ -1,8 +1,55 @@
 {
   "skill_type": "stationary_world_arm_alignment",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "display_name": "Stationary World-Space Arm Finder",
   "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "calibrate_stationary_workcell",
+    "description": "Calibrate a stationary workcell by locating the robot base and end effector, checking that the arm remains still, and registering the arm base into the current world frame. Use this Skill when a fixed camera and robot need a fresh or validated world-to-arm transform before spatial work.",
+    "when_to_use": [
+      "The camera and robot base are stationary and a world-to-arm transform is missing or stale.",
+      "A downstream spatial Skill requires a validated stationary workcell frame.",
+      "The operator explicitly requests stationary workcell calibration or alignment."
+    ],
+    "when_not_to_use": [
+      "The camera, workcell, or robot base is moving.",
+      "The task only needs an existing valid transform.",
+      "The request is for continuous real-time body or mobile-base tracking."
+    ],
+    "side_effects": [
+      "Acquires a Manager motion-inhibit lease.",
+      "May start required perception providers.",
+      "Publishes a new stationary world-to-arm transform and calibration result."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "camera.read",
+      "robot.transforms.read",
+      "world.transforms.publish",
+      "motion.inhibit"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "description": "The stationary-workcell calibration request."
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.stationary_world_arm_alignment.cli.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "scripts/run.ps1"
+    }
+  },
   "entrypoints": {
     "cli": "scripts/run.ps1",
     "gui": "scripts/run_gui.ps1",
@@ -40,7 +87,7 @@
       "requires_prior_alignment": true
     }
   },
-  "result_schema_version": 2,
+  "result_schema_version": 3,
   "required_capabilities": [
     "camera.rgb",
     "camera.depth_aligned_to_rgb",
@@ -57,12 +104,25 @@
     "skills.stationary_world_arm_alignment.result",
     "skills.stationary_world_arm_alignment.pose_overlay",
     "transform.stationary_world.vio",
-    "transform.stationary_world.arm_base"
+    "transform.stationary_world.arm_base",
+    "transform.stationary_world.vio.candidate",
+    "transform.stationary_world.arm_base.candidate"
   ],
   "provider_residency": {
     "camera": "leave_running",
     "local_vio": "leave_running",
-    "foundation_pose": "stop_after_skill_when_no_foreign_sessions_exist"
+    "foundation_pose": "compatibility_route_only_stop_after_skill_when_no_foreign_sessions_exist"
+  },
+  "base_pose_engine": {
+    "owner": "calibrate_stationary_workcell",
+    "default_route": "PROVIDER_COMPATIBILITY",
+    "available_routes": [
+      "PROVIDER_COMPATIBILITY",
+      "SKILL_LOCAL"
+    ],
+    "automatic_fallback_enabled": false,
+    "skill_local_behavior": "finite_backend_lifetime_fresh_rgbd_samples_no_provider_session",
+    "provider_route_status": "compatibility_fallback_pending_guarded_hardware_comparison"
   },
   "environment": {
     "type": "python_venv",

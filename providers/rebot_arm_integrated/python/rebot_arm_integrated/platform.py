@@ -86,6 +86,67 @@ class PlatformPublisher:
         self.manager_error = None
         return payload
 
+    def control_authority(self, resource_id: str) -> dict[str, Any]:
+        if not self.manager_url:
+            return {
+                "resource_id": resource_id,
+                "enforcement": "NO_MANAGER_URL",
+                "active_lease": None,
+                "latest_fencing_generation": 0,
+            }
+        encoded = quote(str(resource_id), safe="")
+        try:
+            payload = self.http.get(
+                f"{self.manager_url}/v1/control-authority/resources/{encoded}"
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Midbrain control-authority response must be an object")
+        except Exception as exc:
+            self.manager_error = str(exc)
+            raise
+        self.manager_error = None
+        return payload
+
+    def workcell_calibrations(self) -> dict[str, Any]:
+        if not self.manager_url:
+            raise RuntimeError(
+                "workcell calibration validation requires a Manager URL"
+            )
+        try:
+            payload = self.http.get(
+                f"{self.manager_url}/v1/workcell-calibrations"
+            )
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    "Midbrain workcell-calibration response must be an object"
+                )
+        except Exception as exc:
+            self.manager_error = str(exc)
+            raise
+        self.manager_error = None
+        return payload
+
+    def shutdown_plan(self, owner_id: str, reason: str) -> dict[str, Any]:
+        if not self.manager_url:
+            return {
+                "state": "NOT_REQUESTED",
+                "enforcement": "NO_MANAGER_URL",
+                "requested_by": owner_id,
+                "reason": reason,
+            }
+        try:
+            payload = self.http.post(
+                f"{self.manager_url}/v1/shutdown/plan",
+                {"owner_id": owner_id, "reason": reason},
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Midbrain shutdown-plan response must be an object")
+        except Exception as exc:
+            self.manager_error = str(exc)
+            raise
+        self.manager_error = None
+        return payload
+
     def publish(
         self,
         stream: str,

@@ -1,4 +1,4 @@
-# Physical MIT bring-up test — 0.7.0
+# Physical MIT bring-up test — 0.8.0
 
 ## Capability maturity
 

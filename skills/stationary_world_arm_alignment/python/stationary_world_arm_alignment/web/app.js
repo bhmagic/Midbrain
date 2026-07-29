@@ -2,6 +2,7 @@ const el = id => document.getElementById(id);
 let selectedImage = "overlay";
 let imageRevision = 0;
 let statusValue = null;
+let candidateReviewValue = null;
 
 function toast(message) {
   const node = el("toast");
@@ -18,9 +19,107 @@ async function post(url, body) {
   });
   if (!response.ok) {
     const value = await response.json().catch(() => ({}));
-    throw new Error(value.detail || `Request failed: ${response.status}`);
+    const detail = value.detail || {};
+    throw new Error(detail.message || detail || `Request failed: ${response.status}`);
   }
   return response.json();
+}
+
+function reviewedProvenance(candidate) {
+  const camera = candidate.camera_provenance || {};
+  const vio = candidate.vio_provenance || {};
+  return {
+    workcell_calibration_revision: candidate.workcell_calibration_revision,
+    camera_provider_id: camera.provider_id ?? null,
+    camera_provider_instance_id: camera.provider_instance_id ?? null,
+    camera_boot_id: camera.boot_id ?? null,
+    camera_calibration_revision: camera.calibration_revision ?? null,
+    vio_session_epoch: vio.session_epoch ?? null
+  };
+}
+
+function renderCandidateReviews(value) {
+  candidateReviewValue = value;
+  const available = value.identity_verification_available === true;
+  const authState = el("review-auth-state");
+  authState.textContent = available ? "EXTERNAL IDENTITY READY" : "FAIL-CLOSED";
+  authState.className = `runtime-state ${available ? "ready" : "degraded"}`;
+  el("review-auth-message").textContent = available
+    ? "A trusted upstream identity service must attach a decision-scoped assertion."
+    : "No external identity verifier is configured. Approval and rejection are disabled.";
+  const candidates = value.candidates || [];
+  el("candidate-list").innerHTML = candidates.length ? candidates.map(view => {
+    const candidate = view.candidate;
+    const camera = candidate.camera_provenance || {};
+    const vio = candidate.vio_provenance || {};
+    const finalDecision = view.decision;
+    const disabled = !available || view.expired || Boolean(finalDecision);
+    const state = finalDecision
+      ? finalDecision.decision_state
+      : view.expired ? "EXPIRED" : "REVIEW REQUIRED";
+    return `
+      <article class="candidate-card">
+        <div class="candidate-head">
+          <div>
+            <strong class="mono">${escapeHtml(candidate.candidate_id)}</strong>
+            <span>${escapeHtml(state)}</span>
+          </div>
+          <small class="mono">${escapeHtml(view.candidate_sha256)}</small>
+        </div>
+        <dl>
+          <div><dt>Method</dt><dd>${escapeHtml((candidate.method || {}).base_pose_engine_route || "unknown")}</dd></div>
+          <div><dt>Camera boot</dt><dd class="mono">${escapeHtml(camera.boot_id || "unavailable")}</dd></div>
+          <div><dt>Calibration</dt><dd class="mono">${escapeHtml(camera.calibration_revision || "unavailable")}</dd></div>
+          <div><dt>VIO epoch</dt><dd class="mono">${escapeHtml(vio.session_epoch || "unavailable")}</dd></div>
+          <div><dt>Expires</dt><dd>${new Date(Number(candidate.expires_at_us) / 1000).toLocaleString()}</dd></div>
+          <div><dt>Motion usable</dt><dd>false</dd></div>
+        </dl>
+        <div class="review-actions">
+          <button data-review="${escapeHtml(view.alignment_id)}" data-decision="APPROVE" ${disabled ? "disabled" : ""}>Approve for activation</button>
+          <button class="danger" data-review="${escapeHtml(view.alignment_id)}" data-decision="REJECT" ${disabled ? "disabled" : ""}>Reject</button>
+        </div>
+      </article>`;
+  }).join("") : '<p class="muted">No calibration candidate is available.</p>';
+  document.querySelectorAll("[data-review]").forEach(button => {
+    button.onclick = () => submitCandidateReview(
+      button.dataset.review,
+      button.dataset.decision
+    );
+  });
+}
+
+async function submitCandidateReview(alignmentId, decision) {
+  const view = (candidateReviewValue.candidates || []).find(
+    item => item.alignment_id === alignmentId
+  );
+  if (!view) return;
+  const rationale = window.prompt(
+    `${decision} ${alignmentId}. Enter a review rationale:`
+  );
+  if (rationale === null) return;
+  try {
+    await post(`/api/candidate-reviews/${encodeURIComponent(alignmentId)}/decision`, {
+      decision,
+      candidate_sha256: view.candidate_sha256,
+      expected_provenance: reviewedProvenance(view.candidate),
+      idempotency_key: crypto.randomUUID(),
+      rationale
+    });
+    toast(`${decision} decision recorded; transform remains inactive`);
+    await refreshCandidateReviews();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function refreshCandidateReviews() {
+  try {
+    const response = await fetch("/api/candidate-reviews", {cache: "no-store"});
+    renderCandidateReviews(await response.json());
+  } catch (_) {
+    el("review-auth-state").textContent = "OFFLINE";
+    el("review-auth-state").className = "runtime-state degraded";
+  }
 }
 
 function start(mode) {
@@ -359,8 +458,10 @@ setInterval(pollStatus, 800);
 setInterval(refreshCloud, 1000);
 setInterval(refreshGeometry, 1000);
 setInterval(refreshImage, 2500);
+setInterval(refreshCandidateReviews, 2500);
 pollStatus();
 refreshCloud();
 refreshGeometry();
 refreshImage();
+refreshCandidateReviews();
 render();

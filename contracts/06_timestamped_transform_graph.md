@@ -24,6 +24,25 @@ Required data fields:
 
 The observation timestamp is the transform timestamp. Receipt time is not a substitute for acquisition time.
 
+## Graph eligibility
+
+Fabric always retains an accepted transform observation in its ordinary latest
+and recent stream history for inspection. That does not imply that the
+observation is eligible to participate in the composed transform graph.
+
+A transform is excluded from the graph and transform catalog when:
+
+- its observation has `valid=false`;
+- its observation-level `expires_at_us` is in the past;
+- its data explicitly has `motion_usable=false`; or
+- its data has `review_state=CANDIDATE_REVIEW_REQUIRED`.
+
+When `review_state=CANDIDATE_REVIEW_REQUIRED` is present,
+`motion_usable=false` is mandatory. This keeps calibration candidates visible
+without allowing a stream-name change, static-edge behavior, or direct Fabric
+query to bypass review. Legacy transforms without review fields remain
+graph-eligible for compatibility until their producing subsystem is migrated.
+
 ## Query
 
 `GET /v1/transform` accepts `from_frame`, `to_frame`, optional `at_us`, optional `session_epoch`, and `max_extrapolation_us`.

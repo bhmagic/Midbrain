@@ -1,5 +1,19 @@
 # Validation
 
+## 2026-07-29 guarded Phase 5 validation
+
+The current checkpoint includes offline tests plus operator-observed physical validation. The physical run used a real OpenAI Agents SDK model only for Skill selection. Authorization, decision validity, lease ownership, trajectory preview, execution, and audit remained deterministic server-side.
+
+- The Agents SDK selected `execute_reviewed_observation_motion` using only a reviewed decision ID.
+- The no-contact toilet-paper standoff plan completed 40/40 stages at limits of 0.25 rad/s per joint and 0.05 m/s Cartesian speed.
+- Reported minimum clearance was 0.07943 m, terminal position error was 0.001185 m, and final standoff was approximately 0.099942 m.
+- A subsequent vertical-lift test rejected unsafe or invalid 20, 19, 15, and 14 cm candidates before actuation. The accepted 13 cm plan produced approximately 12.67 cm measured displacement.
+- Safe-home completed, gravity float was confirmed, and all Midbrain/Test Agent processes and HTTP listeners were shut down.
+
+This does not validate general natural-language Cartesian directions. In this installation, physical vertical mapped primarily to arm-base `+X`. Camera, world, base, controlled-frame, tool, and object axes must be resolved explicitly for each command. See [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+
+The exact stopped publication regression passed `469/469`: 439 Python tests across all 62 published Python test files plus 30 Rust tests. The wider local tree passed another 109 vegetable-cutting tests, for a local-only total of `578/578`; that prototype is not part of the publication. Python compilation, JSON parsing, PowerShell parsing, clean-configuration checks, Rust formatting, and the Rust release build also passed. CI includes the Agents SDK, Google GenAI, current publishable Provider/Skill source roots, and isolated pytest imports.
+
 ## Automated source checks completed during cleanup
 
 The cleaned repository was validated with the source directories on `PYTHONPATH`:
@@ -100,6 +114,10 @@ The current validation is not formal localization certification. Still required:
 - POS_VEL one-shot acceptance only within the declared ≤20 cm/no-load envelope
 - resolution of continuous POS_VEL instability before capability publication
 - resolution of arm POS_TOR baseline/force instability before capability publication
+- explicit semantic-direction resolution across camera, world, arm-base, controlled-frame, tool, and object frames
+- transform age, revision, provenance, and uncertainty enforcement at the consuming Skill's decision boundary
+- fault-injection validation for every authority handover and loss-of-upstream path
+- structured effector-front and task-specific action-point VLM qualification across RGB/depth resolution and alignment mismatches
 
 ## Automatic Rust formatting
 

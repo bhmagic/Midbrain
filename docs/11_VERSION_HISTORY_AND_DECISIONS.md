@@ -1,5 +1,17 @@
 # Version History and Engineering Decisions
 
+## v0.3.16 — Phase 5 guarded-agent checkpoint
+
+- Added descriptive Agent Skill discovery with explicit provider IDs retained as fallback.
+- Added shared-memory RGB-D route advertisement supporting mismatched RGB, IR, and depth resolutions/aspect ratios, channel boundaries, alignment metadata, and a direct Orbbec fallback.
+- Added Manager authorization decisions, fenced lease lineage, invalidation, global safe termination, and browser-oriented observation/authorization boundaries.
+- Moved reusable path planning, speed limits, singularity/workspace/collision checks, endpoint validation, and command audit into the Integrated Controller.
+- Added Stationary World-Space Arm Alignment, RGB-D Registration, Tool-to-Control-Frame Registration, and General VLM Observation Skills.
+- Limited the OpenAI Agents SDK action surface to selection of a reviewed decision; deterministic services retained authority over execution.
+- Completed a no-contact object-standoff run, bounded 13 cm lift, safe-home, gravity-float confirmation, and complete shutdown.
+- Deferred slice cutting and broader VLM landmark/action-point policy until the systemic contracts are stable.
+- Recorded Cartesian-axis understanding and alignment as unresolved. Installation-specific axis observations are not general control contracts.
+
 ## v0.3.1 — First Space Cognition milestone
 
 Components included Local VIO v0.1.0 and Test Agent GUI v0.2.0.
@@ -92,6 +104,11 @@ Local VIO v0.2.2 and Test Agent v0.2.9.
 
 - Keep Manager, Fabric, Resource Provider, Skill, Observation, Capability, and BufferRef terminology.
 - Keep large payloads outside Fabric.
+- Keep Fabric passive and fast: it timestamps and transports state, while each consuming Skill decides whether evidence is fresh enough for its own workload.
+- Keep latency-sensitive control direct while retaining a systematic audit copy of requested intent, resolved target, authority lineage, and acknowledgements.
+- Keep generic RGB-D shared-memory routes flexible enough for different channel resolutions, aspect ratios, boundaries, and alignments, while retaining hardware-specific fallback routes.
+- Keep fault fallback and ordinary command completion distinct: errors prefer gravity float; non-error operation retains its control mode until another command.
+- Do not infer semantic Cartesian directions from axis names alone. Require explicit frame and transform evidence.
 - Preserve serial-bound calibration and do not overwrite `config` during overlays.
 - Preserve orthographic/isometric viewer and explicit estimator-stage indicators.
 - Preserve adaptive gravity gating and rotation-only leveling.

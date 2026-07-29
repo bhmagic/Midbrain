@@ -59,7 +59,9 @@
     "motor_endpoint_keepalive_hz": 10.0,
     "transient_serial_retry_count": 2,
     "transient_serial_retry_delay_ms": 10,
-    "mit_mode_confirmation_timeout_ms": 1000
+    "mit_mode_confirmation_timeout_ms": 1000,
+    "gripper_force_position_native_velocity_scale": 0.75,
+    "gripper_force_position_velocity_guard_resume_ratio": 0.75
   },
   "frames": {
     "base": "rebot_arm_base",

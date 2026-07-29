@@ -9,6 +9,12 @@ Role: expandable local Resource Provider hosting and observation infrastructure
 - Start, HOT, WARM, graceful stop, and force-kill endpoints.
 - Provider registration and heartbeat reports.
 - Capability-specific availability catalog at `/v1/capabilities`.
+- Non-enforcing capability binding with deterministic selection, opaque binding IDs, provider instance/boot snapshots, and explicit provider-ID fallback.
+- Advisory control-authority lease lifecycle with expiry, retained history,
+  explicit preemption, and fencing generations.
+- Manager-owned shutdown planning in `SHADOW_DRY_RUN`, including motion
+  relinquishment, Basic safe-state confirmation, audit flush, and Manager-last
+  ordering.
 - Heartbeat expiry with explicit unavailable publication to the Fabric.
 - Provider stdout/stderr forwarding and automatic startup.
 - Initial Windows process-group termination behavior.
@@ -26,11 +32,14 @@ Role: expandable local Resource Provider hosting and observation infrastructure
 
 - Windows Job Objects and reliable child-tree ownership.
 - Restart backoff, crash-loop detection, and policy-driven recovery.
-- Formal provider manifests, contract negotiation, dependency resolution, and provider selection.
+- Formal provider manifests, contract negotiation, dependency resolution, ranking policy, binding invalidation, and enforced provider selection.
 - Resource measurement, admission, priority, and GPU/VRAM arbitration.
 - Authentication, permissions, signed packages, sandboxing, and remote providers.
 - Command IDs, deadlines, idempotency, progress, and cancellation.
-- Control Authority Leases, fencing generations, and safe relinquish for actuators.
+- Enforced provider validation of Manager authority and bounded safe
+  relinquishment. The current lease API is advisory only.
+- Executing the Manager-owned shutdown plan after shadow comparison and
+  safety-order conformance tests.
 
 ## Important remaining Fabric work
 

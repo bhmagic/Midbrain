@@ -73,7 +73,7 @@ def test_manifest_discovers_only_public_modes_and_source_contracts() -> None:
     )
 
     assert manifest["modes"] == [mode.value for mode in PUBLIC_RUN_MODES]
-    assert manifest["result_schema_version"] == 2
+    assert manifest["result_schema_version"] == 3
     assert manifest["mode_contracts"] == {
         mode.value: mode_contract(mode)
         for mode in PUBLIC_RUN_MODES

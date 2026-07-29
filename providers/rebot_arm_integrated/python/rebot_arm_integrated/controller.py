@@ -22,7 +22,14 @@ from .hybrid import MIT_SETTLE, POS_VEL_APPROACH, HybridApproachPolicy
 from .http_client import HttpStatusError
 from .kinematics import ArmKinematics, matrix_rpy, rotation_vector, rpy_matrix, transform
 from .modes import CONTACT_WORK, MODE_SPECS, PRESS_MIT, TRANSIT_SPEED, normalize_execution_mode
-from .planning import PlanPreview, build_waypoint_preview, solve_cartesian_continuity
+from .planning import (
+    PlanPreview,
+    build_transit_frame_candidates,
+    build_waypoint_preview,
+    controller_owned_duration,
+    solve_cartesian_continuity,
+    solve_cartesian_continuity_adaptive,
+)
 from .scene import SceneSnapshot
 
 
@@ -77,12 +84,53 @@ class TrajectoryPlan:
     ik_iterations: int
     sigma_min: float
     target_revision: int
+    arrival_position_residual_m: float | None = None
+    arrival_orientation_residual_rad: float | None = None
+    arrival_joint_confirmed: bool = False
+    arrival_cartesian_confirmed: bool = False
+    arrival_duration_confirmed: bool = False
+    deadline_position_residual_m: float | None = None
+    deadline_orientation_residual_rad: float | None = None
+    deadline_joint_within_tolerance: bool = False
+    deadline_cartesian_within_tolerance: bool = False
     replan_count: int = 0
     last_replan_monotonic: float = 0.0
     frames_attempted: int = 0
     frames_sent: int = 0
     frames_skipped: int = 0
     final_frame_sent: bool = False
+
+
+@dataclass
+class AuthorizedTransitExecution:
+    plan_id: str
+    preview_sha256: str
+    request_sha256: str
+    assertion_id: str
+    decision_id: str
+    resolved_by: str
+    scene_revision: str
+    q_waypoints: tuple[np.ndarray, ...]
+    stage_durations_s: tuple[float, ...]
+    started_monotonic: float
+    stage_started_monotonic: float
+    current_stage_index: int = 1
+    status: str = "EXECUTING"
+    frames_attempted: int = 0
+    frames_sent: int = 0
+    completed_stage_count: int = 0
+    maximum_command_latency_ms: float = 0.0
+    last_command_latency_ms: float | None = None
+    last_feedback_monotonic: float = 0.0
+    final_hold_started_monotonic: float | None = None
+    error: str | None = None
+    stage_expected_duration_s: float = 0.0
+    stage_timeout_s: float = 0.0
+    stage_position_error_rad: float | None = None
+    stage_max_velocity_rad_s: float | None = None
+    stage_best_position_error_rad: float | None = None
+    stage_last_progress_monotonic: float = 0.0
+    stage_completion_criterion: str = "INTERMEDIATE_POSITION_PASSAGE"
 
 
 class IntegratedController:
@@ -101,10 +149,12 @@ class IntegratedController:
         self.basic = basic
         self.lock = threading.RLock()
         self.command_gate_lock = threading.RLock()
+        self.lease_operation_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.control_thread: threading.Thread | None = None
         self.lease_thread: threading.Thread | None = None
         self.trajectory_thread: threading.Thread | None = None
+        self.authorized_transit_thread: threading.Thread | None = None
 
         self.residency = "WARM"
         self.health = "HEALTHY"
@@ -185,6 +235,13 @@ class IntegratedController:
         self.last_preview_context: dict[str, Any] | None = None
         self.preview_count = 0
         self.preview_rejected_count = 0
+        self.shadow_transit_plan_count = 0
+        self.last_shadow_transit_plan: dict[str, Any] | None = None
+        self.authorized_transit: AuthorizedTransitExecution | None = None
+        self.last_authorized_transit: dict[str, Any] | None = None
+        self.authorized_transit_count = 0
+        self.authorized_transit_rejected_count = 0
+        self.authorization_assertion_configured = False
         self.latched_endpoint: LatchedEndpointCommand | None = None
         self.hybrid_policy: HybridApproachPolicy | None = None
         self.hybrid_started_monotonic = 0.0
@@ -219,6 +276,7 @@ class IntegratedController:
         self.last_lease_renew = 0.0
         self.lease_renew_success_count = 0
         self.lease_renew_failure_count = 0
+        self.lease_transition_skip_count = 0
         self.lease_acquire_failure_count = 0
         self.lease_renew_latency_ms: float | None = None
         self.max_lease_renew_latency_ms = 0.0
@@ -281,7 +339,10 @@ class IntegratedController:
     def set_runtime_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         payload_update = False
         with self.lock:
-            if self.trajectory is not None:
+            if (
+                self.trajectory is not None
+                or self.authorized_transit is not None
+            ):
                 raise RuntimeError("runtime settings cannot change during active motion")
             if "interaction_mode" in payload:
                 value = str(payload["interaction_mode"]).strip().upper()
@@ -687,8 +748,14 @@ class IntegratedController:
             with self.lock:
                 self.basic_state = state
                 self.last_state_success = time.monotonic()
-                if self.residency != "HOT" or self.kinematics is None or self.staged_target is None:
-                    raise RuntimeError("controller must be HOT before preview")
+                if (
+                    self.residency not in {"WARM", "HOT"}
+                    or self.kinematics is None
+                    or self.staged_target is None
+                ):
+                    raise RuntimeError(
+                        "controller must be WARM or HOT before preview"
+                    )
                 q_start = self._measured_positions_locked()[:6].copy()
                 origin = self.kinematics.controlled_frame(q_start, self._tool_to_control_locked())
                 requested, clamped = self._clamped_target_locked(origin, self.staged_target)
@@ -724,10 +791,43 @@ class IntegratedController:
                 if not preview.collision_free:
                     planning_reasons.append("candidate path intersects a non-permitted semantic object")
                 planning_config = self.config["planning"]
-                if continuity.minimum_sigma <= 0.0 or continuity.minimum_sigma < float(planning_config["minimum_jacobian_sigma"]):
+                position_motion = float(
+                    np.linalg.norm(requested[:3, 3] - origin[:3, 3])
+                )
+                orientation_motion = float(
+                    np.linalg.norm(
+                        rotation_vector(
+                            requested[:3, :3] @ origin[:3, :3].T
+                        )
+                    )
+                )
+                motion_required = (
+                    position_motion
+                    >= float(
+                        self.config["trajectory"].get(
+                            "minimum_translation_per_commit_m",
+                            0.0005,
+                        )
+                    )
+                    or (
+                        self.ik_mode == IK_POSE_6DOF
+                        and orientation_motion >= 1e-4
+                    )
+                )
+                if motion_required and (
+                    continuity.minimum_sigma <= 0.0
+                    or continuity.minimum_sigma
+                    < float(planning_config["minimum_jacobian_sigma"])
+                ):
                     planning_reasons.append(
                         f"Cartesian waypoint path approaches a singularity (sigma {continuity.minimum_sigma:.5f})"
                     )
+                planning_reasons.extend(
+                    self._ik_residual_reasons_locked(
+                        continuity.final_position_residual_m,
+                        continuity.final_orientation_residual_rad,
+                    )
+                )
                 if continuity.maximum_waypoint_joint_step_rad > float(planning_config["maximum_waypoint_joint_step_rad"]):
                     planning_reasons.append("IK continuity path contains a large joint jump")
                 endpoint_limits = np.asarray(planning_config["maximum_endpoint_joint_delta_rad"], dtype=float)
@@ -739,7 +839,7 @@ class IntegratedController:
                     planning_reasons.append("IK path has excessive aggregate joint travel")
                 if self.execution_mode == "CONTACT_WORK" and self.ik_mode != IK_POSE_6DOF:
                     planning_reasons.append("CONTACT_WORK requires POSE_6DOF")
-                contact_distance = float(np.linalg.norm(requested[:3, 3] - origin[:3, 3]))
+                contact_distance = position_motion
                 if self.execution_mode == "CONTACT_WORK" and contact_distance > float(self.config["contact"]["maximum_translation_m"]):
                     planning_reasons.append("CONTACT_WORK exceeds its configured short-stroke distance")
                 if self.execution_mode == "CONTACT_WORK" and self.torque_baseline is not None:
@@ -792,9 +892,627 @@ class IntegratedController:
                 self.preview_rejected_count += 1
             raise
 
+    def preview_transit_path(
+        self,
+        *,
+        target_position_m: list[float],
+        target_rpy_rad: list[float] | None,
+        requested_speed_m_s: float,
+        allowed_contact_object_ids: set[str] | None = None,
+        permit_pushable_contact: bool = False,
+    ) -> dict[str, Any]:
+        """Evaluate controller-owned transit paths without changing control state."""
+
+        state = self.basic.state()
+        with self.lock:
+            preview_model_required = self.kinematics is None
+        preview_model = (
+            self.basic.model()
+            if preview_model_required
+            else None
+        )
+        with self.lock:
+            self.basic_state = state
+            self.last_state_success = time.monotonic()
+            if self.kinematics is None and preview_model is not None:
+                self.basic_model = preview_model
+                self.kinematics = ArmKinematics(preview_model)
+            if self.residency not in {"WARM", "HOT"} or self.kinematics is None:
+                raise RuntimeError(
+                    "controller must be WARM or HOT before transit path planning"
+                )
+            q_start = self._measured_positions_locked()[:6].copy()
+            origin = self.kinematics.controlled_frame(
+                q_start,
+                self._tool_to_control_locked(),
+            )
+            position = np.asarray(target_position_m, dtype=float)
+            if position.shape != (3,) or not np.all(np.isfinite(position)):
+                raise ValueError("target_position_m must contain three finite values")
+            self._assert_workspace_target_locked(position)
+            goal = origin.copy()
+            goal[:3, 3] = position
+            if target_rpy_rad is not None:
+                rpy = np.asarray(target_rpy_rad, dtype=float)
+                if rpy.shape != (3,) or not np.all(np.isfinite(rpy)):
+                    raise ValueError("target_rpy_rad must contain three finite values")
+                goal[:3, :3] = rpy_matrix(rpy)
+
+            planning_config = self.config["planning"]
+            candidates = build_transit_frame_candidates(
+                origin,
+                goal,
+                workspace=self.config["workspace"],
+                clearance_margin_m=float(
+                    planning_config["transit_clearance_margin_m"]
+                ),
+                lateral_escape_m=float(
+                    planning_config["singularity_escape_lateral_m"]
+                ),
+            )
+            evaluated: list[dict[str, Any]] = []
+            for strategy, cartesian_frames in candidates:
+                try:
+                    q_waypoints: list[np.ndarray] = [q_start.copy()]
+                    q_cursor = q_start.copy()
+                    frame_cursor = origin.copy()
+                    minimum_sigma = float("inf")
+                    maximum_joint_step = 0.0
+                    total_joint_travel = 0.0
+                    final_position_residual = 0.0
+                    final_orientation_residual = 0.0
+                    final_iterations = 0
+                    path_length = 0.0
+                    per_leg_waypoints = max(
+                        2,
+                        int(
+                            math.ceil(
+                                int(planning_config["cartesian_waypoint_count"])
+                                / max(1, len(cartesian_frames))
+                            )
+                        ),
+                    )
+                    for frame in cartesian_frames:
+                        self._assert_workspace_target_locked(frame[:3, 3])
+                        continuity = solve_cartesian_continuity_adaptive(
+                            q_cursor,
+                            frame_cursor,
+                            frame,
+                            self._solve_target_locked,
+                            initial_waypoint_count=per_leg_waypoints,
+                            maximum_waypoint_count=int(
+                                planning_config[
+                                    "maximum_cartesian_waypoints_per_leg"
+                                ]
+                            ),
+                            maximum_joint_step_rad=float(
+                                planning_config[
+                                    "maximum_waypoint_joint_step_rad"
+                                ]
+                            ),
+                        )
+                        q_waypoints.extend(
+                            waypoint.copy()
+                            for waypoint in continuity.q_waypoints[1:]
+                        )
+                        q_cursor = continuity.q_waypoints[-1].copy()
+                        path_length += float(
+                            np.linalg.norm(frame[:3, 3] - frame_cursor[:3, 3])
+                        )
+                        frame_cursor = frame.copy()
+                        minimum_sigma = min(
+                            minimum_sigma,
+                            continuity.minimum_sigma,
+                        )
+                        maximum_joint_step = max(
+                            maximum_joint_step,
+                            continuity.maximum_waypoint_joint_step_rad,
+                        )
+                        total_joint_travel += continuity.total_joint_travel_rad
+                        final_position_residual = (
+                            continuity.final_position_residual_m
+                        )
+                        final_orientation_residual = (
+                            continuity.final_orientation_residual_rad
+                        )
+                        final_iterations = continuity.final_iterations
+
+                    duration = controller_owned_duration(
+                        q_waypoints,
+                        path_length,
+                        requested_speed_m_s,
+                        self._provider_rate_caps_locked(),
+                        speed_min_m_s=float(
+                            planning_config["cartesian_speed_min_m_s"]
+                        ),
+                        speed_max_m_s=float(
+                            planning_config["cartesian_speed_max_m_s"]
+                        ),
+                        minimum_duration_s=float(
+                            self.config["runtime_limits"]["duration_min_s"]
+                        ),
+                    )
+                    preview = build_waypoint_preview(
+                        self.kinematics,
+                        q_waypoints,
+                        duration["duration_s"],
+                        scene=self.scene,
+                        link_radii_m=self.config["trajectory"]["link_radii_m"],
+                        sample_count=max(
+                            int(self.config["trajectory"]["preview_sample_count"]),
+                            len(q_waypoints),
+                        ),
+                        allowed_contact_object_ids=set(
+                            allowed_contact_object_ids or set()
+                        ),
+                        permit_pushable_contact=bool(permit_pushable_contact),
+                    )
+                    reasons: list[str] = []
+                    if not preview.collision_free:
+                        reasons.append(
+                            "candidate path intersects a non-permitted semantic object"
+                        )
+                    orientation_motion = float(
+                        np.linalg.norm(
+                            rotation_vector(goal[:3, :3] @ origin[:3, :3].T)
+                        )
+                    )
+                    motion_required = (
+                        path_length
+                        >= float(
+                            self.config["trajectory"].get(
+                                "minimum_translation_per_commit_m",
+                                0.0005,
+                            )
+                        )
+                        or (
+                            self.ik_mode == IK_POSE_6DOF
+                            and orientation_motion >= 1e-4
+                        )
+                    )
+                    if motion_required and (
+                        minimum_sigma <= 0.0
+                        or minimum_sigma
+                        < float(planning_config["minimum_jacobian_sigma"])
+                    ):
+                        reasons.append(
+                            "candidate approaches a singularity "
+                            f"(sigma {minimum_sigma:.5f})"
+                        )
+                    reasons.extend(
+                        self._ik_residual_reasons_locked(
+                            final_position_residual,
+                            final_orientation_residual,
+                        )
+                    )
+                    if maximum_joint_step > float(
+                        planning_config["maximum_waypoint_joint_step_rad"]
+                    ):
+                        reasons.append(
+                            "candidate contains a large IK waypoint joint jump"
+                        )
+                    endpoint_limits = np.asarray(
+                        planning_config[
+                            "maximum_transit_endpoint_joint_delta_rad"
+                        ],
+                        dtype=float,
+                    )
+                    endpoint_delta = np.abs(q_waypoints[-1] - q_waypoints[0])
+                    if np.any(endpoint_delta > endpoint_limits):
+                        reasons.append(
+                            "candidate endpoint requires excessive joint travel"
+                        )
+                    if total_joint_travel > float(
+                        planning_config[
+                            "maximum_transit_total_joint_travel_rad"
+                        ]
+                    ):
+                        reasons.append(
+                            "candidate has excessive aggregate joint travel"
+                        )
+                    maximum_segment_duration = float(
+                        self.config["runtime_limits"]["duration_max_s"]
+                    )
+                    evaluated.append(
+                        {
+                            "strategy": strategy,
+                            "planning_valid": not reasons,
+                            "planning_reasons": reasons,
+                            "preview": preview.snapshot(include_samples=False),
+                            "cartesian_waypoints": [
+                                self._frame_payload(frame)
+                                for frame in cartesian_frames
+                            ],
+                            "joint_waypoint_count": len(q_waypoints),
+                            "q_waypoints_rad": [
+                                waypoint.tolist() for waypoint in q_waypoints
+                            ],
+                            "minimum_jacobian_sigma": minimum_sigma,
+                            "maximum_waypoint_joint_step_rad": maximum_joint_step,
+                            "total_joint_travel_rad": total_joint_travel,
+                            "final_position_residual_m": final_position_residual,
+                            "final_orientation_residual_rad": (
+                                final_orientation_residual
+                            ),
+                            "final_iterations": final_iterations,
+                            "speed_schedule": {
+                                **duration,
+                                "maximum_execution_segment_duration_s": (
+                                    maximum_segment_duration
+                                ),
+                                "execution_segment_count": max(
+                                    1,
+                                    int(
+                                        math.ceil(
+                                            duration["duration_s"]
+                                            / maximum_segment_duration
+                                        )
+                                    ),
+                                ),
+                            },
+                        }
+                    )
+                except Exception as error:
+                    evaluated.append(
+                        {
+                            "strategy": strategy,
+                            "planning_valid": False,
+                            "planning_reasons": [str(error)],
+                            "error": str(error),
+                        }
+                    )
+
+            selected = next(
+                (
+                    candidate
+                    for candidate in evaluated
+                    if candidate.get("planning_valid")
+                ),
+                None,
+            )
+            if selected is None:
+                selected = min(
+                    evaluated,
+                    key=lambda candidate: len(
+                        candidate.get("planning_reasons") or []
+                    ),
+                )
+            result = {
+                "status": (
+                    "PLANNED"
+                    if selected.get("planning_valid")
+                    else "REJECTED"
+                ),
+                "planner_owner": "ROBOT_ARM_INTEGRATED_CONTROLLER",
+                "enforcement": "SHADOW_NONPHYSICAL",
+                "physical_motion_authorized": False,
+                "control_state_unchanged": True,
+                "lease_unchanged": True,
+                "selected_strategy": selected.get("strategy"),
+                "plan_id": (selected.get("preview") or {}).get("preview_id"),
+                "selected_plan": copy.deepcopy(selected),
+                "candidate_evaluations": copy.deepcopy(evaluated),
+                "target": self._frame_payload(goal),
+                "scene_revision": None if self.scene is None else self.scene.revision,
+            }
+            self.shadow_transit_plan_count += 1
+            self.last_shadow_transit_plan = copy.deepcopy(result)
+            return result
+
     def capture_contact_baseline(self) -> dict[str, Any]:
         """Capture steady torque while floating; this operation never sends a motion target."""
         return self._capture_contact_baseline()
+
+    def execute_authorized_transit(
+        self,
+        *,
+        plan_id: str,
+        preview_sha256: str,
+        request_sha256: str,
+        q_waypoints_rad: list[list[float]],
+        requested_speed_m_s: float,
+        scene_revision: str,
+        allowed_contact_object_ids: set[str] | None,
+        permit_pushable_contact: bool,
+        authorization_claims: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Execute one exact reviewed waypoint path and hold its final endpoint."""
+
+        self._ensure_runtime_lease()
+        if not self._request_float_once("authorized transit preflight"):
+            raise RuntimeError(
+                "Basic Controller gravity-float could not be verified"
+            )
+        state = self.basic.state()
+        now = time.monotonic()
+        try:
+            with self.lock:
+                self.basic_state = state
+                self.last_state_success = now
+                self._assert_motion_prerequisites_locked(now)
+                if self.residency != "HOT" or not self.ready:
+                    raise RuntimeError(
+                        "controller must be HOT before authorized transit"
+                    )
+                if self.trajectory is not None or self.authorized_transit is not None:
+                    raise RuntimeError("another arm trajectory is already active")
+                if self._desired_gripper_action_locked() is not None:
+                    raise RuntimeError(
+                        "release the gripper command before authorized transit"
+                    )
+                if self.kinematics is None:
+                    raise RuntimeError("kinematics are unavailable")
+                if self.scene is None:
+                    raise PermissionError(
+                        "authorized transit requires a current semantic scene"
+                    )
+                scene_age_ms = (
+                    now - self.scene_received_monotonic
+                ) * 1000.0
+                if scene_age_ms > float(
+                    self.config["scene_input"]["max_age_ms"]
+                ):
+                    raise PermissionError(
+                        "semantic scene is stale at authorized transit commit"
+                    )
+                if self.scene.revision != str(scene_revision):
+                    raise PermissionError(
+                        "semantic scene changed after transit preview"
+                    )
+
+                q_waypoints = tuple(
+                    np.asarray(waypoint, dtype=float)
+                    for waypoint in q_waypoints_rad
+                )
+                if (
+                    len(q_waypoints) < 2
+                    or any(
+                        waypoint.shape != (6,)
+                        or not np.all(np.isfinite(waypoint))
+                        for waypoint in q_waypoints
+                    )
+                ):
+                    raise ValueError(
+                        "authorized transit requires at least two finite "
+                        "six-joint waypoints"
+                    )
+                measured_q = self._measured_positions_locked()[:6].copy()
+                start_drift = float(
+                    np.max(np.abs(measured_q - q_waypoints[0]))
+                )
+                maximum_start_drift = float(
+                    self.config["planning"][
+                        "maximum_transit_start_joint_drift_rad"
+                    ]
+                )
+                if start_drift > maximum_start_drift:
+                    raise PlanningRejected(
+                        "arm moved after preview "
+                        f"({start_drift:.5f} rad > {maximum_start_drift:.5f} rad)"
+                    )
+
+                deltas = [
+                    np.abs(goal - start)
+                    for start, goal in zip(q_waypoints[:-1], q_waypoints[1:])
+                ]
+                maximum_step = max(
+                    float(np.max(delta)) for delta in deltas
+                )
+                configured_step = float(
+                    self.config["planning"][
+                        "maximum_waypoint_joint_step_rad"
+                    ]
+                )
+                if maximum_step > configured_step:
+                    raise PlanningRejected(
+                        "authorized transit contains an oversized joint step"
+                    )
+                endpoint_limits = np.asarray(
+                    self.config["planning"][
+                        "maximum_transit_endpoint_joint_delta_rad"
+                    ],
+                    dtype=float,
+                )
+                if np.any(
+                    np.abs(q_waypoints[-1] - q_waypoints[0])
+                    > endpoint_limits
+                ):
+                    raise PlanningRejected(
+                        "authorized transit endpoint exceeds whole-route limits"
+                    )
+                total_joint_travel = sum(
+                    float(np.sum(delta)) for delta in deltas
+                )
+                if total_joint_travel > float(
+                    self.config["planning"][
+                        "maximum_transit_total_joint_travel_rad"
+                    ]
+                ):
+                    raise PlanningRejected(
+                        "authorized transit exceeds whole-route joint travel"
+                    )
+
+                joint_caps = np.minimum(
+                    self._provider_pos_vel_caps_locked(),
+                    float(
+                        self.config["planning"][
+                            "maximum_transit_joint_velocity_rad_s"
+                        ]
+                    ),
+                )
+                minimum_duration = float(
+                    self.config["runtime_limits"]["duration_min_s"]
+                )
+                requested_speed = float(requested_speed_m_s)
+                if not np.isfinite(requested_speed):
+                    raise ValueError(
+                        "requested_speed_m_s must be finite"
+                    )
+                effective_cartesian_speed = float(
+                    np.clip(
+                        requested_speed,
+                        float(
+                            self.config["planning"][
+                                "cartesian_speed_min_m_s"
+                            ]
+                        ),
+                        float(
+                            self.config["planning"][
+                                "cartesian_speed_max_m_s"
+                            ]
+                        ),
+                    )
+                )
+                controlled_positions = [
+                    self.kinematics.controlled_frame(
+                        waypoint,
+                        self._tool_to_control_locked(),
+                    )[:3, 3]
+                    for waypoint in q_waypoints
+                ]
+                stage_durations = tuple(
+                    max(
+                        minimum_duration,
+                        float(
+                            np.max(
+                                1.5
+                                * delta
+                                / np.maximum(joint_caps, 1e-6)
+                            )
+                        ),
+                        float(
+                            np.linalg.norm(goal_position - start_position)
+                            / effective_cartesian_speed
+                        ),
+                    )
+                    for delta, start_position, goal_position in zip(
+                        deltas,
+                        controlled_positions[:-1],
+                        controlled_positions[1:],
+                    )
+                )
+                total_duration = sum(stage_durations)
+                maximum_duration = float(
+                    self.config["planning"][
+                        "maximum_transit_duration_s"
+                    ]
+                )
+                if total_duration > maximum_duration:
+                    raise PlanningRejected(
+                        "authorized transit duration "
+                        f"{total_duration:.2f} s exceeds {maximum_duration:.2f} s"
+                    )
+
+                refreshed_preview = build_waypoint_preview(
+                    self.kinematics,
+                    q_waypoints,
+                    total_duration,
+                    scene=self.scene,
+                    link_radii_m=self.config["trajectory"][
+                        "link_radii_m"
+                    ],
+                    sample_count=max(
+                        int(
+                            self.config["trajectory"][
+                                "preview_sample_count"
+                            ]
+                        ),
+                        len(q_waypoints),
+                    ),
+                    allowed_contact_object_ids=set(
+                        allowed_contact_object_ids or set()
+                    ),
+                    permit_pushable_contact=bool(
+                        permit_pushable_contact
+                    ),
+                )
+                if not refreshed_preview.collision_free:
+                    raise PlanningRejected(
+                        "authorized transit became colliding during commit "
+                        "revalidation"
+                    )
+
+                assertion_id = str(
+                    authorization_claims.get("assertion_id") or ""
+                )
+                decision_id = str(
+                    authorization_claims.get("decision_id") or ""
+                )
+                resolved_by = str(
+                    authorization_claims.get("resolved_by") or ""
+                )
+                if not assertion_id or not decision_id or not resolved_by:
+                    raise PermissionError(
+                        "authorization assertion identity is incomplete"
+                    )
+                execution = AuthorizedTransitExecution(
+                    plan_id=str(plan_id),
+                    preview_sha256=str(preview_sha256),
+                    request_sha256=str(request_sha256),
+                    assertion_id=assertion_id,
+                    decision_id=decision_id,
+                    resolved_by=resolved_by,
+                    scene_revision=str(scene_revision),
+                    q_waypoints=tuple(
+                        waypoint.copy() for waypoint in q_waypoints
+                    ),
+                    stage_durations_s=stage_durations,
+                    started_monotonic=now,
+                    stage_started_monotonic=now,
+                    last_feedback_monotonic=now,
+                )
+                self.authorized_transit = execution
+                self.authorized_transit_count += 1
+                self.goal_q = q_waypoints[-1].copy()
+                self.commanded_q = measured_q.copy()
+                self.commanded_qd = np.zeros(6, dtype=float)
+                self.engaged = False
+                self.control_state = "EXECUTING_AUTHORIZED_TRANSIT"
+                self.float_confirmed = False
+                self.fault_reason = None
+                self.last_error = None
+                self.health = "HEALTHY"
+            self._start_authorized_transit_thread()
+            return {
+                "status": "EXECUTING",
+                "plan_id": plan_id,
+                "assertion_id": authorization_claims["assertion_id"],
+                "decision_id": authorization_claims["decision_id"],
+                "resolved_by": authorization_claims["resolved_by"],
+                "stage_count": len(q_waypoints) - 1,
+                "planned_duration_s": sum(stage_durations),
+                "maximum_joint_velocity_rad_s": float(
+                    np.max(joint_caps)
+                ),
+                "effective_cartesian_speed_m_s": (
+                    effective_cartesian_speed
+                ),
+                "completion_behavior": (
+                    "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                ),
+                "physical_motion_authorized": True,
+            }
+        except Exception:
+            with self.lock:
+                self.authorized_transit_rejected_count += 1
+            raise
+
+    def release_authorized_transit(self) -> dict[str, Any]:
+        """End an authorized transit or final hold through explicit float."""
+
+        self._cancel_active_trajectory(
+            "authorized transit explicitly released",
+            request_float=True,
+        )
+        with self.lock:
+            self.engaged = False
+            self.control_state = (
+                "TARGET_EDIT" if self.residency == "HOT" else "IDLE_FLOAT"
+            )
+        return {
+            "status": "gravity_float",
+            "physical_motion_authorized": False,
+        }
 
     def _capture_contact_baseline(self) -> dict[str, Any]:
         self.request_float()
@@ -870,56 +1588,75 @@ class IntegratedController:
                 return {"status": "already_hot_float"}
         model = self.basic.model()
         state = self.basic.state()
-        lease = self.basic.acquire(
-            f"{self.config['provider_id']}:{self.config['arm_id']}",
-            int(self.config["lease_duration_ms"]),
-        )
-        positions = self._positions_from_state(state)
-        kinematics = ArmKinematics(model)
-        with self.lock:
-            self.basic_model = model
-            self.basic_state = state
-            self.kinematics = kinematics
-            self.last_state_success = time.monotonic()
-            self.residency = "HOT"
-            self.ready = True
-            self.health = "HEALTHY"
-            self.control_state = "TARGET_EDIT"
-            self.engaged = False
-            self.input = InputState()
-            self._lb_previous = False
-            self.commit_requested = False
-            self.replan_requested = False
-            self.fault_reason = None
-            self.last_error = None
-            self.staged_target = kinematics.controlled_frame(positions[:6], self._tool_to_control_locked())
-            self.last_target_update = time.monotonic()
-            self._invalidate_preview_locked()
-            self.goal_q = positions[:6].copy()
-            self.commanded_q = positions[:6].copy()
-            self.commanded_qd = np.zeros(6, dtype=float)
-            self.trajectory = None
-            self.latched_endpoint = None
-            self.hybrid_policy = None
-            self.gripper_gamepad_action = None
-            self.gripper_ui_action = None
-            self.gripper_active_action = None
-            self.gripper_target_rad = None
-            self.gripper_fault_latched = False
-            self._validate_gripper_against_model_locked()
-            self.lease_state = "OWNED"
-            self.last_lease_attempt = time.monotonic()
-            self.last_lease_renew = self.last_lease_attempt
-        self.basic.set_payload(self.payload_mass_kg, self.payload_com_tool_m.tolist())
-        if not self._verify_float_once("MIT controller HOT idle"):
-            try:
-                self.basic.release("MIT startup float verification failed")
-            finally:
-                with self.lock:
-                    self.lease_state = "LOST"
-            raise RuntimeError("Basic Controller gravity-float could not be verified")
-        print(f"[mit-lease] acquired generation={lease.fencing_generation} holder={lease.holder}")
-        return {"status": "hot_target_edit"}
+        with self.lease_operation_lock:
+            with self.lock:
+                if (
+                    self.residency == "HOT"
+                    and self.basic.lease_snapshot() is not None
+                ):
+                    return {"status": "already_hot_float"}
+            lease = self.basic.acquire(
+                f"{self.config['provider_id']}:{self.config['arm_id']}",
+                int(self.config["lease_duration_ms"]),
+            )
+            positions = self._positions_from_state(state)
+            kinematics = ArmKinematics(model)
+            with self.lock:
+                self.basic_model = model
+                self.basic_state = state
+                self.kinematics = kinematics
+                self.last_state_success = time.monotonic()
+                self.residency = "HOT"
+                self.ready = True
+                self.health = "HEALTHY"
+                self.control_state = "TARGET_EDIT"
+                self.engaged = False
+                self.input = InputState()
+                self._lb_previous = False
+                self.commit_requested = False
+                self.replan_requested = False
+                self.fault_reason = None
+                self.last_error = None
+                self.staged_target = kinematics.controlled_frame(
+                    positions[:6],
+                    self._tool_to_control_locked(),
+                )
+                self.last_target_update = time.monotonic()
+                self._invalidate_preview_locked()
+                self.goal_q = positions[:6].copy()
+                self.commanded_q = positions[:6].copy()
+                self.commanded_qd = np.zeros(6, dtype=float)
+                self.trajectory = None
+                self.authorized_transit = None
+                self.latched_endpoint = None
+                self.hybrid_policy = None
+                self.gripper_gamepad_action = None
+                self.gripper_ui_action = None
+                self.gripper_active_action = None
+                self.gripper_target_rad = None
+                self.gripper_fault_latched = False
+                self._validate_gripper_against_model_locked()
+                self.lease_state = "OWNED"
+                self.last_lease_attempt = time.monotonic()
+                self.last_lease_renew = self.last_lease_attempt
+            self.basic.set_payload(
+                self.payload_mass_kg,
+                self.payload_com_tool_m.tolist(),
+            )
+            if not self._verify_float_once("MIT controller HOT idle"):
+                try:
+                    self.basic.release("MIT startup float verification failed")
+                finally:
+                    with self.lock:
+                        self.lease_state = "LOST"
+                raise RuntimeError(
+                    "Basic Controller gravity-float could not be verified"
+                )
+            print(
+                f"[mit-lease] acquired generation={lease.fencing_generation} "
+                f"holder={lease.holder}"
+            )
+            return {"status": "hot_target_edit"}
 
     def enter_warm(self) -> dict[str, Any]:
         float_ok=self._cancel_active_trajectory("controller WARM", request_float=True)
@@ -927,20 +1664,21 @@ class IntegratedController:
             raise RuntimeError(
                 "Integrated WARM refused to release the Basic lease because completed gravity-float was not confirmed"
             )
-        with self.lock:
-            self.residency = "WARM"
-            self.ready = False
-            self.engaged = False
-            self.control_state = "IDLE_FLOAT"
-            self.commit_requested = False
-            self.replan_requested = False
-            self.gripper_gamepad_action = None
-            self.gripper_ui_action = None
-            self.gripper_active_action = None
-            self.gripper_target_rad = None
-            self.gripper_fault_latched = False
-        if self.basic.lease_snapshot() is not None:
-            self.basic.release("MIT controller WARM release")
+        with self.lease_operation_lock:
+            with self.lock:
+                self.residency = "WARM"
+                self.ready = False
+                self.engaged = False
+                self.control_state = "IDLE_FLOAT"
+                self.commit_requested = False
+                self.replan_requested = False
+                self.gripper_gamepad_action = None
+                self.gripper_ui_action = None
+                self.gripper_active_action = None
+                self.gripper_target_rad = None
+                self.gripper_fault_latched = False
+            if self.basic.lease_snapshot() is not None:
+                self.basic.release("MIT controller WARM release")
         with self.lock:
             self.lease_state = "NONE"
         return {"status": "warm"}
@@ -950,15 +1688,16 @@ class IntegratedController:
             return
         self.stop_event.set()
         self._cancel_active_trajectory("MIT controller termination", request_float=False)
-        with self.lock:
-            self.residency = "COLD"
-            self.ready = False
-            self.engaged = False
-        if self.basic.lease_snapshot() is not None:
-            try:
-                self.basic.release("MIT controller termination release")
-            except LeaseLostError:
-                pass
+        with self.lease_operation_lock:
+            with self.lock:
+                self.residency = "COLD"
+                self.ready = False
+                self.engaged = False
+            if self.basic.lease_snapshot() is not None:
+                try:
+                    self.basic.release("MIT controller termination release")
+                except LeaseLostError:
+                    pass
         with self.lock:
             self.lease_state = "NONE"
             self.control_state = "STOPPING"
@@ -983,11 +1722,21 @@ class IntegratedController:
             self.motion_inhibit_owners = list(motion_inhibit_owners or [])
             if errors is not None:
                 self.platform_errors = dict(errors)
-            if self.trajectory is not None and not self._platform_ready_locked():
+            if (
+                self.trajectory is not None
+                or self.authorized_transit is not None
+            ) and not self._platform_ready_locked():
                 self._set_fault_locked("Manager, Fabric, or motion authority became unavailable")
                 should_float = True
         if should_float:
             self._cancel_active_trajectory("platform availability or motion authority lost", request_float=True)
+
+    def set_authorization_assertion_configured(
+        self,
+        configured: bool,
+    ) -> None:
+        with self.lock:
+            self.authorization_assertion_configured = bool(configured)
 
     def set_engaged(self, enabled: bool) -> dict[str, Any]:
         if not bool(enabled):
@@ -1059,11 +1808,48 @@ class IntegratedController:
         if normalized not in SUPPORTED_GRIPPER_ACTIONS | {"STOP"}:
             raise ValueError("gripper action must be OPEN, CLOSE, or STOP")
         with self.lock:
-            if normalized != "STOP" and not self.engaged:
+            authorized_final_hold = (
+                self.authorized_transit is not None
+                and self.authorized_transit.status == "HOLDING_FINAL"
+            )
+            if (
+                normalized != "STOP"
+                and not self.engaged
+                and not authorized_final_hold
+                and self.authorized_transit is None
+            ):
                 raise PermissionError("Engage physical control before operating the gripper")
-            if normalized != "STOP" and self.trajectory is not None:
+            if normalized != "STOP" and (
+                self.trajectory is not None
+                or (
+                    self.authorized_transit is not None
+                    and not authorized_final_hold
+                )
+            ):
                 raise RuntimeError("gripper is blocked while an arm trajectory is active")
             self.gripper_ui_action = None if normalized == "STOP" else normalized
+            if normalized == "STOP":
+                # The next controller-owned envelope omits joint 7. Basic then
+                # recaptures its measured angle under local impedance support,
+                # while the authorized arm endpoint remains continuously held.
+                self.gripper_active_action = None
+                self.gripper_target_rad = None
+                self.gripper_stop_count += 1
+                self.gripper_last_error = None
+                self.gripper_fault_latched = False
+            elif authorized_final_hold:
+                # The authorized-transit thread owns the full arm command envelope.
+                # Latch the requested gripper action so that thread appends joint 7
+                # without releasing the final arm endpoint or creating a second
+                # command source.
+                self.gripper_active_action = normalized
+                self.gripper_target_rad = (
+                    self.gripper_open_position_rad
+                    if normalized == GRIPPER_OPEN
+                    else self.gripper_closed_position_rad
+                )
+                self.gripper_last_error = None
+                self.gripper_fault_latched = False
             desired = self._desired_gripper_action_locked()
             return {
                 "accepted": True,
@@ -1207,6 +1993,51 @@ class IntegratedController:
         )
         return result
 
+    def _ik_residual_reasons_locked(
+        self,
+        position_residual_m: float,
+        orientation_residual_rad: float,
+        *,
+        ik_mode: str | None = None,
+    ) -> list[str]:
+        """Return deterministic execution blockers for an unresolved IK target."""
+        reasons: list[str] = []
+        position_limit = float(self.config["ik"]["position_tolerance_m"])
+        orientation_limit = float(self.config["ik"]["orientation_tolerance_rad"])
+        position_residual = float(position_residual_m)
+        orientation_residual = float(orientation_residual_rad)
+        effective_mode = self.ik_mode if ik_mode is None else str(ik_mode).upper()
+        if not math.isfinite(position_residual) or position_residual > position_limit:
+            reasons.append(
+                "IK position residual "
+                f"{position_residual:.6f} m exceeds {position_limit:.6f} m"
+            )
+        if effective_mode == IK_POSE_6DOF and (
+            not math.isfinite(orientation_residual)
+            or orientation_residual > orientation_limit
+        ):
+            reasons.append(
+                "IK orientation residual "
+                f"{orientation_residual:.6f} rad exceeds "
+                f"{orientation_limit:.6f} rad"
+            )
+        return reasons
+
+    def _assert_ik_residual_locked(
+        self,
+        position_residual_m: float,
+        orientation_residual_rad: float,
+        *,
+        ik_mode: str | None = None,
+    ) -> None:
+        reasons = self._ik_residual_reasons_locked(
+            position_residual_m,
+            orientation_residual_rad,
+            ik_mode=ik_mode,
+        )
+        if reasons:
+            raise PlanningRejected("; ".join(reasons))
+
     def _duration_for_move_locked(self, q_start: np.ndarray, q_goal: np.ndarray, requested: float) -> float:
         caps = (
             self._provider_pos_vel_caps_locked()
@@ -1237,7 +2068,10 @@ class IntegratedController:
                 self._assert_motion_prerequisites_locked(now)
                 if not self.engaged:
                     raise PermissionError("click Engage physical control before committing a target")
-                if self.trajectory is not None:
+                if (
+                    self.trajectory is not None
+                    or self.authorized_transit is not None
+                ):
                     raise RuntimeError("a trajectory is already active")
                 if self._desired_gripper_action_locked() is not None:
                     raise RuntimeError("release RB/RT before committing an arm trajectory; the latched gripper hold is preserved")
@@ -1309,6 +2143,10 @@ class IntegratedController:
                     self.last_error = "target is already at the current controlled frame; no trajectory was sent"
                     return
                 result = self._solve_target_locked(q_start, requested)
+                self._assert_ik_residual_locked(
+                    result.position_residual_m,
+                    result.orientation_residual_rad,
+                )
                 q_goal = result.q_goal.copy()
                 duration = (
                     self._continuous_horizon_locked(q_start, q_goal)
@@ -1445,6 +2283,11 @@ class IntegratedController:
                             f"from its baseline, above {maximum_contact:.4f} m"
                         )
                 result = self._solve_target_locked(measured_q, requested)
+                self._assert_ik_residual_locked(
+                    result.position_residual_m,
+                    result.orientation_residual_rad,
+                    ik_mode=plan.ik_mode,
+                )
                 if plan.execution_mode in {TRANSIT_SPEED, CONTACT_WORK}:
                     # Latched endpoint speed must be synchronized from the
                     # physical position, not from an earlier endpoint that the
@@ -1563,6 +2406,448 @@ class IntegratedController:
             self._fault_to_float(f"continuous replan fault: {exc}")
 
     # ------------------------------------------------------------------
+    # Authorization-bound staged transit
+    # ------------------------------------------------------------------
+    def _start_authorized_transit_thread(self) -> None:
+        with self.lock:
+            if (
+                self.authorized_transit_thread
+                and self.authorized_transit_thread.is_alive()
+            ):
+                raise RuntimeError(
+                    "authorized transit worker is already active"
+                )
+            self.authorized_transit_thread = threading.Thread(
+                target=self._authorized_transit_loop,
+                name="arm-authorized-transit",
+                daemon=True,
+            )
+            self.authorized_transit_thread.start()
+
+    def _authorized_transit_summary_locked(
+        self,
+        execution: AuthorizedTransitExecution,
+    ) -> dict[str, Any]:
+        return {
+            "plan_id": execution.plan_id,
+            "preview_sha256": execution.preview_sha256,
+            "request_sha256": execution.request_sha256,
+            "assertion_id": execution.assertion_id,
+            "decision_id": execution.decision_id,
+            "resolved_by": execution.resolved_by,
+            "scene_revision": execution.scene_revision,
+            "status": execution.status,
+            "stage_count": len(execution.stage_durations_s),
+            "current_stage_index": execution.current_stage_index,
+            "completed_stage_count": execution.completed_stage_count,
+            "planned_duration_s": sum(execution.stage_durations_s),
+            "elapsed_s": max(
+                0.0,
+                time.monotonic() - execution.started_monotonic,
+            ),
+            "frames_attempted": execution.frames_attempted,
+            "frames_sent": execution.frames_sent,
+            "last_command_latency_ms": execution.last_command_latency_ms,
+            "maximum_command_latency_ms": (
+                execution.maximum_command_latency_ms
+            ),
+            "feedback_age_ms": max(
+                0.0,
+                (
+                    time.monotonic()
+                    - execution.last_feedback_monotonic
+                )
+                * 1000.0,
+            ),
+            "final_hold_age_s": (
+                None
+                if execution.final_hold_started_monotonic is None
+                else max(
+                    0.0,
+                    time.monotonic()
+                    - execution.final_hold_started_monotonic,
+                )
+            ),
+            "completion_behavior": (
+                "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+            ),
+            "current_stage_expected_duration_s": (
+                execution.stage_expected_duration_s
+            ),
+            "current_stage_timeout_s": execution.stage_timeout_s,
+            "current_stage_position_error_rad": (
+                execution.stage_position_error_rad
+            ),
+            "current_stage_max_velocity_rad_s": (
+                execution.stage_max_velocity_rad_s
+            ),
+            "current_stage_best_position_error_rad": (
+                execution.stage_best_position_error_rad
+            ),
+            "current_stage_last_progress_age_s": (
+                None
+                if execution.stage_last_progress_monotonic <= 0.0
+                else max(
+                    0.0,
+                    time.monotonic()
+                    - execution.stage_last_progress_monotonic,
+                )
+            ),
+            "current_stage_completion_criterion": (
+                execution.stage_completion_criterion
+            ),
+            "error": execution.error,
+        }
+
+    def _authorized_transit_loop(self) -> None:
+        """Advance exact POS_VEL waypoints and retain the final endpoint."""
+
+        poll_period = 1.0 / max(
+            float(self.config["basic_state_rate_hz"]),
+            1.0,
+        )
+        next_tick = time.monotonic()
+        endpoint: LatchedEndpointCommand | None = None
+        endpoint_execution: AuthorizedTransitExecution | None = None
+        endpoint_stage_index = -1
+        stable_samples = 0
+        required_stable_samples = int(
+            self.config["trajectory"].get(
+                "arrival_stable_samples",
+                10,
+            )
+        )
+        intermediate_stable_samples = int(
+            self.config["trajectory"].get(
+                "intermediate_arrival_stable_samples",
+                2,
+            )
+        )
+        stage_timeout_multiplier = float(
+            self.config["trajectory"].get(
+                "authorized_stage_timeout_multiplier",
+                4.0,
+            )
+        )
+        stage_timeout_min_s = float(
+            self.config["trajectory"].get(
+                "authorized_stage_timeout_min_s",
+                3.0,
+            )
+        )
+        stage_timeout_max_s = float(
+            self.config["trajectory"].get(
+                "authorized_stage_timeout_max_s",
+                8.0,
+            )
+        )
+        stage_stall_timeout_s = float(
+            self.config["trajectory"].get(
+                "authorized_stage_stall_timeout_s",
+                2.5,
+            )
+        )
+        stage_progress_epsilon_rad = float(
+            self.config["trajectory"].get(
+                "authorized_stage_progress_epsilon_rad",
+                0.002,
+            )
+        )
+        position_tolerance = self.config["trajectory"][
+            "arrival_position_tolerance_rad"
+        ]
+        velocity_tolerance = self.config["trajectory"][
+            "arrival_velocity_tolerance_rad_s"
+        ]
+        try:
+            while not self.stop_event.is_set():
+                now = time.monotonic()
+                if now < next_tick:
+                    self.stop_event.wait(next_tick - now)
+                    continue
+                next_tick = now + poll_period
+                state = self.basic.state()
+                commands = None
+                execution: AuthorizedTransitExecution | None = None
+                with self.lock:
+                    execution = self.authorized_transit
+                    if execution is None:
+                        return
+                    self.basic_state = state
+                    self.last_state_success = now
+                    execution.last_feedback_monotonic = now
+                    self._assert_motion_prerequisites_locked(now)
+
+                    stage_index = execution.current_stage_index
+                    measured_q = self._measured_positions_locked()[
+                        :6
+                    ].copy()
+                    measured_qd = self._measured_velocities_locked()[
+                        :6
+                    ].copy()
+                    if (
+                        endpoint is None
+                        or execution is not endpoint_execution
+                        or stage_index != endpoint_stage_index
+                    ):
+                        q_start = measured_q.copy()
+                        q_goal = execution.q_waypoints[stage_index]
+                        duration = execution.stage_durations_s[
+                            stage_index - 1
+                        ]
+                        joint_caps = np.minimum(
+                            self._provider_pos_vel_caps_locked(),
+                            float(
+                                self.config["planning"][
+                                    "maximum_transit_joint_velocity_rad_s"
+                                ]
+                            ),
+                        )
+                        velocity_limits = synchronized_velocity_limits(
+                            q_start,
+                            q_goal,
+                            duration,
+                            joint_caps,
+                            stationary_joint_limit_rad_s=min(
+                                float(
+                                    self.config["trajectory"][
+                                        "stationary_joint_velocity_limit_rad_s"
+                                    ]
+                                ),
+                                float(np.min(joint_caps)),
+                            ),
+                        )
+                        endpoint = LatchedEndpointCommand.create(
+                            "POSITION_VELOCITY_LIMITED",
+                            q_start,
+                            q_goal,
+                            velocity_limits,
+                            keepalive_period_s=1.0
+                            / float(
+                                self.config["trajectory"][
+                                    "latched_keepalive_hz"
+                                ]
+                            ),
+                        )
+                        endpoint_execution = execution
+                        endpoint_stage_index = stage_index
+                        stable_samples = 0
+                        execution.stage_started_monotonic = now
+                        execution.stage_expected_duration_s = duration
+                        settle_window_s = (
+                            required_stable_samples / max(
+                                float(
+                                    self.config["basic_state_rate_hz"]
+                                ),
+                                1.0,
+                            )
+                        )
+                        execution.stage_timeout_s = min(
+                            stage_timeout_max_s,
+                            max(
+                                stage_timeout_min_s,
+                                duration * stage_timeout_multiplier
+                                + settle_window_s,
+                            ),
+                        )
+                        initial_error = float(
+                            np.max(np.abs(measured_q - q_goal))
+                        )
+                        execution.stage_position_error_rad = initial_error
+                        execution.stage_max_velocity_rad_s = float(
+                            np.max(np.abs(measured_qd))
+                        )
+                        execution.stage_best_position_error_rad = (
+                            initial_error
+                        )
+                        execution.stage_last_progress_monotonic = now
+                        execution.stage_completion_criterion = (
+                            "FINAL_POSITION_AND_SETTLED_VELOCITY"
+                            if stage_index
+                            == len(execution.q_waypoints) - 1
+                            else "INTERMEDIATE_POSITION_PASSAGE"
+                        )
+
+                    position_error = np.abs(
+                        measured_q - endpoint.q_goal
+                    )
+                    max_position_error = float(
+                        np.max(position_error)
+                    )
+                    max_velocity = float(
+                        np.max(np.abs(measured_qd))
+                    )
+                    position_arrived = bool(
+                        np.all(
+                            position_error
+                            <= np.asarray(
+                                position_tolerance,
+                                dtype=float,
+                            )
+                        )
+                    )
+                    velocity_arrived = bool(
+                        np.all(
+                            np.abs(measured_qd)
+                            <= np.asarray(
+                                velocity_tolerance,
+                                dtype=float,
+                            )
+                        )
+                    )
+                    final_stage = (
+                        stage_index
+                        == len(execution.q_waypoints) - 1
+                    )
+                    arrived = (
+                        position_arrived
+                        and (velocity_arrived if final_stage else True)
+                    )
+                    execution.stage_position_error_rad = (
+                        max_position_error
+                    )
+                    execution.stage_max_velocity_rad_s = max_velocity
+                    best_error = (
+                        execution.stage_best_position_error_rad
+                    )
+                    if (
+                        best_error is None
+                        or max_position_error
+                        <= best_error - stage_progress_epsilon_rad
+                    ):
+                        execution.stage_best_position_error_rad = (
+                            max_position_error
+                        )
+                        execution.stage_last_progress_monotonic = now
+                    duration = execution.stage_durations_s[
+                        stage_index - 1
+                    ]
+                    duration_elapsed = (
+                        now - execution.stage_started_monotonic
+                        >= duration
+                    )
+                    stable_samples = (
+                        stable_samples + 1
+                        if arrived and duration_elapsed
+                        else 0
+                    )
+                    stable_sample_target = (
+                        required_stable_samples
+                        if final_stage
+                        else intermediate_stable_samples
+                    )
+                    if (
+                        execution.status == "EXECUTING"
+                        and stable_samples >= stable_sample_target
+                    ):
+                        execution.completed_stage_count += 1
+                        if stage_index < len(execution.q_waypoints) - 1:
+                            execution.current_stage_index += 1
+                            endpoint = None
+                            stable_samples = 0
+                            self.commanded_q = measured_q.copy()
+                            self.commanded_qd = np.zeros(6, dtype=float)
+                            self.control_state = (
+                                "EXECUTING_AUTHORIZED_TRANSIT"
+                            )
+                            continue
+                        execution.status = "HOLDING_FINAL"
+                        execution.final_hold_started_monotonic = now
+                        self.commanded_q = endpoint.q_goal.copy()
+                        self.commanded_qd = np.zeros(6, dtype=float)
+                        self.control_state = (
+                            "HOLDING_AUTHORIZED_TRANSIT_ENDPOINT"
+                        )
+                        self.health = "HEALTHY"
+                        self.last_error = None
+
+                    if execution.status == "EXECUTING":
+                        timeout = execution.stage_timeout_s
+                        stalled_for_s = (
+                            now
+                            - execution.stage_last_progress_monotonic
+                        )
+                        if (
+                            not position_arrived
+                            and stalled_for_s > stage_stall_timeout_s
+                        ):
+                            raise RuntimeError(
+                                "authorized transit stage "
+                                f"{stage_index} made no joint progress for "
+                                f"{stalled_for_s:.2f} s "
+                                f"(position error "
+                                f"{max_position_error:.5f} rad)"
+                            )
+                        if (
+                            now - execution.stage_started_monotonic
+                            > timeout
+                        ):
+                            raise RuntimeError(
+                                "authorized transit stage "
+                                f"{stage_index} did not arrive within "
+                                f"{timeout:.2f} s "
+                                f"(position error "
+                                f"{max_position_error:.5f} rad, "
+                                f"maximum velocity "
+                                f"{max_velocity:.5f} rad/s)"
+                            )
+                    if endpoint.should_send(now):
+                        commands = self._append_latched_gripper_locked(
+                            endpoint.commands()
+                        )
+                        execution.frames_attempted += 1
+
+                if commands is None or execution is None:
+                    continue
+                send_started = time.monotonic()
+                with self.command_gate_lock:
+                    with self.lock:
+                        if (
+                            self.authorized_transit is not execution
+                            or not self._platform_ready_locked()
+                        ):
+                            return
+                    self.basic.command(
+                        commands,
+                        int(self.config["command_timeout_ms"]),
+                    )
+                sent_at = time.monotonic()
+                with self.lock:
+                    if self.authorized_transit is not execution:
+                        return
+                    endpoint.mark_sent(sent_at)
+                    execution.frames_sent += 1
+                    latency_ms = (sent_at - send_started) * 1000.0
+                    execution.last_command_latency_ms = latency_ms
+                    execution.maximum_command_latency_ms = max(
+                        execution.maximum_command_latency_ms,
+                        latency_ms,
+                    )
+                    self.command_count += 1
+                    self.last_command_sent_monotonic = sent_at
+                    self.last_command_latency_ms = latency_ms
+                    self.max_command_latency_ms = max(
+                        self.max_command_latency_ms,
+                        latency_ms,
+                    )
+        except LeaseLostError as exc:
+            self._handle_lease_loss(
+                f"{exc.error_code}: {exc.reason}"
+            )
+        except Exception as exc:
+            with self.lock:
+                execution = self.authorized_transit
+                if execution is not None:
+                    execution.status = "FAILED"
+                    execution.error = str(exc)
+                    self.last_authorized_transit = (
+                        self._authorized_transit_summary_locked(execution)
+                    )
+            self._fault_to_float(
+                f"authorized transit fault: {exc}"
+            )
+
+    # ------------------------------------------------------------------
     # MIT trajectory streaming
     # ------------------------------------------------------------------
     def _start_trajectory_thread(self) -> None:
@@ -1637,7 +2922,63 @@ class IntegratedController:
                         position_tolerance_rad=position_tolerance,
                         velocity_tolerance_rad_s=velocity_tolerance,
                     )
-                    stable_samples = stable_samples + 1 if arrived else 0
+                    plan.arrival_joint_confirmed = bool(arrived)
+                    if plan.execution_mode == TRANSIT_SPEED:
+                        if self.kinematics is None:
+                            raise RuntimeError(
+                                "kinematics are unavailable during TRANSIT_SPEED arrival confirmation"
+                            )
+                        measured_control = self.kinematics.controlled_frame(
+                            measured_q,
+                            self._tool_to_control_locked(),
+                        )
+                        position_residual_m = float(
+                            np.linalg.norm(
+                                measured_control[:3, 3]
+                                - plan.controlled_goal[:3, 3]
+                            )
+                        )
+                        orientation_residual_rad = float(
+                            np.linalg.norm(
+                                rotation_vector(
+                                    plan.controlled_goal[:3, :3]
+                                    @ measured_control[:3, :3].T
+                                )
+                            )
+                        )
+                        plan.arrival_position_residual_m = position_residual_m
+                        plan.arrival_orientation_residual_rad = (
+                            orientation_residual_rad
+                        )
+                        cartesian_arrived = (
+                            position_residual_m
+                            <= float(
+                                self.config["trajectory"][
+                                    "arrival_cartesian_position_tolerance_m"
+                                ]
+                            )
+                            and (
+                                plan.ik_mode != IK_POSE_6DOF
+                                or orientation_residual_rad
+                                <= float(
+                                    self.config["trajectory"][
+                                        "arrival_cartesian_orientation_tolerance_rad"
+                                    ]
+                                )
+                            )
+                        )
+                        duration_arrived = (
+                            now - endpoint_started >= plan.duration_s
+                        )
+                    else:
+                        cartesian_arrived = True
+                        duration_arrived = True
+                    plan.arrival_cartesian_confirmed = bool(cartesian_arrived)
+                    plan.arrival_duration_confirmed = bool(duration_arrived)
+                    fully_arrived = (
+                        arrived and cartesian_arrived and duration_arrived
+                    )
+                    stable_samples = stable_samples + 1 if fully_arrived else 0
                     contact_pulse_complete = (
                         plan.execution_mode == CONTACT_WORK
                         and plan.interaction_mode == INTERACTION_ONE_SHOT
@@ -1989,6 +3330,7 @@ class IntegratedController:
                     return
                 if plan.interaction_mode == INTERACTION_HOLD_LB:
                     return
+                self._observe_trajectory_deadline_locked(plan)
                 self.control_state = "FLOATING_AFTER_TRAJECTORY"
             float_ok = self._request_float_once("one-shot MIT trajectory complete")
             with self.lock:
@@ -2007,7 +3349,89 @@ class IntegratedController:
         except Exception as exc:
             self._fault_to_float(f"trajectory fault: {exc}")
 
+    def _observe_trajectory_deadline_locked(self, plan: TrajectoryPlan) -> None:
+        measured_q = self._measured_positions_locked()[:6].copy()
+        measured_qd = self._measured_velocities_locked()[:6].copy()
+        position_tolerance = np.asarray(
+            self.config["trajectory"]["arrival_position_tolerance_rad"],
+            dtype=float,
+        )
+        velocity_tolerance = np.asarray(
+            self.config["trajectory"]["arrival_velocity_tolerance_rad_s"],
+            dtype=float,
+        )
+        plan.deadline_joint_within_tolerance = bool(
+            np.all(np.abs(measured_q - plan.q_goal) <= position_tolerance)
+            and np.all(np.abs(measured_qd) <= velocity_tolerance)
+        )
+        plan.arrival_duration_confirmed = bool(
+            time.monotonic() - plan.segment_started_monotonic >= plan.duration_s
+        )
+        if self.kinematics is None:
+            return
+        measured_control = self.kinematics.controlled_frame(
+            measured_q,
+            self._tool_to_control_locked(),
+        )
+        plan.deadline_position_residual_m = float(
+            np.linalg.norm(
+                measured_control[:3, 3] - plan.controlled_goal[:3, 3]
+            )
+        )
+        plan.deadline_orientation_residual_rad = float(
+            np.linalg.norm(
+                rotation_vector(
+                    plan.controlled_goal[:3, :3]
+                    @ measured_control[:3, :3].T
+                )
+            )
+        )
+        plan.deadline_cartesian_within_tolerance = bool(
+            plan.deadline_position_residual_m
+            <= float(
+                self.config["trajectory"][
+                    "arrival_cartesian_position_tolerance_m"
+                ]
+            )
+            and (
+                plan.ik_mode != IK_POSE_6DOF
+                or plan.deadline_orientation_residual_rad
+                <= float(
+                    self.config["trajectory"][
+                        "arrival_cartesian_orientation_tolerance_rad"
+                    ]
+                )
+            )
+        )
+
     def _plan_summary_locked(self, plan: TrajectoryPlan, float_ok: bool) -> dict[str, Any]:
+        target_arrival_confirmed = bool(
+            plan.arrival_joint_confirmed
+            and plan.arrival_cartesian_confirmed
+            and plan.arrival_duration_confirmed
+        )
+        deadline_snapshot_within_tolerance = bool(
+            plan.deadline_joint_within_tolerance
+            and plan.deadline_cartesian_within_tolerance
+            and plan.arrival_duration_confirmed
+        )
+        if not float_ok:
+            completion_outcome = "FLOAT_NOT_CONFIRMED"
+            completion_success = False
+        elif plan.execution_mode == CONTACT_WORK:
+            completion_outcome = "CONTACT_DURATION_COMPLETE_AND_FLOATED"
+            completion_success = bool(plan.arrival_duration_confirmed)
+        elif target_arrival_confirmed:
+            completion_outcome = "ARRIVAL_CONFIRMED_AND_FLOATED"
+            completion_success = True
+        elif deadline_snapshot_within_tolerance:
+            completion_outcome = (
+                "DEADLINE_SNAPSHOT_WITHIN_TOLERANCE_AND_FLOATED"
+            )
+            completion_success = False
+        else:
+            completion_outcome = "DEADLINE_FLOAT_BEFORE_ARRIVAL"
+            completion_success = False
         return {
             "execution_mode": plan.execution_mode,
             "interaction_mode": plan.interaction_mode,
@@ -2019,6 +3443,26 @@ class IntegratedController:
             "controlled_goal_position_m": plan.controlled_goal[:3, 3].tolist(),
             "position_residual_m": plan.position_residual_m,
             "orientation_residual_rad": plan.orientation_residual_rad,
+            "arrival_position_residual_m": plan.arrival_position_residual_m,
+            "arrival_orientation_residual_rad": (
+                plan.arrival_orientation_residual_rad
+            ),
+            "arrival_joint_confirmed": plan.arrival_joint_confirmed,
+            "arrival_cartesian_confirmed": plan.arrival_cartesian_confirmed,
+            "arrival_duration_confirmed": plan.arrival_duration_confirmed,
+            "deadline_position_residual_m": plan.deadline_position_residual_m,
+            "deadline_orientation_residual_rad": (
+                plan.deadline_orientation_residual_rad
+            ),
+            "deadline_joint_within_tolerance": (
+                plan.deadline_joint_within_tolerance
+            ),
+            "deadline_cartesian_within_tolerance": (
+                plan.deadline_cartesian_within_tolerance
+            ),
+            "target_arrival_confirmed": target_arrival_confirmed,
+            "completion_outcome": completion_outcome,
+            "completion_success": completion_success,
             "replan_count": plan.replan_count,
             "frames_attempted": plan.frames_attempted,
             "frames_sent": plan.frames_sent,
@@ -2371,7 +3815,10 @@ class IntegratedController:
             if self.gripper_fault_latched:
                 return
             operation = desired or active
-            if self.trajectory is not None:
+            if (
+                self.trajectory is not None
+                or self.authorized_transit is not None
+            ):
                 if active is not None:
                     self.control_state = f"GRIPPER_{self.gripper_mode}_{active}_LATCHED_WITH_ARM"
                     self.gripper_last_error = None
@@ -2391,7 +3838,11 @@ class IntegratedController:
         try:
             with self.lock:
                 self._assert_motion_prerequisites_locked(now)
-                if self.trajectory is not None or not self.engaged:
+                if (
+                    self.trajectory is not None
+                    or self.authorized_transit is not None
+                    or not self.engaged
+                ):
                     return
                 commands = self._build_gripper_command_locked(operation)
             with self.command_gate_lock:
@@ -2452,7 +3903,20 @@ class IntegratedController:
             plan = self.trajectory
             if plan is not None:
                 self.last_completed_trajectory = self._plan_summary_locked(plan, False)
+            authorized = self.authorized_transit
+            if authorized is not None:
+                if authorized.status not in {"FAILED", "RELEASED"}:
+                    authorized.status = "RELEASED"
+                authorized.error = (
+                    authorized.error
+                    if authorized.error is not None
+                    else str(reason)
+                )
+                self.last_authorized_transit = (
+                    self._authorized_transit_summary_locked(authorized)
+                )
             self.trajectory = None
+            self.authorized_transit = None
             self.latched_endpoint = None
             self.hybrid_policy = None
             self.commit_requested = False
@@ -2522,7 +3986,15 @@ class IntegratedController:
     def _fault_to_float(self, reason: str) -> None:
         with self.lock:
             self._set_fault_locked(reason)
+            authorized = self.authorized_transit
+            if authorized is not None:
+                authorized.status = "FAILED"
+                authorized.error = str(reason)
+                self.last_authorized_transit = (
+                    self._authorized_transit_summary_locked(authorized)
+                )
             self.trajectory = None
+            self.authorized_transit = None
             self.latched_endpoint = None
             self.hybrid_policy = None
             self.gripper_gamepad_action = None
@@ -2554,89 +4026,116 @@ class IntegratedController:
                 self._renew_lease_once()
 
     def _ensure_runtime_lease(self, background: bool = False) -> bool:
-        if self.basic.lease_snapshot() is not None:
-            return True
-        now = time.monotonic()
-        with self.lock:
-            if background and now - self.last_lease_attempt < 1.0:
-                return False
-            self.last_lease_attempt = now
-        try:
-            lease = self.basic.acquire(
-                f"{self.config['provider_id']}:{self.config['arm_id']}",
-                int(self.config["lease_duration_ms"]),
-            )
-            self.basic.set_payload(self.payload_mass_kg, self.payload_com_tool_m.tolist())
-        except Exception as exc:
+        with self.lease_operation_lock:
+            if self.basic.lease_snapshot() is not None:
+                return True
+            now = time.monotonic()
             with self.lock:
-                self.lease_acquire_failure_count += 1
-                self.lease_state = "ACQUIRE_RETRY"
-                self.last_error = f"lease acquisition failed: {exc}"
-                self.health = "DEGRADED"
-            if background:
-                return False
-            raise
-        with self.lock:
-            self.lease_state = "OWNED"
-            self.last_lease_renew = time.monotonic()
-            self.last_error = None
-            if self.fault_reason is None:
-                self.health = "HEALTHY"
-        print(f"[mit-lease] acquired generation={lease.fencing_generation}")
-        return True
+                if background and self.residency != "HOT":
+                    self.lease_transition_skip_count += 1
+                    return False
+                if background and now - self.last_lease_attempt < 1.0:
+                    return False
+                self.last_lease_attempt = now
+            try:
+                lease = self.basic.acquire(
+                    f"{self.config['provider_id']}:{self.config['arm_id']}",
+                    int(self.config["lease_duration_ms"]),
+                )
+                self.basic.set_payload(self.payload_mass_kg, self.payload_com_tool_m.tolist())
+            except Exception as exc:
+                with self.lock:
+                    self.lease_acquire_failure_count += 1
+                    self.lease_state = "ACQUIRE_RETRY"
+                    self.last_error = f"lease acquisition failed: {exc}"
+                    self.health = "DEGRADED"
+                if background:
+                    return False
+                raise
+            with self.lock:
+                self.lease_state = "OWNED"
+                self.last_lease_renew = time.monotonic()
+                self.last_error = None
+                if self.fault_reason is None:
+                    self.health = "HEALTHY"
+            print(f"[mit-lease] acquired generation={lease.fencing_generation}")
+            return True
 
     def _renew_lease_once(self) -> bool:
-        started = time.monotonic()
-        with self.lock:
-            self.last_lease_attempt = started
-        try:
-            self.basic.renew(int(self.config["lease_duration_ms"]))
-        except LeaseLostError as exc:
+        with self.lease_operation_lock:
+            started = time.monotonic()
             with self.lock:
-                self.lease_renew_failure_count += 1
-            self._handle_lease_loss(f"{exc.error_code}: {exc.reason}")
-            return False
-        except Exception as exc:
+                if self.residency != "HOT":
+                    self.lease_transition_skip_count += 1
+                    return False
+                self.last_lease_attempt = started
+            try:
+                self.basic.renew(int(self.config["lease_duration_ms"]))
+            except LeaseLostError as exc:
+                with self.lock:
+                    self.lease_renew_failure_count += 1
+                self._handle_lease_loss(f"{exc.error_code}: {exc.reason}")
+                return False
+            except Exception as exc:
+                latency = (time.monotonic() - started) * 1000.0
+                with self.lock:
+                    self.lease_renew_failure_count += 1
+                    self.lease_renew_latency_ms = latency
+                    self.max_lease_renew_latency_ms = max(self.max_lease_renew_latency_ms, latency)
+                    self.lease_state = "RENEW_RETRY"
+                    self.last_error = f"lease renewal transport error: {exc}"
+                    self.health = "DEGRADED"
+                lease = self.basic.lease_snapshot()
+                if lease is None or lease.expires_monotonic - time.monotonic() <= 1.5:
+                    self._handle_lease_loss(f"lease renewal became uncertain: {exc}")
+                return False
             latency = (time.monotonic() - started) * 1000.0
             with self.lock:
-                self.lease_renew_failure_count += 1
+                self.lease_renew_success_count += 1
                 self.lease_renew_latency_ms = latency
                 self.max_lease_renew_latency_ms = max(self.max_lease_renew_latency_ms, latency)
-                self.lease_state = "RENEW_RETRY"
-                self.last_error = f"lease renewal transport error: {exc}"
-                self.health = "DEGRADED"
-            lease = self.basic.lease_snapshot()
-            if lease is None or lease.expires_monotonic - time.monotonic() <= 1.5:
-                self._handle_lease_loss(f"lease renewal became uncertain: {exc}")
-            return False
-        latency = (time.monotonic() - started) * 1000.0
-        with self.lock:
-            self.lease_renew_success_count += 1
-            self.lease_renew_latency_ms = latency
-            self.max_lease_renew_latency_ms = max(self.max_lease_renew_latency_ms, latency)
-            self.last_lease_renew = time.monotonic()
-            self.lease_state = "OWNED"
-        return True
+                self.last_lease_renew = time.monotonic()
+                self.lease_state = "OWNED"
+            return True
 
     def _handle_lease_loss(self, reason: str) -> None:
-        self.basic.clear_lease()
-        with self.lock:
-            self.lease_state = "LOST"
-            self.trajectory = None
-            self.latched_endpoint = None
-            self.hybrid_policy = None
-            self.gripper_gamepad_action = None
-            self.gripper_ui_action = None
-            self.gripper_active_action = None
-            self.gripper_target_rad = None
-            self.gripper_fault_latched = False
-            self.engaged = False
-            self.control_state = "FAULT_FLOAT"
-            self.fault_reason = f"Basic lease lost: {reason}"
-            self.last_error = self.fault_reason
-            self.health = "DEGRADED"
-            self.rejected_count += 1
-            self.float_confirmed = False
+        with self.lease_operation_lock:
+            self.basic.clear_lease()
+            with self.lock:
+                if self.residency != "HOT":
+                    self.lease_transition_skip_count += 1
+                    if self.residency in {"WARM", "COLD"}:
+                        self.lease_state = "NONE"
+                    return
+                # Lease loss is an explicit recovery boundary. Remaining HOT would
+                # let the background lease loop reacquire while Basic owns a safety
+                # operation such as safe-home.
+                self.residency = "RECOVERY_REQUIRED"
+                self.ready = False
+                self.lease_state = "LOST"
+                authorized = self.authorized_transit
+                if authorized is not None:
+                    authorized.status = "FAILED"
+                    authorized.error = f"Basic lease lost: {reason}"
+                    self.last_authorized_transit = (
+                        self._authorized_transit_summary_locked(authorized)
+                    )
+                self.trajectory = None
+                self.authorized_transit = None
+                self.latched_endpoint = None
+                self.hybrid_policy = None
+                self.gripper_gamepad_action = None
+                self.gripper_ui_action = None
+                self.gripper_active_action = None
+                self.gripper_target_rad = None
+                self.gripper_fault_latched = False
+                self.engaged = False
+                self.control_state = "FAULT_FLOAT"
+                self.fault_reason = f"Basic lease lost: {reason}"
+                self.last_error = self.fault_reason
+                self.health = "DEGRADED"
+                self.rejected_count += 1
+                self.float_confirmed = False
 
     # ------------------------------------------------------------------
     # State helpers
@@ -2737,6 +4236,12 @@ class IntegratedController:
                 and str(state.get("health") or "") not in {"FAULTED", "UNHEALTHY"}
                 and self._platform_ready_locked()
             )
+            direct_planning_ready = bool(
+                self.ready
+                and self.residency == "HOT"
+                and self.health not in {"FAULTED", "UNHEALTHY"}
+                and str(state.get("health") or "") not in {"FAULTED", "UNHEALTHY"}
+            )
             capability_readiness = {
                 "robot.motion.arm.integrated.mit.one_shot": discovery_ready,
                 "robot.motion.arm.integrated.mit.continuous": discovery_ready,
@@ -2745,6 +4250,15 @@ class IntegratedController:
                 "robot.motion.arm.integrated.runtime_settings": discovery_ready,
                 "robot.motion.arm.integrated.semantic_scene_staging": discovery_ready,
                 "robot.motion.arm.integrated.nonphysical_preview": discovery_ready,
+                "robot.motion.arm.integrated.plan.direct.nonphysical": direct_planning_ready,
+                "robot.motion.arm.integrated.plan.transit_path.shadow": bool(
+                    direct_planning_ready
+                    and self.config["planning"]["transit_shadow_enabled"]
+                ),
+                "robot.motion.arm.integrated.transit.authorized_staged": bool(
+                    discovery_ready
+                    and self.authorization_assertion_configured
+                ),
                 "robot.motion.arm.integrated.contact_baseline_capture": discovery_ready,
                 "robot.motion.arm.integrated.gripper.mit": discovery_ready,
                 "robot.motion.arm.integrated.gripper.pos_tor": discovery_ready,
@@ -2794,6 +4308,49 @@ class IntegratedController:
                             "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
                             "stability_beyond_constraints": "NOT_ESTABLISHED",
                         },
+                    },
+                    "robot.motion.arm.integrated.plan.direct.nonphysical": {
+                        "maturity": "SHADOW",
+                        "transport": "DIRECT_HTTP",
+                        "fabric_in_synchronous_path": False,
+                        "physical_motion_authorized": False,
+                        "discoverable": True,
+                    },
+                    "robot.motion.arm.integrated.plan.transit_path.shadow": {
+                        "maturity": "SHADOW",
+                        "planner_owner": "ROBOT_ARM_INTEGRATED_CONTROLLER",
+                        "transport": "DIRECT_HTTP",
+                        "fabric_in_synchronous_path": False,
+                        "physical_motion_authorized": False,
+                        "evaluates": [
+                            "DIRECT",
+                            "CLEARANCE_Z_THEN_XY",
+                            "LATERAL_SINGULARITY_ESCAPE",
+                            "PROVIDER_RATE_CAPPED_SPEED",
+                            "SEMANTIC_SCENE_COLLISION",
+                        ],
+                        "discoverable": True,
+                    },
+                    "robot.motion.arm.integrated.transit.authorized_staged": {
+                        "maturity": "LIMITED",
+                        "planner_owner": (
+                            "ROBOT_ARM_INTEGRATED_CONTROLLER"
+                        ),
+                        "transport": "DIRECT_HTTP",
+                        "fabric_in_synchronous_path": False,
+                        "authorization": (
+                            "SIGNED_SHORT_LIVED_ONE_TIME_ASSERTION"
+                        ),
+                        "exact_preview_digest_required": True,
+                        "maximum_joint_velocity_rad_s": float(
+                            self.config["planning"][
+                                "maximum_transit_joint_velocity_rad_s"
+                            ]
+                        ),
+                        "completion_behavior": (
+                            "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                        ),
+                        "discoverable": True,
                     },
                 },
                 "non_discoverable_experiments": {
@@ -2872,7 +4429,7 @@ class IntegratedController:
                     "maximum_commit_distance_m": float(self.config["trajectory"]["maximum_translation_per_commit_m"]),
                     "position_residual_m": self.last_position_residual_m,
                     "orientation_residual_rad": self.last_orientation_residual_rad,
-                    "residual_policy": "TELEMETRY_ONLY_NO_EXECUTION_REJECTION",
+                    "residual_policy": "PREVIEW_AND_EXECUTION_REJECTION",
                     "ik_iterations": self.last_ik_iterations,
                     "sigma_min": self.last_sigma_min,
                 },
@@ -2880,6 +4437,29 @@ class IntegratedController:
                     "target_revision": self.target_revision,
                     "preview_count": self.preview_count,
                     "preview_rejected_count": self.preview_rejected_count,
+                    "shadow_transit_plan_count": self.shadow_transit_plan_count,
+                    "last_shadow_transit_plan": copy.deepcopy(
+                        self.last_shadow_transit_plan
+                    ),
+                    "authorized_transit_count": (
+                        self.authorized_transit_count
+                    ),
+                    "authorized_transit_rejected_count": (
+                        self.authorized_transit_rejected_count
+                    ),
+                    "authorization_assertion_configured": (
+                        self.authorization_assertion_configured
+                    ),
+                    "authorized_transit": (
+                        None
+                        if self.authorized_transit is None
+                        else self._authorized_transit_summary_locked(
+                            self.authorized_transit
+                        )
+                    ),
+                    "last_authorized_transit": copy.deepcopy(
+                        self.last_authorized_transit
+                    ),
                     "last_preview": None if self.last_preview is None else {
                         **self.last_preview.snapshot(include_samples=False),
                         **copy.deepcopy(self.last_preview_context or {}),
@@ -2950,6 +4530,13 @@ class IntegratedController:
                     "last_completed": copy.deepcopy(self.last_completed_trajectory),
                     "latched_endpoint": None if self.latched_endpoint is None else self.latched_endpoint.snapshot(),
                     "hybrid": None if self.hybrid_policy is None else self.hybrid_policy.snapshot(),
+                    "arrival_confirmation": None if plan is None else {
+                        "joint_confirmed": plan.arrival_joint_confirmed,
+                        "cartesian_confirmed": plan.arrival_cartesian_confirmed,
+                        "planned_duration_confirmed": plan.arrival_duration_confirmed,
+                        "position_residual_m": plan.arrival_position_residual_m,
+                        "orientation_residual_rad": plan.arrival_orientation_residual_rad,
+                    },
                 },
                 "joint_state": {
                     "measured_rad": measured_q,
@@ -2987,6 +4574,7 @@ class IntegratedController:
                     "expires_in_ms": None if lease is None else max(0, int((lease.expires_monotonic - time.monotonic()) * 1000.0)),
                     "renew_success_count": self.lease_renew_success_count,
                     "renew_failure_count": self.lease_renew_failure_count,
+                    "transition_skip_count": self.lease_transition_skip_count,
                     "last_renew_latency_ms": self.lease_renew_latency_ms,
                 },
                 "safety": {

@@ -5,11 +5,32 @@ This document is the working design for the prototype. It separates planning fro
 ## Non-negotiable safety invariants
 
 - A Fabric observation may stage a Cartesian target, tool transform, payload, execution mode, or semantic scene. It never grants physical motion authority.
+- Direct control calls are recorded in the provider-local audit outbox before
+  submission. Fabric receives a later shadow copy and is not a synchronous
+  dependency of the control path.
 - Motion requires a local operator action. The current physical path remains GUI Engage plus Xbox LB. Preview, mode selection, and scene updates do not imply engagement.
 - Gravity-float is the immediate fallback. The already proven safe-home PowerShell path is the authoritative termination path.
 - Low force, low torque, low Kp, or slow motion is not assumed safe. A low load-bearing Kp can let the arm fall under its own weight.
 - Transport uncertainty, stale physical feedback, lost lease, Midbrain motion inhibit, or Basic FAULTED state blocks new commands and requests float where the lease is still valid.
 - The controller does not automatically retry physical work after a fault or safety fallback. The operator must inspect state and authorize a new attempt.
+
+## Authority coordination shadow
+
+Integrated evaluates Manager task authority, operational-writer activity, and
+the Basic residency lease through the versioned
+`physical_agent.authority_coordination_state` schema. Manager and Basic
+fencing generations live in distinct namespaces; equal numbers do not
+establish lineage. Holding a Basic lease while HOT and idle is standby, not an
+active upstream writer.
+
+When an operational writer is active, a coordinated state requires its exact
+upstream owner and Manager authority lease ID. The current execution boundary
+does not yet supply those fields, so an active writer under simultaneous
+Manager authority is intentionally reported as `DUAL_LAYER_UNCORRELATED` with
+`AUTHORITY_LINEAGE_NOT_BOUND`. The state and disagreement counters are exposed
+through `/health`, `/v1/state`, and `/v1/capabilities`. The evaluator is
+strictly shadow-only: it cannot replace the Basic lease, change mode, or submit
+motor commands.
 
 ## Execution modes
 
@@ -34,6 +55,11 @@ The gripper input begins with a joint-7-only request at a 10 Hz provider keepali
 ## Planning and semantic objects
 
 Every candidate path receives an immutable preview ID, target revision, scene revision, joint start/goal, duration, sampled configurations, minimum clearance, and collision list. Any target, tool-offset, settings, or scene change invalidates the preview.
+
+`POST /v1/motion/plan` combines target staging and preview in one direct
+provider call. It remains `SHADOW_NONPHYSICAL`; singularity diagnostics and
+speed/path-shaping policy stay controller-owned and are not interpreted as
+Skill-level motion authority.
 
 The scene input uses base-frame spheres with stable sphere and object IDs:
 

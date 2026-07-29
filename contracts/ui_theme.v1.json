@@ -1,0 +1,41 @@
+{
+  "schema": "physical_agent.browser_ui_theme",
+  "schema_version": 1,
+  "name": "Midbrain Neutral Dark",
+  "tokens": {
+    "background": "#090909",
+    "surface": "#131313",
+    "surface_raised": "#1c1c1c",
+    "border": "#3b3b3b",
+    "text": "#f2f2f2",
+    "muted": "#a8a8a8",
+    "accent": "#e5e5e5",
+    "secondary": "#bdbdbd",
+    "warning": "#f2b84b",
+    "danger": "#f17878",
+    "experimental": "#cfcfcf"
+  },
+  "palette_policy": {
+    "ordinary_ui_chrome": "WHITE_GREY_BLACK_ONLY",
+    "semantic_color_allowed_for": [
+      "warnings",
+      "errors",
+      "safety state",
+      "status requiring immediate interpretation",
+      "image overlays",
+      "coordinate axes",
+      "data-series differentiation"
+    ]
+  },
+  "ui_roles": [
+    "OBSERVATION",
+    "AUTHORIZATION",
+    "DEVELOPMENT"
+  ],
+  "authorization_rules": {
+    "decision_specific_payload": true,
+    "popup_allowed": true,
+    "approval_executes_action": false,
+    "execution_requires_separate_authority_and_provider_checks": true
+  }
+}

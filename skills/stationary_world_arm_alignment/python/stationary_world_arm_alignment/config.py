@@ -63,6 +63,29 @@ def load_skill_config(path: Path | None = None) -> dict[str, Any]:
             "pose-validation confidence thresholds must satisfy "
             "0 < fallback <= strict <= 1"
         )
+    from .foundation_engine import normalize_base_pose_engine_route
+
+    normalize_base_pose_engine_route(config)
+    candidate_review = config.get("candidate_review") or {}
+    candidate_mode = str(
+        candidate_review.get("mode") or "SHADOW"
+    ).upper()
+    if candidate_mode not in {"SHADOW", "ENFORCED"}:
+        raise ValueError(
+            "candidate-review mode must be SHADOW or ENFORCED"
+        )
+    if float(candidate_review.get("ttl_s") or 0) <= 0:
+        raise ValueError("candidate-review TTL must be positive")
+    vlm_translation_bound = float(
+        (config.get("vlm_refine") or {}).get(
+            "single_observation_translation_error_bound_m",
+            0.0,
+        )
+    )
+    if not 0.0 < vlm_translation_bound <= 0.01:
+        raise ValueError(
+            "VLM-only translation error bound must be in (0, 0.01]"
+        )
     return config
 
 
@@ -86,5 +109,11 @@ class Settings:
     @property
     def calibration_root(self) -> Path:
         path = SKILL_ROOT / "config" / "calibrations"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def review_root(self) -> Path:
+        path = SKILL_ROOT / "config" / "calibration_reviews"
         path.mkdir(parents=True, exist_ok=True)
         return path

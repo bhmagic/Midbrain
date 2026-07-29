@@ -77,6 +77,11 @@ class ArmController:
         # Fast ingress state is intentionally separate from the hardware/control lock.
         # HTTP lease renewals and command submissions must never wait for serial I/O.
         self.ingress_lock = threading.RLock()
+        # Safe-home is an exclusive hardware-writing operation. Operational
+        # ownership must not be reacquired while it is active.
+        self.safe_home_operation_lock = threading.Lock()
+        self.safe_home_cancel_event = threading.Event()
+        self.operational_control_block_reason: str | None = None
         # State delivery must remain responsive when a driver call holds the
         # control lock until the operating system reports a serial timeout.
         self.snapshot_cache_lock = threading.Lock()
@@ -105,10 +110,50 @@ class ArmController:
         self.hold_reference = configuration.home_positions.copy()
         # Persistent MIT moving target, equivalent to the supplied Unity bridge q_mt.
         self.mit_moving_target = configuration.home_positions.copy()
+        # The gripper FORCE_POS command uses a provider-owned physical-speed
+        # policy: target ramp, hardware-specific native-command translation,
+        # and a measured-speed brake with hysteresis.
+        self.position_effort_gripper_reference = float("nan")
+        control_configuration = configuration.model["control"]
+        self.gripper_force_position_native_velocity_scale = float(
+            control_configuration.get(
+                "gripper_force_position_native_velocity_scale",
+                1.0,
+            )
+        )
+        self.gripper_force_position_velocity_guard_resume_ratio = float(
+            control_configuration.get(
+                "gripper_force_position_velocity_guard_resume_ratio",
+                0.75,
+            )
+        )
+        self.gripper_velocity_guard_active = False
+        self.gripper_velocity_guard_hold_position_rad = float("nan")
+        self.gripper_velocity_guard_limit_rad_s: float | None = None
+        self.gripper_velocity_guard_resume_rad_s: float | None = None
+        self.gripper_velocity_guard_trip_count = 0
+        self.gripper_velocity_guard_peak_rad_s = 0.0
+        self.gripper_velocity_guard_last_measured_rad_s = 0.0
+        self.gripper_velocity_guard_last_trip_at_us: int | None = None
+        self.gripper_velocity_guard_last_requested_limit_rad_s: float | None = None
+        self.gripper_velocity_guard_last_native_limit_rad_s: float | None = None
         self.active_command_modes: list[str | None] = [None] * 7
         self.float_entry_started = 0.0
         self.float_start_gravity = np.zeros(7)
         self.last_float_reason: str | None = None
+        self.safe_home_attempt_sequence = 0
+        self.last_safe_home_result: dict[str, Any] = {
+            "attempt_sequence": 0,
+            "active": False,
+            "success": None,
+            "reason": "not attempted",
+            "failing_position_joint_indices": [],
+            "failing_velocity_joint_indices": [],
+            "maximum_position_error_rad": None,
+            "maximum_velocity_rad_s": None,
+            "gripper_policy": "PRESERVE_MEASURED_ANGLE",
+            "gripper_target_rad": None,
+        }
         self.last_position_hold_reason: str | None = None
         self.position_hold_velocity_limit = 0.12
         self.loop_count = 0
@@ -147,11 +192,23 @@ class ArmController:
         self.latched_endpoint_frames_sent = 0
         self.latched_endpoint_frames_suppressed = 0
 
+    def _reset_gripper_velocity_guard_locked(self) -> None:
+        self.gripper_velocity_guard_active = False
+        self.gripper_velocity_guard_hold_position_rad = float("nan")
+        self.gripper_velocity_guard_limit_rad_s = None
+        self.gripper_velocity_guard_resume_rad_s = None
+
 
     def set_payload(self, lease_id: str, generation: int, mass_kg: float, com_tool_m: Any) -> dict[str, Any]:
         """Update the tool payload under the same fenced operational lease as motion."""
         now = time.monotonic()
         with self.ingress_lock:
+            if self.operational_control_block_reason is not None:
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    self.operational_control_block_reason,
+                    self._lease_status_ingress_locked(),
+                )
             current = self.lease
             if current is None:
                 raise LeasePermissionError("NO_ACTIVE_LEASE", "payload update requires an active operational lease", self._lease_status_ingress_locked())
@@ -243,6 +300,21 @@ class ArmController:
         ) / 1000.0
         expired: ControlLease | None = None
         with self.ingress_lock:
+            blocked_reason = self.operational_control_block_reason
+            if blocked_reason is None and self.state == ProviderState.SAFE_HOME:
+                blocked_reason = "safe-home owns exclusive hardware control"
+            if blocked_reason is not None:
+                self._record_lease_event_ingress_locked(
+                    "ACQUIRE_REJECTED",
+                    blocked_reason,
+                    requested_lease_id=None,
+                    requested_generation=None,
+                )
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    blocked_reason,
+                    self._lease_status_ingress_locked(),
+                )
             now = time.monotonic()
             current = self.lease
             if current is not None and now < current.expires_monotonic:
@@ -288,6 +360,19 @@ class ArmController:
         now=time.monotonic(); timeout=(duration_ms or int(self.configuration.model["control"]["lease_timeout_ms"]))/1000.0
         expired_reason=None
         with self.ingress_lock:
+            if self.operational_control_block_reason is not None:
+                reason = self.operational_control_block_reason
+                self._record_lease_event_ingress_locked(
+                    "RENEW_REJECTED",
+                    reason,
+                    requested_lease_id=lease_id,
+                    requested_generation=generation,
+                )
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    reason,
+                    self._lease_status_ingress_locked(),
+                )
             if self.lease is None:
                 reason=self.last_lease_drop_reason or "no active lease exists"
                 self._record_lease_event_ingress_locked("RENEW_REJECTED",reason,requested_lease_id=lease_id,requested_generation=generation)
@@ -375,6 +460,19 @@ class ArmController:
         # lock. This path deliberately does not acquire the hardware/control lock.
         now=time.monotonic()
         with self.ingress_lock:
+            if self.operational_control_block_reason is not None:
+                reason = self.operational_control_block_reason
+                self._record_lease_event_ingress_locked(
+                    "COMMAND_REJECTED",
+                    reason,
+                    requested_lease_id=envelope.lease_id,
+                    requested_generation=envelope.fencing_generation,
+                )
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    reason,
+                    self._lease_status_ingress_locked(),
+                )
             current=self.lease
             if current is None:
                 reason=self.last_lease_drop_reason or "command rejected because no active lease exists"
@@ -427,6 +525,8 @@ class ArmController:
 
     def request_gravity_float(self, reason: str = "requested") -> None:
         with self.ingress_lock:
+            if self.operational_control_block_reason is not None:
+                self.safe_home_cancel_event.set()
             self.pending=None
         with self.lock:
             self._enter_gravity_float_locked(reason, immediate=True, apply_now=True)
@@ -454,6 +554,8 @@ class ArmController:
         self.mode_transition_hold_reference=None
         self.latched_endpoint_signatures=[None]*7
         self.latched_endpoint_last_sent_monotonic.fill(0.0)
+        self.position_effort_gripper_reference=float("nan")
+        self._reset_gripper_velocity_guard_locked()
         self.float_entry_started=time.monotonic()
         self.state=ProviderState.SAFE_HOLD_GRAVITY_FLOAT
         self.last_float_reason=reason
@@ -520,73 +622,221 @@ class ArmController:
             self.active_command_modes[index]="IMPEDANCE"
             self.mit_moving_target[index]=float(target[index])
 
-    def safe_home(self, timeout_s: float | None = None) -> bool:
-        """Rate-limit all MIT targets toward the configured zero/home vector.
+    def safe_home(
+        self,
+        timeout_s: float | None = None,
+        max_velocity_rad_s: float | None = None,
+    ) -> bool:
+        """Rate-limit the six arm joints toward home while preserving joint 7.
 
         This mirrors the official Python and supplied Unity bridge behavior:
         the active powered MIT loop moves toward home and verifies measured
-        joint position before shutdown.
+        arm-joint position before shutdown. The installed gripper remains at
+        the angle measured when safe-home takes control. A caller may request
+        a stricter velocity limit, but cannot raise the configured limit.
         """
+        configured_max_velocity=float(
+            self.configuration.model["control"]["safe_home_max_velocity_rad_s"]
+        )
+        requested_max_velocity=(
+            configured_max_velocity
+            if max_velocity_rad_s is None
+            else float(max_velocity_rad_s)
+        )
+        if not math.isfinite(requested_max_velocity) or requested_max_velocity <= 0.0:
+            raise ValueError("max_velocity_rad_s must be finite and greater than zero")
+        max_velocity=min(configured_max_velocity,requested_max_velocity)
+        if not self.safe_home_operation_lock.acquire(blocking=False):
+            with self.lock:
+                self.safe_home_attempt_sequence += 1
+                self.last_safe_home_result = {
+                    "attempt_sequence": self.safe_home_attempt_sequence,
+                    "active": False,
+                    "success": False,
+                    "reason": "another safe-home operation is already active",
+                    "failing_position_joint_indices": [],
+                    "failing_velocity_joint_indices": [],
+                    "maximum_position_error_rad": None,
+                    "maximum_velocity_rad_s": None,
+                    "configured_max_velocity_rad_s": configured_max_velocity,
+                    "requested_max_velocity_rad_s": requested_max_velocity,
+                    "effective_max_velocity_rad_s": max_velocity,
+                }
+            return False
         timeout=float(timeout_s or self.configuration.model["control"]["safe_home_timeout_s"])
         tolerance=float(self.configuration.model["home"]["tolerance_rad"])
-        max_velocity=float(self.configuration.model["control"]["safe_home_max_velocity_rad_s"])
         settle_velocity=float(self.configuration.model["control"].get("safe_home_settle_velocity_rad_s",0.06))
         settle_cycles=int(self.configuration.model["control"].get("safe_home_settle_cycles",10))
         transition_hold_cycles=max(1,int(self.configuration.model["control"].get("safe_home_transition_hold_cycles",5)))
-        home=self.configuration.home_positions
-        with self.ingress_lock:
-            active_lease=self.lease
-            self.lease=None
-            self.pending=None
-            if active_lease is not None:
-                self.fencing_generation += 1
-                self._record_lease_event_ingress_locked(
-                    "REVOKED",
-                    "safe-home preempted operational control",
-                    lease=active_lease,
-                )
-        with self.lock:
-            if self.feedback is None: return False
-            if self.state == ProviderState.READ_ONLY:
-                self.backend.enable()
-            kp,kd=self._safe_home_gains_locked()
-            target=self.feedback.positions_rad.copy()
-            self.hold_reference=target.copy()
-            self.state=ProviderState.SAFE_HOME
-            # Seamless handoff: the first safe-home command captures the measured
-            # position with full load-bearing stiffness and gravity support.  The
-            # home target is not advanced until this supported frame has been sent.
-            self._send_supported_mit_target_locked(target,kp,kd)
-            already_home=bool(np.all(np.abs(self.feedback.positions_rad-home)<=tolerance))
-        if already_home:
-            with self.lock:
-                self._enter_gravity_float_locked("already at safe-home", immediate=True, apply_now=True)
-            return True
-        # Keep the captured target powered for several control periods while any
-        # motor-side mode completes its transition into MIT.
-        for _ in range(transition_hold_cycles):
-            if self.stop_event.is_set(): break
-            time.sleep(self.period)
-            with self.lock:
-                if self.feedback is None: break
-                self._send_supported_mit_target_locked(target,kp,kd)
-        deadline=time.monotonic()+timeout; settled=0; max_step=max_velocity*self.period
-        while time.monotonic()<deadline and not self.stop_event.is_set():
+        home=self.configuration.home_positions.copy()
+        block_reason="safe-home owns exclusive hardware control"
+
+        def record_result(success: bool, reason: str) -> None:
             with self.lock:
                 feedback=self.feedback
-                if feedback is None: break
-                error=home-target
-                target += np.clip(error,-max_step,max_step)
+                position_error = (
+                    np.full(6, np.inf)
+                    if feedback is None
+                    else np.abs(feedback.positions_rad[:6]-home[:6])
+                )
+                velocity = (
+                    np.full(6, np.inf)
+                    if feedback is None
+                    else np.abs(feedback.velocities_rad_s[:6])
+                )
+                self.last_safe_home_result = {
+                    "attempt_sequence": self.safe_home_attempt_sequence,
+                    "active": False,
+                    "success": success,
+                    "reason": reason,
+                    "failing_position_joint_indices": [
+                        int(index) for index in np.flatnonzero(position_error>tolerance)
+                    ],
+                    "failing_velocity_joint_indices": [
+                        int(index) for index in np.flatnonzero(velocity>settle_velocity)
+                    ],
+                    "maximum_position_error_rad": (
+                        None if feedback is None else float(np.max(position_error))
+                    ),
+                    "maximum_velocity_rad_s": (
+                        None if feedback is None else float(np.max(velocity))
+                    ),
+                    "configured_max_velocity_rad_s": configured_max_velocity,
+                    "requested_max_velocity_rad_s": requested_max_velocity,
+                    "effective_max_velocity_rad_s": max_velocity,
+                    "gripper_policy": "PRESERVE_MEASURED_ANGLE",
+                    "gripper_target_rad": (
+                        None if feedback is None else float(home[6])
+                    ),
+                }
+
+        try:
+            self.safe_home_cancel_event.clear()
+            with self.ingress_lock:
+                if self.operational_control_block_reason is not None:
+                    record_result(False, self.operational_control_block_reason)
+                    return False
+                self.operational_control_block_reason=block_reason
+                active_lease=self.lease
+                self.lease=None
+                self.pending=None
+                if active_lease is not None:
+                    self.fencing_generation += 1
+                    self._record_lease_event_ingress_locked(
+                        "REVOKED",
+                        "safe-home preempted operational control",
+                        lease=active_lease,
+                    )
+            with self.lock:
+                self.safe_home_attempt_sequence += 1
+                self.last_safe_home_result = {
+                    "attempt_sequence": self.safe_home_attempt_sequence,
+                    "active": True,
+                    "success": None,
+                    "reason": "safe-home active",
+                    "failing_position_joint_indices": [],
+                    "failing_velocity_joint_indices": [],
+                    "maximum_position_error_rad": None,
+                    "maximum_velocity_rad_s": None,
+                    "configured_max_velocity_rad_s": configured_max_velocity,
+                    "requested_max_velocity_rad_s": requested_max_velocity,
+                    "effective_max_velocity_rad_s": max_velocity,
+                }
+                if self.feedback is None:
+                    record_result(False, "joint feedback is unavailable")
+                    return False
+                home[6]=float(self.feedback.positions_rad[6])
+                if self.state == ProviderState.READ_ONLY:
+                    self.backend.enable()
+                kp,kd=self._safe_home_gains_locked()
+                target=self.feedback.positions_rad.copy()
+                self.hold_reference=target.copy()
+                self.state=ProviderState.SAFE_HOME
+                # Seamless handoff: the first safe-home command captures the
+                # measured position with full load-bearing stiffness and gravity
+                # support. The home target is not advanced until this supported
+                # frame has been sent.
                 self._send_supported_mit_target_locked(target,kp,kd)
-                position_ok=bool(np.all(np.abs(feedback.positions_rad-home)<=tolerance))
-                velocity_ok=bool(np.all(np.abs(feedback.velocities_rad_s)<=settle_velocity))
-                settled=settled+1 if position_ok and velocity_ok else 0
-                if settled>=settle_cycles:
-                    self._enter_gravity_float_locked("safe-home complete", immediate=True, apply_now=True)
-                    return True
-            time.sleep(self.period)
-        with self.lock: self._enter_gravity_float_locked("safe-home incomplete", immediate=True, apply_now=True)
-        return False
+                already_home=bool(
+                    np.all(
+                        np.abs(self.feedback.positions_rad[:6]-home[:6])
+                        <= tolerance
+                    )
+                )
+            if already_home:
+                with self.lock:
+                    self._enter_gravity_float_locked("already at safe-home", immediate=True, apply_now=True)
+                record_result(True, "already at safe-home")
+                return True
+            # Keep the captured target powered for several control periods while
+            # any motor-side mode completes its transition into MIT.
+            for _ in range(transition_hold_cycles):
+                if self.stop_event.is_set() or self.safe_home_cancel_event.is_set():
+                    break
+                time.sleep(self.period)
+                with self.lock:
+                    if (
+                        self.feedback is None
+                        or self.safe_home_cancel_event.is_set()
+                        or self.state != ProviderState.SAFE_HOME
+                    ):
+                        break
+                    self._send_supported_mit_target_locked(target,kp,kd)
+            deadline=time.monotonic()+timeout; settled=0; max_step=max_velocity*self.period
+            while (
+                time.monotonic()<deadline
+                and not self.stop_event.is_set()
+                and not self.safe_home_cancel_event.is_set()
+            ):
+                with self.lock:
+                    feedback=self.feedback
+                    if (
+                        feedback is None
+                        or self.safe_home_cancel_event.is_set()
+                        or self.state != ProviderState.SAFE_HOME
+                    ):
+                        break
+                    error=home-target
+                    target += np.clip(error,-max_step,max_step)
+                    self._send_supported_mit_target_locked(target,kp,kd)
+                    position_ok=bool(
+                        np.all(
+                            np.abs(feedback.positions_rad[:6]-home[:6])
+                            <= tolerance
+                        )
+                    )
+                    velocity_ok=bool(
+                        np.all(
+                            np.abs(feedback.velocities_rad_s[:6])
+                            <= settle_velocity
+                        )
+                    )
+                    settled=settled+1 if position_ok and velocity_ok else 0
+                    if settled>=settle_cycles:
+                        self._enter_gravity_float_locked("safe-home complete", immediate=True, apply_now=True)
+                        record_result(True, "safe-home complete")
+                        return True
+                time.sleep(self.period)
+            cancelled = self.safe_home_cancel_event.is_set()
+            with self.lock:
+                if self.state == ProviderState.SAFE_HOME:
+                    self._enter_gravity_float_locked(
+                        "safe-home cancelled" if cancelled else "safe-home incomplete",
+                        immediate=True,
+                        apply_now=True,
+                    )
+            record_result(
+                False,
+                "safe-home cancelled by another safety transition"
+                if cancelled
+                else "safe-home did not reach stable position and velocity before timeout",
+            )
+            return False
+        finally:
+            with self.ingress_lock:
+                if self.operational_control_block_reason == block_reason:
+                    self.operational_control_block_reason=None
+            self.safe_home_operation_lock.release()
 
     def enter_warm(self) -> bool:
         """Safe-home, stop the loop, disable motors, and release the device."""
@@ -753,6 +1003,9 @@ class ArmController:
             self.backend.send_impedance(index,float(self.hold_reference[index]),0.0,float(calibration["safe_float_kp"]),float(calibration["safe_float_kd"]),feedforward)
             self.active_command_modes[index]="IMPEDANCE"
             self.mit_moving_target[index]=float(self.hold_reference[index])
+            if index == 6:
+                self.position_effort_gripper_reference=float("nan")
+                self._reset_gripper_velocity_guard_locked()
         for index, command in envelope.commands.items():
             values=command.values
             if command.mode == "IMPEDANCE":
@@ -785,8 +1038,84 @@ class ArmController:
                     self.backend.send_position_velocity(index,float(values["position_rad"]),float(values["velocity_limit_rad_s"]))
             elif command.mode == "VELOCITY": self.backend.send_velocity(index,float(values["velocity_rad_s"]))
             elif command.mode == "POSITION_EFFORT_LIMITED":
-                if self._latched_endpoint_due_locked(index,command.mode,values):
-                    self.backend.send_force_position(index,float(values["position_rad"]),float(values["velocity_limit_rad_s"]),float(values["torque_limit_ratio"]))
+                output_values=values
+                if index == 6:
+                    if (
+                        self.active_command_modes[index] != command.mode
+                        or not math.isfinite(
+                            self.position_effort_gripper_reference
+                        )
+                    ):
+                        self.position_effort_gripper_reference=float(
+                            self.feedback.positions_rad[index]
+                        )
+                        self._reset_gripper_velocity_guard_locked()
+                    target=float(values["position_rad"])
+                    velocity_limit=float(values["velocity_limit_rad_s"])
+                    measured_position=float(self.feedback.positions_rad[index])
+                    measured_speed=abs(float(self.feedback.velocities_rad_s[index]))
+                    resume_speed=(
+                        velocity_limit
+                        * self.gripper_force_position_velocity_guard_resume_ratio
+                    )
+                    native_velocity_limit=(
+                        velocity_limit
+                        * self.gripper_force_position_native_velocity_scale
+                    )
+                    self.gripper_velocity_guard_limit_rad_s=velocity_limit
+                    self.gripper_velocity_guard_resume_rad_s=resume_speed
+                    self.gripper_velocity_guard_last_measured_rad_s=measured_speed
+                    self.gripper_velocity_guard_peak_rad_s=max(
+                        self.gripper_velocity_guard_peak_rad_s,
+                        measured_speed,
+                    )
+                    self.gripper_velocity_guard_last_requested_limit_rad_s=(
+                        velocity_limit
+                    )
+                    self.gripper_velocity_guard_last_native_limit_rad_s=(
+                        native_velocity_limit
+                    )
+                    if (
+                        not self.gripper_velocity_guard_active
+                        and measured_speed >= velocity_limit
+                    ):
+                        self.gripper_velocity_guard_active=True
+                        self.gripper_velocity_guard_hold_position_rad=(
+                            measured_position
+                        )
+                        self.position_effort_gripper_reference=measured_position
+                        self.gripper_velocity_guard_trip_count += 1
+                        self.gripper_velocity_guard_last_trip_at_us=(
+                            time.time_ns() // 1000
+                        )
+                    elif (
+                        self.gripper_velocity_guard_active
+                        and measured_speed <= resume_speed
+                    ):
+                        self._reset_gripper_velocity_guard_locked()
+                        self.gripper_velocity_guard_limit_rad_s=velocity_limit
+                        self.gripper_velocity_guard_resume_rad_s=resume_speed
+                        self.position_effort_gripper_reference=measured_position
+                    if self.gripper_velocity_guard_active:
+                        self.position_effort_gripper_reference=(
+                            self.gripper_velocity_guard_hold_position_rad
+                        )
+                    else:
+                        maximum_step=velocity_limit*self.period
+                        self.position_effort_gripper_reference += float(
+                            np.clip(
+                                target-self.position_effort_gripper_reference,
+                                -maximum_step,
+                                maximum_step,
+                            )
+                        )
+                    output_values=dict(values)
+                    output_values["position_rad"]=(
+                        self.position_effort_gripper_reference
+                    )
+                    output_values["velocity_limit_rad_s"]=native_velocity_limit
+                if self._latched_endpoint_due_locked(index,command.mode,output_values):
+                    self.backend.send_force_position(index,float(output_values["position_rad"]),float(output_values["velocity_limit_rad_s"]),float(output_values["torque_limit_ratio"]))
             self.active_command_modes[index]=command.mode
         self.last_applied_command_id=envelope.command_id
 
@@ -879,6 +1208,11 @@ class ArmController:
             desired=desired_modes[selected]
             self._send_mode_hold_locked(selected,desired,float(reference[selected]),gravity)
             self.active_command_modes[selected]=desired
+            if selected == 6:
+                self.position_effort_gripper_reference=float(
+                    self.feedback.positions_rad[selected]
+                )
+                self._reset_gripper_velocity_guard_locked()
             self.latched_endpoint_signatures[selected]=None
             self.latched_endpoint_last_sent_monotonic[selected]=0.0
             self.mode_transition_step_count+=1
@@ -959,6 +1293,7 @@ class ArmController:
                 "current":self._lease_status_ingress_locked(),
                 "last_event":dict(self.last_lease_event),
                 "last_drop_reason":self.last_lease_drop_reason,
+                "operational_control_block_reason":self.operational_control_block_reason,
             }
         return {
             "schema":"physical_agent.robot_arm_joint_state","schema_version":1,
@@ -1001,6 +1336,31 @@ class ArmController:
                     if signature is not None
                 ],
                 "semantics":"CHANGED_ENDPOINT_IMMEDIATE_OTHERWISE_MOTOR_KEEPALIVE_RATE",
+                "gripper_position_effort_rate_policy":"PROVIDER_RAMP_NATIVE_TRANSLATION_AND_MEASURED_SPEED_GUARD",
+                "gripper_position_effort_reference_rad":(
+                    None
+                    if not math.isfinite(self.position_effort_gripper_reference)
+                    else self.position_effort_gripper_reference
+                ),
+                "gripper_measured_speed_guard":{
+                    "active":self.gripper_velocity_guard_active,
+                    "requested_limit_rad_s":self.gripper_velocity_guard_last_requested_limit_rad_s,
+                    "native_limit_rad_s":self.gripper_velocity_guard_last_native_limit_rad_s,
+                    "resume_below_rad_s":self.gripper_velocity_guard_resume_rad_s,
+                    "last_measured_rad_s":self.gripper_velocity_guard_last_measured_rad_s,
+                    "peak_measured_rad_s":self.gripper_velocity_guard_peak_rad_s,
+                    "hold_position_rad":(
+                        None
+                        if not math.isfinite(
+                            self.gripper_velocity_guard_hold_position_rad
+                        )
+                        else self.gripper_velocity_guard_hold_position_rad
+                    ),
+                    "trip_count":self.gripper_velocity_guard_trip_count,
+                    "last_trip_at_us":self.gripper_velocity_guard_last_trip_at_us,
+                    "native_velocity_scale":self.gripper_force_position_native_velocity_scale,
+                    "semantics":"REQUESTED_LIMIT_IS_PHYSICAL; NATIVE_LIMIT_IS_HARDWARE_TRANSLATED; MEASURED_LIMIT_TRIPS_BRAKE_HOLD",
+                },
             },
             "loop":{
                 "rate_hz":self.rate_hz,
@@ -1015,7 +1375,9 @@ class ArmController:
                 "control_fault_count":self.control_fault_count,
                 "last_control_fault_at_us":self.last_control_fault_at_us,
             },
-            "last_error":self.last_error,"last_float_reason":self.last_float_reason,"last_position_hold_reason":self.last_position_hold_reason,
+            "last_error":self.last_error,"last_float_reason":self.last_float_reason,
+            "last_safe_home_result":copy.deepcopy(self.last_safe_home_result),
+            "last_position_hold_reason":self.last_position_hold_reason,
             "lease_diagnostics":lease_diagnostics,
             "payload":self.dynamics.payload_snapshot(),
             "gravity_compensation":{

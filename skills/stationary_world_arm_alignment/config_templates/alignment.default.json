@@ -12,6 +12,22 @@
   "foundation_gripper_model_id": "robot_gripper_slider_support",
   "foundation_base_frame": "observed_object/rebot_b601_dm/base",
   "foundation_gripper_frame": "observed_object/rebot_b601_dm/gripper_slider_support",
+  "base_pose_engine": {
+    "active_route": "PROVIDER_COMPATIBILITY",
+    "provider_fallback_available": true,
+    "automatic_fallback_enabled": false,
+    "skill_local": {
+      "backend": "nvlabs",
+      "foundationpose_root": "providers/foundation_pose/nvlabs/FoundationPose",
+      "model_registry": "config/foundation_pose/models.json",
+      "estimate_iterations": 5,
+      "track_iterations": 2,
+      "debug_level": 0,
+      "debug_dir": "debug/stationary_foundation_pose",
+      "prepared_model_cache_size": 4,
+      "minimum_sample_interval_s": 0.2
+    }
+  },
   "base_alignment": {
     "minimum_base_samples": 6,
     "minimum_gripper_samples": 4,
@@ -43,7 +59,8 @@
     "consensus_trigger_m": 0.05,
     "maximum_yaw_delta_rad": 0.08726646259971647,
     "require_same_vio_epoch": true,
-    "require_valid_depth": true
+    "require_valid_depth": true,
+    "single_observation_translation_error_bound_m": 0.01
   },
   "depth": {
     "search_radius_px": 12,
@@ -68,6 +85,10 @@
     "duration_ms": 15000,
     "renew_every_ms": 5000,
     "renewal_failure_limit": 2
+  },
+  "candidate_review": {
+    "mode": "ENFORCED",
+    "ttl_s": 900
   },
   "gui": {
     "host": "127.0.0.1",

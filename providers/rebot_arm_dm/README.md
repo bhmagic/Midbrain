@@ -15,6 +15,10 @@ Safe-home now revokes the active operational lease and clears pending commands
 before sending its first supported MIT frame. New operational commands are
 rejected while the controller is in `SAFE_HOME`, preventing late Integrated
 gripper keepalives or trajectory commands from competing with homing.
+Operational lease acquisition, renewal, and payload updates are also blocked
+for the full safe-home operation. An explicit gravity-float safety request
+cancels the safe-home writer before changing state, so the two control paths
+cannot transmit concurrently.
 
 The supplied Manager registration sets `force_kill_on_stop_timeout` to `false`.
 With a Manager that supports this field, an incomplete graceful stop is
@@ -22,6 +26,14 @@ reported instead of escalating automatically to process-tree termination.
 An explicitly requested force kill remains available for emergency recovery.
 
 Combined gravity feed-forward is clipped to each motor's configured TMAX. Existing MIT tracking-effort limits, Kd limits, joint/rate limits, minimum load-bearing Kp, lease fencing, and timeout-to-float behavior remain active.
+
+For gripper FORCE_POS commands, the requested `velocity_limit_rad_s` is a
+physical ceiling rather than a raw hardware-native value. Basic applies the
+configured native conversion scale and a measured-feedback hysteretic
+brake/hold at that ceiling. Runtime telemetry exposes requested/native limits,
+measured and peak speed, hold position, and trip history. This guard has
+software coverage but still requires an authorized physical calibration before
+contact use.
 
 The arm-joint `provider_test_caps.max_kp` values now permit up to the documented MIT protocol ceiling of 500. This does not mean 500 is physically validated on this arm; it only removes the former validation conflict so Integrated can request stronger stiffness and show the effective clamp explicitly. Physical tuning should increase gradually from the known 1.0x profile.
 

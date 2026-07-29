@@ -478,6 +478,27 @@ fn validate_transform_observation(
     observation: &Observation,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     let transform = parse_transform(observation)?;
+    if let Some(motion_usable) = observation.data.get("motion_usable") {
+        if !motion_usable.is_boolean() {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "transform motion_usable must be boolean when present",
+            ));
+        }
+    }
+    if observation.data.get("review_state").and_then(Value::as_str)
+        == Some("CANDIDATE_REVIEW_REQUIRED")
+        && observation
+            .data
+            .get("motion_usable")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "review-required transform must explicitly set motion_usable=false",
+        ));
+    }
     if transform.parent_frame.trim().is_empty() || transform.child_frame.trim().is_empty() {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -573,7 +594,7 @@ async fn stream_catalog(State(state): State<AppState>) -> Json<Vec<StreamSummary
         .iter()
         .map(|(stream_name, observation)| {
             let age_ms = observation.received_at.as_ref().map(|received| {
-                now.signed_duration_since(received.clone())
+                now.signed_duration_since(*received)
                     .num_milliseconds()
                     .max(0) as u64
             });
@@ -590,7 +611,7 @@ async fn stream_catalog(State(state): State<AppState>) -> Json<Vec<StreamSummary
                 boot_id: observation.boot_id.clone(),
                 latest_sequence: observation.sequence,
                 latest_observed_at_us: observation.observed_at_us,
-                received_at: observation.received_at.clone(),
+                received_at: observation.received_at,
                 freshness_ms: observation.freshness_ms,
                 age_ms,
                 stale,
@@ -702,23 +723,38 @@ async fn transform_catalog(State(state): State<AppState>) -> Json<Vec<TransformE
     let now = Utc::now();
     let mut result = Vec::new();
     for (key, history) in &store.transforms {
-        let mut latest_by_authority: HashMap<String, &Observation> = HashMap::new();
+        let mut by_authority: HashMap<String, Vec<(&Observation, TransformData)>> = HashMap::new();
         for observation in history {
-            if observation.valid == Some(false) {
-                continue;
-            }
             let Ok(data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
                 continue;
             };
             let authority = transform_authority(observation, &data);
-            let replace = latest_by_authority.get(&authority).map_or(true, |current| {
-                observation.observed_at_us > current.observed_at_us
-            });
-            if replace {
-                latest_by_authority.insert(authority, observation);
-            }
+            by_authority
+                .entry(authority)
+                .or_default()
+                .push((observation, data));
         }
-        for (authority, observation) in latest_by_authority {
+        for (authority, mut samples) in by_authority {
+            samples.sort_by_key(|(observation, _)| observation.observed_at_us);
+            let latest_static = samples
+                .iter()
+                .rev()
+                .find(|(_, data)| data.is_static)
+                .map(|(observation, _)| *observation);
+            let observation = if let Some(latest_static) = latest_static {
+                if !transform_observation_is_graph_usable(latest_static) {
+                    continue;
+                }
+                latest_static
+            } else if let Some((latest_dynamic, _)) = samples
+                .iter()
+                .rev()
+                .find(|(observation, _)| transform_observation_is_graph_usable(observation))
+            {
+                *latest_dynamic
+            } else {
+                continue;
+            };
             let Ok(data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
                 continue;
             };
@@ -913,9 +949,6 @@ fn resolve_edge(
 ) -> Result<Option<ResolvedEdge>, Vec<String>> {
     let mut by_authority: HashMap<String, Vec<(&Observation, TransformData)>> = HashMap::new();
     for observation in history {
-        if observation.valid == Some(false) {
-            continue;
-        }
         let Ok(mut data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
             continue;
         };
@@ -938,6 +971,12 @@ fn resolve_edge(
     let mut candidates = Vec::new();
     for (authority, mut samples) in by_authority {
         samples.sort_by_key(|(observation, _)| observation.observed_at_us);
+        if let Some((latest_static, _)) = samples.iter().rev().find(|(_, data)| data.is_static) {
+            if !transform_observation_is_graph_usable(latest_static) {
+                continue;
+            }
+        }
+        samples.retain(|(observation, _)| transform_observation_is_graph_usable(observation));
         if let Some(candidate) =
             resolve_authority_samples(key, authority, &samples, at_us, max_extrapolation_us)
         {
@@ -1112,13 +1151,35 @@ fn observation_is_stale(observation: &Observation, now: &DateTime<Utc>) -> bool 
     }
     match (observation.freshness_ms, observation.received_at.as_ref()) {
         (Some(freshness_ms), Some(received_at)) => {
-            now.signed_duration_since(received_at.clone())
+            now.signed_duration_since(*received_at)
                 .num_milliseconds()
                 .max(0) as u64
                 > freshness_ms
         }
         _ => false,
     }
+}
+
+fn transform_observation_is_graph_usable(observation: &Observation) -> bool {
+    if observation.valid == Some(false) {
+        return false;
+    }
+    if observation
+        .expires_at_us
+        .is_some_and(|expires_at_us| current_time_us() > expires_at_us)
+    {
+        return false;
+    }
+    if observation
+        .data
+        .get("motion_usable")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return false;
+    }
+    observation.data.get("review_state").and_then(Value::as_str)
+        != Some("CANDIDATE_REVIEW_REQUIRED")
 }
 
 fn current_time_us() -> u64 {
@@ -1201,6 +1262,41 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Jso
 mod tests {
     use super::*;
 
+    fn transform_observation(data_overrides: Value) -> Observation {
+        let mut data = json!({
+            "parent_frame": "world",
+            "child_frame": "arm",
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "is_static": true
+        });
+        for (key, value) in data_overrides.as_object().unwrap() {
+            data[key] = value.clone();
+        }
+        Observation {
+            observation_id: "observation".to_string(),
+            schema: TRANSFORM_SCHEMA.to_string(),
+            schema_version: 1,
+            stream: "transform.test".to_string(),
+            provider_id: "test.provider".to_string(),
+            provider_instance_id: "test-instance".to_string(),
+            boot_id: "test-boot".to_string(),
+            sequence: 1,
+            observed_at_us: current_time_us(),
+            received_at: Some(Utc::now()),
+            freshness_ms: None,
+            frame_id: None,
+            coordinate_frame: None,
+            calibration_revision: None,
+            clock_domain: None,
+            expires_at_us: None,
+            related_skill_id: None,
+            confidence: None,
+            valid: Some(true),
+            data,
+        }
+    }
+
     fn approx(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-9, "{left} != {right}");
     }
@@ -1243,5 +1339,71 @@ mod tests {
         approx(quat_norm(midpoint), 1.0);
         approx(midpoint[2].abs(), (0.5_f64).sqrt());
         approx(midpoint[3].abs(), (0.5_f64).sqrt());
+    }
+
+    #[test]
+    fn transform_graph_excludes_explicit_non_motion_candidate() {
+        let observation = transform_observation(json!({
+            "review_state": "CANDIDATE_REVIEW_REQUIRED",
+            "motion_usable": false
+        }));
+        assert!(!transform_observation_is_graph_usable(&observation));
+        assert!(validate_transform_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn transform_graph_excludes_expired_static_transform() {
+        let mut observation = transform_observation(json!({}));
+        observation.expires_at_us = Some(1);
+        assert!(!transform_observation_is_graph_usable(&observation));
+    }
+
+    #[test]
+    fn transform_graph_keeps_legacy_and_explicitly_usable_transforms() {
+        let legacy = transform_observation(json!({}));
+        let accepted = transform_observation(json!({
+            "review_state": "ACCEPTED",
+            "motion_usable": true
+        }));
+        assert!(transform_observation_is_graph_usable(&legacy));
+        assert!(transform_observation_is_graph_usable(&accepted));
+    }
+
+    #[test]
+    fn latest_static_revocation_suppresses_older_active_transform() {
+        let now = current_time_us();
+        let mut active = transform_observation(json!({
+            "authority": "manager.workcell_calibration_activation",
+            "review_state": "ACCEPTED",
+            "activation_state": "ACTIVE",
+            "motion_usable": true
+        }));
+        active.observed_at_us = now - 1;
+        let mut revoked = transform_observation(json!({
+            "authority": "manager.workcell_calibration_activation",
+            "review_state": "REVOKED",
+            "activation_state": "REVOKED",
+            "motion_usable": false
+        }));
+        revoked.observed_at_us = now;
+        let history = VecDeque::from([active, revoked]);
+        let key = TransformEdgeKey {
+            parent_frame: "world".to_string(),
+            child_frame: "arm".to_string(),
+        };
+
+        let resolved = resolve_edge(&key, &history, now, 100_000, None)
+            .expect("revocation should suppress without creating a conflict");
+
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn review_required_transform_must_explicitly_deny_motion() {
+        let observation = transform_observation(json!({
+            "review_state": "CANDIDATE_REVIEW_REQUIRED"
+        }));
+        let error = validate_transform_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 }

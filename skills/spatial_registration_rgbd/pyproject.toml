@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-spatial-registration-rgbd"
+version = "0.1.0"
+description = "Generic flexible-grid RGB-D point registration for Midbrain"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3"
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["spatial_registration_rgbd*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

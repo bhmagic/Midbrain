@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
+LOCAL_PYTHON_ROOT = Path(__file__).resolve().parent / "python"
+if str(LOCAL_PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(LOCAL_PYTHON_ROOT))
+
 import cv2
 import httpx
 import numpy as np
@@ -34,7 +38,11 @@ from local_vio_provider.inertial_first_backend import InertialFirstRgbdVio
 from orbbec_femto_provider.shared_memory_access import (
     CameraSharedMemory,
     STREAM_ACCEL,
+    STREAM_ALIGNED_DEPTH,
+    STREAM_COLOR,
+    STREAM_DEPTH,
     STREAM_GYRO,
+    STREAM_IR,
 )
 
 BODY_FRAME = "body_base"
@@ -218,7 +226,10 @@ class LocalVioProvider:
         motion_observation = self._latest_cached(
             "system.motion.inhibit", refresh_s=0.05
         )
-        bundle_observation = self._latest_optional("camera.rgbd.bundle")
+        bundle_observation = self._latest_cached(
+            "camera.rgbd.bundle",
+            refresh_s=1.0,
+        )
         if calibration_observation is None or bundle_observation is None:
             self._publish_status("WAITING_FOR_INPUTS", "camera calibration or RGB-D bundle unavailable")
             time.sleep(self.args.poll_interval)
@@ -241,14 +252,20 @@ class LocalVioProvider:
 
         self._ensure_reader(str(rgb_reference.get("mapping_name") or ""))
         self._consume_imu()
+        (
+            rgb_reference,
+            aligned_reference,
+            rgb,
+            depth_m,
+        ) = self._read_latest_rgbd(
+            maximum_delta_us=int(bundle.get("max_delta_us") or 50_000)
+        )
         frame_number = int(rgb_reference.get("frame_number", -1))
         if frame_number <= self.last_rgb_frame:
             self._publish_inertial_prediction_if_due()
             time.sleep(self.args.poll_interval)
             return
 
-        rgb = self._read_rgb(rgb_reference)
-        depth_m = self._read_depth_m(aligned_reference)
         timestamp_us = self._reference_timestamp(rgb_reference)
 
         ir_gray = None
@@ -256,10 +273,19 @@ class LocalVioProvider:
         ir_timestamp_us = None
         if getattr(self.args, "ir_enabled", True):
             try:
-                ir_observation = self._latest_optional("camera.ir.frame_ref")
-                native_depth_observation = self._latest_optional("camera.depth.frame_ref")
-                ir_reference = (ir_observation or {}).get("data")
-                native_depth_reference = (native_depth_observation or {}).get("data")
+                reader = self._require_reader()
+                ir_buffer_ref = reader.latest_ref(STREAM_IR)
+                native_depth_buffer_ref = reader.latest_ref(STREAM_DEPTH)
+                ir_reference = (
+                    ir_buffer_ref.to_dict()
+                    if ir_buffer_ref is not None
+                    else None
+                )
+                native_depth_reference = (
+                    native_depth_buffer_ref.to_dict()
+                    if native_depth_buffer_ref is not None
+                    else None
+                )
                 if isinstance(ir_reference, dict) and isinstance(native_depth_reference, dict):
                     ir_time = self._reference_timestamp(ir_reference)
                     depth_time = self._reference_timestamp(native_depth_reference)
@@ -306,6 +332,61 @@ class LocalVioProvider:
         )
         self.last_inertial_publish_monotonic = time.monotonic()
         time.sleep(self.args.poll_interval)
+
+    def _read_latest_rgbd(
+        self,
+        *,
+        maximum_delta_us: int,
+    ) -> tuple[dict[str, Any], dict[str, Any], np.ndarray, np.ndarray]:
+        """Copy the newest provider-local RGB-D pair before its ring recycles."""
+
+        reader = self._require_reader()
+        last_error: Exception | None = None
+        for _ in range(4):
+            try:
+                aligned_buffer_ref = reader.latest_ref(
+                    STREAM_ALIGNED_DEPTH
+                )
+                if aligned_buffer_ref is None:
+                    raise RuntimeError(
+                        "shared memory has no aligned-depth frame"
+                    )
+                aligned_reference = aligned_buffer_ref.to_dict()
+                depth_m = self._read_depth_m(aligned_reference)
+
+                rgb_buffer_ref = reader.latest_ref(STREAM_COLOR)
+                if rgb_buffer_ref is None:
+                    raise RuntimeError("shared memory has no RGB frame")
+                rgb_reference = rgb_buffer_ref.to_dict()
+                rgb = self._read_rgb(rgb_reference)
+            except RuntimeError as error:
+                last_error = error
+                continue
+
+            rgb_timestamp_us = self._reference_timestamp(rgb_reference)
+            aligned_timestamp_us = self._reference_timestamp(
+                aligned_reference
+            )
+            if min(rgb_timestamp_us, aligned_timestamp_us) <= 0:
+                last_error = RuntimeError(
+                    "provider-local RGB-D references have no usable timestamp"
+                )
+                continue
+            if (
+                maximum_delta_us > 0
+                and abs(aligned_timestamp_us - rgb_timestamp_us)
+                > maximum_delta_us
+            ):
+                last_error = RuntimeError(
+                    "provider-local RGB and aligned depth exceed the declared "
+                    "synchronization threshold"
+                )
+                continue
+            return rgb_reference, aligned_reference, rgb, depth_m
+        raise RuntimeError(
+            "could not copy a fresh provider-local synchronized RGB-D pair: "
+            f"{last_error}"
+        )
 
     def _publish_inertial_prediction_if_due(self) -> None:
         publish_hz = max(1.0, float(getattr(self.args, "inertial_publish_hz", 100.0)))

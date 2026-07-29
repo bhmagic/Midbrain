@@ -3,6 +3,21 @@
 ## Unreleased
 
 - Made `CAMERA_MAPPING_NAME` from the generated workspace configuration drive both the Manager Provider entry and the accelerometer-calibration launcher.
+- Added a headless external-provider launcher that resolves the workspace
+  virtual-environment Python explicitly, accepts the configured shared-memory
+  mapping name, writes separate diagnostic logs, and returns the child process
+  identity instead of holding the calling agent in the Provider's foreground
+  loop.
+- Retained the Orbbec-specific direct shared-memory route as a declared
+  fallback while the generic camera route carries independent grid,
+  resolution, aspect-ratio, boundary, alignment, timestamp, and small-metadata
+  descriptions through Fabric.
+- Validated current RGB, native depth, IR, registered depth, and point-cloud
+  products during the physical-test session. Consumer Skills still own their
+  own completion-age and content-validity decisions.
+- Isolated the aligned-depth validity tests from the generic top-level
+  `provider` module name so the combined repository CI path cannot import the
+  Local VIO entrypoint by mistake.
 
 ## 0.2.0
 

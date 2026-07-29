@@ -25,6 +25,8 @@
   "auto_start": false,
   "graceful_stop_timeout_ms": 35000,
   "force_kill_on_stop_timeout": false,
+  "safe_state_request_path": "/v1/calibration/safe-home",
+  "safe_state_timeout_ms": 35000,
   "heartbeat_timeout_ms": 3500,
   "env": {}
 }

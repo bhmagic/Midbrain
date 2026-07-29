@@ -118,6 +118,24 @@
       </div>
       <div id="result-summary" class="result-grid"><p class="muted">No calibration saved yet.</p></div>
     </section>
+
+    <section class="panel review-card">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">DECISION-SPECIFIC AUTHORIZATION</p>
+          <h2>Calibration candidates</h2>
+        </div>
+        <span id="review-auth-state" class="runtime-state">CHECKING</span>
+      </div>
+      <p id="review-auth-message" class="muted">Checking the external identity verifier.</p>
+      <div id="candidate-list" class="candidate-list">
+        <p class="muted">No calibration candidate is available.</p>
+      </div>
+      <p class="review-boundary">
+        Approval creates an append-only decision record only. It cannot activate a
+        transform, publish a motion-usable frame, start a provider, or move the arm.
+      </p>
+    </section>
   </main>
 
   <div id="toast" role="status" aria-live="polite"></div>

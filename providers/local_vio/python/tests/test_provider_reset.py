@@ -7,6 +7,10 @@ import numpy as np
 
 from local_vio_provider.prototype_backend import PoseResult
 from provider import LocalVioProvider
+from orbbec_femto_provider.shared_memory_access import (
+    STREAM_ALIGNED_DEPTH,
+    STREAM_COLOR,
+)
 
 
 class ProviderResetTests(unittest.TestCase):
@@ -122,6 +126,54 @@ class ProviderResetTests(unittest.TestCase):
         result = provider.start_hot()
         self.assertEqual(result["status"], "already_hot")
         self.assertEqual(provider.session_epoch, old_epoch)
+
+    def test_rgbd_copy_uses_provider_latest_refs_not_fabric_refs(self) -> None:
+        provider = object.__new__(LocalVioProvider)
+        requested_streams = []
+
+        class Reference:
+            def __init__(self, label: str, timestamp_us: int):
+                self.label = label
+                self.timestamp_us = timestamp_us
+
+            def to_dict(self) -> dict:
+                return {
+                    "label": self.label,
+                    "frame_number": 100,
+                    "system_timestamp_us": self.timestamp_us,
+                }
+
+        class Reader:
+            def latest_ref(self, stream_kind: int):
+                requested_streams.append(stream_kind)
+                if stream_kind == STREAM_ALIGNED_DEPTH:
+                    return Reference("aligned", 1_000_000)
+                if stream_kind == STREAM_COLOR:
+                    return Reference("rgb", 1_001_000)
+                return None
+
+        provider.reader = Reader()
+        provider._read_depth_m = lambda reference: np.ones(
+            (2, 2),
+            dtype=np.float32,
+        )
+        provider._read_rgb = lambda reference: np.ones(
+            (2, 2, 3),
+            dtype=np.uint8,
+        )
+
+        rgb_ref, aligned_ref, rgb, depth = provider._read_latest_rgbd(
+            maximum_delta_us=50_000
+        )
+
+        self.assertEqual(
+            requested_streams,
+            [STREAM_ALIGNED_DEPTH, STREAM_COLOR],
+        )
+        self.assertEqual(rgb_ref["label"], "rgb")
+        self.assertEqual(aligned_ref["label"], "aligned")
+        self.assertEqual(rgb.shape, (2, 2, 3))
+        self.assertEqual(depth.shape, (2, 2))
 
 
 if __name__ == "__main__":

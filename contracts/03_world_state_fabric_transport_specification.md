@@ -50,7 +50,7 @@ Every observation must contain:
 - Calibration revision when applicable
 - Confidence
 - Validity
-- Expiration or freshness duration
+- Producer-declared hard expiry and optional recommended age
 - Related Skill or request identifier when applicable
 - Inline payload or `BufferRef`
 
@@ -138,12 +138,13 @@ The reference must never be published before the payload is committed.
 
 ## 8. Consumer access
 
-The Fabric must support these metadata queries:
+The Fabric must support these passive metadata queries:
 
-- Latest valid reference for a stream
+- Latest reference for a stream, with structural-validity and temporal metadata
 - Reference by frame or sample identifier
 - Reference nearest a timestamp
-- Synchronized references for related streams
+- Synchronized references for related streams within a consumer-requested
+  association tolerance
 - References within a recent time window
 
 A consumer should:
@@ -186,15 +187,17 @@ RGB and depth references should include:
 - Maximum synchronization error
 - Calibration revision
 
-The Fabric may return:
+The Fabric may return, using a tolerance supplied by the consumer:
 
 - Exact synchronized pair
 - Nearest pair within a requested tolerance
 - No valid pair
 
-It must not silently return badly misaligned frames.
+It must not silently return a pair outside the requested association
+tolerance. This association decision does not assert that the data will still
+be fresh after a Skill finishes computation.
 
-## 11. Freshness and canonical state
+## 11. Temporal evidence and canonical state
 
 The Fabric owns canonical state revisions.
 
@@ -202,7 +205,6 @@ A provider publishes observations, not authoritative replacement of canonical st
 
 The Fabric may reject or ignore an observation because it is:
 
-- Expired
 - Out of sequence
 - From an obsolete provider boot
 - Unauthorized
@@ -210,7 +212,22 @@ The Fabric may reject or ignore an observation because it is:
 - Based on unknown calibration
 - Outside requested synchronization tolerance
 
-Every canonical state value should retain source, timestamp, confidence, validity, and freshness information.
+The Fabric preserves raw observations even after their producer-declared hard
+expiry when history policy permits. It reports hard expiry, invalidity,
+provider-boot incompatibility, BufferRef generation loss, and authority
+revocation without erasing the historical record.
+
+Every canonical state value retains source observation time, Fabric arrival
+time, clock domain, provider instance and boot, sequence, confidence,
+structural validity, and producer temporal recommendations. The Fabric must
+not convert a producer-recommended age into one universal Skill acceptance
+policy.
+
+Each consuming Skill declares its own maximum source age, association
+tolerance, allowed extrapolation, required epoch/revision, and post-compute
+continuity policy. A slow VLM or neural inference records its input observation
+time separately from inference start and completion; publication of a new
+result must not make the source observation appear newer.
 
 ## 12. Producer crash
 
@@ -218,8 +235,9 @@ When a producer crashes or disconnects:
 
 - Its pool registration becomes unavailable for new references.
 - Existing references remain valid only until their original expiry and only if the memory still exists.
-- The Fabric marks related streams stale or unavailable.
-- Consumers must not assume the last frame remains current.
+- The Fabric reports that the producer boot or pool is unavailable.
+- Consumers apply their own temporal policy and must not assume the last frame
+  remains usable for a new live operation.
 
 The Manager may restart the provider with a new boot identifier and a new pool registration.
 

@@ -1,4 +1,4 @@
-# Architecture — Integrated 0.7.0
+# Architecture — Integrated 0.8.0
 
 Integrated is the motor-brand-neutral planning/control provider. Basic is the reBot/Damiao hardware adapter and hard-safety boundary.
 
@@ -13,4 +13,4 @@ Integrated is the motor-brand-neutral planning/control provider. Basic is the re
 9. Integrated requests zero additional gravity torque. Basic computes arm plus payload gravity feed-forward using measured joints.
 10. Basic's legacy MIT moving-target limiter remains for compatibility. Integrated rate-limits its waypoint progression so that legacy limiter should remain transparent rather than acting as a second trajectory generator.
 
-Fabric is a target source in 0.7.0, not a motion-authority mechanism. It distinguishes absolute `ik_location`, tool-to-acting-point `ik_offset`, and base-frame geometric `ik_gravity_offset`. Current Midbrain audit target `e226a09` has no Manager-issued physical authority lease for this arm path, so Engage + LB remain required during bring-up.
+Fabric is a target source in 0.8.0, not a motion-authority mechanism. It distinguishes absolute `ik_location`, tool-to-acting-point `ik_offset`, and base-frame geometric `ik_gravity_offset`. Operator debug motion still requires Engage + LB. Agentic transit instead requires a signed decision-specific assertion and the controller's exact current preview.

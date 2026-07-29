@@ -1,0 +1,321 @@
+param(
+    [switch]$NoBrowser,
+    [switch]$CoreOnly,
+    [ValidateRange(2, 120)]
+    [int]$StartupTimeoutSeconds = 15
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot "common.ps1")
+Repair-DuplicateProcessPath
+
+$workspace = Get-WorkspaceRoot
+$core = Get-CoreRoot
+$providerConfig = Join-Path $workspace "config\providers.json"
+$managerExe = Join-Path $core "target\release\resource-provider-manager.exe"
+$fabricExe = Join-Path $core "target\release\world-state-fabric.exe"
+$python = Join-Path $workspace ".venv\Scripts\python.exe"
+$pidsFile = Join-Path $core "run\pids.json"
+
+function Test-TcpPortOpen {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutMilliseconds = 300
+    )
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connect = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
+        if (-not $connect.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)) {
+            return $false
+        }
+        $client.EndConnect($connect)
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $client.Dispose()
+    }
+}
+
+function Start-IndependentProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string]$Arguments = ""
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $Arguments
+    $startInfo.WorkingDirectory = $workspace
+    $startInfo.UseShellExecute = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    if ($null -eq $process) {
+        throw "Failed to start $FilePath"
+    }
+    return $process
+}
+
+function Wait-BoundedHealth {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ($Process.HasExited) {
+            throw (
+                "Process $($Process.Id) exited with code $($Process.ExitCode) " +
+                "before $Url became healthy."
+            )
+        }
+        try {
+            $health = Invoke-RestMethod -Uri $Url -TimeoutSec 1
+            if ([string]$health.status -eq "ok") {
+                return $health
+            }
+        }
+        catch {
+            # A connection failure is expected while the process is starting.
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Timed out after $TimeoutSeconds seconds waiting for $Url"
+}
+
+function Assert-RustBinaryCurrent {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$CrateRoot,
+        [Parameter(Mandatory = $true)][string]$ComponentName
+    )
+
+    $binary = Get-Item -LiteralPath $BinaryPath
+    $sourceCandidates = @(
+        (Join-Path $core "Cargo.toml"),
+        (Join-Path $core "Cargo.lock"),
+        (Join-Path $core "rust-toolchain.toml")
+    )
+    $sourceCandidates += @(
+        Get-ChildItem -LiteralPath $CrateRoot -Recurse -File |
+            Where-Object {
+                $_.Extension -eq ".rs" -or
+                $_.Name -eq "Cargo.toml" -or
+                $_.Name -eq "build.rs"
+            } |
+            ForEach-Object { $_.FullName }
+    )
+    $newestSource = $sourceCandidates |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        ForEach-Object { Get-Item -LiteralPath $_ } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if (
+        $null -ne $newestSource -and
+        $newestSource.LastWriteTimeUtc -gt $binary.LastWriteTimeUtc
+    ) {
+        throw (
+            "$ComponentName binary is older than source file " +
+            "$($newestSource.FullName). Rebuild Platform Core before " +
+            "bounded startup: cargo build --release."
+        )
+    }
+}
+
+foreach ($required in @($managerExe, $fabricExe, $providerConfig)) {
+    if (-not (Test-Path -LiteralPath $required)) {
+        throw "Missing required file: $required. Run setup_workspace.ps1 first."
+    }
+}
+if (-not $CoreOnly -and -not (Test-Path -LiteralPath $python)) {
+    throw "Shared Python environment is missing at $python. Run setup_workspace.ps1."
+}
+Assert-RustBinaryCurrent `
+    -BinaryPath $managerExe `
+    -CrateRoot (Join-Path $core "manager") `
+    -ComponentName "Manager"
+Assert-RustBinaryCurrent `
+    -BinaryPath $fabricExe `
+    -CrateRoot (Join-Path $core "fabric") `
+    -ComponentName "Fabric"
+
+$providerDocument = Get-Content -Raw -LiteralPath $providerConfig | ConvertFrom-Json
+$unattendedArmAutoStarts = @(
+    $providerDocument.providers |
+        Where-Object {
+            [bool]$_.auto_start -and [string]$_.id -like "robot_arm.*"
+        } |
+        ForEach-Object { [string]$_.id }
+)
+if ($unattendedArmAutoStarts.Count -gt 0) {
+    throw (
+        "Bounded unattended startup refuses auto-start arm providers: " +
+        ($unattendedArmAutoStarts -join ", ")
+    )
+}
+$autoStartProviderIds = @(
+    $providerDocument.providers |
+        Where-Object { [bool]$_.auto_start } |
+        ForEach-Object { [string]$_.id }
+)
+
+function Stop-BoundedAutoStartProviders {
+    param([Nullable[int]]$ManagerPid)
+
+    if ($null -eq $ManagerPid) {
+        return
+    }
+    $manager = Get-Process -Id $ManagerPid -ErrorAction SilentlyContinue
+    if ($null -eq $manager) {
+        return
+    }
+
+    try {
+        Invoke-RestMethod -Uri "http://127.0.0.1:7001/health" -TimeoutSec 1 |
+            Out-Null
+    }
+    catch {
+        return
+    }
+
+    $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    foreach ($providerId in $autoStartProviderIds) {
+        if ([DateTime]::UtcNow -ge $cleanupDeadline) {
+            break
+        }
+        try {
+            $escapedProviderId = [Uri]::EscapeDataString($providerId)
+            Invoke-RestMethod `
+                -Method Post `
+                -Uri "http://127.0.0.1:7001/v1/providers/$escapedProviderId/stop" `
+                -TimeoutSec 2 |
+                Out-Null
+        }
+        catch {
+            # Best-effort cleanup remains bounded; only non-arm providers can be here.
+        }
+    }
+}
+
+$requiredPorts = @(7002, 7001)
+if (-not $CoreOnly) {
+    $requiredPorts += 8000
+}
+foreach ($port in $requiredPorts) {
+    if (Test-TcpPortOpen -Port $port) {
+        throw (
+            "TCP port $port is already occupied. Refusing to replace or " +
+            "stop an existing workspace from the bounded launcher."
+        )
+    }
+}
+
+Import-EnvFile (Join-Path $workspace "config\system.env")
+Import-EnvFile (Join-Path $workspace "config\api_keys.env")
+$env:PHYSICAL_AGENT_ROOT = $workspace
+if (Test-Path -LiteralPath $python) {
+    $env:PHYSICAL_AGENT_PYTHON = $python
+}
+$workspacePythonRoots = @(
+    (Join-Path $workspace "test_agent\python"),
+    (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
+    (Join-Path $workspace "providers\local_vio\python"),
+    (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
+    (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
+    (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
+    (Join-Path $workspace "skills\locate-effector-front\python")
+) | Where-Object { Test-Path -LiteralPath $_ }
+$existingPythonPath = [string]$env:PYTHONPATH
+$pythonPathParts = @($workspacePythonRoots)
+if (-not [string]::IsNullOrWhiteSpace($existingPythonPath)) {
+    $pythonPathParts += $existingPythonPath
+}
+$env:PYTHONPATH = $pythonPathParts -join [IO.Path]::PathSeparator
+
+New-Item -ItemType Directory -Force `
+    -Path (Join-Path $core "logs"), (Join-Path $core "run") |
+    Out-Null
+
+$started = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+$fabricProcess = $null
+$managerProcess = $null
+$uiProcess = $null
+
+try {
+    $fabricProcess = Start-IndependentProcess -FilePath $fabricExe
+    $started.Add($fabricProcess)
+    Wait-BoundedHealth `
+        -Url "http://127.0.0.1:7002/health" `
+        -Process $fabricProcess `
+        -TimeoutSeconds $StartupTimeoutSeconds |
+        Out-Null
+
+    $managerArguments = '"' + $providerConfig.Replace('"', '\"') + '"'
+    $managerProcess = Start-IndependentProcess `
+        -FilePath $managerExe `
+        -Arguments $managerArguments
+    $started.Add($managerProcess)
+    Wait-BoundedHealth `
+        -Url "http://127.0.0.1:7001/health" `
+        -Process $managerProcess `
+        -TimeoutSeconds $StartupTimeoutSeconds |
+        Out-Null
+
+    if (-not $CoreOnly) {
+        $uiProcess = Start-IndependentProcess `
+            -FilePath $python `
+            -Arguments "-m physical_agent_test.app"
+        $started.Add($uiProcess)
+        Wait-BoundedHealth `
+            -Url "http://127.0.0.1:8000/health" `
+            -Process $uiProcess `
+            -TimeoutSeconds $StartupTimeoutSeconds |
+            Out-Null
+    }
+
+    [ordered]@{
+        fabric = $fabricProcess.Id
+        manager = $managerProcess.Id
+        ui = if ($null -eq $uiProcess) { $null } else { $uiProcess.Id }
+    } |
+        ConvertTo-Json |
+        Set-Content -LiteralPath $pidsFile
+}
+catch {
+    $failure = $_
+    if ($null -ne $managerProcess) {
+        Stop-BoundedAutoStartProviders -ManagerPid $managerProcess.Id
+    }
+    $startedArray = @($started)
+    [array]::Reverse($startedArray)
+    foreach ($process in $startedArray) {
+        if ($null -ne $process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Item -LiteralPath $pidsFile -Force -ErrorAction SilentlyContinue
+    throw $failure
+}
+
+Write-Host "Manager: http://127.0.0.1:7001"
+Write-Host "Fabric:  http://127.0.0.1:7002"
+if ($null -ne $uiProcess) {
+    Write-Host "Test UI: http://127.0.0.1:8000"
+    if (-not $NoBrowser) {
+        Start-Process "http://127.0.0.1:8000"
+    }
+}
+else {
+    Write-Host "Test-agent UI was not started."
+}
+Write-Host "PID file: $pidsFile"
+Write-Host "Stop: platform_core\scripts\stop_workspace.ps1"

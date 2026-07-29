@@ -1,0 +1,66 @@
+{
+  "skill_type": "execute_reviewed_observation_motion",
+  "version": "0.1.1",
+  "display_name": "Execute Reviewed Observation Motion",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "execute_reviewed_observation_motion",
+    "description": "Commit exactly one fresh Integrated Controller observation-path preview that has already received a separate decision-specific operator approval. The only model-supplied input is the authorization decision ID; coordinates, speeds, modes, contact permissions, leases, and fallback motions cannot be supplied or changed by the model.",
+    "when_to_use": [
+      "A nonphysical observation path preview has been created and separately approved by the operator.",
+      "The OpenAI Agents SDK must select the final finite execution skill for that exact approved decision."
+    ],
+    "when_not_to_use": [
+      "No approved decision-specific authorization record exists.",
+      "The preview, decision, controller identity, scene, or workcell evidence may be stale.",
+      "The task needs a new target, speed, controller mode, contact permission, lease change, safe-home, or fallback motion."
+    ],
+    "side_effects": [
+      "Issues one signed, short-lived, one-time execution assertion for the approved decision.",
+      "Commits the exact recorded Integrated Controller preview and may physically move the robot.",
+      "Does not accept or derive any new motion parameter."
+    ],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "authorization.approved.read",
+      "authorization.execution_assertion.issue",
+      "robot.motion.commit.reviewed"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Exact fresh operator-approved observation-motion decision ID."
+        }
+      },
+      "required": [
+        "decision_id"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.execute_reviewed_observation_motion.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "entrypoint": "test_agent/python/physical_agent_test/reviewed_observation_execution.py",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "robot.motion.arm.integrated.transit.authorized_staged"
+  ],
+  "result_policy": {
+    "decision_specific": true,
+    "model_supplied_motion_parameters": false,
+    "separate_operator_approval_required": true,
+    "approval_executes_action": false,
+    "one_time_assertion_required": true,
+    "controller_preview_digest_required": true
+  },
+  "published_streams": []
+}

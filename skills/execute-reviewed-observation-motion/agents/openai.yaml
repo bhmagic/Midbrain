@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execute Reviewed Observation Motion"
+  short_description: "Commit one approved observation path"
+  default_prompt: "Use $execute-reviewed-observation-motion to execute one already-approved observation decision."

@@ -52,6 +52,9 @@ class RgbdCapture:
         calibration_observation = await self.fabric.latest_optional("camera.calibration")
         pose_observation = await self.fabric.latest_optional("localization.body.pose")
         vio_observation = await self.fabric.latest_optional("localization.vio.status")
+        route_observation = await self.fabric.latest_optional(
+            "camera.rgbd.data_routes"
+        )
         if not calibration_observation or not pose_observation:
             raise RuntimeError("camera calibration or VIO body pose is unavailable")
 
@@ -121,6 +124,7 @@ class RgbdCapture:
                 ),
                 observations={
                     "bundle": bundle_observation,
+                    "route": route_observation,
                     "calibration": calibration_observation,
                     "body_pose": pose_observation,
                     "vio_status": vio_observation,

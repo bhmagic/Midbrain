@@ -1,6 +1,10 @@
-# Safety — MIT bring-up 0.7.0
+# Safety — MIT bring-up 0.8.0
 
 - Arm motion requires GUI Engage and Xbox LB. A new gripper endpoint requires GUI Engage and RB/RT; releasing RB/RT latches the endpoint.
+- Agentic transit never uses the GUI/Xbox gate. It requires a separate exact
+  controller preview plus a signed, short-lived, decision-specific, one-time
+  authorization assertion. Approval alone does not execute; commit is a
+  distinct request.
 - Gamepad and Fabric target editing remain non-physical while Basic is in gravity-float.
 - Every physical solve projects target translation to at most 20 cm from the fresh measured controlled frame for the current commit/replan.
 - Workspace bounds are enforced before IK.
@@ -9,6 +13,17 @@
 - The POS_VEL ONE_SHOT discovery label is limited to paths at or below 20 cm with no payload or high external load. The current 20 cm target projection is not evidence of stability under load.
 - Requested and effective gains are exposed. Gain clamping is not hidden.
 - Command gaps, lease loss, Manager/Fabric readiness loss, motion inhibit, unrecoverable serial/mode-confirmation failure, IK rejection, or continuous-replan faults request gravity-float.
+- Signed transit revalidates the current semantic-scene revision, collision
+  result, measured start drift, controller identity/configuration, preview
+  expiry, and fenced Basic lease before its first physical endpoint.
+- Signed transit caps requested Cartesian speed at the controller limit and
+  every joint at the smaller of the configured 0.25 rad/s transit limit and
+  Basic's reported limit. It waits for stable measured arrival before
+  advancing to the next exact controller-owned waypoint.
+- A healthy signed transit holds its final POS_VEL endpoint until explicit
+  `/v1/motion/path-release`. Errors and invalidated safety gates request
+  gravity-float; normal short command gaps do not create an implicit mode
+  switch.
 - PRESS_MIT and TRANSIT_SPEED ONE_SHOT completion return to gravity-float. CONTACT_WORK returns to gravity-float when its configured one-shot duration expires, regardless of endpoint arrival. HOLD_LB release returns to gravity-float.
 - CONTACT_WORK is ONE_SHOT-only and requires 6-DoF, a maximum 20 cm baseline-relative stroke, and a complete JOINT_6, WRENCH_6, or ISOTROPIC_2 budget. Baseline capture is a separate operator command performed in verified float; a later Engage + LB action uses that stored posture-local baseline. IK residuals are reported but do not reject the action. Required ratios and live residual overruns saturate affected joints at the reviewed physical POS_TOR ceilings instead of ending the action early.
 - Releasing RB/RT latches the last gripper MIT or POS_TOR endpoint. LT, Float, and Safe terminate explicitly release the gripper latch.

@@ -286,7 +286,19 @@ class ArmProviderService:
             )
             result = {"status": "gravity_float"}
         elif action == "safe_home":
-            result = {"status": "safe_home", "success": self.controller.safe_home()}
+            max_velocity_rad_s = request_payload.get("max_velocity_rad_s")
+            success = self.controller.safe_home(
+                max_velocity_rad_s=(
+                    None
+                    if max_velocity_rad_s is None
+                    else float(max_velocity_rad_s)
+                )
+            )
+            result = {
+                "status": "safe_home",
+                "success": success,
+                "details": self.controller.snapshot().get("last_safe_home_result"),
+            }
         elif action == "revoke_lease":
             reason = str(
                 request_payload.get(
@@ -772,13 +784,28 @@ class ArmProviderService:
                         service.controller.request_gravity_float(str(body.get('reason','external gravity-float request'))); return self._json(200,{"status":"gravity_float","reason":str(body.get('reason','external gravity-float request'))})
                     if self.path=='/v1/calibration/safe-home':
                         if service.controller.state == ProviderState.DISCONNECTED: service.controller.start()
-                        return self._json(200,{"success":service.controller.safe_home()})
+                        max_velocity_rad_s=body.get("max_velocity_rad_s")
+                        success=service.controller.safe_home(
+                            max_velocity_rad_s=(
+                                None
+                                if max_velocity_rad_s is None
+                                else float(max_velocity_rad_s)
+                            )
+                        )
+                        return self._json(200,{
+                            "success":success,
+                            "details":service.controller.snapshot().get("last_safe_home_result"),
+                        })
                     if self.path=='/v1/calibration/experiment': return self._json(200,service.run_experiment(body))
                     if self.path=='/v1/calibration/experiment/cancel': service.experiment_cancel_event.set(); service.controller.request_position_hold('experiment cancelled'); return self._json(200,{'status':'cancelling_into_position_hold'})
                     if self.path=='/v1/calibration/apply-fit': return self._json(200,service.apply_fit(body))
                     return self._json(404,{"error":"not found"})
                 except LeasePermissionError as error:
-                    status = 409 if error.error_code in {"ACTIVE_LEASE_CONFLICT", "STALE_LEASE"} else 403
+                    status = 409 if error.error_code in {
+                        "ACTIVE_LEASE_CONFLICT",
+                        "STALE_LEASE",
+                        "OPERATIONAL_CONTROL_BLOCKED",
+                    } else 403
                     return self._json(status,{
                         "error":error.reason,
                         "reason":error.reason,

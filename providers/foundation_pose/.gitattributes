@@ -1,18 +1,5 @@
 # Avoid enormous textual diffs for generated/exported geometry.
-*.gitattributes text eol=lf
-*.gitignore text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.obj text eol=lf -diff
-*.ps1 text eol=lf
-*.py text eol=lf
-*.sha256 text eol=lf
-*.step text eol=lf -diff
-*.STEP text eol=lf -diff
-*.toml text eol=lf
-*.txt text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-LICENSE text eol=lf
-VERSION text eol=lf
+*.obj -diff
+*.step -diff
+*.STEP -diff
 *.pth filter=lfs diff=lfs merge=lfs -text

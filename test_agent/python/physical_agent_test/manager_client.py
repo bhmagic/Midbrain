@@ -25,6 +25,39 @@ class ManagerClient:
         response.raise_for_status()
         return response.json()
 
+    async def bind_capabilities(
+        self,
+        required_capabilities: list[str],
+        *,
+        fallback_provider_ids: dict[str, str] | None = None,
+        allowed_provider_ids: list[str] | None = None,
+        excluded_provider_ids: list[str] | None = None,
+        request_id: str | None = None,
+        related_skill_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Request an advisory capability binding without changing provider authority."""
+        response = await self._client.post(
+            f"{self.base_url}/v1/capability-bindings",
+            json={
+                "required_capabilities": required_capabilities,
+                "fallback_provider_ids": fallback_provider_ids or {},
+                "allowed_provider_ids": allowed_provider_ids or [],
+                "excluded_provider_ids": excluded_provider_ids or [],
+                "request_id": request_id,
+                "related_skill_id": related_skill_id,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def capability_binding(self, binding_id: str) -> dict[str, Any]:
+        """Revalidate a binding against the current provider instance and boot."""
+        response = await self._client.get(
+            f"{self.base_url}/v1/capability-bindings/{binding_id}"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def set_hot(self, provider_id: str) -> dict[str, Any]:
         response = await self._client.post(f"{self.base_url}/v1/providers/{provider_id}/hot")
         response.raise_for_status()

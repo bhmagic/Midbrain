@@ -126,6 +126,7 @@ class TrackingGui:
         self.root.geometry("1320x820")
         self.root.minsize(1080, 680)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.configure(background="#090909")
 
         self.status_var = tk.StringVar(value="Workspace stopped")
         self.target_var = tk.StringVar(value="robot_arm_root")
@@ -147,6 +148,34 @@ class TrackingGui:
 
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure(
+            ".",
+            background="#131313",
+            foreground="#f2f2f2",
+            bordercolor="#3b3b3b",
+            darkcolor="#131313",
+            lightcolor="#3b3b3b",
+            troughcolor="#090909",
+            fieldbackground="#1c1c1c",
+            selectbackground="#444444",
+            selectforeground="#ffffff",
+        )
+        style.configure("TButton", background="#202020", padding=(8, 5))
+        style.map(
+            "TButton",
+            background=[("active", "#303030"), ("disabled", "#171717")],
+            foreground=[("disabled", "#777777")],
+        )
+        style.configure("TEntry", fieldbackground="#1c1c1c")
+        style.configure("TCombobox", fieldbackground="#1c1c1c")
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#1c1c1c")],
+            selectbackground=[("readonly", "#1c1c1c")],
+            selectforeground=[("readonly", "#f2f2f2")],
+        )
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
         toolbar = ttk.Frame(outer)
@@ -166,7 +195,13 @@ class TrackingGui:
         content.add(camera_panel, weight=4)
         content.add(side, weight=1)
 
-        self.canvas = tk.Canvas(camera_panel, width=960, height=540, background="#111827", highlightthickness=0)
+        self.canvas = tk.Canvas(
+            camera_panel,
+            width=960,
+            height=540,
+            background="#090909",
+            highlightthickness=0,
+        )
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<ButtonPress-1>", self._drag_begin)
         self.canvas.bind("<B1-Motion>", self._drag_move)
@@ -233,7 +268,17 @@ class TrackingGui:
 
         logs = ttk.LabelFrame(side, text="Activity", padding=6)
         logs.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        self.log_text = tk.Text(logs, height=12, wrap=tk.WORD, state=tk.DISABLED, background="#f8fafc")
+        self.log_text = tk.Text(
+            logs,
+            height=12,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            background="#101010",
+            foreground="#f2f2f2",
+            insertbackground="#f2f2f2",
+            selectbackground="#444444",
+            relief=tk.FLAT,
+        )
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
     def log(self, message: str) -> None:

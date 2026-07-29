@@ -1,5 +1,13 @@
 # Limitations and Roadmap
 
+## Cartesian direction and alignment remain unresolved
+
+The system does not yet have a sufficiently general contract for statements such as "move up", "move forward", or "rotate 45 degrees." Camera, world, arm-base, controlled-frame, tool, and object frames can use different axis conventions, signs, origins, and transform ages. The observed mapping in the current workcell—physical vertical primarily corresponding to arm-base `+X`—is installation-specific and must not be generalized.
+
+A future motion request must carry a semantic direction, source and target frame IDs, transform revision and timestamps, gravity provenance when relevant, uncertainty, and the resolved numeric vector used for planning. The consuming Skill must judge freshness according to its own latency budget; Fabric remains a passive, fast timestamped-state transport.
+
+Until that contract and its qualification suite are complete, natural-language Cartesian directions remain reviewed development inputs. See [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+
 ## Current estimator limits
 
 - The Local VIO backend is a Python reference 15-state ESKF with pose-level RGB-D/IR corrections.
@@ -14,8 +22,8 @@
 - BufferRefs can expire when ring slots are recycled; explicit pinning/leases are not implemented.
 - Deterministic recording/replay and subscriptions are not included.
 - Provider containment, restart backoff, and stale-state invalidation need expansion.
-- Control Authority Leases and safe relinquish remain contract/design work, not a verified robot-motion runtime.
-- The Test Agent is a diagnostic mockup, not a hardened operator console.
+- Control Authority Leases, decision lineage, safe relinquish, and Manager-owned shutdown now have an implemented guarded path, but still require broader fault-injection and long-duration qualification.
+- The Test Agent demonstrates discovery, permission-gated action, and browser-based observation/development controls; it is not a hardened autonomous production agent or operator console.
 
 ## reBot arm prototype limits
 
@@ -24,7 +32,7 @@
 - POS_VEL `HOLD_LB` is experimental and unstable and is excluded from Manager capability discovery.
 - Arm POS_TOR `ONE_SHOT`/CONTACT_WORK is experimental and unstable and is excluded from Manager capability discovery.
 - Obstacle-route planning is not implemented. Semantic point-cloud objects can be staged, but the current preview is diagnostic rather than a route-search authority.
-- The audited Manager revision lacks a physical control-authority lease API, so upstream Skills can stage targets/settings but local Engage + Xbox LB remains the physical release boundary.
+- The guarded Manager revision exposes control-authority leases and reviewed authorization decisions. The physical implementation remains prototype-grade and is not safety certified.
 - USB/serial transport timeouts and mode-confirmation faults remain physical qualification risks.
 
 ## FoundationPose object-pose limits
@@ -35,7 +43,7 @@
 - The Provider serializes expensive GPU work, so requested rates are upper bounds rather than guaranteed throughput.
 - OpenAI boxes and SAM2 masks are initialization aids, not safety-rated perception. Operator review remains required.
 - Color refinements are empirical for the present lighting and materials. Lab distance 30 plus radius-2 dilation worked for the Base; median RGB with 10% drift plus radius-2 dilation worked for the neon-green Gripper root.
-- A bounded camera-to-world alignment Skill is not yet implemented. It should aggregate stationary measurements, reject transients, resolve symmetry using robot geometry or joint context, estimate uncertainty, and publish a separately authoritative transform.
+- A bounded stationary camera/world-to-arm alignment Skill is implemented for the current workcell. General axis semantics, uncertainty qualification, and broader hardware/camera portability remain open.
 
 ## Highest-priority milestone
 
@@ -60,8 +68,9 @@ Measure orientation latency, absolute/relative trajectory error, stationary drif
 
 Before expanding autonomous robot motion:
 
-- implement fenced Control Authority Leases;
-- define safe relinquish on expiry, process failure, and Manager disconnect;
+- broaden fault-injection qualification for fenced Control Authority Leases;
+- qualify safe relinquish on expiry, process failure, Manager disconnect, and lost upstream authority;
 - complete physical acceptance for every advertised motion profile;
 - keep emergency stop independent from software recovery;
 - review every hardware-specific Provider separately.
+- require explicit frame and resolved-vector evidence for semantic Cartesian commands.

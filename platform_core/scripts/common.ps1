@@ -21,6 +21,22 @@ function Import-EnvFile {
     }
 }
 
+function Repair-DuplicateProcessPath {
+    $processEnvironment = [Environment]::GetEnvironmentVariables("Process")
+    $pathKeys = @(
+        $processEnvironment.Keys |
+            Where-Object { [string]$_ -ieq "Path" } |
+            ForEach-Object { [string]$_ }
+    )
+    if ($pathKeys.Count -le 1) { return }
+
+    $pathValue = [string]$processEnvironment[$pathKeys[0]]
+    foreach ($pathKey in $pathKeys) {
+        [Environment]::SetEnvironmentVariable($pathKey, $null, "Process")
+    }
+    [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+}
+
 function Wait-HttpHealth {
     param(
         [Parameter(Mandatory = $true)][string]$Url,

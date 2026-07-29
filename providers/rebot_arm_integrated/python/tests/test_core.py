@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import sys
@@ -191,6 +192,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["runtime"]["interaction_mode"], INTERACTION_ONE_SHOT)
         self.assertEqual(config["runtime"]["ik_mode"], IK_POSITION_3DOF)
         self.assertEqual(config["gripper"]["mode"], "MIT")
+        self.assertEqual(
+            config["trajectory"]["arrival_cartesian_position_tolerance_m"],
+            0.003,
+        )
+        self.assertEqual(
+            config["trajectory"]["arrival_cartesian_orientation_tolerance_rad"],
+            0.05,
+        )
+        self.assertEqual(
+            config["trajectory"]["intermediate_arrival_stable_samples"],
+            2,
+        )
+        self.assertEqual(
+            config["trajectory"]["authorized_stage_timeout_min_s"],
+            3.0,
+        )
         self.assertAlmostEqual(config["gripper"]["open_position_rad"], -4.886921905584122)
         self.assertAlmostEqual(config["gripper"]["closed_position_rad"], -0.3490658503988659)
 
@@ -222,6 +239,17 @@ class SafeTerminationTests(unittest.TestCase):
             service = IntegratedService(object(), load_config(), None, None)
             service.provider_root = provider_root
             launch_kwargs: dict[str, Any] = {}
+            shadow_requests: list[tuple[str, str]] = []
+            service.platform.shutdown_plan = (  # type: ignore[method-assign]
+                lambda owner_id, reason: (
+                    shadow_requests.append((owner_id, reason))
+                    or {
+                        "state": "PLANNED",
+                        "enforcement": "SHADOW_DRY_RUN",
+                        "shutdown_id": "shutdown-test",
+                    }
+                )
+            )
 
             def acknowledged_process(arguments, **kwargs):
                 launch_kwargs.update(kwargs)
@@ -251,6 +279,18 @@ class SafeTerminationTests(unittest.TestCase):
             self.assertEqual(result["status"], "accepted")
             self.assertEqual(result["safe_termination"]["state"], "RUNNING")
             self.assertEqual(result["safe_termination"]["process_id"], 12345)
+            deadline = time.monotonic() + 1.0
+            while not shadow_requests and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(shadow_requests), 1)
+            with service.safe_termination_lock:
+                manager_shadow_plan = dict(
+                    service.safe_termination["manager_shadow_plan"]
+                )
+            self.assertEqual(
+                manager_shadow_plan["enforcement"],
+                "SHADOW_DRY_RUN",
+            )
             self.assertFalse(
                 int(launch_kwargs["creationflags"])
                 & int(getattr(subprocess, "DETACHED_PROCESS", 0))
@@ -398,6 +438,77 @@ class ControllerTests(unittest.TestCase):
             controller.enter_warm()
         self.assertIsNotNone(basic.lease_snapshot())
 
+    def test_warm_serializes_against_inflight_lease_renewal(self):
+        controller, basic = prepared_controller()
+        renew_started = threading.Event()
+        finish_renew = threading.Event()
+        original_renew = basic.renew
+
+        def slow_renew(duration_ms):
+            renew_started.set()
+            self.assertTrue(finish_renew.wait(1.0))
+            return original_renew(duration_ms)
+
+        basic.renew = slow_renew
+        renew_result = []
+        warm_result = []
+        renew_worker = threading.Thread(
+            target=lambda: renew_result.append(controller._renew_lease_once())
+        )
+        warm_worker = threading.Thread(
+            target=lambda: warm_result.append(controller.enter_warm())
+        )
+        renew_worker.start()
+        self.assertTrue(renew_started.wait(0.5))
+        warm_worker.start()
+        time.sleep(0.03)
+        self.assertTrue(warm_worker.is_alive())
+        finish_renew.set()
+        renew_worker.join(1.0)
+        warm_worker.join(1.0)
+
+        self.assertEqual(renew_result, [True])
+        self.assertEqual(warm_result, [{"status": "warm"}])
+        self.assertEqual(controller.residency, "WARM")
+        self.assertEqual(controller.lease_state, "NONE")
+        self.assertIsNone(basic.lease_snapshot())
+        self.assertIsNone(controller.fault_reason)
+
+    def test_lease_loss_requires_explicit_recovery_and_stops_background_reacquire(self):
+        controller, basic = prepared_controller()
+        controller.start()
+        original_generation = basic.generation
+        controller._handle_lease_loss(
+            "NO_ACTIVE_LEASE: safe-home preempted operational control"
+        )
+
+        time.sleep(1.2)
+
+        state = controller.snapshot()
+        self.assertEqual(state["residency"], "RECOVERY_REQUIRED")
+        self.assertFalse(state["ready"])
+        self.assertEqual(state["lease"]["state"], "LOST")
+        self.assertIsNone(basic.lease_snapshot())
+        self.assertEqual(basic.generation, original_generation)
+        controller.stop()
+
+    def test_explicit_hot_transition_recovers_after_lease_loss(self):
+        controller, basic = prepared_controller()
+        original_generation = basic.generation
+        controller._handle_lease_loss(
+            "NO_ACTIVE_LEASE: safe-home preempted operational control"
+        )
+
+        result = controller.enter_hot()
+
+        self.assertEqual(result["status"], "hot_target_edit")
+        state = controller.snapshot()
+        self.assertEqual(state["residency"], "HOT")
+        self.assertTrue(state["ready"])
+        self.assertEqual(state["lease"]["state"], "OWNED")
+        self.assertEqual(basic.generation, original_generation + 1)
+        controller.stop()
+
     def test_press_transit_and_contact_are_physically_enabled_backends(self):
         controller, _ = prepared_controller()
         state = controller.snapshot()
@@ -482,6 +593,522 @@ class ControllerTests(unittest.TestCase):
         result = controller.preview_staged_target()
         self.assertFalse(result["physical_motion_authorized"])
         self.assertEqual(basic.commands, [])
+
+    def test_zero_length_preview_does_not_report_a_singularity(self):
+        controller, basic = prepared_controller()
+        q = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        result = type(
+            "IkResult",
+            (),
+            {
+                "q_goal": q.copy(),
+                "position_residual_m": 0.0,
+                "orientation_residual_rad": 0.0,
+                "iterations": 1,
+                "sigma_min": 0.0,
+            },
+        )()
+        with patch.object(
+            controller,
+            "_solve_target_locked",
+            return_value=result,
+        ):
+            preview = controller.preview_staged_target()
+
+        self.assertTrue(preview["planning_valid"])
+        self.assertFalse(
+            any(
+                "singular" in reason.lower()
+                for reason in preview["planning_reasons"]
+            )
+        )
+        self.assertEqual(basic.commands, [])
+
+    def test_preview_rejects_large_ik_position_residual(self):
+        controller, basic = prepared_controller()
+        q = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        controller.staged_target[0, 3] += 0.002
+        result = type(
+            "IkResult",
+            (),
+            {
+                "q_goal": q.copy(),
+                "position_residual_m": 0.102,
+                "orientation_residual_rad": 0.0,
+                "iterations": 180,
+                "sigma_min": 0.02,
+            },
+        )()
+        with patch.object(
+            controller,
+            "_solve_target_locked",
+            return_value=result,
+        ):
+            preview = controller.preview_staged_target()
+
+        self.assertFalse(preview["planning_valid"])
+        self.assertTrue(
+            any(
+                "position residual" in reason
+                for reason in preview["planning_reasons"]
+            )
+        )
+        self.assertEqual(basic.commands, [])
+
+    def test_physical_commit_rejects_fresh_large_ik_residual(self):
+        controller, basic = prepared_controller()
+        controller.set_engaged(True)
+        q = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        controller.staged_target[0, 3] += 0.002
+        result = type(
+            "IkResult",
+            (),
+            {
+                "q_goal": q.copy(),
+                "position_residual_m": 0.102,
+                "orientation_residual_rad": 0.0,
+                "iterations": 180,
+                "sigma_min": 0.02,
+            },
+        )()
+        floats_before = basic.float_count
+        with patch.object(
+            controller,
+            "_solve_target_locked",
+            return_value=result,
+        ):
+            controller._commit_staged_target()
+
+        self.assertIsNone(controller.trajectory)
+        self.assertEqual(basic.commands, [])
+        self.assertGreater(basic.float_count, floats_before)
+        self.assertIn("IK position residual", controller.last_error)
+        self.assertEqual(
+            controller.snapshot()["target"]["residual_policy"],
+            "PREVIEW_AND_EXECUTION_REJECTION",
+        )
+
+    def test_transit_path_shadow_does_not_stage_engage_or_command(self):
+        controller, basic = prepared_controller()
+        before = controller.snapshot()
+        target = controller.staged_target[:3, 3].copy()
+        target[1] += 0.01
+
+        result = controller.preview_transit_path(
+            target_position_m=target.tolist(),
+            target_rpy_rad=None,
+            requested_speed_m_s=0.4,
+        )
+
+        after = controller.snapshot()
+        self.assertFalse(result["physical_motion_authorized"])
+        self.assertEqual(
+            result["planner_owner"],
+            "ROBOT_ARM_INTEGRATED_CONTROLLER",
+        )
+        self.assertEqual(result["enforcement"], "SHADOW_NONPHYSICAL")
+        self.assertTrue(result["control_state_unchanged"])
+        self.assertTrue(result["lease_unchanged"])
+        self.assertEqual(before["control_state"], after["control_state"])
+        self.assertEqual(before["engaged"], after["engaged"])
+        self.assertEqual(before["lease"]["lease_id"], after["lease"]["lease_id"])
+        self.assertEqual(before["target"]["staged"], after["target"]["staged"])
+        self.assertEqual(basic.commands, [])
+
+    def test_transit_path_preview_is_available_while_warm_and_unleased(self):
+        controller, basic = prepared_controller()
+        controller.enter_warm()
+        before = controller.snapshot()
+        target = controller.staged_target[:3, 3].copy()
+        target[1] += 0.01
+        float_count = basic.float_count
+
+        result = controller.preview_transit_path(
+            target_position_m=target.tolist(),
+            target_rpy_rad=None,
+            requested_speed_m_s=0.05,
+        )
+
+        after = controller.snapshot()
+        self.assertEqual(result["status"], "PLANNED")
+        self.assertFalse(result["physical_motion_authorized"])
+        self.assertEqual(before["residency"], "WARM")
+        self.assertEqual(after["residency"], "WARM")
+        self.assertFalse(after["ready"])
+        self.assertIsNone(basic.lease_snapshot())
+        self.assertEqual(basic.float_count, float_count)
+        self.assertEqual(basic.commands, [])
+
+    def test_transit_path_preview_lazily_loads_model_in_initial_warm_state(self):
+        config = load_config()
+        basic = FakeBasic()
+        controller = IntegratedController(config, basic)
+        controller.update_platform_status(
+            True,
+            True,
+            {},
+            motion_inhibited=True,
+        )
+        model = ArmKinematics(basic.model())
+        q = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        target = model.controlled_frame(
+            q,
+            controller._tool_to_control_locked(),
+        )[:3, 3]
+        target[1] += 0.01
+
+        result = controller.preview_transit_path(
+            target_position_m=target.tolist(),
+            target_rpy_rad=None,
+            requested_speed_m_s=0.05,
+        )
+
+        self.assertEqual(result["status"], "PLANNED")
+        self.assertFalse(result["physical_motion_authorized"])
+        self.assertEqual(controller.residency, "WARM")
+        self.assertFalse(controller.ready)
+        self.assertIsNotNone(controller.kinematics)
+        self.assertIsNone(basic.lease_snapshot())
+        self.assertEqual(basic.commands, [])
+
+    def test_authorized_transit_executes_bounded_stages_and_holds_final(
+        self,
+    ):
+        controller, basic = prepared_controller()
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-authorized-1",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test",
+        )
+        q_start = np.asarray(
+            basic._state["positions_rad"][:6],
+            dtype=float,
+        )
+        q_mid = q_start.copy()
+        q_mid[0] += 0.01
+        q_goal = q_mid.copy()
+        q_goal[1] -= 0.01
+        original_command = basic.command
+
+        def follow_endpoint(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            goal = np.asarray(
+                [
+                    float(command["values"]["position_rad"])
+                    for command in commands
+                    if int(command["joint_index"]) < 6
+                ],
+                dtype=float,
+            )
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = (
+                        0.05
+                        if np.allclose(goal, q_mid)
+                        else 0.0
+                    )
+            return result
+
+        basic.command = follow_endpoint  # type: ignore[method-assign]
+        result = controller.execute_authorized_transit(
+            plan_id="plan-authorized-1",
+            preview_sha256="preview-sha",
+            request_sha256="request-sha",
+            q_waypoints_rad=[
+                q_start.tolist(),
+                q_mid.tolist(),
+                q_goal.tolist(),
+            ],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-authorized-1",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-1",
+                "decision_id": "decision-1",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertEqual(result["status"], "EXECUTING")
+        self.assertLessEqual(
+            result["maximum_joint_velocity_rad_s"],
+            0.25,
+        )
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status
+                    == "HOLDING_FINAL"
+                ),
+                timeout=2.0,
+            )
+        )
+        self.assertTrue(basic.commands)
+        for envelope in basic.commands:
+            for command in envelope:
+                if command["joint_index"] < 6:
+                    self.assertLessEqual(
+                        command["values"]["velocity_limit_rad_s"],
+                        0.25,
+                    )
+        floats_before_release = basic.float_count
+        released = controller.release_authorized_transit()
+        self.assertEqual(released["status"], "gravity_float")
+        self.assertIsNone(controller.authorized_transit)
+        self.assertGreater(basic.float_count, floats_before_release)
+
+    def test_gripper_can_join_authorized_final_hold_without_float(self):
+        controller, basic = prepared_controller()
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-authorized-gripper-hold",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test",
+        )
+        q_start = np.asarray(
+            basic._state["positions_rad"][:6],
+            dtype=float,
+        )
+        q_goal = q_start.copy()
+        q_goal[0] += 0.01
+        original_command = basic.command
+
+        def follow_endpoint(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = 0.0
+            return result
+
+        basic.command = follow_endpoint  # type: ignore[method-assign]
+        controller.execute_authorized_transit(
+            plan_id="plan-authorized-gripper-hold",
+            preview_sha256="preview-sha",
+            request_sha256="request-sha",
+            q_waypoints_rad=[
+                q_start.tolist(),
+                q_goal.tolist(),
+            ],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-authorized-gripper-hold",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-gripper-hold",
+                "decision_id": "decision-gripper-hold",
+                "resolved_by": "operator",
+            },
+        )
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status
+                    == "HOLDING_FINAL"
+                ),
+                timeout=2.0,
+            )
+        )
+
+        floats_before_gripper = basic.float_count
+        accepted = controller.request_gripper("OPEN")
+        self.assertTrue(accepted["accepted"])
+        self.assertTrue(
+            wait_until(
+                lambda: any(
+                    any(
+                        int(command["joint_index"]) == 6
+                        and command["values"].get("position_rad")
+                        == controller.gripper_open_position_rad
+                        for command in envelope
+                    )
+                    and any(
+                        int(command["joint_index"]) < 6
+                        for command in envelope
+                    )
+                    for envelope in basic.commands
+                ),
+                timeout=1.0,
+            )
+        )
+        self.assertEqual(basic.float_count, floats_before_gripper)
+        self.assertIsNotNone(controller.authorized_transit)
+        self.assertEqual(
+            controller.authorized_transit.status,
+            "HOLDING_FINAL",
+        )
+        self.assertEqual(
+            controller.snapshot()["gripper"]["active_action"],
+            "OPEN",
+        )
+        command_count_before_stop = len(basic.commands)
+        stopped = controller.request_gripper("STOP")
+        self.assertTrue(stopped["accepted"])
+        self.assertIsNone(stopped["requested_action"])
+        self.assertTrue(
+            wait_until(
+                lambda: any(
+                    any(
+                        int(command["joint_index"]) < 6
+                        for command in envelope
+                    )
+                    and all(
+                        int(command["joint_index"]) != 6
+                        for command in envelope
+                    )
+                    for envelope in basic.commands[command_count_before_stop:]
+                ),
+                timeout=1.0,
+            )
+        )
+        stopped_snapshot = controller.snapshot()["gripper"]
+        self.assertIsNone(stopped_snapshot["active_action"])
+        self.assertIsNone(stopped_snapshot["target_rad"])
+        self.assertEqual(stopped_snapshot["stop_count"], 1)
+        self.assertEqual(basic.float_count, floats_before_gripper)
+        self.assertIsNotNone(controller.authorized_transit)
+        self.assertEqual(
+            controller.authorized_transit.status,
+            "HOLDING_FINAL",
+        )
+        controller.release_authorized_transit()
+
+    def test_gripper_remains_blocked_during_authorized_transit(self):
+        controller, basic = prepared_controller()
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-authorized-gripper-block",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test",
+        )
+        q_start = np.asarray(
+            basic._state["positions_rad"][:6],
+            dtype=float,
+        )
+        q_goal = q_start.copy()
+        q_goal[0] += 0.2
+        controller.execute_authorized_transit(
+            plan_id="plan-authorized-gripper-block",
+            preview_sha256="preview-sha",
+            request_sha256="request-sha",
+            q_waypoints_rad=[
+                q_start.tolist(),
+                q_goal.tolist(),
+            ],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-authorized-gripper-block",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-gripper-block",
+                "decision_id": "decision-gripper-block",
+                "resolved_by": "operator",
+            },
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "blocked while an arm trajectory is active",
+        ):
+            controller.request_gripper("OPEN")
+        controller.release_authorized_transit()
+
+    def test_authorized_transit_final_endpoint_requires_settled_velocity(
+        self,
+    ):
+        controller, basic = prepared_controller()
+        controller.config["trajectory"]["arrival_stable_samples"] = 2
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-authorized-final-settle",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test",
+        )
+        q_start = np.asarray(
+            basic._state["positions_rad"][:6],
+            dtype=float,
+        )
+        q_goal = q_start.copy()
+        q_goal[0] += 0.01
+        original_command = basic.command
+        report_moving_velocity = threading.Event()
+        report_moving_velocity.set()
+
+        def follow_moving_endpoint(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    if report_moving_velocity.is_set():
+                        basic._state["velocities_rad_s"][index] = 0.05
+            return result
+
+        basic.command = (  # type: ignore[method-assign]
+            follow_moving_endpoint
+        )
+        controller.execute_authorized_transit(
+            plan_id="plan-authorized-final-settle",
+            preview_sha256="preview-sha",
+            request_sha256="request-sha",
+            q_waypoints_rad=[
+                q_start.tolist(),
+                q_goal.tolist(),
+            ],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-authorized-final-settle",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-final-settle",
+                "decision_id": "decision-final-settle",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertFalse(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status
+                    == "HOLDING_FINAL"
+                ),
+                timeout=0.5,
+            )
+        )
+        report_moving_velocity.clear()
+        basic._state["velocities_rad_s"][:6] = [0.0] * 6
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status
+                    == "HOLDING_FINAL"
+                ),
+                timeout=1.0,
+            )
+        )
+        controller.release_authorized_transit()
 
     def test_physical_ik_keeps_large_position_residual_as_telemetry(self):
         controller, basic = prepared_controller()
@@ -638,11 +1265,23 @@ class ControllerTests(unittest.TestCase):
         goal = controller.goal_q.copy()
         basic._state["positions_rad"][:6] = goal.tolist()
         basic._state["velocities_rad_s"][:6] = [0.0] * 6
+        time.sleep(0.08)
+        self.assertIsNotNone(controller.trajectory)
         self.assertTrue(wait_until(lambda: controller.trajectory is None, timeout=2.0))
         modes = {item["mode"] for frame in basic.commands for item in frame}
         self.assertIn("POSITION_VELOCITY_LIMITED", modes)
         self.assertNotIn(MODE_MIT, modes)
         self.assertGreater(basic.float_count, floats_before_commit)
+        self.assertTrue(
+            controller.last_completed_trajectory[
+                "arrival_cartesian_confirmed"
+            ]
+        )
+        self.assertTrue(
+            controller.last_completed_trajectory[
+                "arrival_duration_confirmed"
+            ]
+        )
 
     def test_transit_basic_400_keeps_last_accepted_endpoint_without_float(self):
         controller, basic = prepared_controller(short_trajectory=True)
@@ -776,6 +1415,42 @@ class ControllerTests(unittest.TestCase):
         controller.update_input({"lb": False})
         self.assertTrue(wait_until(lambda: controller.trajectory is None))
         self.assertGreater(len(basic.commands), 3)
+        self.assertGreater(basic.float_count, 0)
+        completed = controller.last_completed_trajectory
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(
+            completed["completion_outcome"],
+            "DEADLINE_SNAPSHOT_WITHIN_TOLERANCE_AND_FLOATED",
+        )
+        self.assertFalse(completed["completion_success"])
+        self.assertFalse(completed["target_arrival_confirmed"])
+        self.assertTrue(completed["arrival_duration_confirmed"])
+        self.assertTrue(completed["deadline_joint_within_tolerance"])
+        self.assertIsNotNone(completed["deadline_position_residual_m"])
+
+    def test_one_shot_deadline_reports_incomplete_when_arm_does_not_follow(self):
+        controller, basic = prepared_controller(short_trajectory=True)
+        controller.set_engaged(True)
+        with controller.lock:
+            controller.staged_target[2, 3] += 0.02
+        controller.preview_staged_target()
+        controller.update_input({"lb": True})
+        controller._tick()
+
+        self.assertTrue(wait_until(lambda: controller.trajectory is None))
+        completed = controller.last_completed_trajectory
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(
+            completed["completion_outcome"],
+            "DEADLINE_FLOAT_BEFORE_ARRIVAL",
+        )
+        self.assertFalse(completed["completion_success"])
+        self.assertFalse(completed["target_arrival_confirmed"])
+        self.assertTrue(completed["arrival_duration_confirmed"])
+        self.assertFalse(completed["deadline_cartesian_within_tolerance"])
+        self.assertGreater(completed["deadline_position_residual_m"], 0.003)
         self.assertGreater(basic.float_count, 0)
 
     def test_rejected_optional_preview_does_not_veto_operator_commit(self):

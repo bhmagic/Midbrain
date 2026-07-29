@@ -18,7 +18,13 @@ from rebot_arm_integrated.command_semantics import LatchedEndpointCommand, synch
 from rebot_arm_integrated.kinematics import ArmKinematics
 from rebot_arm_integrated.hybrid import COMPLETE, MIT_SETTLE, POS_VEL_APPROACH, HybridApproachPolicy
 from rebot_arm_integrated.modes import CONTACT_WORK, PRESS_MIT, TRANSIT_SPEED, MODE_SPECS
-from rebot_arm_integrated.planning import build_direct_preview, solve_cartesian_continuity
+from rebot_arm_integrated.planning import (
+    build_direct_preview,
+    build_transit_frame_candidates,
+    controller_owned_duration,
+    solve_cartesian_continuity,
+    solve_cartesian_continuity_adaptive,
+)
 from rebot_arm_integrated.scene import SceneSnapshot, configuration_clearance
 from rebot_arm_integrated.trajectory import QuinticJointSegment
 
@@ -184,6 +190,61 @@ class ScenePlanningTests(unittest.TestCase):
         self.kinematics = ArmKinematics(model)
         self.q = np.array([0.0, -0.18, -0.22, 0.12, 0.02, -0.05])
 
+    def test_transit_candidates_include_direct_clearance_and_both_lateral_escapes(
+        self,
+    ):
+        start = np.eye(4)
+        start[:3, 3] = [0.1, 0.0, 0.3]
+        goal = np.eye(4)
+        goal[:3, 3] = [0.3, 0.1, 0.25]
+
+        candidates = build_transit_frame_candidates(
+            start,
+            goal,
+            workspace={
+                "z_min_m": 0.05,
+                "z_max_m": 0.72,
+                "abs_y_max_m": 0.65,
+            },
+            clearance_margin_m=0.08,
+            lateral_escape_m=0.05,
+        )
+
+        names = [name for name, _frames in candidates]
+        self.assertEqual(names[0], "DIRECT")
+        self.assertIn("CLEARANCE_Z_THEN_XY", names)
+        self.assertIn(
+            "CLEARANCE_WITH_POSITIVE_Y_SINGULARITY_ESCAPE",
+            names,
+        )
+        self.assertIn(
+            "CLEARANCE_WITH_NEGATIVE_Y_SINGULARITY_ESCAPE",
+            names,
+        )
+
+    def test_controller_duration_clamps_speed_and_respects_joint_rate_caps(self):
+        schedule = controller_owned_duration(
+            [
+                [0.0, 0.0],
+                [0.3, 0.1],
+                [0.5, 0.1],
+            ],
+            0.4,
+            0.4,
+            [0.2, 0.2],
+            speed_min_m_s=0.01,
+            speed_max_m_s=0.15,
+            minimum_duration_s=0.25,
+        )
+
+        self.assertTrue(schedule["speed_clamped"])
+        self.assertEqual(schedule["effective_speed_m_s"], 0.15)
+        self.assertGreaterEqual(schedule["duration_s"], 3.75)
+        self.assertEqual(
+            schedule["limiting_factor"],
+            "PROVIDER_JOINT_RATE_CAPS",
+        )
+
     def test_semantic_scene_requires_explicit_contact_policy(self):
         points = self.kinematics.evaluate(self.q).points
         center = ((points[1] + points[2]) / 2.0).tolist()
@@ -252,6 +313,35 @@ class ScenePlanningTests(unittest.TestCase):
         self.assertTrue(np.allclose(seeds[1], result.q_waypoints[1]))
         self.assertAlmostEqual(result.maximum_waypoint_joint_step_rad, 0.05)
         self.assertAlmostEqual(result.minimum_sigma, 0.05)
+
+    def test_adaptive_continuity_subdivides_until_joint_steps_are_bounded(self):
+        start = np.eye(4)
+        goal = np.eye(4)
+        goal[0, 3] = 0.4
+
+        def solve(seed, target):
+            q_goal = seed.copy()
+            q_goal[0] = target[0, 3]
+            return SimpleNamespace(
+                q_goal=q_goal,
+                sigma_min=0.05,
+                position_residual_m=0.0,
+                orientation_residual_rad=0.0,
+                iterations=2,
+            )
+
+        result = solve_cartesian_continuity_adaptive(
+            [0.0] * 6,
+            start,
+            goal,
+            solve,
+            initial_waypoint_count=2,
+            maximum_waypoint_count=16,
+            maximum_joint_step_rad=0.06,
+        )
+
+        self.assertEqual(len(result.q_waypoints), 9)
+        self.assertLessEqual(result.maximum_waypoint_joint_step_rad, 0.06)
 
 
 if __name__ == "__main__":

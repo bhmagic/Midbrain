@@ -1,0 +1,91 @@
+{
+  "skill_type": "register_tool_to_control_frame",
+  "version": "0.1.0",
+  "display_name": "Register Tool to Control Frame",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "register_tool_to_control_frame",
+    "description": "Build a review-only tool control-frame candidate from VLM-selected image landmarks, flexible-grid RGB-D registration, and the observed robot tool pose. This Skill handles reflective tools by selecting nearby valid depth with explicit per-landmark policy and provenance.",
+    "when_to_use": [
+      "A mounted tool needs an acting point or controlled frame relative to the robot tool frame.",
+      "A shiny blade or tool surface requires nearby valid depth instead of trusting the exact highlighted pixel.",
+      "A tool registration needs VLM, RGB-D, calibration, and robot-pose provenance in one finite result."
+    ],
+    "when_not_to_use": [
+      "The candidate would be used for motion without operator review and controller safety checks.",
+      "The tool is moving relative to the gripper during observation.",
+      "The requested landmarks do not define the intended control-frame orientation."
+    ],
+    "side_effects": [
+      "Reads camera and timestamped transform observations.",
+      "May call an explicitly selected VLM backend.",
+      "Returns a review-only candidate and does not publish or activate a control frame."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "robot.transforms.read",
+      "vlm.invoke"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "tool_description": {
+          "type": "string",
+          "description": "Tool and relevant landmarks to identify."
+        },
+        "control_frame_purpose": {
+          "type": "string",
+          "description": "Meaning of the desired acting point and axes."
+        },
+        "target_frame": {
+          "type": "string",
+          "description": "Calibrated stationary workcell frame for registration."
+        }
+      },
+      "required": [
+        "tool_description",
+        "control_frame_purpose",
+        "target_frame"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.register_tool_to_control_frame.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/register_tool_to_control_frame/registration.py"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "world.transforms.timestamped",
+    "robot_arm.transforms.local",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "result_policy": {
+    "motion_usable": false,
+    "operator_review_required": true,
+    "publishes_control_frame": false,
+    "activation_requires_separate_authorization": true
+  },
+  "published_streams": []
+}

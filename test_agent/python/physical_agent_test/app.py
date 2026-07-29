@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,22 +12,147 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from .agent_driver import PrototypeAgentDriver
+from .authorization import AuthorizationStore
 from .config import Settings
 from .depth_capture import DepthCapture
+from .effector_front_adapter import EffectorFrontSkillAdapter
 from .fabric_client import FabricClient
-from .gemini_pointing_skill import PointingIdentificationSkill
+from .gemini_pointing_skill import (
+    PointingIdentificationSkill,
+    VisualSceneAnalysisSkill,
+)
 from .initialize_space_cognition_skill import InitializeSpaceCognitionSkill
+from .integrated_client import IntegratedControllerClient
 from .manager_client import ManagerClient
+from .observation_motion import (
+    attach_controller_preview,
+    build_observation_motion_proposal,
+    create_observation_motion_authorization,
+)
+from .phase4_policy import (
+    OperationRegistry,
+    Phase4Policy,
+    install_operation_registry,
+)
+from .phase5_replay import Phase5ReplayCaptureService
 from .rgb_capture import RgbCapture
+from .rgbd_alignment import (
+    RgbdAlignmentValidationSkill,
+    RgbdEvidenceCapture,
+)
+from .reviewed_observation_execution import (
+    ReviewedObservationExecutionAdapter,
+)
+from .skill_catalog import discover_agent_skills
+from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
+from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
+from .tool_registration_adapter import ToolControlFrameSkillAdapter
 from .world_point_cloud import WorldPointCloudAccumulator
+from .vlm_router import build_default_vlm_router
+from stationary_world_arm_alignment.camera import RgbdCapture
+from stationary_world_arm_alignment.skill import AlignmentSkill
 
 settings = Settings()
+phase4_policy = Phase4Policy.from_environment()
+operation_registry = OperationRegistry()
+install_operation_registry(operation_registry)
 fabric = FabricClient(settings.fabric_url)
 manager = ManagerClient(settings.manager_url)
+integrated = IntegratedControllerClient(
+    settings.integrated_controller_url,
+    timeout_s=settings.integrated_preview_timeout_s,
+)
+authorization_store = AuthorizationStore(
+    signing_secret=settings.authorization_signing_secret,
+)
 capture = RgbCapture(fabric, settings.screenshot_dir)
 depth_capture = DepthCapture(fabric, settings.screenshot_dir)
-pointing_skill = PointingIdentificationSkill(capture, settings.gemini_model)
-driver = PrototypeAgentDriver(pointing_skill, settings.openai_model)
+pointing_skill = PointingIdentificationSkill(
+    capture,
+    settings.gemini_model,
+    manager=manager,
+    fallback_camera_provider_id=settings.head_camera_provider_id,
+)
+visual_scene_skill = VisualSceneAnalysisSkill(
+    capture,
+    settings.gemini_model,
+    manager=manager,
+    fallback_camera_provider_id=settings.head_camera_provider_id,
+)
+rgbd_evidence_capture = RgbdEvidenceCapture(
+    fabric,
+    settings.screenshot_dir,
+    policy=phase4_policy,
+)
+rgbd_alignment_skill = RgbdAlignmentValidationSkill(
+    rgbd_evidence_capture,
+    build_default_vlm_router(
+        gemini_model=settings.gemini_model,
+        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
+    ),
+    provider_id=settings.head_camera_provider_id,
+    manager=manager,
+    policy=phase4_policy,
+)
+spatial_registration_skill = SpatialRegistrationSkillAdapter(
+    RgbdCapture(fabric, settings.head_camera_frame),
+    fabric,
+    manager=manager,
+    fallback_camera_provider_id=settings.head_camera_provider_id,
+    binding_mode=settings.phase5_spatial_binding_mode,
+    generic_route_mode=settings.phase5_spatial_generic_route_mode,
+)
+effector_front_skill = EffectorFrontSkillAdapter(
+    spatial_registration_skill,
+    build_default_vlm_router(
+        gemini_model=settings.gemini_model,
+        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
+    ),
+)
+tool_registration_skill = ToolControlFrameSkillAdapter(
+    spatial_registration_skill,
+    build_default_vlm_router(
+        gemini_model=settings.gemini_model,
+        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
+    ),
+    manager=manager,
+    fallback_arm_provider_id=settings.arm_transform_provider_id,
+    arm_base_frame=settings.arm_base_frame,
+    arm_tool_frame=settings.arm_tool_frame,
+    binding_mode=settings.phase5_spatial_binding_mode,
+)
+stationary_calibration_agent_adapter = StationaryCalibrationSkillAdapter(
+    AlignmentSkill,
+)
+reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
+    authorization_store,
+    integrated,
+)
+driver = PrototypeAgentDriver(
+    pointing_skill,
+    settings.openai_model,
+    tool_choice=settings.openai_agent_tool_choice,
+    eligible_tool_names=set(settings.phase4_eligible_tools),
+    visual_scene_skill=visual_scene_skill,
+    rgbd_alignment_skill=rgbd_alignment_skill,
+    spatial_registration_skill=spatial_registration_skill,
+    effector_front_skill=effector_front_skill,
+    tool_registration_skill=tool_registration_skill,
+    stationary_calibration_skill=stationary_calibration_agent_adapter,
+    defer_loading=settings.agent_skill_defer_loading,
+    adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+)
+reviewed_observation_agent_driver = PrototypeAgentDriver(
+    pointing_skill,
+    settings.openai_model,
+    tool_choice="required",
+    eligible_tool_names={"execute_reviewed_observation_motion"},
+    reviewed_observation_execution_skill=(
+        reviewed_observation_execution_skill
+    ),
+    defer_loading=False,
+    adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+)
 space_cognition_skill = InitializeSpaceCognitionSkill(
     manager,
     fabric,
@@ -41,6 +167,11 @@ world_point_cloud = WorldPointCloudAccumulator(
     update_hz=settings.point_cloud_hz,
     max_points=settings.point_cloud_max_points,
 )
+agent_skill_catalog = discover_agent_skills(
+    settings.workspace_root,
+    include_disabled=True,
+)
+replay_capture = Phase5ReplayCaptureService(fabric, settings.replay_bundle_dir)
 auto_initialization_task: asyncio.Task[None] | None = None
 auto_initialization_error: str | None = None
 auto_initialization_state = "NOT_STARTED"
@@ -84,19 +215,95 @@ async def lifespan(_app: FastAPI):
             pass
         auto_initialization_task = None
     await world_point_cloud.stop()
+    await integrated.close()
     await fabric.close()
     await manager.close()
 
 
-app = FastAPI(title="Physical Agent Test Scaffold", version="0.2.9", lifespan=lifespan)
+app = FastAPI(title="Physical Agent Test Scaffold", version="0.3.0", lifespan=lifespan)
 
 
 class PromptRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
 
 
+class RgbdAlignmentRequest(BaseModel):
+    request: str = Field(
+        default=(
+            "Verify that this synchronized RGB and registered-depth bundle "
+            "is visually and numerically aligned for observation use."
+        ),
+        min_length=1,
+        max_length=2000,
+    )
+
+
+class Phase5ReplayCaptureRequest(BaseModel):
+    bundle_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+
+
+class Phase5ReplayRouteComparisonRequest(BaseModel):
+    pixel_yx: list[float] = Field(min_length=2, max_length=2)
+    depth_policy: str = Field(
+        default="ROBUST_MEDIAN",
+        pattern=r"^(ROBUST_MEDIAN|CLOSEST_TO_CAMERA|NEAREST_VALID_PIXEL)$",
+    )
+
+
+class SpatialRegistrationRequest(BaseModel):
+    pixel_yx: list[float] = Field(min_length=2, max_length=2)
+    target_frame: str = Field(min_length=1, max_length=200)
+    depth_policy: str = Field(
+        default="ROBUST_MEDIAN",
+        pattern=r"^(ROBUST_MEDIAN|CLOSEST_TO_CAMERA|NEAREST_VALID_PIXEL)$",
+    )
+
+
+class ToolRegistrationRequest(BaseModel):
+    tool_description: str = Field(min_length=1, max_length=2000)
+    control_frame_purpose: str = Field(min_length=1, max_length=2000)
+    target_frame: str = Field(min_length=1, max_length=200)
+
+
 class InitializationRequest(BaseModel):
     force_reset: bool = False
+
+
+class AuthorizationCreateRequest(BaseModel):
+    requester_type: str = Field(min_length=3, max_length=32)
+    requester_id: str = Field(min_length=1, max_length=200)
+    decision_type: str = Field(min_length=3, max_length=80)
+    title: str = Field(min_length=3, max_length=200)
+    summary: str = Field(min_length=3, max_length=2000)
+    proposed_action: dict[str, Any]
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    safety: dict[str, Any] = Field(default_factory=dict)
+    expires_in_s: float = Field(default=120.0, ge=1.0, le=900.0)
+
+
+class AuthorizationResolveRequest(BaseModel):
+    resolution: str
+    resolved_by: str = Field(default="local-operator", min_length=1, max_length=100)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ObservationMotionProposalRequest(BaseModel):
+    object_point_world_m: list[float] = Field(min_length=3, max_length=3)
+    world_from_arm_base: list[float] = Field(min_length=16, max_length=16)
+    view_mode: str
+    standoff_m: float = Field(default=0.15, ge=0.05, le=0.50)
+    source_evidence: dict[str, Any] = Field(default_factory=dict)
+    preview_context: dict[str, Any]
+    requester_id: str = Field(default="observe-pointed-object", min_length=1)
+
+
+class ReviewedObservationAgentExecutionRequest(BaseModel):
+    decision_id: str = Field(min_length=1, max_length=200)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -151,8 +358,368 @@ async def status() -> dict[str, Any]:
         "auto_initialize_result": auto_initialization_result,
         "auto_initialize_error": auto_initialization_error,
         "openai_model": settings.openai_model,
+        "openai_agent_tool_choice": settings.openai_agent_tool_choice,
         "gemini_model": settings.gemini_model,
+        "capability_binding": pointing_skill.last_binding,
+        "rgbd_alignment_binding": rgbd_alignment_skill.last_binding,
+        "rgbd_alignment_validation": rgbd_alignment_skill.last_result,
+        "spatial_registration_binding": spatial_registration_skill.last_binding,
+        "spatial_registration_result": spatial_registration_skill.last_result,
+        "effector_front_result": effector_front_skill.last_result,
+        "tool_registration_binding": tool_registration_skill.last_binding,
+        "tool_registration_result": tool_registration_skill.last_result,
+        "agent_skill_catalog": [
+            descriptor.as_dict() for descriptor in agent_skill_catalog
+        ],
+        "authorization_ui": {
+            "pending_count": len(authorization_store.list(status="PENDING")),
+            "approval_executes_action": False,
+            "ui_role": "OBSERVATION_AND_DECISION_ONLY",
+        },
+        "phase4_policy": phase4_policy.as_dict(),
+        "phase5_policy": {
+            "spatial_binding": settings.phase5_spatial_binding_mode,
+            "spatial_generic_rgbd_route": (
+                settings.phase5_spatial_generic_route_mode
+            ),
+        },
+        "bounded_operations": operation_registry.snapshot(),
     }
+
+
+@app.get("/api/phase4/policy")
+async def phase4_policy_status() -> dict[str, Any]:
+    return {
+        "policy": phase4_policy.as_dict(),
+        "phase5_policy": {
+            "spatial_binding": settings.phase5_spatial_binding_mode,
+            "spatial_generic_rgbd_route": (
+                settings.phase5_spatial_generic_route_mode
+            ),
+        },
+        "operations": operation_registry.snapshot(),
+    }
+
+
+@app.get("/api/phase5/replay/bundles")
+async def phase5_replay_bundles() -> dict[str, Any]:
+    return {
+        "hardware_access_allowed": False,
+        "bundles": await asyncio.to_thread(replay_capture.list_bundles),
+    }
+
+
+@app.get("/api/phase5/replay/{bundle_id}/provenance")
+async def phase5_replay_provenance(bundle_id: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(
+            replay_capture.bundle_provenance,
+            bundle_id,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/phase5/replay/capture")
+async def phase5_replay_capture(
+    request: Phase5ReplayCaptureRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_replay_capture",
+            replay_capture.capture_current(
+                bundle_id=request.bundle_id,
+                additional_records={
+                    "phase4_policy": phase4_policy.as_dict(),
+                    "phase5_policy": {
+                        "spatial_binding": (
+                            settings.phase5_spatial_binding_mode
+                        ),
+                        "spatial_generic_rgbd_route": (
+                            settings.phase5_spatial_generic_route_mode
+                        ),
+                    },
+                    "bounded_operations_before_capture": (
+                        operation_registry.snapshot()
+                    ),
+                    "capability_binding": rgbd_alignment_skill.last_binding,
+                    "rgbd_alignment_validation": (
+                        rgbd_alignment_skill.last_result
+                    ),
+                    "authorizations": authorization_store.list(),
+                },
+            ),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except FileExistsError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/phase5/replay/{bundle_id}/validate")
+async def phase5_replay_validate(bundle_id: str) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_replay_validate",
+            replay_capture.validate_bundle(bundle_id),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/phase5/replay/{bundle_id}/compare-rgbd-routes")
+async def phase5_replay_compare_rgbd_routes(
+    bundle_id: str,
+    request: Phase5ReplayRouteComparisonRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_replay_compare_rgbd_routes",
+            replay_capture.compare_rgbd_routes(
+                bundle_id,
+                pixel_yx=(float(request.pixel_yx[0]), float(request.pixel_yx[1])),
+                depth_policy=request.depth_policy,
+            ),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/phase5/replay/{bundle_id}/scenario/{scenario_name}")
+async def phase5_replay_scenario(
+    bundle_id: str,
+    scenario_name: str,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_replay_scenario",
+            replay_capture.run_scenario(bundle_id, scenario_name),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/phase5/spatial/register")
+async def phase5_spatial_register(
+    request: SpatialRegistrationRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_spatial_registration",
+            spatial_registration_skill.run(
+                pixel_yx=request.pixel_yx,
+                target_frame=request.target_frame,
+                depth_policy=request.depth_policy,
+            ),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/phase5/tool/register-candidate")
+async def phase5_tool_register_candidate(
+    request: ToolRegistrationRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "phase5_tool_registration_candidate",
+            tool_registration_skill.run(
+                tool_description=request.tool_description,
+                control_frame_purpose=request.control_frame_purpose,
+                target_frame=request.target_frame,
+            ),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/skills")
+async def skills(include_disabled: bool = False) -> dict[str, Any]:
+    descriptors = discover_agent_skills(
+        settings.workspace_root,
+        include_disabled=include_disabled,
+    )
+    return {
+        "selection": "OPENAI_AGENTS_SDK_TOOL_DESCRIPTION",
+        "provider_binding": "MANAGER_ADVISORY",
+        "skills": [descriptor.as_dict() for descriptor in descriptors],
+    }
+
+
+@app.get("/api/authorizations")
+async def authorizations(status: str | None = None) -> dict[str, Any]:
+    return {
+        "approval_executes_action": False,
+        "authorizations": authorization_store.list(status=status),
+    }
+
+
+@app.post("/api/authorizations")
+async def create_authorization(
+    request: AuthorizationCreateRequest,
+) -> dict[str, Any]:
+    return authorization_store.create(**request.model_dump())
+
+
+@app.post("/api/authorizations/{decision_id}/resolve")
+async def resolve_authorization(
+    decision_id: str,
+    request: AuthorizationResolveRequest,
+) -> dict[str, Any]:
+    try:
+        return authorization_store.resolve(
+            decision_id,
+            resolution=request.resolution,
+            resolved_by=request.resolved_by,
+            note=request.note,
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="authorization not found") from error
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/authorizations/{decision_id}/execution-assertion")
+async def issue_authorization_assertion(
+    decision_id: str,
+) -> dict[str, Any]:
+    try:
+        return authorization_store.issue_execution_assertion(decision_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="authorization not found",
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/observation-motion/execute/{decision_id}")
+async def execute_observation_motion(
+    decision_id: str,
+) -> dict[str, Any]:
+    """Execute only after a separate approval and one-time assertion issue."""
+
+    try:
+        return await reviewed_observation_execution_skill.run(
+            decision_id=decision_id
+        )
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="authorization not found",
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except httpx.HTTPStatusError as error:
+        detail = error.response.text
+        raise HTTPException(
+            status_code=error.response.status_code,
+            detail=detail,
+        ) from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/agent/reviewed-observation/execute")
+async def execute_reviewed_observation_through_agent(
+    request: ReviewedObservationAgentExecutionRequest,
+) -> dict[str, Any]:
+    try:
+        answer = await operation_registry.run(
+            "agent_reviewed_observation_execution",
+            reviewed_observation_agent_driver.run(
+                "Execute the already reviewed and operator-approved "
+                f"observation decision ID {request.decision_id}. "
+                "Use the eligible finite skill and report its exact result."
+            ),
+            hard_timeout_s=settings.phase4_agent_run_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+        return {
+            "decision_id": request.decision_id,
+            "agent_sdk": True,
+            "answer": answer,
+        }
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="authorization not found",
+        ) from error
+    except (ValueError, RuntimeError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/observation-motion/propose")
+async def propose_observation_motion(
+    request: ObservationMotionProposalRequest,
+) -> dict[str, Any]:
+    try:
+        proposal = build_observation_motion_proposal(
+            object_point_world_m=request.object_point_world_m,
+            world_from_arm_base=request.world_from_arm_base,
+            view_mode=request.view_mode,
+            standoff_m=request.standoff_m,
+            source_evidence=request.source_evidence,
+            preview_context=request.preview_context,
+        )
+        preview = await integrated.preview_transit_path(
+            proposal["controller_plan_request"]
+        )
+        proposal = attach_controller_preview(proposal, preview)
+        if not proposal["controller_preview_valid"]:
+            return {
+                "proposal": proposal,
+                "authorization": None,
+                "physical_motion_authorized": False,
+                "approval_executes_action": False,
+            }
+        authorization = create_observation_motion_authorization(
+            authorization_store,
+            proposal,
+            requester_id=request.requester_id,
+        )
+        return {
+            "proposal": proposal,
+            "authorization": authorization,
+            "physical_motion_authorized": False,
+            "approval_executes_action": False,
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (httpx.HTTPError, RuntimeError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Integrated nonphysical path preview unavailable: {error}",
+        ) from error
 
 
 @app.post("/api/space-cognition/initialize")
@@ -224,13 +791,88 @@ async def clear_world_point_cloud() -> dict[str, str]:
 @app.post("/api/run")
 async def run_prompt(request: PromptRequest) -> dict[str, Any]:
     try:
-        answer = await driver.run(request.prompt)
+        answer = await operation_registry.run(
+            "openai_agent_run",
+            driver.run(request.prompt),
+            hard_timeout_s=min(
+                settings.phase4_agent_run_timeout_s,
+                phase4_policy.operation_hard_timeout_s,
+            ),
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
         return {"answer": answer}
     except httpx.HTTPStatusError as error:
         detail = error.response.text or str(error)
         raise HTTPException(status_code=502, detail=detail) from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/rgbd-alignment/validate")
+async def validate_rgbd_alignment(
+    request: RgbdAlignmentRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "rgbd_alignment_validation",
+            rgbd_alignment_skill.run(request.request),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except httpx.HTTPStatusError as error:
+        detail = error.response.text or str(error)
+        raise HTTPException(status_code=502, detail=detail) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/rgbd-alignment/capture-for-review")
+async def capture_rgbd_alignment_for_review(
+    request: RgbdAlignmentRequest,
+) -> dict[str, Any]:
+    try:
+        return await operation_registry.run(
+            "rgbd_alignment_builtin_review_capture",
+            rgbd_alignment_skill.capture_for_builtin_review(
+                request.request
+            ),
+            hard_timeout_s=phase4_policy.operation_hard_timeout_s,
+            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        )
+    except httpx.HTTPStatusError as error:
+        detail = error.response.text or str(error)
+        raise HTTPException(status_code=502, detail=detail) from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/latest-rgbd-alignment-composite")
+async def latest_rgbd_alignment_composite() -> Response:
+    result = rgbd_alignment_skill.last_result
+    if not isinstance(result, dict):
+        raise HTTPException(
+            status_code=404,
+            detail="no RGB-D alignment validation has completed",
+        )
+    artifacts = result.get("artifacts")
+    path_value = artifacts.get("composite") if isinstance(artifacts, dict) else None
+    if not isinstance(path_value, str) or not path_value:
+        raise HTTPException(
+            status_code=404,
+            detail="latest validation has no composite artifact",
+        )
+    path = Path(path_value).resolve()
+    artifact_root = settings.screenshot_dir.resolve()
+    if path.parent != artifact_root or not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="latest composite artifact is unavailable",
+        )
+    return Response(
+        content=path.read_bytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/latest-image")
@@ -271,62 +913,94 @@ PAGE = r"""
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Physical Agent Test Scaffold</title>
   <style>
-    :root { font-family: Inter, Segoe UI, sans-serif; color-scheme: dark; }
+    :root {
+      font-family: Inter, Segoe UI, sans-serif;
+      color-scheme: dark;
+      --mb-bg: #090909;
+      --mb-surface: #131313;
+      --mb-surface-raised: #1c1c1c;
+      --mb-border: #3b3b3b;
+      --mb-text: #f2f2f2;
+      --mb-muted: #a8a8a8;
+      --mb-accent: #e5e5e5;
+      --mb-secondary: #bdbdbd;
+      --mb-warning: #f2b84b;
+      --mb-danger: #f17878;
+      --mb-experimental: #cfcfcf;
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #111827; color: #f3f4f6; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% -10%, rgba(255,255,255,.08), transparent 34rem),
+        radial-gradient(circle at 92% 4%, rgba(255,255,255,.035), transparent 28rem),
+        var(--mb-bg);
+      color: var(--mb-text);
+    }
     main { max-width: 1480px; margin: 0 auto; padding: 24px; }
     h1 { margin-bottom: 4px; }
     h2 { margin-top: 4px; }
-    .sub { color: #9ca3af; margin-top: 0; }
+    .sub { color: var(--mb-muted); margin-top: 0; }
+    .role-kicker { color: var(--mb-accent); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
     .grid { display: grid; grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr); gap: 18px; }
-    .card { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 16px; margin-bottom: 18px; }
-    textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border-radius: 8px; border: 1px solid #4b5563; background: #111827; color: #f9fafb; }
+    .card { background: rgba(19,19,19,.96); border: 1px solid var(--mb-border); border-radius: 14px; padding: 16px; margin-bottom: 18px; }
+    textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border-radius: 8px; border: 1px solid var(--mb-border); background: var(--mb-bg); color: var(--mb-text); }
     button { margin-top: 10px; padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
-    button.primary { background: #2563eb; color: white; }
-    button.secondary { background: #374151; color: white; margin-left: 8px; }
-    button.danger { background: #991b1b; color: white; margin-left: 8px; }
+    button.primary { background: var(--mb-accent); color: #111; }
+    button.secondary { background: var(--mb-surface-raised); color: var(--mb-text); margin-left: 8px; }
+    button.danger { background: #6f2f38; color: #ffe9eb; margin-left: 8px; }
     button:disabled { opacity: .55; cursor: progress; }
-    pre { white-space: pre-wrap; word-break: break-word; background: #111827; padding: 12px; border-radius: 8px; min-height: 72px; max-height: 520px; overflow: auto; }
-    img { width: 100%; min-height: 220px; object-fit: contain; background: #030712; border-radius: 8px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #101010; padding: 12px; border-radius: 8px; min-height: 72px; max-height: 520px; overflow: auto; }
+    img { width: 100%; min-height: 220px; object-fit: contain; background: #050505; border-radius: 8px; }
     .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .status { font-size: 12px; color: #d1d5db; }
-    .viewer-wrap { position: relative; width: 100%; height: min(68vh, 720px); min-height: 430px; background: #030712; border-radius: 10px; overflow: hidden; }
+    .status { font-size: 12px; color: #d1d1d1; }
+    .viewer-wrap { position: relative; width: 100%; height: min(68vh, 720px); min-height: 430px; background: #050505; border-radius: 10px; overflow: hidden; }
     #cloud { display: block; width: 100%; height: 100%; cursor: grab; }
     #cloud:active { cursor: grabbing; }
-    .viewer-overlay { position: absolute; left: 10px; top: 10px; background: rgba(3,7,18,.74); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; }
-    .gravity-overlay { position: absolute; right: 10px; top: 10px; background: rgba(3,7,18,.78); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; text-align: right; white-space: pre-line; }
-    .init-summary { margin-top: 10px; padding: 9px 10px; background: #111827; border-radius: 8px; color: #d1d5db; font-size: 13px; }
+    .viewer-overlay { position: absolute; left: 10px; top: 10px; background: rgba(5,5,5,.78); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+    .gravity-overlay { position: absolute; right: 10px; top: 10px; background: rgba(5,5,5,.82); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; text-align: right; white-space: pre-line; }
+    .init-summary { margin-top: 10px; padding: 9px 10px; background: #181818; border-radius: 8px; color: #d1d1d1; font-size: 13px; }
     .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
-    .state-card { border: 1px solid #374151; border-radius: 8px; background: #111827; padding: 9px 10px; min-height: 58px; }
-    .state-label { color: #9ca3af; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
-    .state-value { margin-top: 3px; font-size: 14px; font-weight: 700; color: #e5e7eb; display: flex; align-items: center; gap: 7px; }
-    .state-lamp { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; box-shadow: 0 0 0 2px rgba(107,114,128,.18); flex: 0 0 auto; }
+    .state-card { border: 1px solid #444; border-radius: 8px; background: #181818; padding: 9px 10px; min-height: 58px; }
+    .state-label { color: #a8a8a8; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .state-value { margin-top: 3px; font-size: 14px; font-weight: 700; color: #e5e5e5; display: flex; align-items: center; gap: 7px; }
+    .state-lamp { width: 10px; height: 10px; border-radius: 50%; background: #777; box-shadow: 0 0 0 2px rgba(119,119,119,.18); flex: 0 0 auto; }
     .state-lamp.ok { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,.75); }
     .state-lamp.warn { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,.72); }
     .state-lamp.bad { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,.75); }
-    .state-lamp.busy { background: #60a5fa; box-shadow: 0 0 8px rgba(96,165,250,.75); }
-    .state-detail { margin-top: 2px; color: #9ca3af; font-size: 11px; }
+    .state-lamp.busy { background: #e5e5e5; box-shadow: 0 0 8px rgba(229,229,229,.55); }
+    .state-detail { margin-top: 2px; color: #a8a8a8; font-size: 11px; }
     .state-card.ok { border-color: #166534; }
     .state-card.ok .state-value { color: #86efac; }
     .state-card.warn { border-color: #92400e; }
     .state-card.warn .state-value { color: #fde68a; }
     .state-card.bad { border-color: #991b1b; }
     .state-card.bad .state-value { color: #fca5a5; }
-    .state-card.busy { border-color: #1d4ed8; }
-    .state-card.busy .state-value { color: #93c5fd; }
-    .action-status { margin-top: 8px; color: #cbd5e1; font-size: 12px; min-height: 18px; }
-    .controls { color: #9ca3af; font-size: 12px; margin: 8px 0 0; }
+    .state-card.busy { border-color: #777; }
+    .state-card.busy .state-value { color: #f2f2f2; }
+    .action-status { margin-top: 8px; color: #d0d0d0; font-size: 12px; min-height: 18px; }
+    .controls { color: #a8a8a8; font-size: 12px; margin: 8px 0 0; }
+    dialog { width: min(680px, calc(100vw - 28px)); color: var(--mb-text); background: var(--mb-surface); border: 1px solid var(--mb-accent); border-radius: 16px; padding: 0; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+    dialog::backdrop { background: rgba(0,0,0,.82); backdrop-filter: blur(4px); }
+    .decision-head { padding: 18px 20px 12px; border-bottom: 1px solid var(--mb-border); }
+    .decision-body { padding: 18px 20px; }
+    .decision-body pre { max-height: 260px; }
+    .decision-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 0 20px 20px; }
+    .decision-actions button { margin: 0; }
+    .decision-note { color: var(--mb-warning); font-size: 12px; }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .viewer-wrap { height: 55vh; } }
     @media (max-width: 640px) { .sensor-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 <main>
+  <div class="role-kicker">Observation UI</div>
   <h1>Physical Agent Test Scaffold</h1>
-  <p class="sub">Startup space cognition, local VIO body pose, and fading world-frame RGB-D map</p>
+  <p class="sub">Agent-visible observations, decision-specific authorization, and separated development controls</p>
   <div class="grid">
     <div>
       <section class="card">
+        <div class="role-kicker">Development controls</div>
         <h2>Space cognition</h2>
         <div class="state-grid">
           <div class="state-card" id="visualState"><div class="state-label">Visual correction</div><div class="state-value"><span class="state-lamp"></span><span class="state-text">UNKNOWN</span></div><div class="state-detail">RGB-D/IR updates correct inertial drift</div></div>
@@ -345,7 +1019,9 @@ PAGE = r"""
         <pre id="spaceStatus" class="status">Loading…</pre>
       </section>
       <section class="card">
+        <div class="role-kicker">Agent observation</div>
         <h2>Prompt</h2>
+        <div class="state-card" id="bindingState"><div class="state-label">Camera capability binding</div><div class="state-value"><span class="state-lamp"></span><span class="state-text">NOT REQUESTED</span></div><div class="state-detail">Manager binding has not been requested</div></div>
         <textarea id="prompt">Take a screenshot and identify the object I am pointing at. Use only the RGB image.</textarea>
         <div>
           <button class="primary" id="run">Run prompt</button>
@@ -355,6 +1031,7 @@ PAGE = r"""
         <pre id="answer">Ready.</pre>
       </section>
       <section class="card">
+        <div class="role-kicker">Observation</div>
         <h2>Latest sensor frames</h2>
         <div class="sensor-grid">
           <div><p>RGB</p><img id="image" alt="Latest RGB frame"></div>
@@ -362,11 +1039,28 @@ PAGE = r"""
         </div>
       </section>
       <section class="card">
+        <div class="role-kicker">RGB-D quality control</div>
+        <h2>Content and registration review</h2>
+        <p class="sub">A bounded VLM reviews actual RGB, registered depth, overlay, boundary, timing, and cadence evidence. Image presence alone is not accepted.</p>
+        <button class="primary" id="validateRgbd">Validate RGB-D</button>
+        <img id="rgbdComposite" alt="RGB, registered depth, and overlay validation composite">
+        <pre id="rgbdResult">No validation has run.</pre>
+      </section>
+      <section class="card">
+        <div class="role-kicker">Replay provenance</div>
+        <h2>Hardware-isolated capture bundles</h2>
+        <p class="sub">Read-only provenance: payload hashes, provider boot identity, calibration/VIO context, evidence coverage, and manual retention review. This surface cannot start hardware or call a controller.</p>
+        <button class="secondary" id="refreshReplay">Refresh provenance</button>
+        <pre id="replayProvenance">Loading replay bundles...</pre>
+      </section>
+      <section class="card">
+        <div class="role-kicker">Diagnostics</div>
         <h2>Platform status</h2>
         <pre id="status" class="status">Loading…</pre>
       </section>
     </div>
     <section class="card">
+      <div class="role-kicker">Observation</div>
       <h2>World RGB point cloud</h2>
       <button class="secondary" id="resetView">Reset isometric view</button>
       <div class="viewer-wrap">
@@ -378,17 +1072,43 @@ PAGE = r"""
     </section>
   </div>
 </main>
+<dialog id="authorizationDialog" aria-labelledby="authorizationTitle">
+  <div class="decision-head">
+    <div class="role-kicker">Authorization required</div>
+    <h2 id="authorizationTitle">Pending decision</h2>
+    <p class="sub" id="authorizationSummary"></p>
+  </div>
+  <div class="decision-body">
+    <p class="decision-note">Approval records this decision only. It does not execute motion or bypass provider safety checks.</p>
+    <pre id="authorizationDetails"></pre>
+  </div>
+  <div class="decision-actions">
+    <button class="danger" id="denyAuthorization">Deny</button>
+    <button class="primary" id="approveAuthorization">Approve decision</button>
+  </div>
+</dialog>
 <script>
 const runButton = document.getElementById('run');
 const refreshButton = document.getElementById('refresh');
+const refreshReplayButton = document.getElementById('refreshReplay');
+const validateRgbdButton = document.getElementById('validateRgbd');
 const initializeButton = document.getElementById('initialize');
 const resetButton = document.getElementById('reset');
 const clearCloudButton = document.getElementById('clearCloud');
 const resetViewButton = document.getElementById('resetView');
+const authorizationDialog = document.getElementById('authorizationDialog');
+const authorizationTitle = document.getElementById('authorizationTitle');
+const authorizationSummary = document.getElementById('authorizationSummary');
+const authorizationDetails = document.getElementById('authorizationDetails');
+const approveAuthorization = document.getElementById('approveAuthorization');
+const denyAuthorization = document.getElementById('denyAuthorization');
 const promptBox = document.getElementById('prompt');
 const answer = document.getElementById('answer');
 const image = document.getElementById('image');
 const depth = document.getElementById('depth');
+const rgbdComposite = document.getElementById('rgbdComposite');
+const rgbdResult = document.getElementById('rgbdResult');
+const replayProvenance = document.getElementById('replayProvenance');
 const statusBox = document.getElementById('status');
 const spaceStatus = document.getElementById('spaceStatus');
 const initSummary = document.getElementById('initSummary');
@@ -398,12 +1118,88 @@ const visualState = document.getElementById('visualState');
 const poseState = document.getElementById('poseState');
 const rotationState = document.getElementById('rotationState');
 const gravityState = document.getElementById('gravityState');
+const bindingState = document.getElementById('bindingState');
 const featureState = document.getElementById('featureState');
 const mapState = document.getElementById('mapState');
 const initState = document.getElementById('initState');
 const actionStatus = document.getElementById('actionStatus');
 let cloudCaptureState = 'unknown';
 let latestCameraPose = null;
+let activeAuthorizationId = null;
+
+async function refreshAuthorization() {
+  try {
+    const response = await fetch('/api/authorizations?status=PENDING', {cache: 'no-store'});
+    if (!response.ok) return;
+    const data = await response.json();
+    const pending = data.authorizations || [];
+    if (!pending.length) {
+      activeAuthorizationId = null;
+      if (authorizationDialog.open) authorizationDialog.close();
+      return;
+    }
+    const decision = pending[0];
+    if (activeAuthorizationId === decision.decision_id && authorizationDialog.open) return;
+    activeAuthorizationId = decision.decision_id;
+    authorizationTitle.textContent = decision.title;
+    authorizationSummary.textContent = decision.summary;
+    authorizationDetails.textContent = JSON.stringify({
+      requester: {type: decision.requester_type, id: decision.requester_id},
+      decision_type: decision.decision_type,
+      proposed_action: decision.proposed_action,
+      evidence: decision.evidence,
+      safety: decision.safety,
+      expires_at_us: decision.expires_at_us
+    }, null, 2);
+    if (!authorizationDialog.open) authorizationDialog.showModal();
+  } catch (_error) {
+    return;
+  }
+}
+
+async function refreshReplayProvenance() {
+  refreshReplayButton.disabled = true;
+  try {
+    const response = await fetch('/api/phase5/replay/bundles', {cache: 'no-store'});
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    replayProvenance.textContent = JSON.stringify({
+      hardware_access_allowed: data.hardware_access_allowed,
+      bundles: (data.bundles || []).map((bundle) => ({
+        bundle_id: bundle.bundle_id,
+        status: bundle.status,
+        created_at_us: bundle.created_at_us,
+        provenance: bundle.provenance
+      }))
+    }, null, 2);
+  } catch (error) {
+    replayProvenance.textContent = 'Replay provenance unavailable: ' + error.message;
+  } finally {
+    refreshReplayButton.disabled = false;
+  }
+}
+
+async function resolveAuthorization(resolution) {
+  if (!activeAuthorizationId) return;
+  approveAuthorization.disabled = true;
+  denyAuthorization.disabled = true;
+  try {
+    const response = await fetch('/api/authorizations/' + encodeURIComponent(activeAuthorizationId) + '/resolve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({resolution, resolved_by: 'browser-local-operator'})
+    });
+    if (!response.ok) throw new Error(await response.text());
+    activeAuthorizationId = null;
+    authorizationDialog.close();
+  } finally {
+    approveAuthorization.disabled = false;
+    denyAuthorization.disabled = false;
+  }
+}
+
+approveAuthorization.addEventListener('click', () => resolveAuthorization('APPROVED'));
+denyAuthorization.addEventListener('click', () => resolveAuthorization('DENIED'));
 
 function setStateCard(element, value, detail, kind) {
   element.className = 'state-card' + (kind ? ' ' + kind : '');
@@ -437,6 +1233,22 @@ async function refreshStatus() {
     const vioData = (data.vio && data.vio.data) || {};
     const poseData = (data.body_pose && data.body_pose.data) || {};
     const cloudData = data.world_point_cloud || {};
+    const binding = data.capability_binding || {};
+    const bindingValidity = binding.validity || binding.status || 'NOT_REQUESTED';
+    const bindingIssues = Array.isArray(binding.validation_issues)
+      ? binding.validation_issues.join('; ')
+      : (binding.reason || 'no validation issue');
+    const bindingKind = bindingValidity === 'CURRENT'
+      ? 'ok'
+      : (bindingValidity.includes('FALLBACK') ? 'warn' :
+        (bindingValidity.includes('STALE') || bindingValidity === 'UNRESOLVED' ? 'bad' : ''));
+    setStateCard(
+      bindingState,
+      bindingValidity,
+      (binding.binding_id ? 'binding ' + String(binding.binding_id).slice(0, 8) + ' · ' : '') +
+        bindingIssues,
+      bindingKind
+    );
     cloudCaptureState = cloudData.capture_state || 'unknown';
     latestCameraPose = poseData.world_from_camera || null;
     updateCameraMarker(latestCameraPose);
@@ -645,6 +1457,29 @@ runButton.addEventListener('click', async () => {
   }
 });
 refreshButton.addEventListener('click', refreshImages);
+refreshReplayButton.addEventListener('click', refreshReplayProvenance);
+validateRgbdButton.addEventListener('click', async () => {
+  validateRgbdButton.disabled = true;
+  rgbdResult.textContent = 'Running bounded RGB-D content and alignment review\u2026';
+  try {
+    const response = await fetch('/api/rgbd-alignment/validate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        request: 'Verify this RGB-D bundle for observation use. Inspect actual scene content, registration, valid boundary, and channel cadence.'
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
+    rgbdResult.textContent = JSON.stringify(data, null, 2);
+    rgbdComposite.src = '/api/latest-rgbd-alignment-composite?t=' + Date.now();
+    await refreshStatus();
+  } catch (error) {
+    rgbdResult.textContent = 'Error: ' + error;
+  } finally {
+    validateRgbdButton.disabled = false;
+  }
+});
 
 const canvas = document.getElementById('cloud');
 const gl = canvas.getContext('webgl', {alpha: false, antialias: true});
@@ -831,7 +1666,7 @@ function resizeCanvas() {
 function renderCloud() {
   if (!gl || !program || !lineProgram) return;
   resizeCanvas();
-  gl.clearColor(0.012, 0.027, 0.071, 1.0);
+  gl.clearColor(0.018, 0.018, 0.018, 1.0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   const cp = Math.cos(orbitPitch);
   const eye = [
@@ -931,10 +1766,14 @@ resetViewButton.addEventListener('click', () => {
 
 refreshImages();
 refreshStatus();
+refreshReplayProvenance();
 renderCloud();
 refreshCloud();
 setInterval(refreshStatus, 2500);
+setInterval(refreshReplayProvenance, 10000);
 setInterval(refreshCloud, 300);
+setInterval(refreshAuthorization, 1000);
+refreshAuthorization();
 </script>
 </body>
 </html>

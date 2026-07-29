@@ -1,5 +1,15 @@
 # Workspace Audit
 
+## 2026-07-29 publication scope
+
+The current publication supersedes the earlier RGB-D-only scope. It includes the current framework contracts, Manager and Fabric, Providers, Skills, Test Agent, browser-based development interfaces, safety enforcement, tests, and component documentation produced through Phase 5.
+
+The upload is prepared from an isolated clean clone of `bhmagic/Midbrain` rather than treating the local development folder as a Git repository. Source trees are overlaid with generated output, virtual environments, caches, runtime state, captures, calibration reviews, and machine-local configuration excluded. Existing upstream package license files are retained when the working source copy does not contain them.
+
+The following local files are explicitly not publication inputs: `config/api_keys.env`, `config/system.env`, active `config/providers.json`, provider-local active configuration, serial-bound calibration, captures, logs, PID files, shared-memory/runtime artifacts, build output, and local backups. Only documented blank/example configuration is published.
+
+All services were stopped after the final guarded physical run. The publication process does not start Providers, submit robot commands, or alter arm state.
+
 ## Compared inputs
 
 The cleanup compared:

@@ -17,9 +17,13 @@ The long-term goal is to provide a reusable foundation for robotic systems that 
 * Autonomous and human-directed agents
 * Shared spatial and operational state
 
-> **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack. It is not yet a production-certified robotics control system.
+> **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack, policy-enforced control authority, integrated arm motion planning, and a narrowly bounded OpenAI Agents SDK test path. It is not yet a production-certified robotics control system.
 
-The latest cross-provider hardening is recorded in the [Changelog](CHANGELOG.md) and [Build and Validation Report](BUILD_REPORT.md). It covers immutable alignment-camera references, reliable Fabric command staging, controlled-frame semantics, policy-aware arm shutdown, and safe-home lease fencing. The vegetable-cutting experiment that motivated part of this validation remains experimental workspace code and is not included as a deployable Skill in this repository.
+The latest system-housecleaning and guarded physical validation are recorded in the [Changelog](CHANGELOG.md), [Build and Validation Report](BUILD_REPORT.md), and [Phase 5 completion record](docs/reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md). The work separates durable mechanism from task policy, makes control submissions auditable, adds discoverable Skill and data-route contracts, introduces lease and authorization enforcement, and exercises a decision-only Agents SDK path through reviewed motion.
+
+Cartesian direction understanding remains an open safety and correctness problem. Natural-language directions such as "up", "front", and axis names must not be assumed to map directly across camera, world, arm-base, controlled-frame, tool, and object frames. The current workcell's observed mapping is installation-specific. See [Cartesian Axis and Alignment Open Issue](docs/reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+
+The vegetable-cutting experiment that motivated part of this validation remains experimental local workspace code and is not published as a deployable Skill. Slice cutting is deferred until the systemic work is stable.
 
 ---
 

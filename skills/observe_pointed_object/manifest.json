@@ -1,0 +1,73 @@
+{
+  "skill_type": "observe_pointed_object",
+  "version": "0.1.0",
+  "display_name": "Observe Pointed Object",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": false,
+    "disabled_reason": "Phase 5 structured pointing-pixel output and the complete nonphysical execution adapter are not implemented yet.",
+    "tool_name": "observe_pointed_object_from_pose",
+    "description": "Identify the pointed object, register it in the stationary workcell, prepare a controller-owned path preview to a front or top observation pose, and request permission only at the physical-motion boundary. Phase 2 produces a nonphysical proposal and authorization record; approval does not execute motion.",
+    "when_to_use": [
+      "The user points at an object and asks the robot to inspect it from the front or top.",
+      "The agent can act through perception and planning without asking for intermediate human planning decisions."
+    ],
+    "when_not_to_use": [
+      "Stationary workcell calibration is missing or stale.",
+      "The object point cannot be registered with valid RGB-D evidence.",
+      "Physical authority or controller safety state is uncertain."
+    ],
+    "side_effects": [
+      "Reads camera, spatial, transform, and controller-preview state.",
+      "Creates a decision-specific physical-motion authorization request.",
+      "Phase 2 does not execute or authorize motion."
+    ],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "robot.motion.preview",
+      "authorization.request"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "Which pointed object to inspect."
+        },
+        "view_mode": {
+          "type": "string",
+          "enum": [
+            "FRONT",
+            "TOP"
+          ]
+        }
+      },
+      "required": [
+        "question",
+        "view_mode"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.observe_pointed_object.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "test_agent/python/physical_agent_test/observation_motion.py"
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "world.transforms.timestamped",
+    "robot.motion.arm.integrated.plan.transit_path.shadow"
+  ],
+  "result_policy": {
+    "physical_motion_authorized": false,
+    "approval_executes_action": false,
+    "controller_preview_required": true
+  },
+  "published_streams": []
+}

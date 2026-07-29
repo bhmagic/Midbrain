@@ -26,6 +26,30 @@ else {
     Write-Host "Orbbec provider package is not present; RGB/depth capture will be unavailable." -ForegroundColor Yellow
 }
 
+$spatialSkill = Join-Path $workspace "skills\spatial_registration_rgbd"
+if (Test-Path (Join-Path $spatialSkill "pyproject.toml")) {
+    & $python -m pip install -e $spatialSkill
+    if ($LASTEXITCODE -ne 0) { throw "Spatial RGB-D Skill installation failed." }
+}
+
+$stationarySkill = Join-Path $workspace "skills\stationary_world_arm_alignment"
+if (Test-Path (Join-Path $stationarySkill "pyproject.toml")) {
+    & $python -m pip install -e $stationarySkill
+    if ($LASTEXITCODE -ne 0) { throw "Stationary alignment Skill installation failed." }
+}
+
+$toolRegistrationSkill = Join-Path $workspace "skills\register_tool_to_control_frame"
+if (Test-Path (Join-Path $toolRegistrationSkill "pyproject.toml")) {
+    & $python -m pip install -e $toolRegistrationSkill
+    if ($LASTEXITCODE -ne 0) { throw "Tool registration Skill installation failed." }
+}
+
+$effectorFrontSkill = Join-Path $workspace "skills\locate-effector-front"
+if (Test-Path (Join-Path $effectorFrontSkill "pyproject.toml")) {
+    & $python -m pip install -e $effectorFrontSkill
+    if ($LASTEXITCODE -ne 0) { throw "Effector-front Skill installation failed." }
+}
+
 & $python -m pip install -e (Join-Path $agent "python")
 if ($LASTEXITCODE -ne 0) { throw "Test-agent package installation failed." }
 

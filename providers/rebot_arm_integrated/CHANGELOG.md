@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.8.0 - 2026-07-29
+
+- Added a versioned shadow evaluator that separates Manager task authority,
+  Integrated operational-writer activity, and the Basic residency lease, with
+  explicit upstream lineage, separate fencing namespaces, HOT-idle standby,
+  stable disagreement reasons, and poll/state/transition/reason counters. It
+  remains observation-only.
+- Gripper `STOP` now clears the active action and target so the next
+  controller-owned envelope omits joint 7 and Basic recaptures its measured
+  angle while the arm endpoint remains held.
+- Added adaptive Cartesian subdivision so controller-owned transit previews
+  preserve sequential IK continuity within the configured adjacent-joint
+  bound.
+- Added separate whole-transit endpoint-delta and aggregate-joint-travel
+  limits instead of applying the operator single-commit limit to every
+  controller-owned route.
+- Added signed, short-lived, exact-preview-bound, one-time physical transit
+  commit and explicit gravity-float release endpoints.
+- Revalidates controller identity/configuration, semantic-scene collision
+  state, measured start drift, platform readiness, inhibit state, and the
+  fenced Basic lease at commit.
+- Executes only the exact controller-owned waypoint sequence, advances after
+  stable measured arrival, caps every joint at 0.25 rad/s, and retains the
+  final endpoint until an explicit release.
+- Copies the exact control request and authorization assertion hash to the
+  synchronous local audit while keeping both the raw assertion and Fabric out
+  of the motor-command path.
+- Completed a real OpenAI Agents SDK transit using the decision-specific
+  commit boundary: 40/40 controller stages, 0.25 rad/s joint ceiling,
+  0.05 m/s Cartesian ceiling, no reported fault, one accepted authorized
+  transit, and zero rejected authorized transits.
+- The controller retained the exact final authorized endpoint after completion
+  and did not infer a release, gravity-float, controller-mode change, lease
+  change, or safe-home command from agent completion.
+- A later platform/authority-loss error moved that retained transit to
+  `RELEASED` and latched Integrated `DEGRADED` while Basic remained connected,
+  healthy, gravity-supported, and under a renewing local lease. No recovery or
+  physical command was issued during this read-only observation.
+- Unified the browser development controller GUI around the shared dark
+  white/gray/black palette while retaining semantic warning and fault colors.
+- During final shutdown, rejected unsafe/unreachable 20 cm, 19 cm, 15 cm, and
+  14 cm upward targets through workspace, singularity, IK, joint-jump, and
+  joint-travel gates. A 13 cm preview passed with no collision and 0.0514 m
+  modeled clearance.
+- The measured lift was approximately 12.67 cm. The eight-second one-shot
+  retained its real `DEADLINE_FLOAT_BEFORE_ARRIVAL` classification with about
+  7 mm Cartesian deadline residual and confirmed gravity-float before
+  authoritative safe-home.
+- Recorded Cartesian direction/frame interpretation as an open upstream
+  contract. Controller-frame axes must not be inferred directly from words
+  such as "up" without gravity and timestamped transform semantics.
+
 ## 0.7.0
 
 - Publishes the configured Cartesian workspace in runtime state so upstream

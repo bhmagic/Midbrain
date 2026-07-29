@@ -7,8 +7,6 @@ name = "orbbec-femto-provider"
 version = "0.3.1"
 description = "Orbbec Femto Bolt Resource Provider with device calibration GUI and transform publication"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
 dependencies = [
   "httpx>=0.27,<1",
   "Pillow>=10,<13",

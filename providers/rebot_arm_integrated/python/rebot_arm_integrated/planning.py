@@ -64,6 +64,149 @@ class CartesianContinuitySolution:
         }
 
 
+def build_transit_frame_candidates(
+    start_frame: np.ndarray,
+    goal_frame: np.ndarray,
+    *,
+    workspace: dict[str, Any],
+    clearance_margin_m: float,
+    lateral_escape_m: float,
+) -> tuple[tuple[str, tuple[np.ndarray, ...]], ...]:
+    """Build controller-owned Cartesian path shapes for shadow evaluation."""
+
+    start = np.asarray(start_frame, dtype=float)
+    goal = np.asarray(goal_frame, dtype=float)
+    if start.shape != (4, 4) or goal.shape != (4, 4):
+        raise ValueError("transit start and goal frames must be 4x4 transforms")
+    if not np.all(np.isfinite(start)) or not np.all(np.isfinite(goal)):
+        raise ValueError("transit frames must be finite")
+
+    z_min = float(workspace["z_min_m"])
+    z_max = float(workspace["z_max_m"])
+    y_limit = float(workspace["abs_y_max_m"])
+    clearance_z = float(
+        np.clip(
+            max(start[2, 3], goal[2, 3]) + float(clearance_margin_m),
+            z_min,
+            z_max,
+        )
+    )
+
+    def frame_at(position: np.ndarray, *, goal_orientation: bool = False) -> np.ndarray:
+        output = start.copy()
+        output[:3, 3] = np.asarray(position, dtype=float)
+        if goal_orientation:
+            output[:3, :3] = goal[:3, :3]
+        return output
+
+    def compact(frames: list[np.ndarray]) -> tuple[np.ndarray, ...]:
+        output: list[np.ndarray] = []
+        for frame in frames:
+            if output and np.allclose(output[-1], frame, rtol=0.0, atol=1e-12):
+                continue
+            output.append(frame)
+        return tuple(output)
+
+    direct = ("DIRECT", (goal.copy(),))
+    clearance = (
+        "CLEARANCE_Z_THEN_XY",
+        compact(
+            [
+                frame_at(np.array([start[0, 3], start[1, 3], clearance_z])),
+                frame_at(np.array([goal[0, 3], goal[1, 3], clearance_z])),
+                goal.copy(),
+            ]
+        ),
+    )
+    positive_room = y_limit - max(start[1, 3], goal[1, 3])
+    negative_room = y_limit + min(start[1, 3], goal[1, 3])
+    directions = (1.0, -1.0) if positive_room >= negative_room else (-1.0, 1.0)
+    lateral_candidates: list[tuple[str, tuple[np.ndarray, ...]]] = []
+    for direction in directions:
+        edge = max(start[1, 3], goal[1, 3]) if direction > 0 else min(
+            start[1, 3], goal[1, 3]
+        )
+        escape_y = float(
+            np.clip(
+                edge + direction * float(lateral_escape_m),
+                -y_limit,
+                y_limit,
+            )
+        )
+        label = (
+            "CLEARANCE_WITH_POSITIVE_Y_SINGULARITY_ESCAPE"
+            if direction > 0
+            else "CLEARANCE_WITH_NEGATIVE_Y_SINGULARITY_ESCAPE"
+        )
+        lateral_candidates.append(
+            (
+                label,
+                compact(
+                    [
+                        frame_at(
+                            np.array([start[0, 3], start[1, 3], clearance_z])
+                        ),
+                        frame_at(np.array([start[0, 3], escape_y, clearance_z])),
+                        frame_at(np.array([goal[0, 3], escape_y, clearance_z])),
+                        frame_at(np.array([goal[0, 3], goal[1, 3], clearance_z])),
+                        frame_at(goal[:3, 3], goal_orientation=True),
+                    ]
+                ),
+            )
+        )
+    return (direct, clearance, *lateral_candidates)
+
+
+def controller_owned_duration(
+    q_waypoints: Iterable[Iterable[float]],
+    cartesian_path_length_m: float,
+    requested_speed_m_s: float,
+    joint_rate_caps_rad_s: Iterable[float],
+    *,
+    speed_min_m_s: float,
+    speed_max_m_s: float,
+    minimum_duration_s: float,
+) -> dict[str, Any]:
+    """Choose path duration from requested Cartesian speed and provider caps."""
+
+    waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
+    if len(waypoints) < 2:
+        raise ValueError("duration planning requires at least two joint waypoints")
+    caps = np.asarray(list(joint_rate_caps_rad_s), dtype=float)
+    if any(item.shape != caps.shape for item in waypoints):
+        raise ValueError("joint waypoints and rate caps must have matching shapes")
+    if not np.all(np.isfinite(caps)) or np.any(caps <= 0.0):
+        raise ValueError("joint rate caps must be positive and finite")
+    effective_speed = float(
+        np.clip(float(requested_speed_m_s), speed_min_m_s, speed_max_m_s)
+    )
+    cartesian_duration = max(0.0, float(cartesian_path_length_m)) / effective_speed
+    joint_duration = sum(
+        float(np.max(1.5 * np.abs(goal - start) / caps))
+        for start, goal in zip(waypoints[:-1], waypoints[1:])
+    )
+    duration = max(float(minimum_duration_s), cartesian_duration, joint_duration)
+    limiting_factor = (
+        "PROVIDER_JOINT_RATE_CAPS"
+        if joint_duration >= cartesian_duration and joint_duration >= minimum_duration_s
+        else (
+            "REQUESTED_CARTESIAN_SPEED"
+            if cartesian_duration >= minimum_duration_s
+            else "MINIMUM_DURATION"
+        )
+    )
+    return {
+        "requested_speed_m_s": float(requested_speed_m_s),
+        "effective_speed_m_s": effective_speed,
+        "speed_clamped": abs(effective_speed - float(requested_speed_m_s)) > 1e-12,
+        "cartesian_path_length_m": float(cartesian_path_length_m),
+        "cartesian_duration_s": cartesian_duration,
+        "joint_rate_duration_s": joint_duration,
+        "duration_s": duration,
+        "limiting_factor": limiting_factor,
+    }
+
+
 def _rotation_from_vector(vector: np.ndarray) -> np.ndarray:
     angle = float(np.linalg.norm(vector))
     if angle <= 1e-12:
@@ -126,6 +269,46 @@ def solve_cartesian_continuity(
         float(final_result.orientation_residual_rad),
         int(final_result.iterations),
     )
+
+
+def solve_cartesian_continuity_adaptive(
+    q_start: Iterable[float],
+    start_frame: np.ndarray,
+    goal_frame: np.ndarray,
+    solve: Callable[[np.ndarray, np.ndarray], Any],
+    *,
+    initial_waypoint_count: int,
+    maximum_waypoint_count: int,
+    maximum_joint_step_rad: float,
+) -> CartesianContinuitySolution:
+    """Increase Cartesian sampling until every adjacent IK step is bounded."""
+
+    initial = int(initial_waypoint_count)
+    maximum = int(maximum_waypoint_count)
+    maximum_step = float(maximum_joint_step_rad)
+    if initial < 2:
+        raise ValueError("initial_waypoint_count must be at least two")
+    if maximum < initial:
+        raise ValueError(
+            "maximum_waypoint_count must be at least initial_waypoint_count"
+        )
+    if not np.isfinite(maximum_step) or maximum_step <= 0.0:
+        raise ValueError("maximum_joint_step_rad must be positive and finite")
+
+    count = initial
+    while True:
+        result = solve_cartesian_continuity(
+            q_start,
+            start_frame,
+            goal_frame,
+            solve,
+            waypoint_count=count,
+        )
+        if result.maximum_waypoint_joint_step_rad <= maximum_step:
+            return result
+        if count >= maximum:
+            return result
+        count = min(maximum, count * 2)
 
 
 def build_waypoint_preview(

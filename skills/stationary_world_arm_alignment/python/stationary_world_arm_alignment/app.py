@@ -7,30 +7,51 @@ import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .artifacts import MonitorArtifacts
+from .candidate_review import (
+    CandidateReviewError,
+    CandidateReviewService,
+    ExternalReviewIdentityVerifier,
+)
 from .config import Settings, load_skill_config
 from .models import RunMode
 from .scene import WorldPointCloud
 from .skill import AlignmentSkill
+from .vlm import OPENAI_API_ROUTE
 
 
 class RunRequest(BaseModel):
     mode: RunMode = RunMode.AUTO
     arm_is_home: bool = False
     allow_active_control_interrupt: bool = False
+    vision_route: Literal["OPENAI_API", "REVIEWED_FILE"] = OPENAI_API_ROUTE
+    review_timeout_s: float = Field(default=300.0, ge=1.0, le=900.0)
+
+
+class CandidateDecisionRequest(BaseModel):
+    decision: str
+    candidate_sha256: str
+    expected_provenance: dict[str, Any]
+    idempotency_key: str
+    rationale: str = ""
 
 
 settings = Settings()
 config = load_skill_config()
 artifacts = MonitorArtifacts()
 skill = AlignmentSkill(settings=settings, config=config, artifacts=artifacts)
+candidate_reviews = CandidateReviewService(
+    skill.store,
+    settings.review_root,
+)
+review_identity = ExternalReviewIdentityVerifier()
 cloud = WorldPointCloud(
     skill.fabric,
     config["camera_frame"],
@@ -41,6 +62,15 @@ cloud = WorldPointCloud(
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 GUI_PID_PATH = settings.run_root / "gui.pid.json"
 provider_task: asyncio.Task[dict[str, Any]] | None = None
+
+
+def auto_bootstrap_providers_enabled() -> bool:
+    return os.getenv("MIDBRAIN_GUI_AUTO_BOOTSTRAP_PROVIDERS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _consume_task(task: asyncio.Task[Any]) -> None:
@@ -66,11 +96,12 @@ async def lifespan(_: FastAPI):
         encoding="utf-8",
     )
     await cloud.start()
-    provider_task = asyncio.create_task(
-        skill.request_runtime_inputs(wait_for_vio_tracking=False),
-        name="stationary-world-provider-bootstrap",
-    )
-    provider_task.add_done_callback(_consume_task)
+    if auto_bootstrap_providers_enabled():
+        provider_task = asyncio.create_task(
+            skill.request_runtime_inputs(wait_for_vio_tracking=False),
+            name="stationary-world-provider-bootstrap",
+        )
+        provider_task.add_done_callback(_consume_task)
     try:
         yield
     finally:
@@ -106,7 +137,13 @@ async def index() -> FileResponse:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "stationary-world-arm-alignment"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "stationary-world-arm-alignment",
+            "passive_gui_startup": not auto_bootstrap_providers_enabled(),
+        }
+    )
 
 
 @app.get("/assets/{name}")
@@ -167,11 +204,20 @@ async def run(request: RunRequest) -> JSONResponse:
             request.mode,
             arm_is_home=request.arm_is_home,
             allow_active_control_interrupt=request.allow_active_control_interrupt,
+            vision_route=request.vision_route,
+            review_timeout_s=request.review_timeout_s,
         )
         task.add_done_callback(_consume_task)
     except RuntimeError as error:
         raise HTTPException(409, detail=str(error)) from error
-    return JSONResponse({"accepted": True, "mode": request.mode})
+    return JSONResponse(
+        {
+            "accepted": True,
+            "mode": request.mode,
+            "vision_route": request.vision_route,
+            "review_timeout_s": request.review_timeout_s,
+        }
+    )
 
 
 @app.post("/api/cancel")
@@ -224,6 +270,84 @@ async def pose_overlay(alignment_id: str, attempt: int) -> FileResponse:
 @app.get("/api/calibrations")
 async def calibrations() -> JSONResponse:
     return JSONResponse({"calibrations": skill.store.list()})
+
+
+@app.get("/api/candidate-reviews")
+async def list_candidate_reviews() -> JSONResponse:
+    return JSONResponse(
+        {
+            "identity_verification_available": review_identity.available,
+            "activation_supported": False,
+            "approval_executes_action": False,
+            "candidates": candidate_reviews.list_candidates(),
+        }
+    )
+
+
+@app.post("/api/candidate-reviews/{alignment_id}/decision")
+async def decide_candidate(
+    alignment_id: str,
+    body: CandidateDecisionRequest,
+    x_midbrain_review_assertion: str | None = Header(default=None),
+) -> JSONResponse:
+    result = skill.store.get(alignment_id)
+    if result is None:
+        raise HTTPException(
+            404,
+            detail={
+                "code": "CANDIDATE_NOT_FOUND",
+                "message": "calibration candidate does not exist",
+            },
+        )
+    candidate = result.get("candidate") or {}
+    decision = body.decision.strip().upper()
+    try:
+        identity = review_identity.verify(
+            x_midbrain_review_assertion,
+            candidate_id=str(candidate.get("candidate_id") or ""),
+            candidate_sha256=body.candidate_sha256.lower(),
+            decision=decision,
+        )
+        record, created = candidate_reviews.decide(
+            alignment_id,
+            body.model_dump(),
+            verified_identity=identity,
+        )
+    except CandidateReviewError as error:
+        if error.code == "IDENTITY_SERVICE_UNAVAILABLE":
+            status_code = 503
+        elif error.code in {
+            "IDENTITY_ASSERTION_REQUIRED",
+            "INVALID_IDENTITY_ASSERTION",
+            "EXPIRED_IDENTITY_ASSERTION",
+            "IDENTITY_SCOPE_MISMATCH",
+            "VERIFIED_IDENTITY_REQUIRED",
+        }:
+            status_code = 401
+        elif error.code == "CANDIDATE_NOT_FOUND":
+            status_code = 404
+        elif error.code in {
+            "CANDIDATE_EXPIRED",
+            "CANDIDATE_DIGEST_MISMATCH",
+            "PROVENANCE_MISMATCH",
+            "IDEMPOTENCY_CONFLICT",
+            "CANDIDATE_ALREADY_REVIEWED",
+        }:
+            status_code = 409
+        else:
+            status_code = 422
+        raise HTTPException(
+            status_code,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    return JSONResponse(
+        {
+            "created": created,
+            "decision": record,
+            "activation_supported": False,
+            "motion_usable": False,
+        }
+    )
 
 
 def main() -> None:

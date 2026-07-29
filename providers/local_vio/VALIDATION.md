@@ -9,7 +9,7 @@
 
 Validated in the delivery environment:
 
-- 30 Local VIO regression tests.
+- 27 Local VIO regression tests.
 - Stationary inertial propagation holds pose within numerical tolerance.
 - Fast yaw propagates from gyroscope samples without visual frames.
 - RGB-D visual pose is applied as an error-state correction rather than direct state replacement.

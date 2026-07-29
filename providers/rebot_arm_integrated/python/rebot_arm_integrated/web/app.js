@@ -270,7 +270,7 @@ function drawFrameAxes(context, project, frame, plane, scalePixels) {
 function drawChain(canvas, measured, commanded, targetFrame, measuredFrame, plane) {
   const context = canvas.getContext("2d");
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#0a0f14"; context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = "#0a0a0a"; context.fillRect(0, 0, canvas.width, canvas.height);
   const projectRaw = (point) => plane === "TOP" ? [point[0], point[1]] : [point[0], point[2]];
   const all = [...measured, ...commanded];
   if (targetFrame?.position_m) all.push(targetFrame.position_m);
@@ -311,6 +311,15 @@ function renderModel(snapshot) {
 
 function renderDiagnostics(snapshot) {
   $("diagnostics").textContent = JSON.stringify({ control_state: snapshot.control_state, execution_mode: snapshot.execution_mode, interaction_mode: snapshot.interaction_mode, ik_mode: snapshot.ik_mode, command_count: snapshot.command_count, commit_count: snapshot.commit_count, live_replan_count: snapshot.live_replan_count, rejected_count: snapshot.rejected_count, runtime: snapshot.runtime, gripper: snapshot.gripper, input: snapshot.input, target: snapshot.target, planning: snapshot.planning, contact_monitoring: snapshot.contact_monitoring, trajectory: snapshot.trajectory, gravity_support: snapshot.gravity_support, safety: snapshot.safety, lease: snapshot.lease, basic_active_command_modes: snapshot.basic_state?.active_command_modes, basic_mode_transition: snapshot.basic_state?.mode_transition, basic_float_transition_pending_joint_indices: snapshot.basic_state?.float_transition_pending_joint_indices, basic_snapshot_delivery: snapshot.basic_state?.snapshot_delivery, basic_hardware_io: snapshot.basic_state?.hardware_io, basic_command_ingress: snapshot.basic_state?.command_ingress, basic_payload: snapshot.basic_state?.payload, basic_gravity_compensation: snapshot.basic_state?.gravity_compensation, safe_termination: snapshot.safe_termination, fabric_input: snapshot.fabric_input, scene_input: snapshot.scene_input, external_input: snapshot.external_input, platform_errors: snapshot.platform_errors }, null, 2);
+}
+
+async function refreshControlAudit() {
+  try {
+    const timeline = await api("/v1/control-audit?limit=30", "GET", null, 1800);
+    $("controlAuditTimeline").textContent = JSON.stringify(timeline, null, 2);
+  } catch (error) {
+    $("controlAuditTimeline").textContent = `Audit timeline unavailable: ${String(error?.message || error)}`;
+  }
 }
 
 async function refresh() {
@@ -369,4 +378,6 @@ $("safeTerminateButton").addEventListener("click", requestSafeTerminate);
 
 setInterval(() => { pollGamepad(); }, 40);
 setInterval(() => { refresh(); }, 100);
+setInterval(() => { refreshControlAudit(); }, 2000);
 refresh();
+refreshControlAudit();

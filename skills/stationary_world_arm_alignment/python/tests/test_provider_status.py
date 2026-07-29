@@ -50,3 +50,50 @@ def test_exited_provider_does_not_expose_stale_hot_report() -> None:
     assert normalized["residency"] is None
     assert normalized["health"] is None
     assert normalized["ready"] is False
+
+
+def test_external_registered_provider_uses_fresh_manager_report() -> None:
+    value = provider_view()
+    value["process_state"] = "exited"
+    value["last_exit"] = "exit code: 1"
+    value["report"]["pid"] = 42412
+
+    normalized = AlignmentSkill._provider_views([value])["camera.femto_bolt"]
+
+    assert normalized["process_state"] == "exited"
+    assert normalized["activity_source"] == "REGISTERED_PROVIDER_REPORT"
+    assert normalized["provider_active"] is True
+    assert normalized["residency"] == "HOT"
+    assert normalized["health"] == "HEALTHY"
+    assert normalized["ready"] is True
+    assert AlignmentSkill._provider_was_hot(
+        [value],
+        "camera.femto_bolt",
+    )
+
+
+def test_unhealthy_external_report_is_not_accepted() -> None:
+    value = provider_view()
+    value["process_state"] = "stopped"
+    value["report"]["health"] = "UNHEALTHY"
+
+    normalized = AlignmentSkill._provider_views([value])["camera.femto_bolt"]
+
+    assert normalized["activity_source"] == "NONE"
+    assert normalized["provider_active"] is False
+    assert normalized["residency"] is None
+    assert normalized["ready"] is False
+    assert not AlignmentSkill._provider_was_hot(
+        [value],
+        "camera.femto_bolt",
+    )
+
+
+def test_running_process_with_expired_report_requires_a_fresh_hot_request() -> None:
+    value = provider_view()
+    value["report"]["expired"] = True
+
+    assert not AlignmentSkill._provider_was_hot(
+        [value],
+        "camera.femto_bolt",
+    )

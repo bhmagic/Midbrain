@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain.skill.stationary_world_arm_alignment.route_comparison",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "case_id",
+    "status",
+    "identical_observation",
+    "thresholds",
+    "comparison",
+    "route_issues",
+    "physical_action_submitted",
+    "motion_usable",
+    "review_state"
+  ],
+  "properties": {
+    "schema": {
+      "const": "midbrain.skill.stationary_world_arm_alignment.route_comparison"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "FAIL"
+      ]
+    },
+    "identical_observation": {
+      "type": "boolean"
+    },
+    "observation_fingerprint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thresholds": {
+      "type": "object"
+    },
+    "comparison": {
+      "type": "object"
+    },
+    "route_issues": {
+      "type": "object",
+      "required": [
+        "PROVIDER_COMPATIBILITY",
+        "SKILL_LOCAL"
+      ]
+    },
+    "physical_action_submitted": {
+      "const": false
+    },
+    "motion_usable": {
+      "const": false
+    },
+    "review_state": {
+      "const": "COMPARISON_EVIDENCE_ONLY"
+    }
+  },
+  "additionalProperties": false
+}

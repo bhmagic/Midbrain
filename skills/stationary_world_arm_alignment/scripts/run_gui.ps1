@@ -92,7 +92,8 @@ catch {
 }
 
 Write-Host "Skill GUI: $GuiUrl"
-Write-Host "Provider acquisition starts automatically; FoundationPose remains on demand."
+Write-Host "GUI startup is passive; use Request providers for explicit acquisition."
+Write-Host "Set MIDBRAIN_GUI_AUTO_BOOTSTRAP_PROVIDERS=true only for legacy automatic acquisition."
 Write-Host "Logs: $logsRoot"
 Write-Host "Stop GUI: skills\stationary_world_arm_alignment\scripts\stop_gui.ps1"
 if (-not $NoBrowser) {

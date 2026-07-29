@@ -130,6 +130,18 @@ class ArmConfiguration:
         mit_mode_confirmation_timeout_ms = int(
             self.model.get("control", {}).get("mit_mode_confirmation_timeout_ms", 0)
         )
+        gripper_force_position_native_velocity_scale = float(
+            self.model.get("control", {}).get(
+                "gripper_force_position_native_velocity_scale",
+                1.0,
+            )
+        )
+        gripper_force_position_velocity_guard_resume_ratio = float(
+            self.model.get("control", {}).get(
+                "gripper_force_position_velocity_guard_resume_ratio",
+                0.75,
+            )
+        )
         if not 2.0 <= endpoint_keepalive_hz <= float(self.model["control"]["internal_rate_hz"]):
             raise ConfigurationError(
                 "motor_endpoint_keepalive_hz must be in [2, internal_rate_hz]"
@@ -143,6 +155,14 @@ class ArmConfiguration:
         if not 20 <= mit_mode_confirmation_timeout_ms <= 1000:
             raise ConfigurationError(
                 "mit_mode_confirmation_timeout_ms must be in [20, 1000]"
+            )
+        if not 0.0 < gripper_force_position_native_velocity_scale <= 1.0:
+            raise ConfigurationError(
+                "gripper_force_position_native_velocity_scale must be in (0, 1]"
+            )
+        if not 0.0 < gripper_force_position_velocity_guard_resume_ratio < 1.0:
+            raise ConfigurationError(
+                "gripper_force_position_velocity_guard_resume_ratio must be in (0, 1)"
             )
         for index, joint in enumerate(joints):
             minimum_load_bearing_kp = float(joint.get("provider_test_caps", {}).get("min_kp", joint["default_test"]["kp"]))

@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "residency_modes": [
     "HOT",
@@ -13,6 +13,12 @@
     "robot.motion.arm.integrated.mit.one_shot",
     "robot.motion.arm.integrated.mit.continuous",
     "robot.motion.arm.integrated.pos_vel.one_shot_limited",
+    "robot.motion.arm.integrated.plan.direct.nonphysical",
+    "robot.motion.arm.integrated.plan.transit_path.shadow",
+    "robot.motion.arm.integrated.transit.authorized_staged",
+    "robot_arm.integrated.provider_local_control_audit",
+    "robot_arm.integrated.manager_authority_shadow",
+    "robot_arm.integrated.manager_shutdown_shadow_client",
     "robot_arm.integrated.manager_capability_catalog",
     "robot_arm.integrated.one_shot_lb_commit",
     "robot_arm.integrated.position_3dof_ik",
@@ -51,7 +57,8 @@
   ],
   "published_streams": [
     "robot_arm.integrated.status",
-    "robot_arm.integrated.control_target"
+    "robot_arm.integrated.control_target",
+    "robot_arm.integrated.control_audit"
   ],
   "consumed_streams": [
     "robot_arm.primary.integrated.command",
@@ -63,7 +70,7 @@
     "resource_provider_manager": ">=0.3.0",
     "world_state_fabric": ">=0.3.0",
     "audited_commit": "e226a09",
-    "contract_set": "0.3.6-working-draft"
+    "contract_set": "0.3.10-working-draft"
   },
   "operator_control": {
     "physical_gates": [
@@ -86,17 +93,18 @@
   },
   "limitations": [
     "Physical hardware validation is required; this release is software-tested only",
-    "Obstacle avoidance and route planning are intentionally absent",
+    "Controller-owned path-plan remains nonphysical; physical path-commit requires an exact unexpired preview, a signed short-lived one-time authorization assertion, current scene and workcell context, and a fresh fenced Basic lease",
     "TRANSIT_SPEED ONE_SHOT is limited to paths at or below 20 cm with no payload or high external load; stability beyond those constraints is not established",
     "TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental and unstable and are excluded from Manager capability discovery",
     "Cartesian wrench budgets are mapped to joint limits, but measured Cartesian force estimation remains absent; CONTACT_WORK monitors joint-torque residuals",
-    "Midbrain main at e226a09 does not expose a Manager-issued physical control-authority lease API; this release uses a fenced provider-local Basic lease gated by Manager connectivity and global motion inhibit"
+    "Manager control-authority leases and shutdown plans remain advisory shadow interfaces during Phase 2; physical enforcement remains the fenced provider-local Basic lease and existing safe-termination helper"
   ],
   "midbrain_conformance": {
     "runtime_compatibility": "AUDITED_AGAINST_MAIN_E226A09",
     "manager_lifecycle_endpoints": true,
     "global_motion_inhibit": true,
-    "manager_authority_lease": "BLOCKED_BY_PLATFORM_API_GAP",
+    "manager_authority_lease": "ADVISORY_SHADOW_OBSERVED_NOT_ENFORCED",
+    "manager_shutdown": "SHADOW_PLAN_REQUESTED_WITHOUT_BLOCKING_SAFE_TERMINATION",
     "full_physical_control_contract": false
   },
   "execution_backends": {
@@ -137,7 +145,10 @@
     "advertised_motion_capabilities": [
       "robot.motion.arm.integrated.mit.one_shot",
       "robot.motion.arm.integrated.mit.continuous",
-      "robot.motion.arm.integrated.pos_vel.one_shot_limited"
+      "robot.motion.arm.integrated.pos_vel.one_shot_limited",
+      "robot.motion.arm.integrated.plan.direct.nonphysical",
+      "robot.motion.arm.integrated.plan.transit_path.shadow",
+      "robot.motion.arm.integrated.transit.authorized_staged"
     ],
     "excluded_experiments": [
       "TRANSIT_SPEED_HOLD_LB",

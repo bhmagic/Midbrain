@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/data_route.v1.schema.json",
+  "title": "Midbrain Provider Data Route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "route_id",
+    "capability",
+    "provider_id",
+    "provider_instance_id",
+    "boot_id",
+    "available",
+    "hardware_specific",
+    "selection",
+    "transport",
+    "products"
+  ],
+  "properties": {
+    "route_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 3
+    },
+    "provider_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider_instance_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "boot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "hardware_specific": {
+      "type": "boolean"
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "generic_route_preferred_when_compatible",
+        "coexists_with_generic_route",
+        "explicit_provider_id"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "PRIMARY",
+            "COMPATIBILITY_FALLBACK"
+          ]
+        },
+        "generic_route_preferred_when_compatible": {
+          "type": "boolean"
+        },
+        "coexists_with_generic_route": {
+          "type": "boolean"
+        },
+        "explicit_provider_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "mapping_name",
+        "layout_version",
+        "consumer_library",
+        "reference_validation"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 3
+        },
+        "mapping_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "layout_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consumer_library": {
+          "type": "string",
+          "minLength": 3
+        },
+        "reference_validation": {
+          "type": "string",
+          "minLength": 3
+        },
+        "adapter_scope": {
+          "type": "string",
+          "minLength": 3
+        },
+        "provider_specific_layout": {
+          "type": "boolean"
+        },
+        "buffer_reference_schema": {
+          "type": "string",
+          "minLength": 3
+        },
+        "payload_location": {
+          "type": "string",
+          "minLength": 3
+        },
+        "large_payloads_on_fabric": {
+          "type": "boolean"
+        }
+      }
+    },
+    "products": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "payload_policy": {
+      "type": "object"
+    },
+    "channel_model": {
+      "type": "object"
+    },
+    "alignments": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "synchronization": {
+      "type": "object"
+    }
+  }
+}

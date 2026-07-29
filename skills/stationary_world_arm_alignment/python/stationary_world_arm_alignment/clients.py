@@ -24,6 +24,14 @@ class ManagerClient:
         value = response.json()
         return value if isinstance(value, list) else value.get("providers", [])
 
+    async def workcell_calibrations(self) -> dict[str, Any]:
+        response = await self.http.get(
+            f"{self.base_url}/v1/workcell-calibrations"
+        )
+        response.raise_for_status()
+        value = response.json()
+        return value if isinstance(value, dict) else {"activations": []}
+
     async def set_hot(self, provider_id: str) -> dict[str, Any]:
         encoded = quote(provider_id, safe="")
         response = await self.http.post(f"{self.base_url}/v1/providers/{encoded}/hot")

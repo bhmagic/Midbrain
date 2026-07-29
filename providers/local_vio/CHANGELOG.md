@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.3 - 2026-07-29
+
+- Stopped treating a cached Fabric `camera.rgbd.bundle` ring reference as
+  reusable image storage. Fabric metadata remains cached briefly, but each
+  visual iteration now obtains the current provider-local RGB and
+  aligned-depth references from the already-open shared-memory mapping.
+- Copies depth and RGB immediately, retries a recycled slot at most four
+  times, and rejects missing timestamps or pairs outside the bundle's declared
+  synchronization threshold.
+- Keeps the optional IR correction path nonblocking when its latest
+  shared-memory slot recycles.
+- Added regression coverage for replacing stale Fabric references with current
+  provider-local references. Live validation recovered a current tracking pose
+  without requiring Fabric to decide Skill-specific freshness.
+
 ## 0.2.2
 
 - Fix an impossible startup gate at 50 Hz: 80 required samples no longer have to fit inside a fixed 1.5-second window.
