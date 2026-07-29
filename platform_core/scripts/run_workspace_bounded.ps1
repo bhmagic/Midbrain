@@ -16,7 +16,7 @@ $core = Get-CoreRoot
 $providerConfig = Join-Path $workspace "config\providers.json"
 $managerExe = Join-Path $core "target\release\resource-provider-manager.exe"
 $fabricExe = Join-Path $core "target\release\world-state-fabric.exe"
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
+$agentPython = Join-Path $workspace "test_agent\.venv\Scripts\python.exe"
 $pidsFile = Join-Path $core "run\pids.json"
 
 function Test-TcpPortOpen {
@@ -136,8 +136,8 @@ foreach ($required in @($managerExe, $fabricExe, $providerConfig)) {
         throw "Missing required file: $required. Run setup_workspace.ps1 first."
     }
 }
-if (-not $CoreOnly -and -not (Test-Path -LiteralPath $python)) {
-    throw "Shared Python environment is missing at $python. Run setup_workspace.ps1."
+if (-not $CoreOnly -and -not (Test-Path -LiteralPath $agentPython)) {
+    throw "Test-agent environment is missing at $agentPython. Run setup_workspace.ps1."
 }
 Assert-RustBinaryCurrent `
     -BinaryPath $managerExe `
@@ -222,24 +222,6 @@ foreach ($port in $requiredPorts) {
 Import-EnvFile (Join-Path $workspace "config\system.env")
 Import-EnvFile (Join-Path $workspace "config\api_keys.env")
 $env:PHYSICAL_AGENT_ROOT = $workspace
-if (Test-Path -LiteralPath $python) {
-    $env:PHYSICAL_AGENT_PYTHON = $python
-}
-$workspacePythonRoots = @(
-    (Join-Path $workspace "test_agent\python"),
-    (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
-    (Join-Path $workspace "providers\local_vio\python"),
-    (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
-    (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
-    (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
-    (Join-Path $workspace "skills\locate-effector-front\python")
-) | Where-Object { Test-Path -LiteralPath $_ }
-$existingPythonPath = [string]$env:PYTHONPATH
-$pythonPathParts = @($workspacePythonRoots)
-if (-not [string]::IsNullOrWhiteSpace($existingPythonPath)) {
-    $pythonPathParts += $existingPythonPath
-}
-$env:PYTHONPATH = $pythonPathParts -join [IO.Path]::PathSeparator
 
 New-Item -ItemType Directory -Force `
     -Path (Join-Path $core "logs"), (Join-Path $core "run") |
@@ -272,7 +254,7 @@ try {
 
     if (-not $CoreOnly) {
         $uiProcess = Start-IndependentProcess `
-            -FilePath $python `
+            -FilePath $agentPython `
             -Arguments "-m physical_agent_test.app"
         $started.Add($uiProcess)
         Wait-BoundedHealth `

@@ -424,6 +424,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Core setup and launch both run a non-interactive initializer. A clean checkout receives `config\system.env`, blank `config\api_keys.env`, and `config\providers.json` from the checked-in root examples; existing local files are preserved. The audited baseline/generation matrix is documented in [`config/BASELINE_INVENTORY.md`](config/BASELINE_INVENTORY.md).
 
+Every Python Skill, Provider, and the Test Agent/OpenAI Agents SDK owns a
+private `.venv` inside its component folder. The repository-root `.venv` is not
+used. `setup_workspace.ps1` provisions the core Python components in dependency
+order; optional hardware and CUDA Providers retain their separate setup
+commands.
+
 Set up and launch the optional FoundationPose Provider separately:
 
 ```powershell

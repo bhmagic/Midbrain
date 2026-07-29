@@ -17,14 +17,16 @@ Before replacing:
 Remove-Item .\platform_core -Recurse -Force
 ```
 
-Keep `config`, `.venv`, `test_agent`, and `providers`.
+Keep `config`, `test_agent`, `providers`, and `skills`. Python environments are
+component-local `.venv` directories and can be recreated by their setup
+scripts.
 
 ## Setup
 
 Use Developer PowerShell for Visual Studio 2022:
 
 ```powershell
-cd C:\Projects\testing_physical_ai
+cd C:\Projects\Midbrain_git_migration
 Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\setup_workspace.ps1
 ```

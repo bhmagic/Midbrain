@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProviderRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $WorkspaceRoot = (Resolve-Path (Join-Path $ProviderRoot "..\..")).Path
-$Python = Join-Path $WorkspaceRoot ".venv\Scripts\python.exe"
+$Python = Join-Path $ProviderRoot ".venv\Scripts\python.exe"
 $Provider = Join-Path $ProviderRoot "provider.py"
 $NativeHost = Join-Path $ProviderRoot "native_host\build\Release\CameraHost.exe"
 $RunRoot = Join-Path $ProviderRoot "run"

@@ -41,7 +41,7 @@ Do not place API keys or device calibration in tracked source files. The setup s
 Open Developer PowerShell:
 
 ```powershell
-cd C:\Projects\testing_physical_ai
+cd C:\Projects\Midbrain_git_migration
 Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\setup_workspace.ps1
 ```
@@ -49,12 +49,16 @@ Set-ExecutionPolicy -Scope Process Bypass
 The setup sequence:
 
 1. Builds the Rust Manager and Fabric in release mode.
-2. Creates a shared Python 3.11 virtual environment.
-3. Installs the Orbbec support package.
-4. Builds CameraHost unless `-SkipCameraBuild` is supplied.
-5. Installs the Local VIO Provider.
-6. Installs the Test Agent.
+2. Creates `providers/orbbec_femto_bolt/.venv` and installs the Orbbec support package.
+3. Builds CameraHost unless `-SkipCameraBuild` is supplied.
+4. Creates `providers/local_vio/.venv` and installs the Local VIO Provider.
+5. Creates a private `.venv` for each Python Skill in the core workspace.
+6. Creates `test_agent/.venv` for the Test Agent and OpenAI Agents SDK.
 7. Creates missing local configuration from examples without overwriting existing machine-local files.
+
+There is no repository-root Python environment. A component may install local
+editable dependencies into its own environment, but launch scripts always use
+the environment owned by the process they start.
 
 The workspace setup does not install FoundationPose or build the upstream NVLabs CUDA runtime. Set up that Provider separately after the core workspace:
 
