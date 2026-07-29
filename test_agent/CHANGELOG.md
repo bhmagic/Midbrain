@@ -38,9 +38,13 @@
 - Documented that natural-language Cartesian directions remain an external
   semantic/frame-resolution problem and are not accepted as raw model-selected
   axis commands by the decision-ID-only execution adapter.
-- Raised the clean publication regression result to 93/93 Test Agent tests and
-  synchronized CI source roots with the Integrated Controller and finite Skill
-  packages used by the current Agent.
+- Raised the clean publication regression result to 93/93 Test Agent tests.
+- Added monorepo source-root setup for the Integrated Controller and finite
+  Skill packages used by the current Agent.
+- Declared the existing JSON Schema runtime dependency and moved the
+  Agents-SDK-only schema-test import behind the optional-SDK skip. This keeps
+  the protected legacy GitHub workflow useful without concealing failures when
+  the complete Test Agent dependency set is installed.
 - Made hosted-model SDK imports backend-local at use time so read-only routing
   and offline tests can load without installing every optional VLM backend.
 - Added monorepo test source-root setup and made the disabled cutting-manifest

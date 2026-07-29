@@ -119,10 +119,14 @@ uncertainty semantics. It must not become a hard-coded axis convention. See
 
 - Synchronized root, platform-core, and Test Agent public configuration
   templates. API-key fields remain blank.
-- Updated repository CI to include the Agents SDK, Google GenAI, Integrated
-  Controller, and current finite Skill source roots.
-- Added isolated pytest imports to prevent same-named tests from different
-  Provider packages from colliding.
+- Added Test Agent monorepo source-root setup for the Integrated Controller and
+  current finite Skill packages.
+- Retained the protected legacy GitHub workflow because the publishing token
+  did not have the separate `workflow` OAuth scope. Its exact Python command
+  passes 111 tests and skips three Agents-SDK-only modules; the full
+  publication matrix remains an independently run `469/469`.
+- Declared the Test Agent JSON Schema dependency and placed its SDK-only test
+  import after the optional Agents SDK skip.
 - Fixed the Orbbec aligned-depth validity test to load its own Provider
   entrypoint instead of the ambiguous top-level `provider` module name.
 - Passed the full local stopped matrix at `578/578`, including the local-only

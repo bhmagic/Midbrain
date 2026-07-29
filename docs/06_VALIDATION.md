@@ -12,7 +12,9 @@ The current checkpoint includes offline tests plus operator-observed physical va
 
 This does not validate general natural-language Cartesian directions. In this installation, physical vertical mapped primarily to arm-base `+X`. Camera, world, base, controlled-frame, tool, and object axes must be resolved explicitly for each command. See [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
 
-The exact stopped publication regression passed `469/469`: 439 Python tests across all 62 published Python test files plus 30 Rust tests. The wider local tree passed another 109 vegetable-cutting tests, for a local-only total of `578/578`; that prototype is not part of the publication. Python compilation, JSON parsing, PowerShell parsing, clean-configuration checks, Rust formatting, and the Rust release build also passed. CI includes the Agents SDK, Google GenAI, current publishable Provider/Skill source roots, and isolated pytest imports.
+The exact stopped publication regression passed `469/469`: 439 Python tests across all 62 published Python test files plus 30 Rust tests. The wider local tree passed another 109 vegetable-cutting tests, for a local-only total of `578/578`; that prototype is not part of the publication. Python compilation, JSON parsing, PowerShell parsing, clean-configuration checks, Rust formatting, and the Rust release build also passed.
+
+The protected GitHub workflow retains its smaller legacy dependency and source-root set because updating it requires a publishing identity with the separate `workflow` OAuth scope. Its exact Python command passes 111 tests and skips three Agents-SDK-only modules when the optional SDK is absent. This hosted baseline is intentionally reported separately from the complete independently run publication matrix.
 
 ## Automated source checks completed during cleanup
 

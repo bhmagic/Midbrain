@@ -36,7 +36,7 @@ Date: 2026-07-29
 - All 30 Rust tests passed, Rust formatting passed, and the release workspace build succeeded.
 - The complete stopped publication floor is `469/469`.
 - The wider local workspace also passed 109 vegetable-cutting tests. Those tests and the prototype remain local, producing a full local stopped floor of `578/578`.
-- CI now installs the Agents SDK and Google GenAI dependencies, exposes all current cross-package source roots, and uses isolated pytest imports.
+- The protected legacy GitHub workflow remains unchanged because the publishing token lacked the separate `workflow` OAuth scope. Its exact Python command passes 111 tests and skips three Agents-SDK-only modules when the optional SDK is absent. The complete `469/469` publication matrix was run independently.
 - Credential screening found no active configuration files, key-shaped tokens, or private-key material in the publication set. The two files over 50 MB are the existing Git-LFS FoundationPose model checkpoints.
 
 ## Clean-configuration completeness audit - 2026-07-26

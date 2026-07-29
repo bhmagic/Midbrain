@@ -38,10 +38,12 @@
   device. Both arm providers remained stopped and no VLM or physical call was
   made.
 - The 2026-07-29 publication run passed all 93 Test Agent tests from the clean
-  staging tree using the same cross-package source roots declared by CI.
-- Repository CI now installs the Agents SDK and Google GenAI dependencies,
-  exposes the Integrated Controller and finite Skill packages, and uses
-  isolated pytest imports so same-named component test modules cannot collide.
+  staging tree using the Test Agent's declared monorepo source roots.
+- The protected repository workflow retains its smaller legacy dependency and
+  source-root set. Its exact Python command passes 111 tests and skips three
+  Agents-SDK-only modules when the optional SDK is absent. The complete
+  93-test Test Agent suite is part of the independently run publication
+  matrix.
 - The Test Agent test package also declares its own monorepo source roots and
   skips only Agents-SDK construction cases when that optional SDK is absent.
   Generic VLM routing remains importable without Google/OpenAI clients; each

@@ -792,3 +792,24 @@ Remaining engineering work, but not represented as completed by this upload:
 - Test Agent, all Providers, Manager, Fabric, and controller services stopped.
 - Final endpoint, listener, and process checks found no remaining Midbrain
   workspace service.
+
+## 21. Hosted CI cannot yet exercise the complete Agent SDK graph
+
+The repository's protected GitHub Actions workflow predates the Phase 5
+component graph. Updating a workflow file requires the separate GitHub OAuth
+`workflow` scope; the publishing token had repository write access but not
+that scope. GitHub therefore rejected the attempted workflow-file update, and
+the existing workflow was deliberately preserved instead of bypassing the
+protection.
+
+The legacy workflow installs neither the OpenAI Agents SDK nor Google GenAI
+and exposes only the earlier Python source roots. SDK construction tests must
+skip before importing SDK-only dependencies in that environment. The exact
+legacy Python command passes 111 tests and skips three SDK-only modules. It is
+not evidence for the full Phase 5 Agent graph.
+
+The complete clean publication candidate was validated independently: 439
+Python tests across all 62 published test files plus 30 Rust tests, for
+`469/469`. Until the workflow is updated through an identity with `workflow`
+scope, release documentation must report hosted legacy-CI coverage and the
+independent publication matrix separately.

@@ -14,8 +14,11 @@
 - Documented remaining Agent SDK roadblocks, component changes, authority lineage, and the unresolved Cartesian-axis/alignment problem under `docs/reference/project_notes`.
 - Kept machine-local `config/api_keys.env`, `config/system.env`, active `config/providers.json`, calibration, captures, logs, and runtime state outside the publication.
 - Synchronized public configuration templates with blank secret fields, fixed
-  an ambiguous Orbbec test import, expanded CI to the current component graph,
-  and enabled isolated pytest imports for same-named package tests.
+  an ambiguous Orbbec test import, and added monorepo test source setup.
+- Preserved the protected legacy GitHub workflow because the publishing token
+  lacked the separate `workflow` OAuth scope. Its exact Python command passes
+  111 tests with three Agents-SDK-only modules skipped; the full publication
+  matrix was validated independently.
 - Passed the exact stopped `469/469` publication matrix and the wider
   `578/578` local matrix, plus source parsers, Rust formatting, and Rust
   release build.

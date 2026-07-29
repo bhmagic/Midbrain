@@ -9,9 +9,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from jsonschema import ValidationError
 
 pytest.importorskip("agents")
+
+from jsonschema import ValidationError
 
 from physical_agent_test.agent_driver import PrototypeAgentDriver
 from physical_agent_test.spatial_registration_adapter import (
