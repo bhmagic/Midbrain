@@ -804,9 +804,10 @@ protection.
 
 The legacy workflow installs neither the OpenAI Agents SDK nor Google GenAI
 and exposes only the earlier Python source roots. SDK construction tests must
-skip before importing SDK-only dependencies in that environment. The exact
-legacy Python command passes 111 tests and skips three SDK-only modules. It is
-not evidence for the full Phase 5 Agent graph.
+skip before importing SDK-only dependencies in that environment. On the
+hosted Linux runner, the exact legacy Python command passes 101 tests and
+skips thirteen: three SDK-only modules and ten Windows named-shared-memory
+replay tests. It is not evidence for the full Phase 5 Agent graph.
 
 The complete clean publication candidate was validated independently: 439
 Python tests across all 62 published test files plus 30 Rust tests, for

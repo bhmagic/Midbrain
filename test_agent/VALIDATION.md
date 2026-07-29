@@ -40,10 +40,11 @@
 - The 2026-07-29 publication run passed all 93 Test Agent tests from the clean
   staging tree using the Test Agent's declared monorepo source roots.
 - The protected repository workflow retains its smaller legacy dependency and
-  source-root set. Its exact Python command passes 111 tests and skips three
-  Agents-SDK-only modules when the optional SDK is absent. The complete
-  93-test Test Agent suite is part of the independently run publication
-  matrix.
+  source-root set. On its Linux host, its exact Python command passes 101 tests
+  and skips thirteen: three Agents-SDK-only modules and ten Windows
+  named-shared-memory replay tests. The complete 93-test Test Agent suite,
+  including the ten replay tests, is part of the independently run Windows
+  publication matrix.
 - The Test Agent test package also declares its own monorepo source roots and
   skips only Agents-SDK construction cases when that optional SDK is absent.
   Generic VLM routing remains importable without Google/OpenAI clients; each

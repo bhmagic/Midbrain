@@ -122,10 +122,10 @@ gravity-float:
 - Added Test Agent monorepo source-root setup and declared its JSON Schema
   runtime dependency.
 - Kept the protected legacy GitHub workflow unchanged because the publishing
-  token lacked the separate `workflow` OAuth scope. Its exact Python command
-  passes 111 tests with three Agents-SDK-only modules skipped when that
-  optional SDK is absent; the full `469/469` publication matrix was run
-  independently.
+  token lacked the separate `workflow` OAuth scope. On its Linux host, its
+  exact Python command passes 101 tests and skips thirteen: three
+  Agents-SDK-only modules and ten Windows named-shared-memory replay tests.
+  The full Windows `469/469` publication matrix was run independently.
 - The combined stopped local floor is `578/578`; the exact GitHub publication
   floor is `469/469`.
 

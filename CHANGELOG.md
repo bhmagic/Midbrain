@@ -16,9 +16,10 @@
 - Synchronized public configuration templates with blank secret fields, fixed
   an ambiguous Orbbec test import, and added monorepo test source setup.
 - Preserved the protected legacy GitHub workflow because the publishing token
-  lacked the separate `workflow` OAuth scope. Its exact Python command passes
-  111 tests with three Agents-SDK-only modules skipped; the full publication
-  matrix was validated independently.
+  lacked the separate `workflow` OAuth scope. On its Linux host, its exact
+  Python command passes 101 tests and skips thirteen: three Agents-SDK-only
+  modules plus ten Windows named-shared-memory replay tests. The full Windows
+  publication matrix was validated independently.
 - Passed the exact stopped `469/469` publication matrix and the wider
   `578/578` local matrix, plus source parsers, Rust formatting, and Rust
   release build.

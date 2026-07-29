@@ -14,7 +14,7 @@ This does not validate general natural-language Cartesian directions. In this in
 
 The exact stopped publication regression passed `469/469`: 439 Python tests across all 62 published Python test files plus 30 Rust tests. The wider local tree passed another 109 vegetable-cutting tests, for a local-only total of `578/578`; that prototype is not part of the publication. Python compilation, JSON parsing, PowerShell parsing, clean-configuration checks, Rust formatting, and the Rust release build also passed.
 
-The protected GitHub workflow retains its smaller legacy dependency and source-root set because updating it requires a publishing identity with the separate `workflow` OAuth scope. Its exact Python command passes 111 tests and skips three Agents-SDK-only modules when the optional SDK is absent. This hosted baseline is intentionally reported separately from the complete independently run publication matrix.
+The protected GitHub workflow retains its smaller legacy dependency and source-root set because updating it requires a publishing identity with the separate `workflow` OAuth scope. On its Linux host, its exact Python command passes 101 tests and skips thirteen: three Agents-SDK-only modules plus ten Windows named-shared-memory replay tests. This hosted baseline is intentionally reported separately from the complete independently run Windows publication matrix.
 
 ## Automated source checks completed during cleanup
 

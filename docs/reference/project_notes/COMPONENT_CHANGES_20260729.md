@@ -122,11 +122,14 @@ uncertainty semantics. It must not become a hard-coded axis convention. See
 - Added Test Agent monorepo source-root setup for the Integrated Controller and
   current finite Skill packages.
 - Retained the protected legacy GitHub workflow because the publishing token
-  did not have the separate `workflow` OAuth scope. Its exact Python command
-  passes 111 tests and skips three Agents-SDK-only modules; the full
-  publication matrix remains an independently run `469/469`.
+  did not have the separate `workflow` OAuth scope. On its Linux host, its
+  exact Python command passes 101 tests and skips thirteen: three
+  Agents-SDK-only modules and ten Windows named-shared-memory replay tests.
+  The full Windows publication matrix remains an independently run `469/469`.
 - Declared the Test Agent JSON Schema dependency and placed its SDK-only test
   import after the optional Agents SDK skip.
+- Marked the Windows named-shared-memory replay module as platform-specific;
+  the tests remain active on Windows.
 - Fixed the Orbbec aligned-depth validity test to load its own Provider
   entrypoint instead of the ambiguous top-level `provider` module name.
 - Passed the full local stopped matrix at `578/578`, including the local-only

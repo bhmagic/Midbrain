@@ -45,6 +45,9 @@
   Agents-SDK-only schema-test import behind the optional-SDK skip. This keeps
   the protected legacy GitHub workflow useful without concealing failures when
   the complete Test Agent dependency set is installed.
+- Marked the Windows named-shared-memory replay module as platform-specific so
+  Linux CI skips those ten tests while Windows publication validation continues
+  to execute them.
 - Made hosted-model SDK imports backend-local at use time so read-only routing
   and offline tests can load without installing every optional VLM backend.
 - Added monorepo test source-root setup and made the disabled cutting-manifest

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import mmap
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
+import pytest
 from orbbec_femto_provider.shared_memory_access import (
     STREAM_ALIGNED_DEPTH,
     STREAM_COLOR,
@@ -25,6 +27,12 @@ from physical_agent_test.spatial_registration_adapter import (
     SpatialRegistrationSkillAdapter,
 )
 from stationary_world_arm_alignment.camera import RgbdCapture
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "nt",
+    reason="Phase 5 replay exercises Windows named shared memory",
+)
 
 
 def _reference(
