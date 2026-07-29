@@ -12,16 +12,19 @@ $workspace = Get-WorkspaceRoot
 $configDir = Join-Path $workspace "config"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
-$venvPython = Join-Path $workspace ".venv\Scripts\python.exe"
+$venv = Join-Path $provider ".venv"
+$venvPython = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     if ($PythonLauncher -eq "py") {
-        & py -3.11 -m venv (Join-Path $workspace ".venv")
+        & py -3.11 -m venv $venv
     }
     else {
-        & $PythonLauncher -m venv (Join-Path $workspace ".venv")
+        & $PythonLauncher -m venv $venv
     }
+    if ($LASTEXITCODE -ne 0) { throw "Orbbec virtual environment creation failed." }
 }
 & $venvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Orbbec pip upgrade failed." }
 & $venvPython -m pip install -e (Join-Path $provider "python")
 if ($LASTEXITCODE -ne 0) { throw "Provider Python package installation failed." }
 
@@ -39,7 +42,7 @@ else {
     -OrbbecBinDir $OrbbecBinDir
 
 & (Join-Path $PSScriptRoot "register.ps1")
-Write-Host "Orbbec Femto Bolt provider setup complete."
+Write-Host "Orbbec Femto Bolt provider environment ready: $venv"
 Write-Host "Per-frame metadata on Windows may require Orbbec's Administrator registration script."
 Write-Host "See providers\orbbec_femto_bolt\docs\WINDOWS_FRAME_METADATA_SETUP.md"
 

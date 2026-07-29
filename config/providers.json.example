@@ -3,7 +3,7 @@
     {
       "id": "camera.femto_bolt",
       "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera",
-      "command": "${PHYSICAL_AGENT_PYTHON}",
+      "command": "${PHYSICAL_AGENT_ROOT}/providers/orbbec_femto_bolt/.venv/Scripts/python.exe",
       "args": [
         "${PHYSICAL_AGENT_ROOT}/providers/orbbec_femto_bolt/provider.py",
         "--manager-url",
@@ -31,7 +31,7 @@
     {
       "id": "localization.local_vio",
       "display_name": "Local Inertial-First RGB-D VIO Provider",
-      "command": "${PHYSICAL_AGENT_PYTHON}",
+      "command": "${PHYSICAL_AGENT_ROOT}/providers/local_vio/.venv/Scripts/python.exe",
       "args": [
         "${PHYSICAL_AGENT_ROOT}/providers/local_vio/provider.py",
         "--manager-url",

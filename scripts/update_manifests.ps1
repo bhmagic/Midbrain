@@ -147,7 +147,17 @@ function Write-Manifest {
         [Parameter(Mandatory = $true)][string]$BaseDirectory
     )
 
+    $workspacePath = (Resolve-Path $workspace).Path -replace '[\\/]+$', ''
     $basePath = (Resolve-Path $BaseDirectory).Path -replace '[\\/]+$', ''
+    if (-not $basePath.StartsWith(
+        $workspacePath,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Manifest base directory is outside the workspace: $basePath"
+    }
+    $baseRelativeToWorkspace = (
+        $basePath.Substring($workspacePath.Length) -replace '^[\\/]+', ''
+    ) -replace '\\', '/'
     $manifestPath = Join-Path $basePath 'FILE_MANIFEST.sha256'
     $manifestRelativePath = 'FILE_MANIFEST.sha256'
     $providerManifest = (Split-Path $basePath -Leaf) -in @(
@@ -160,10 +170,38 @@ function Write-Manifest {
     )
     $lines = [System.Collections.Generic.List[string]]::new()
 
-    $files = Get-ChildItem -Path $basePath -Recurse -File
-    foreach ($file in $files) {
-        $relativePath = $file.FullName.Substring($basePath.Length) -replace '^[\\/]+', ''
-        $relativePath = $relativePath -replace '\\', '/'
+    $gitArguments = @(
+        "-C",
+        $workspacePath,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard"
+    )
+    if ($baseRelativeToWorkspace) {
+        $gitArguments += @("--", $baseRelativeToWorkspace)
+    }
+    $repositoryRelativePaths = @(& git @gitArguments)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not enumerate Git-controlled manifest inputs for $basePath"
+    }
+
+    foreach ($repositoryRelativePath in $repositoryRelativePaths) {
+        $repositoryRelativePath = $repositoryRelativePath -replace '\\', '/'
+        $relativePath = if ($baseRelativeToWorkspace) {
+            $repositoryRelativePath.Substring($baseRelativeToWorkspace.Length) `
+                -replace '^[\\/]+', ''
+        }
+        else {
+            $repositoryRelativePath
+        }
+        $fullPath = Join-Path (
+            $workspacePath
+        ) ($repositoryRelativePath -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            continue
+        }
+        $file = Get-Item -LiteralPath $fullPath
         if ($providerManifest -and $relativePath -eq 'SHA256SUMS.txt') {
             continue
         }

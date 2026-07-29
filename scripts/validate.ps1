@@ -64,21 +64,38 @@ function Get-ValidationPython {
 
 Write-Host "Validating repository: $workspace"
 
-Write-Host "[1/6] Checking clean configuration baselines"
+Write-Host "[1/7] Checking clean configuration baselines"
 & (Join-Path $PSScriptRoot "test_config_baselines.ps1")
 
-Write-Host "[2/6] Checking JSON files"
-$jsonFiles = Get-ChildItem -Path $workspace -Recurse -File -Filter "*.json" |
-    Where-Object {
-        $_.FullName -notmatch "[\\/](\.validation|target|build|\.venv|__pycache__)[\\/]"
-    }
+Write-Host "[2/7] Checking Python component environment isolation"
+& (Join-Path $PSScriptRoot "test_python_environment_isolation.ps1")
+
+Write-Host "[3/7] Checking JSON files"
+$jsonRelativePaths = @(
+    & git -C $workspace ls-files --cached --others --exclude-standard -- "*.json"
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to enumerate repository-controlled JSON files."
+}
+
+$activeProvidersConfig = "config/providers.json"
+if ((Test-Path (Join-Path $workspace $activeProvidersConfig)) -and
+    $jsonRelativePaths -notcontains $activeProvidersConfig) {
+    $jsonRelativePaths += $activeProvidersConfig
+}
+
+$jsonFiles = @(
+    $jsonRelativePaths |
+        Sort-Object -Unique |
+        ForEach-Object { Get-Item -LiteralPath (Join-Path $workspace $_) }
+)
 foreach ($jsonFile in $jsonFiles) {
     Get-Content -Raw $jsonFile.FullName | ConvertFrom-Json | Out-Null
 }
 Write-Host "JSON files parsed: $($jsonFiles.Count)"
 
 if (-not $SkipPython) {
-    Write-Host "[3/6] Running Python checks and tests"
+    Write-Host "[4/7] Running Python checks and tests"
     $python = Get-ValidationPython
     Invoke-Checked -FilePath $python -Arguments @(
         "-m", "pip", "install", "--upgrade",
@@ -151,7 +168,7 @@ if (-not $SkipPython) {
         $env:PYTHONPATH = $previousPythonPath
     }
 
-    Write-Host "[4/6] Building Python wheels"
+    Write-Host "[5/7] Building Python wheels"
     if (Test-Path $wheelRoot) {
         Remove-Item -Recurse -Force $wheelRoot
     }
@@ -174,12 +191,12 @@ if (-not $SkipPython) {
     }
 }
 else {
-    Write-Host "[3/6] Python validation skipped"
-    Write-Host "[4/6] Python wheel build skipped"
+    Write-Host "[4/7] Python validation skipped"
+    Write-Host "[5/7] Python wheel build skipped"
 }
 
 if (-not $SkipRust) {
-    Write-Host "[5/6] Checking and compiling Rust workspace"
+    Write-Host "[6/7] Checking and compiling Rust workspace"
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         throw "Cargo is not available. Install the stable Rust toolchain or pass -SkipRust."
     }
@@ -191,11 +208,11 @@ if (-not $SkipRust) {
     Invoke-Checked -FilePath "cargo" -Arguments @("build", "--workspace", "--release") -WorkingDirectory (Join-Path $workspace "platform_core")
 }
 else {
-    Write-Host "[5/6] Rust validation skipped"
+    Write-Host "[6/7] Rust validation skipped"
 }
 
 if ($BuildNativeCamera) {
-    Write-Host "[6/6] Building native CameraHost"
+    Write-Host "[7/7] Building native CameraHost"
     $buildScript = Join-Path $workspace "providers\orbbec_femto_bolt\scripts\build_native.ps1"
     & $buildScript `
         -OrbbecIncludeDir $OrbbecIncludeDir `
@@ -207,7 +224,7 @@ if ($BuildNativeCamera) {
     }
 }
 else {
-    Write-Host "[6/6] Native CameraHost build not requested"
+    Write-Host "[7/7] Native CameraHost build not requested"
 }
 
 Write-Host "Refreshing source integrity manifests"

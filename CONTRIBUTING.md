@@ -22,6 +22,15 @@ Before opening a change:
 
 For camera-native changes, also build and verify CameraHost on Windows with the Orbbec SDK installed.
 
+## Python environment isolation
+
+Every Python Skill, Provider, and Agent owns `.venv` inside its component
+folder. Do not create or reference a repository-root `.venv`, and do not launch
+one component with another component's interpreter. When a process needs local
+Python libraries from another component, declare or install those dependencies
+inside the process owner's environment. Setup, run, check, registration, and
+documentation changes must preserve this boundary.
+
 ## Configuration and data
 
 Never commit:

@@ -8,6 +8,16 @@
 - Restored explicit Git LFS attributes for the two bundled FoundationPose checkpoint files.
 - Added vegetable-cutting compilation, tests, and wheel creation to local validation and its unit tests to hosted CI.
 - Preserved the local Windows `mycpp` compatibility implementation as reviewed source instead of leaving it only inside an untracked upstream checkout.
+- Replaced the repository-root shared Python environment with component-local
+  `.venv` ownership for every Python Provider, Skill, and the Test
+  Agent/OpenAI Agents SDK; added isolated setup scripts and a validation guard
+  against shared-interpreter regressions.
+- Made checksum-manifest generation use Git-controlled inputs so ignored
+  virtual environments and external FoundationPose/SAM2 checkouts cannot enter
+  release manifests after local setup.
+- Limited JSON validation to Git-controlled inputs plus the active local
+  Provider registry, preventing ignored third-party runtime checkouts from
+  producing false validation failures.
 
 ## 0.3.16 — Phase 5 guarded-agent checkpoint (2026-07-29)
 

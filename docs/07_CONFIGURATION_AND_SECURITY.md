@@ -45,12 +45,15 @@ The GUI uses `gpt-5.6-luna` by default. Set `OPENAI_VISION_MODEL` in the local `
 Environment placeholders are expanded by the Manager:
 
 - `${PHYSICAL_AGENT_ROOT}`
-- `${PHYSICAL_AGENT_PYTHON}`
 - `${MANAGER_URL}`
 - `${FABRIC_URL}`
 - `${CAMERA_MAPPING_NAME}`
 
-The workspace launcher imports `config/system.env` before starting the Manager, so canonical Provider entries inherit these values. A manually launched Manager process must receive the same environment explicitly.
+Canonical Python Provider entries resolve the interpreter under that
+Provider's own `.venv`. The workspace launcher imports `config/system.env`
+before starting the Manager, so canonical Provider entries inherit the
+remaining values. A manually launched Manager process must receive the same
+environment explicitly.
 
 ## Device calibration
 

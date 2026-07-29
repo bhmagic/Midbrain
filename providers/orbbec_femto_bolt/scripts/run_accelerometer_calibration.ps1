@@ -6,8 +6,9 @@ param(
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
+$provider = Get-ProviderRoot
 $workspace = Get-WorkspaceRoot
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
+$python = Join-Path $provider ".venv\Scripts\python.exe"
 
 if (-not $MappingName) {
     $systemEnv = Join-Path $workspace "config\system.env"
@@ -28,7 +29,7 @@ if (-not $MappingName) {
 }
 
 if (-not (Test-Path $python)) {
-    throw "Workspace Python environment is missing. Run providers\orbbec_femto_bolt\scripts\setup.ps1 first."
+    throw "Orbbec Provider environment is missing. Run providers\orbbec_femto_bolt\scripts\setup.ps1 first."
 }
 
 try {

@@ -4,9 +4,8 @@ param(
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $provider = Get-ProviderRoot
-$workspace = Get-WorkspaceRoot
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
-if (-not (Test-Path $python)) { throw "Shared Python environment is missing. Run setup.ps1." }
+$python = Join-Path $provider ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) { throw "Orbbec Provider environment is missing. Run setup.ps1." }
 
 try {
     $null = Invoke-RestMethod -Uri "http://127.0.0.1:7002/health" -TimeoutSec 3

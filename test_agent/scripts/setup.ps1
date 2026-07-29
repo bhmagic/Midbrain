@@ -6,16 +6,19 @@ $workspace = Get-WorkspaceRoot
 $configDir = Join-Path $workspace "config"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
+$venv = Join-Path $agent ".venv"
+$python = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $python)) {
     if ($PythonLauncher -eq "py") {
-        & py -3.11 -m venv (Join-Path $workspace ".venv")
+        & py -3.11 -m venv $venv
     }
     else {
-        & $PythonLauncher -m venv (Join-Path $workspace ".venv")
+        & $PythonLauncher -m venv $venv
     }
+    if ($LASTEXITCODE -ne 0) { throw "Test-agent virtual environment creation failed." }
 }
 & $python -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Test-agent pip upgrade failed." }
 
 $providerPython = Join-Path $workspace "providers\orbbec_femto_bolt\python"
 if (Test-Path (Join-Path $providerPython "pyproject.toml")) {
@@ -24,6 +27,12 @@ if (Test-Path (Join-Path $providerPython "pyproject.toml")) {
 }
 else {
     Write-Host "Orbbec provider package is not present; RGB/depth capture will be unavailable." -ForegroundColor Yellow
+}
+
+$foundationPosePython = Join-Path $workspace "providers\foundation_pose\python"
+if (Test-Path (Join-Path $foundationPosePython "pyproject.toml")) {
+    & $python -m pip install -e $foundationPosePython
+    if ($LASTEXITCODE -ne 0) { throw "FoundationPose support package installation failed." }
 }
 
 $spatialSkill = Join-Path $workspace "skills\spatial_registration_rgbd"
@@ -73,4 +82,4 @@ if (-not (Test-Path $systemFile)) {
     }
     Copy-Item -LiteralPath $systemTemplate -Destination $systemFile
 }
-Write-Host "Test-agent setup complete."
+Write-Host "Test-agent/OpenAI Agents SDK environment ready: $venv"

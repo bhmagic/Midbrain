@@ -5,7 +5,11 @@ param(
 $ErrorActionPreference = "Stop"
 $SkillRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $WorkspaceRoot = (Resolve-Path (Join-Path $SkillRoot "..\..")).Path
-$VenvPython = Join-Path $SkillRoot ".venv\Scripts\python.exe"
+$Venv = Join-Path $SkillRoot ".venv"
+$VenvPython = Join-Path $Venv "Scripts\python.exe"
+$SpatialSkill = (
+    Resolve-Path (Join-Path $WorkspaceRoot "skills\spatial_registration_rgbd")
+).Path
 
 function Invoke-Checked {
     param(
@@ -20,30 +24,23 @@ function Invoke-Checked {
 
 if (-not (Test-Path -LiteralPath $VenvPython)) {
     if ($PythonLauncher -eq "py") {
-        Invoke-Checked "py" @("-3.11", "-m", "venv", (Join-Path $SkillRoot ".venv"))
+        Invoke-Checked "py" @("-3.11", "-m", "venv", $Venv)
     }
     else {
-        Invoke-Checked $PythonLauncher @("-m", "venv", (Join-Path $SkillRoot ".venv"))
+        Invoke-Checked $PythonLauncher @("-m", "venv", $Venv)
     }
 }
 
 Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "pip")
-$SpatialRegistrationRoot = (
-    Resolve-Path (Join-Path $WorkspaceRoot "skills\spatial_registration_rgbd")
-).Path
-$OrbbecPython = (
-    Resolve-Path (Join-Path $WorkspaceRoot "providers\orbbec_femto_bolt\python")
-).Path
 Invoke-Checked $VenvPython @(
     "-m",
     "pip",
     "install",
+    "pytest>=8,<10",
     "-e",
-    $SpatialRegistrationRoot,
-    "-e",
-    $OrbbecPython,
+    $SpatialSkill,
     "-e",
     $SkillRoot
 )
 
-Write-Host "Vegetable cutting Skill environment ready: $VenvPython"
+Write-Host "Effector-front Skill environment ready: $Venv"

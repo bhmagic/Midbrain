@@ -1,5 +1,5 @@
 param(
-    [string]$Python = "python"
+    [string]$PythonLauncher = "py"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,25 +19,29 @@ function Invoke-Checked {
 }
 
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    Invoke-Checked $Python @("-m", "venv", (Join-Path $SkillRoot ".venv"))
+    if ($PythonLauncher -eq "py") {
+        Invoke-Checked "py" @("-3.11", "-m", "venv", (Join-Path $SkillRoot ".venv"))
+    }
+    else {
+        Invoke-Checked $PythonLauncher @("-m", "venv", (Join-Path $SkillRoot ".venv"))
+    }
 }
 
 Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "pip")
-Invoke-Checked $VenvPython @("-m", "pip", "install", "-e", $SkillRoot)
-
-$SitePackages = (& $VenvPython -c "import site; print(site.getsitepackages()[0])").Trim()
-if ($LASTEXITCODE -ne 0 -or -not $SitePackages) {
-    throw "Could not resolve the Skill virtual environment's site-packages folder."
-}
 $OrbbecPython = (Resolve-Path (Join-Path $WorkspaceRoot "providers\orbbec_femto_bolt\python")).Path
 $FoundationPosePython = (
     Resolve-Path (Join-Path $WorkspaceRoot "providers\foundation_pose\python")
 ).Path
-$PathFile = Join-Path $SitePackages "midbrain_stationary_local_dependencies.pth"
-[System.IO.File]::WriteAllText(
-    $PathFile,
-    "$OrbbecPython`n$FoundationPosePython`n",
-    [System.Text.UTF8Encoding]::new($false)
+Invoke-Checked $VenvPython @(
+    "-m",
+    "pip",
+    "install",
+    "-e",
+    $OrbbecPython,
+    "-e",
+    $FoundationPosePython,
+    "-e",
+    $SkillRoot
 )
 
 Write-Host "Skill environment ready: $VenvPython"

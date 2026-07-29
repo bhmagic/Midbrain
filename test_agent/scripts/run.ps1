@@ -3,23 +3,9 @@ param([switch]$NoBrowser)
 . (Join-Path $PSScriptRoot "common.ps1")
 $agent = Get-AgentRoot
 $workspace = Get-WorkspaceRoot
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
+$python = Join-Path $agent ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { throw "Run test_agent\scripts\setup.ps1 first." }
 $env:PHYSICAL_AGENT_ROOT = $workspace
-$sourcePaths = @(
-    (Join-Path $agent "python")
-)
-foreach ($packageGroup in @("providers", "skills")) {
-    $groupRoot = Join-Path $workspace $packageGroup
-    if (-not (Test-Path -LiteralPath $groupRoot)) { continue }
-    foreach ($package in Get-ChildItem -LiteralPath $groupRoot -Directory) {
-        $sourceRoot = Join-Path $package.FullName "python"
-        if (Test-Path -LiteralPath $sourceRoot) {
-            $sourcePaths += $sourceRoot
-        }
-    }
-}
-$env:PYTHONPATH = $sourcePaths -join [IO.Path]::PathSeparator
 Import-EnvFile (Join-Path $workspace "config\system.env")
 Import-EnvFile (Join-Path $workspace "config\api_keys.env")
 New-Item -ItemType Directory -Force -Path (Join-Path $agent "logs"), (Join-Path $agent "run") | Out-Null
