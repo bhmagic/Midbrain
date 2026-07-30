@@ -51,17 +51,26 @@ The FoundationPose Provider publishes dynamic measurement edges from the selecte
 
 ## Startup data flow
 
-1. Workspace starts Manager, Fabric, camera Provider, Local VIO Provider, and Test Agent GUI.
-2. Auto-initialize starts shortly after the UI service.
-3. Initialize Space Cognition selects camera, depth, IMU, and VIO Providers.
-4. The Skill acquires motion inhibit.
-5. It waits until Local VIO reports `motion_inhibited: true`.
-6. Local VIO creates a new session epoch.
-7. The initializer selects the newest required accelerometer and gyro samples in their common IMU time domain.
-8. It estimates gravity direction, gyro zero-rate bias, and residual noise.
-9. It initializes the inertial state and publishes body pose and transforms.
-10. Motion inhibit is released after VIO reaches a usable tracking state.
-11. The point-cloud accumulator begins inserting RGB-D chunks in the active world frame.
+1. `Start Midbrain.cmd` starts Manager, Fabric, and the idle Agent UI service,
+   then opens the Manager-hosted main portal.
+2. Providers remain `COLD`; the portal shows their configured identity,
+   liveness, readiness, and observation links without activating them.
+3. The operator enters a guarded development flow or asks an Agent to perform a
+   task.
+4. The Agent or bounded Skill inspects current runtime state and requests
+   approval for required Provider activations.
+5. For spatial initialization, Initialize Space Cognition selects the camera,
+   depth, IMU, and VIO Providers after they are available.
+6. The Skill acquires motion inhibit.
+7. It waits until Local VIO reports `motion_inhibited: true`.
+8. Local VIO creates a new session epoch.
+9. The initializer selects the newest required accelerometer and gyro samples
+   in their common IMU time domain.
+10. It estimates gravity direction, gyro zero-rate bias, and residual noise.
+11. It initializes the inertial state and publishes body pose and transforms.
+12. Motion inhibit is released after VIO reaches a usable tracking state.
+13. Observation pages and authorized consumers can then inspect or use the
+    published state.
 
 ## Runtime data flow
 

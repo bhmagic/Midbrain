@@ -21,6 +21,9 @@ The operator reported v0.3.10 as performing well after the final startup correct
 
 ## What is working
 
+- Manager-hosted Midbrain main GUI as the primary portal for system status,
+  Provider and Skill observation, guarded development links, regular/developer
+  Agent access, and whole-workspace shutdown.
 - Windows Manager and Fabric build and run.
 - Femto Bolt RGB, native depth, aligned depth, IR, XYZ point cloud, accelerometer, gyroscope, calibration, identity, and synchronized bundle publication.
 - Large camera payloads use Windows named shared memory; Fabric carries generation-checked BufferRefs.

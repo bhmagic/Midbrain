@@ -6,7 +6,18 @@ These are prototype local interfaces. They are intentionally simple and are not 
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/` | Systemic read-only mainframe for Manager, Fabric, Providers, Skills, and Agent UI links |
 | GET | `/health` | Manager health and feature flags |
+| GET | `/v1/ui/overview` | Aggregated Manager/Fabric health plus Provider and Skill liveness summaries |
+| GET | `/v1/ui/providers/{id}` | Provider process, heartbeat, readiness, capabilities, streams, and latest observations |
+| GET | `/v1/ui/skills/{id}` | Skill availability, lifecycle history, streams, and latest observations |
+| GET | `/observe/provider/{id}` | Read-only Provider observation page |
+| GET | `/observe/skill/{id}` | Read-only Skill observation page |
+| GET | `/developer/provider/{id}` | Explicit confirmation boundary before resolving a Provider developer UI |
+| GET | `/developer/skill/{id}` | Explicit confirmation boundary before resolving a Skill developer UI |
+| POST | `/v1/ui/developer/{kind}/{id}/activate` | Confirmed Provider HOT/developer-UI activation or Skill developer-UI start |
+| GET | `/shutdown` | Whole-workspace shutdown confirmation page |
+| POST | `/v1/ui/shutdown` | Confirmed delegation to the dependency-aware workspace shutdown supervisor |
 | GET | `/v1/providers` | Configured providers, process state, and latest report |
 | GET | `/v1/capabilities` | Capability-specific availability derived from provider heartbeats |
 | POST | `/v1/capability-bindings` | Create a non-enforcing deterministic capability-to-provider snapshot |
@@ -31,6 +42,19 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | POST | `/v1/providers/{id}/kill` | Force process-tree termination |
 
 A provider heartbeat is expired after its configured `heartbeat_timeout_ms`. Expiry forces `ready=false`, marks the report `UNHEALTHY`, removes capability availability, and publishes an unavailable status observation to the Fabric.
+
+The aggregation endpoints and `/observe/*` pages are read-only. Their
+developer links do not grant authority: they present an explicit overstepping
+confirmation. The distinct confirmed activation endpoint may request Provider
+`HOT` and start an advertised development process. For a Skill it starts only
+the developer UI, not the finite Skill operation. Authentication and
+authorization remain the responsibility of the developer surface and its
+underlying control APIs.
+
+The shutdown UI starts `stop_workspace.ps1` itself with a 750 ms response delay;
+it does not duplicate the Provider shutdown algorithm. Its request uses the
+exact `SHUT_DOWN_MIDBRAIN` confirmation phrase and returns before that script
+stops Manager.
 
 Provider configuration accepts `graceful_stop_timeout_ms`,
 `force_kill_on_stop_timeout`, `safe_state_request_path`, and

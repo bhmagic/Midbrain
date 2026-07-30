@@ -1,6 +1,8 @@
 param(
     [switch]$NoBrowser,
     [switch]$CoreOnly,
+    [switch]$StartAgentUi,
+    [switch]$AllowProviderAutoStart,
     [ValidateRange(2, 120)]
     [int]$StartupTimeoutSeconds = 15
 )

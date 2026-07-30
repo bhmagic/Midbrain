@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Confirm Midbrain Developer Surface</title>
+  <link rel="stylesheet" href="/assets/manager.css">
+</head>
+<body>
+  <main class="confirmation-shell">
+    <a id="backLink" class="back-link" href="/">← Return to observation</a>
+    <section class="confirmation-card">
+      <p class="eyebrow warning-text">DEVELOPMENT BOUNDARY</p>
+      <h1>Leave the agent-mediated observation surface?</h1>
+      <p class="confirmation-copy">
+        The development UI may start or stop components, change calibration or controller settings,
+        issue direct requests, or expose experimental physical capabilities. You will be acting
+        outside the ordinary agent workflow. Provider safety checks and control-authority rules
+        still apply, but this surface is not observational.
+      </p>
+      <dl class="confirmation-details">
+        <div><dt>Component</dt><dd id="componentName">Loading…</dd></div>
+        <div><dt>Current state</dt><dd id="componentState">Checking…</dd></div>
+        <div><dt>Development surface</dt><dd id="developerTarget">Checking availability…</dd></div>
+        <div><dt>Confirmation effect</dt><dd id="activationEffect">Checking activation policy…</dd></div>
+      </dl>
+      <label class="confirm-check">
+        <input id="confirmCheck" type="checkbox">
+        <span id="confirmationText">I understand that I am overstepping the ordinary agent workflow and entering a development surface.</span>
+      </label>
+      <div class="confirmation-actions">
+        <a id="cancelButton" class="secondary-button link-button" href="/">Cancel</a>
+        <button id="continueButton" class="danger-button" type="button" disabled>Open development UI</button>
+      </div>
+      <p id="activationStatus" class="activation-status" aria-live="polite"></p>
+      <div id="launchCommandPanel" class="launch-command-panel" hidden>
+        <p id="launchCommandMessage">The development launcher was requested.</p>
+        <code id="launchCommand"></code>
+      </div>
+    </section>
+  </main>
+  <script src="/assets/developer-confirm.js"></script>
+</body>
+</html>

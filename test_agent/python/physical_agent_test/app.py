@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 import uvicorn
+from agents import RunState, SQLiteSession
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from .agent_driver import PrototypeAgentDriver
 from .authorization import AuthorizationStore
+from .basic_client import BasicControllerClient
+from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .config import Settings
 from .depth_capture import DepthCapture
 from .effector_front_adapter import EffectorFrontSkillAdapter
@@ -23,6 +29,7 @@ from .gemini_pointing_skill import (
 )
 from .initialize_space_cognition_skill import InitializeSpaceCognitionSkill
 from .integrated_client import IntegratedControllerClient
+from .integrated_motion_adapter import IntegratedRelativeMotionAdapter
 from .manager_client import ManagerClient
 from .observation_motion import (
     attach_controller_preview,
@@ -62,22 +69,34 @@ integrated = IntegratedControllerClient(
     settings.integrated_controller_url,
     timeout_s=settings.integrated_preview_timeout_s,
 )
+integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(integrated)
+basic = BasicControllerClient(
+    settings.basic_controller_url,
+    timeout_s=settings.basic_operation_timeout_s,
+)
+basic_safe_home_agent_adapter = BasicSafeHomeAdapter(basic)
 authorization_store = AuthorizationStore(
     signing_secret=settings.authorization_signing_secret,
 )
 capture = RgbCapture(fabric, settings.screenshot_dir)
 depth_capture = DepthCapture(fabric, settings.screenshot_dir)
+agent_vlm_router = build_default_vlm_router(
+    gemini_model=settings.gemini_model,
+    attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
+)
 pointing_skill = PointingIdentificationSkill(
     capture,
     settings.gemini_model,
     manager=manager,
     fallback_camera_provider_id=settings.head_camera_provider_id,
+    vlm_router=agent_vlm_router,
 )
 visual_scene_skill = VisualSceneAnalysisSkill(
     capture,
     settings.gemini_model,
     manager=manager,
     fallback_camera_provider_id=settings.head_camera_provider_id,
+    vlm_router=agent_vlm_router,
 )
 rgbd_evidence_capture = RgbdEvidenceCapture(
     fabric,
@@ -86,10 +105,7 @@ rgbd_evidence_capture = RgbdEvidenceCapture(
 )
 rgbd_alignment_skill = RgbdAlignmentValidationSkill(
     rgbd_evidence_capture,
-    build_default_vlm_router(
-        gemini_model=settings.gemini_model,
-        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
-    ),
+    agent_vlm_router,
     provider_id=settings.head_camera_provider_id,
     manager=manager,
     policy=phase4_policy,
@@ -104,17 +120,11 @@ spatial_registration_skill = SpatialRegistrationSkillAdapter(
 )
 effector_front_skill = EffectorFrontSkillAdapter(
     spatial_registration_skill,
-    build_default_vlm_router(
-        gemini_model=settings.gemini_model,
-        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
-    ),
+    agent_vlm_router,
 )
 tool_registration_skill = ToolControlFrameSkillAdapter(
     spatial_registration_skill,
-    build_default_vlm_router(
-        gemini_model=settings.gemini_model,
-        attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
-    ),
+    agent_vlm_router,
     manager=manager,
     fallback_arm_provider_id=settings.arm_transform_provider_id,
     arm_base_frame=settings.arm_base_frame,
@@ -128,6 +138,20 @@ reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
     authorization_store,
     integrated,
 )
+discoverable_agent_skill_catalog = discover_agent_skills(
+    settings.workspace_root,
+)
+all_discoverable_tool_names = {
+    descriptor.tool_name
+    for descriptor in discoverable_agent_skill_catalog
+}
+agent_session_database = (
+    settings.workspace_root
+    / "test_agent"
+    / "run"
+    / "agent_sessions.sqlite3"
+)
+agent_session_database.parent.mkdir(parents=True, exist_ok=True)
 driver = PrototypeAgentDriver(
     pointing_skill,
     settings.openai_model,
@@ -139,8 +163,44 @@ driver = PrototypeAgentDriver(
     effector_front_skill=effector_front_skill,
     tool_registration_skill=tool_registration_skill,
     stationary_calibration_skill=stationary_calibration_agent_adapter,
+    manager=manager,
+    provider_lifecycle_control=True,
+    integrated_motion_skill=integrated_motion_agent_adapter,
+    basic_safe_home_skill=basic_safe_home_agent_adapter,
+    session=SQLiteSession(
+        "midbrain-regular-agent-systemic-gui-v2",
+        agent_session_database,
+    ),
     defer_loading=settings.agent_skill_defer_loading,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    max_turns=settings.openai_agent_max_turns,
+)
+developer_driver = PrototypeAgentDriver(
+    pointing_skill,
+    settings.openai_model,
+    tool_choice="auto",
+    workspace_root=settings.workspace_root,
+    eligible_tool_names=all_discoverable_tool_names,
+    visual_scene_skill=visual_scene_skill,
+    rgbd_alignment_skill=rgbd_alignment_skill,
+    spatial_registration_skill=spatial_registration_skill,
+    effector_front_skill=effector_front_skill,
+    tool_registration_skill=tool_registration_skill,
+    stationary_calibration_skill=stationary_calibration_agent_adapter,
+    reviewed_observation_execution_skill=(
+        reviewed_observation_execution_skill
+    ),
+    manager=manager,
+    developer_mode=True,
+    integrated_motion_skill=integrated_motion_agent_adapter,
+    basic_safe_home_skill=basic_safe_home_agent_adapter,
+    session=SQLiteSession(
+        "midbrain-developer-agent-systemic-gui-v2",
+        agent_session_database,
+    ),
+    defer_loading=settings.agent_skill_defer_loading,
+    adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    max_turns=settings.openai_agent_max_turns,
 )
 reviewed_observation_agent_driver = PrototypeAgentDriver(
     pointing_skill,
@@ -152,6 +212,7 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
     ),
     defer_loading=False,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    max_turns=settings.openai_agent_max_turns,
 )
 space_cognition_skill = InitializeSpaceCognitionSkill(
     manager,
@@ -171,6 +232,28 @@ agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
     include_disabled=True,
 )
+
+
+@dataclass
+class PendingAgentRun:
+    state: RunState[Any]
+    created_monotonic: float
+    agent_model: str
+    reasoning_effort: str
+    vlm_model: str | None
+
+
+agent_model_options = tuple(
+    dict.fromkeys((settings.openai_model, *settings.openai_agent_models))
+)
+agent_reasoning_options = ("low", "medium", "high", "xhigh", "max")
+vlm_model_options = tuple(
+    dict.fromkeys(backend.model_id for backend in agent_vlm_router.backends)
+)
+pending_regular_runs: dict[str, PendingAgentRun] = {}
+pending_regular_runs_lock = asyncio.Lock()
+pending_developer_runs: dict[str, PendingAgentRun] = {}
+pending_developer_runs_lock = asyncio.Lock()
 replay_capture = Phase5ReplayCaptureService(fabric, settings.replay_bundle_dir)
 auto_initialization_task: asyncio.Task[None] | None = None
 auto_initialization_error: str | None = None
@@ -215,6 +298,7 @@ async def lifespan(_app: FastAPI):
             pass
         auto_initialization_task = None
     await world_point_cloud.stop()
+    await basic.close()
     await integrated.close()
     await fabric.close()
     await manager.close()
@@ -225,6 +309,17 @@ app = FastAPI(title="Physical Agent Test Scaffold", version="0.3.0", lifespan=li
 
 class PromptRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
+    agent_model: str = Field(
+        default=settings.openai_model,
+        min_length=1,
+        max_length=100,
+    )
+    reasoning_effort: str = Field(
+        default=settings.openai_agent_reasoning_effort,
+        min_length=1,
+        max_length=20,
+    )
+    vlm_model: str = Field(default="auto", min_length=1, max_length=100)
 
 
 class RgbdAlignmentRequest(BaseModel):
@@ -306,8 +401,23 @@ class ReviewedObservationAgentExecutionRequest(BaseModel):
     decision_id: str = Field(min_length=1, max_length=200)
 
 
+class DeveloperApprovalDecision(BaseModel):
+    approve: bool
+    rejection_message: str | None = Field(default=None, max_length=500)
+
+
+REGULAR_PAGE = (
+    Path(__file__).resolve().parent / "web" / "regular_agent.html"
+).read_text(encoding="utf-8")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
+    return REGULAR_PAGE
+
+
+@app.get("/dev", response_class=HTMLResponse)
+async def developer_index() -> str:
     return PAGE
 
 
@@ -358,8 +468,12 @@ async def status() -> dict[str, Any]:
         "auto_initialize_result": auto_initialization_result,
         "auto_initialize_error": auto_initialization_error,
         "openai_model": settings.openai_model,
+        "agent_model_options": list(agent_model_options),
+        "agent_reasoning_effort": settings.openai_agent_reasoning_effort,
+        "agent_reasoning_options": list(agent_reasoning_options),
         "openai_agent_tool_choice": settings.openai_agent_tool_choice,
         "gemini_model": settings.gemini_model,
+        "vlm_model_options": ["auto", *vlm_model_options],
         "capability_binding": pointing_skill.last_binding,
         "rgbd_alignment_binding": rgbd_alignment_skill.last_binding,
         "rgbd_alignment_validation": rgbd_alignment_skill.last_result,
@@ -788,22 +902,255 @@ async def clear_world_point_cloud() -> dict[str, str]:
     return {"status": "cleared"}
 
 
+def _model_selection(
+    request: PromptRequest,
+) -> tuple[str, str, str | None]:
+    agent_model = request.agent_model.strip()
+    reasoning_effort = request.reasoning_effort.strip().lower()
+    requested_vlm_model = request.vlm_model.strip()
+    if agent_model not in agent_model_options:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported Agent model: {agent_model}",
+        )
+    if reasoning_effort not in agent_reasoning_options:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported reasoning effort: {reasoning_effort}",
+        )
+    vlm_model = None if requested_vlm_model == "auto" else requested_vlm_model
+    if vlm_model is not None and vlm_model not in vlm_model_options:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unavailable VLM model: {vlm_model}",
+        )
+    return agent_model, reasoning_effort, vlm_model
+
+
 @app.post("/api/run")
 async def run_prompt(request: PromptRequest) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+    agent_model, reasoning_effort, vlm_model = _model_selection(request)
     try:
-        answer = await operation_registry.run(
-            "openai_agent_run",
-            driver.run(request.prompt),
-            hard_timeout_s=min(
-                settings.phase4_agent_run_timeout_s,
-                phase4_policy.operation_hard_timeout_s,
-            ),
-            idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+        return await _regular_agent_step(
+            request.prompt,
+            run_id,
+            agent_model=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model=vlm_model,
         )
-        return {"answer": answer}
     except httpx.HTTPStatusError as error:
         detail = error.response.text or str(error)
         raise HTTPException(status_code=502, detail=detail) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+async def _regular_agent_step(
+    input_value: str | RunState[Any],
+    run_id: str,
+    *,
+    agent_model: str,
+    reasoning_effort: str,
+    vlm_model: str | None,
+) -> dict[str, Any]:
+    result = await operation_registry.run(
+        f"openai_regular_agent_run:{run_id}",
+        driver.run_interactive(
+            input_value,
+            model_override=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model_override=vlm_model,
+        ),
+        hard_timeout_s=min(
+            settings.phase4_agent_run_timeout_s,
+            phase4_policy.operation_hard_timeout_s,
+        ),
+        idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+    )
+    if result.state is None:
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "answer": result.answer,
+            "approvals": [],
+        }
+    async with pending_regular_runs_lock:
+        pending_regular_runs[run_id] = PendingAgentRun(
+            state=result.state,
+            created_monotonic=time.monotonic(),
+            agent_model=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model=vlm_model,
+        )
+    return {
+        "status": "approval_required",
+        "run_id": run_id,
+        "answer": None,
+        "approvals": result.approvals,
+    }
+
+
+@app.post("/api/runs/{run_id}/decision")
+async def decide_regular_run(
+    run_id: str,
+    decision: DeveloperApprovalDecision,
+) -> dict[str, Any]:
+    async with pending_regular_runs_lock:
+        entry = pending_regular_runs.pop(run_id, None)
+        expired = [
+            pending_id
+            for pending_id, pending in pending_regular_runs.items()
+            if time.monotonic() - pending.created_monotonic > 600.0
+        ]
+        for pending_id in expired:
+            pending_regular_runs.pop(pending_id, None)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail="pending regular agent run was not found or expired",
+        )
+    if time.monotonic() - entry.created_monotonic > 600.0:
+        raise HTTPException(
+            status_code=410,
+            detail="pending regular agent approval expired",
+        )
+    interruptions = entry.state.get_interruptions()
+    if not interruptions:
+        raise HTTPException(
+            status_code=409,
+            detail="regular agent run has no pending approvals",
+        )
+    for interruption in interruptions:
+        if decision.approve:
+            entry.state.approve(interruption)
+        else:
+            entry.state.reject(
+                interruption,
+                rejection_message=decision.rejection_message,
+            )
+    try:
+        return await _regular_agent_step(
+            entry.state,
+            run_id,
+            agent_model=entry.agent_model,
+            reasoning_effort=entry.reasoning_effort,
+            vlm_model=entry.vlm_model,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+async def _developer_agent_step(
+    input_value: str | RunState[Any],
+    run_id: str,
+    *,
+    agent_model: str,
+    reasoning_effort: str,
+    vlm_model: str | None,
+) -> dict[str, Any]:
+    result = await operation_registry.run(
+        f"openai_developer_agent_run:{run_id}",
+        developer_driver.run_interactive(
+            input_value,
+            model_override=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model_override=vlm_model,
+        ),
+        hard_timeout_s=min(
+            settings.phase4_agent_run_timeout_s,
+            phase4_policy.operation_hard_timeout_s,
+        ),
+        idle_timeout_s=phase4_policy.operation_idle_timeout_s,
+    )
+    if result.state is None:
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "answer": result.answer,
+            "approvals": [],
+        }
+    async with pending_developer_runs_lock:
+        pending_developer_runs[run_id] = PendingAgentRun(
+            state=result.state,
+            created_monotonic=time.monotonic(),
+            agent_model=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model=vlm_model,
+        )
+    return {
+        "status": "approval_required",
+        "run_id": run_id,
+        "answer": None,
+        "approvals": result.approvals,
+    }
+
+
+@app.post("/api/dev/run")
+async def run_developer_prompt(request: PromptRequest) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+    agent_model, reasoning_effort, vlm_model = _model_selection(request)
+    try:
+        return await _developer_agent_step(
+            request.prompt,
+            run_id,
+            agent_model=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model=vlm_model,
+        )
+    except httpx.HTTPStatusError as error:
+        detail = error.response.text or str(error)
+        raise HTTPException(status_code=502, detail=detail) from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.post("/api/dev/runs/{run_id}/decision")
+async def decide_developer_run(
+    run_id: str,
+    decision: DeveloperApprovalDecision,
+) -> dict[str, Any]:
+    async with pending_developer_runs_lock:
+        entry = pending_developer_runs.pop(run_id, None)
+        expired = [
+            pending_id
+            for pending_id, pending in pending_developer_runs.items()
+            if time.monotonic() - pending.created_monotonic > 600.0
+        ]
+        for pending_id in expired:
+            pending_developer_runs.pop(pending_id, None)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail="pending developer agent run was not found or expired",
+        )
+    if time.monotonic() - entry.created_monotonic > 600.0:
+        raise HTTPException(
+            status_code=410,
+            detail="pending developer agent approval expired",
+        )
+    interruptions = entry.state.get_interruptions()
+    if not interruptions:
+        raise HTTPException(
+            status_code=409,
+            detail="developer agent run has no pending approvals",
+        )
+    for interruption in interruptions:
+        if decision.approve:
+            entry.state.approve(interruption)
+        else:
+            entry.state.reject(
+                interruption,
+                rejection_message=decision.rejection_message,
+            )
+    try:
+        return await _developer_agent_step(
+            entry.state,
+            run_id,
+            agent_model=entry.agent_model,
+            reasoning_effort=entry.reasoning_effort,
+            vlm_model=entry.vlm_model,
+        )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 
@@ -944,6 +1291,9 @@ PAGE = r"""
     .role-kicker { color: var(--mb-accent); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
     .grid { display: grid; grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr); gap: 18px; }
     .card { background: rgba(19,19,19,.96); border: 1px solid var(--mb-border); border-radius: 14px; padding: 16px; margin-bottom: 18px; }
+    .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 12px; }
+    .model-controls label { color: var(--mb-muted); font-size: 11px; }
+    select { width: 100%; margin-top: 5px; padding: 8px; border: 1px solid var(--mb-border); border-radius: 7px; background: var(--mb-bg); color: var(--mb-text); }
     textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border-radius: 8px; border: 1px solid var(--mb-border); background: var(--mb-bg); color: var(--mb-text); }
     button { margin-top: 10px; padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
     button.primary { background: var(--mb-accent); color: #111; }
@@ -989,14 +1339,18 @@ PAGE = r"""
     .decision-actions button { margin: 0; }
     .decision-note { color: var(--mb-warning); font-size: 12px; }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .viewer-wrap { height: 55vh; } }
-    @media (max-width: 640px) { .sensor-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { .sensor-grid, .model-controls { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 <main>
-  <div class="role-kicker">Observation UI</div>
-  <h1>Physical Agent Test Scaffold</h1>
-  <p class="sub">Agent-visible observations, decision-specific authorization, and separated development controls</p>
+  <nav style="display:flex;justify-content:space-between;gap:16px;margin-bottom:24px">
+    <a href="http://127.0.0.1:7001/" style="color:var(--mb-muted);text-decoration:none">← Midbrain</a>
+    <a href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
+  </nav>
+  <div class="role-kicker">Development UI</div>
+  <h1>Physical Agent Developer</h1>
+  <p class="sub">All adapter-bound Skills, Provider lifecycle tools, relative IK, controller-owned safe-home, selectable models, and detailed development controls</p>
   <div class="grid">
     <div>
       <section class="card">
@@ -1022,6 +1376,11 @@ PAGE = r"""
         <div class="role-kicker">Agent observation</div>
         <h2>Prompt</h2>
         <div class="state-card" id="bindingState"><div class="state-label">Camera capability binding</div><div class="state-value"><span class="state-lamp"></span><span class="state-text">NOT REQUESTED</span></div><div class="state-detail">Manager binding has not been requested</div></div>
+        <div class="model-controls">
+          <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
+          <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
+          <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
+        </div>
         <textarea id="prompt">Take a screenshot and identify the object I am pointing at. Use only the RGB image.</textarea>
         <div>
           <button class="primary" id="run">Run prompt</button>
@@ -1104,6 +1463,9 @@ const approveAuthorization = document.getElementById('approveAuthorization');
 const denyAuthorization = document.getElementById('denyAuthorization');
 const promptBox = document.getElementById('prompt');
 const answer = document.getElementById('answer');
+const agentModel = document.getElementById('agentModel');
+const reasoningEffort = document.getElementById('reasoningEffort');
+const vlmModel = document.getElementById('vlmModel');
 const image = document.getElementById('image');
 const depth = document.getElementById('depth');
 const rgbdComposite = document.getElementById('rgbdComposite');
@@ -1219,6 +1581,18 @@ function stateKind(value) {
   return '';
 }
 
+function populateModelSelect(select, values, selectedValue, labeler) {
+  if (select.dataset.loaded === 'true') return;
+  select.replaceChildren(...values.map((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = labeler(value);
+    return option;
+  }));
+  select.value = values.includes(selectedValue) ? selectedValue : values[0];
+  select.dataset.loaded = 'true';
+}
+
 function refreshImages() {
   const stamp = Date.now();
   image.src = '/api/latest-image?t=' + stamp;
@@ -1229,6 +1603,24 @@ async function refreshStatus() {
   try {
     const response = await fetch('/api/status', {cache: 'no-store'});
     const data = await response.json();
+    populateModelSelect(
+      agentModel,
+      data.agent_model_options || [data.openai_model],
+      data.openai_model,
+      (value) => value.replace('gpt-5.6-', 'GPT-5.6 ')
+    );
+    populateModelSelect(
+      reasoningEffort,
+      data.agent_reasoning_options || ['medium'],
+      data.agent_reasoning_effort || 'medium',
+      (value) => value.toUpperCase()
+    );
+    populateModelSelect(
+      vlmModel,
+      data.vlm_model_options || ['auto'],
+      'auto',
+      (value) => value === 'auto' ? 'Auto routing' : value
+    );
     const initializationData = (data.space_cognition && data.space_cognition.data) || {};
     const vioData = (data.vio && data.vio.data) || {};
     const poseData = (data.body_pose && data.body_pose.data) || {};
@@ -1436,18 +1828,64 @@ clearCloudButton.addEventListener('click', async () => {
   await fetch('/api/world-point-cloud/clear', {method: 'POST'});
 });
 
+async function handleDeveloperAgentResult(data) {
+  if (data.status !== 'approval_required') {
+    answer.textContent = data.answer || 'Completed without a text response.';
+    return;
+  }
+  const approvals = data.approvals || [];
+  const summary = approvals.map((approval) => {
+    const details = (approval.details || []).map(
+      (detail) => detail.label + ': ' + detail.value
+    );
+    return [
+      approval.title || 'Approve protected operation?',
+      '',
+      approval.summary || 'The Agent requested a protected operation.',
+      ...(details.length ? ['', ...details] : []),
+      '',
+      approval.warning || 'The operation runs only after approval.',
+      '',
+      'Approve this request?'
+    ].join('\n');
+  }).join('\n\n');
+  answer.textContent = summary;
+  const approved = window.confirm(summary);
+  const decisionResponse = await fetch(
+    '/api/dev/runs/' + encodeURIComponent(data.run_id) + '/decision',
+    {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        approve: approved,
+        rejection_message: approved ? null : 'Rejected in the developer UI'
+      })
+    }
+  );
+  const next = await decisionResponse.json();
+  if (!decisionResponse.ok) {
+    throw new Error(next.detail || JSON.stringify(next));
+  }
+  await handleDeveloperAgentResult(next);
+}
+
 runButton.addEventListener('click', async () => {
   runButton.disabled = true;
   answer.textContent = 'Running…';
   try {
-    const response = await fetch('/api/run', {
+    const response = await fetch('/api/dev/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prompt: promptBox.value})
+      body: JSON.stringify({
+        prompt: promptBox.value,
+        agent_model: agentModel.value,
+        reasoning_effort: reasoningEffort.value,
+        vlm_model: vlmModel.value
+      })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
-    answer.textContent = data.answer;
+    await handleDeveloperAgentResult(data);
     refreshImages();
     refreshStatus();
   } catch (error) {

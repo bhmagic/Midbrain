@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shut Down Midbrain</title>
+  <link rel="stylesheet" href="/assets/manager.css">
+</head>
+<body>
+  <main class="confirmation-shell">
+    <a class="back-link" href="/">← Return to Midbrain</a>
+    <section class="confirmation-card shutdown-card">
+      <p class="eyebrow danger-text">WHOLE-SYSTEM SHUTDOWN</p>
+      <h1>Shut down Midbrain?</h1>
+      <p class="confirmation-copy">
+        This directly invokes platform_core/scripts/stop_workspace.ps1 after the Manager
+        returns this page's acceptance response. Development UIs are stopped first. Motion
+        Providers must satisfy their safe-state and shutdown rules before Manager and Fabric
+        are stopped.
+      </p>
+      <dl class="confirmation-details">
+        <div><dt>Scope</dt><dd>Developer UIs, Providers, Agent UI, Manager, and Fabric</dd></div>
+        <div><dt>Safety behavior</dt><dd>Fail closed and retain required support when a safety-critical Provider cannot confirm shutdown</dd></div>
+      </dl>
+      <label class="confirm-check">
+        <input id="shutdownCheck" type="checkbox">
+        <span>I understand that this requests shutdown of the complete Midbrain workspace.</span>
+      </label>
+      <div class="confirmation-actions">
+        <a class="secondary-button link-button" href="/">Cancel</a>
+        <button id="shutdownButton" class="danger-button" type="button" disabled>Shut down Midbrain</button>
+      </div>
+      <p id="shutdownStatus" class="activation-status" aria-live="polite"></p>
+    </section>
+  </main>
+  <script src="/assets/shutdown.js"></script>
+</body>
+</html>

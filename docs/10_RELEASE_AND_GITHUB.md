@@ -67,8 +67,9 @@ Authentication is not embedded; use Git Credential Manager or GitHub CLI.
 
 - [ ] `scripts/validate.ps1` passes on Windows.
 - [ ] CameraHost builds with the installed Orbbec SDK.
-- [ ] Test Agent tutorial passes on hardware.
-- [ ] IMU calibration tutorial passes on hardware.
+- [ ] Main GUI portal acceptance flow passes on the target workstation.
+- [ ] Required Provider observation, activation, Agent, and shutdown paths pass
+  on hardware.
 - [ ] Staged-file secret/config review is clean.
 - [ ] README screenshots, if added, contain no serial numbers or private room imagery.
 - [x] MIT License added for original project code.

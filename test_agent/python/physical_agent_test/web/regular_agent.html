@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Midbrain Agent</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #090909;
+      --surface: #131313;
+      --surface-raised: #1c1c1c;
+      --border: #3b3b3b;
+      --text: #f2f2f2;
+      --muted: #a8a8a8;
+      --accent: #e5e5e5;
+      --secondary: #bdbdbd;
+      --warning: #f2b84b;
+      --danger: #f17878;
+      --experimental: #cfcfcf;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--background);
+      color: var(--text);
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at 82% -20%, rgba(255,255,255,.09), transparent 36rem),
+        var(--background);
+    }
+    .shell { width: min(calc(100% - 32px), 1040px); margin: 0 auto; padding: 28px 0; }
+    nav { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 70px; }
+    nav a { color: var(--muted); font-size: 13px; text-decoration: none; }
+    nav a:last-child { color: var(--warning); }
+    .eyebrow { margin: 0 0 9px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .15em; }
+    h1 { margin: 0; font-size: clamp(48px, 9vw, 86px); font-weight: 650; letter-spacing: -.07em; line-height: .95; }
+    .subtitle { max-width: 720px; margin: 17px 0 0; color: var(--muted); line-height: 1.6; }
+    .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 38px 0 12px; }
+    .status-card, .prompt-panel, .answer-panel {
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: rgba(19,19,19,.95);
+    }
+    .status-card { min-height: 105px; padding: 15px; }
+    .status-card span { display: block; color: var(--muted); font-size: 12px; }
+    .status-card strong { display: block; margin-top: 28px; font-size: 17px; }
+    .prompt-panel { padding: 20px; }
+    label { display: block; margin-bottom: 10px; color: var(--secondary); font-size: 13px; font-weight: 650; }
+    .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+    .model-controls label { margin: 0; color: var(--muted); font-size: 11px; }
+    select {
+      width: 100%;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 9px;
+      background: #0d0d0d;
+      color: var(--text);
+      font: inherit;
+    }
+    textarea {
+      width: 100%;
+      min-height: 155px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      background: #0d0d0d;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.5;
+    }
+    textarea:focus { border-color: var(--accent); outline: none; }
+    .actions { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 13px; }
+    .policy { color: var(--muted); font-size: 12px; }
+    button {
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px 18px;
+      background: var(--accent);
+      color: var(--background);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: wait; }
+    .answer-panel { min-height: 170px; margin-top: 12px; padding: 20px; }
+    .answer-panel h2 { margin: 0 0 14px; font-size: 15px; }
+    pre { margin: 0; color: var(--secondary); font: 13px/1.6 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+    footer { display: flex; justify-content: space-between; margin-top: 18px; color: var(--muted); font-size: 11px; }
+    .error { color: var(--danger); }
+    @media (max-width: 680px) {
+      nav { margin-bottom: 42px; }
+      .status-grid { grid-template-columns: 1fr; }
+      .model-controls { grid-template-columns: 1fr; }
+      .actions, footer { align-items: stretch; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <nav>
+      <a href="http://127.0.0.1:7001/">← Midbrain</a>
+      <a href="/dev">Developer agent…</a>
+    </nav>
+    <header>
+      <p class="eyebrow">MIDBRAIN · REGULAR AGENT</p>
+      <h1>Ask the robot system.</h1>
+      <p class="subtitle">This surface exposes curated finite Skills, approved Provider lifecycle control, preview-then-approve relative arm IK, and controller-owned safe-home. Every stateful or physical action pauses for your approval and retains Provider-side safety checks.</p>
+    </header>
+
+    <section class="status-grid" aria-label="Runtime summary">
+      <article class="status-card"><span>Manager</span><strong id="managerState">Checking</strong></article>
+      <article class="status-card"><span>Fabric</span><strong id="fabricState">Checking</strong></article>
+      <article class="status-card"><span>Available Skills</span><strong id="skillState">Checking</strong></article>
+    </section>
+
+    <section class="prompt-panel">
+      <div class="model-controls" aria-label="Model selection">
+        <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
+        <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
+        <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
+      </div>
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="Describe what you want Midbrain to observe or do through its available Skills."></textarea>
+      <div class="actions">
+        <span class="policy">Stateful and physical operations retain approval and Provider-side checks.</span>
+        <button id="runButton" type="button">Run prompt</button>
+      </div>
+    </section>
+
+    <section class="answer-panel" aria-live="polite">
+      <h2>Agent response</h2>
+      <pre id="answer">Ready.</pre>
+    </section>
+    <footer><span>Persistent local agent session</span><span id="lastUpdated">No status sample</span></footer>
+  </main>
+  <script>
+    "use strict";
+    const byId = (id) => document.getElementById(id);
+
+    function populateSelect(id, values, selectedValue, labeler) {
+      const select = byId(id);
+      if (select.dataset.loaded === "true") return;
+      select.replaceChildren(...values.map((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = labeler(value);
+        return option;
+      }));
+      select.value = values.includes(selectedValue) ? selectedValue : values[0];
+      select.dataset.loaded = "true";
+    }
+
+    async function refreshStatus() {
+      try {
+        const [statusResponse, skillsResponse] = await Promise.all([
+          fetch("/api/status", {cache: "no-store"}),
+          fetch("/api/skills", {cache: "no-store"})
+        ]);
+        const status = await statusResponse.json();
+        const skills = await skillsResponse.json();
+        byId("managerState").textContent = status.manager?.error ? "Unavailable" : "Online";
+        byId("fabricState").textContent = status.fabric?.error ? "Unavailable" : "Online";
+        byId("skillState").textContent = String((skills.skills || []).length);
+        populateSelect(
+          "agentModel",
+          status.agent_model_options || [status.openai_model],
+          status.openai_model,
+          (value) => value.replace("gpt-5.6-", "GPT-5.6 ")
+        );
+        populateSelect(
+          "reasoningEffort",
+          status.agent_reasoning_options || ["medium"],
+          status.agent_reasoning_effort || "medium",
+          (value) => value.toUpperCase()
+        );
+        populateSelect(
+          "vlmModel",
+          status.vlm_model_options || ["auto"],
+          "auto",
+          (value) => value === "auto" ? "Auto routing" : value
+        );
+        byId("lastUpdated").textContent = new Date().toLocaleTimeString();
+      } catch (error) {
+        byId("managerState").textContent = "Unavailable";
+        byId("fabricState").textContent = "Unavailable";
+        byId("lastUpdated").textContent = error.message;
+      }
+    }
+
+    function approvalMessage(approval) {
+      const detailLines = (approval.details || []).map(
+        (detail) => `${detail.label}: ${detail.value}`
+      );
+      return [
+        approval.title || "Approve protected operation?",
+        "",
+        approval.summary || "The Agent requested a protected operation.",
+        ...(detailLines.length ? ["", ...detailLines] : []),
+        "",
+        approval.warning || "The operation runs only after approval.",
+        "",
+        "Approve this request?"
+      ].join("\n");
+    }
+
+    async function handleAgentResult(data) {
+      if (data.status !== "approval_required") {
+        byId("answer").textContent =
+          data.answer || "Completed without a text response.";
+        return;
+      }
+      const approvals = data.approvals || [];
+      const readable = approvals.map(approvalMessage).join("\n\n");
+      byId("answer").textContent = readable;
+      const approved = window.confirm(readable);
+      const decisionResponse = await fetch(
+        `/api/runs/${encodeURIComponent(data.run_id)}/decision`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            approve: approved,
+            rejection_message: approved
+              ? null
+              : "Rejected in the regular Agent UI"
+          })
+        }
+      );
+      const next = await decisionResponse.json();
+      if (!decisionResponse.ok) {
+        throw new Error(next.detail || "Approval decision failed");
+      }
+      await handleAgentResult(next);
+    }
+
+    byId("runButton").addEventListener("click", async () => {
+      const prompt = byId("prompt").value.trim();
+      if (!prompt) return;
+      byId("runButton").disabled = true;
+      byId("answer").className = "";
+      byId("answer").textContent = "Running…";
+      try {
+        const response = await fetch("/api/run", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            prompt,
+            agent_model: byId("agentModel").value,
+            reasoning_effort: byId("reasoningEffort").value,
+            vlm_model: byId("vlmModel").value
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
+        await handleAgentResult(data);
+        await refreshStatus();
+      } catch (error) {
+        byId("answer").className = "error";
+        byId("answer").textContent = `Error: ${error.message}`;
+      } finally {
+        byId("runButton").disabled = false;
+      }
+    });
+
+    refreshStatus();
+    window.setInterval(refreshStatus, 3000);
+  </script>
+</body>
+</html>

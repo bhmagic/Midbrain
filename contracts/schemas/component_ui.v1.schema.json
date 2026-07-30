@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/component_ui.v1.schema.json",
+  "title": "Midbrain Component Browser UI Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "observation"
+  ],
+  "properties": {
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "information_level",
+        "read_only"
+      ],
+      "properties": {
+        "kind": {
+          "const": "MANAGER_HOSTED"
+        },
+        "information_level": {
+          "enum": [
+            "BASIC",
+            "RICH"
+          ]
+        },
+        "read_only": {
+          "const": true
+        }
+      }
+    },
+    "developer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "availability"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 3
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/"
+        },
+        "url_from_control": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "launch_command": {
+          "type": "string",
+          "minLength": 3
+        },
+        "stop_command": {
+          "type": "string",
+          "minLength": 3
+        },
+        "availability": {
+          "enum": [
+            "PROVIDER_RUNNING",
+            "SEPARATE_LOCAL_PROCESS",
+            "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER",
+            "SEPARATE_LEGACY_LOCAL_PROCESS",
+            "SEPARATE_MANUAL_ONLY_PROCESS"
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "url"
+          ]
+        },
+        {
+          "required": [
+            "url_from_control"
+          ]
+        },
+        {
+          "required": [
+            "launch_command"
+          ]
+        }
+      ]
+    }
+  }
+}

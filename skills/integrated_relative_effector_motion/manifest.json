@@ -1,0 +1,102 @@
+{
+  "skill_type": "integrated_relative_effector_motion",
+  "version": "0.1.0",
+  "display_name": "Integrated Relative End-Effector Motion",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Open Physical Agent Developer UI",
+      "url": "http://127.0.0.1:8000/dev",
+      "availability": "SEPARATE_LOCAL_PROCESS"
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "preview_relative_effector_motion",
+    "description": "Preview one new relative end-effector displacement from the current measured pose through the Integrated Controller. Repeated requests are cumulative: each request creates another displacement from the latest measured pose. Before using this Skill, inspect runtime and activate robot_arm.rebot_dm to HOT first, then robot_arm.primary.integrated to HOT. In the arm-base frame, UP is positive Y because gravity is negative Y. PREVIEW_READY is not a completed workflow: immediately call the returned required_next_tool with its arguments unchanged to present the separate physical-execution approval.",
+    "when_to_use": [
+      "The operator requests a new relative Cartesian end-effector displacement.",
+      "The Basic and Integrated arm Providers can be activated in dependency order.",
+      "A fresh measured controlled-frame pose is available."
+    ],
+    "when_not_to_use": [
+      "The request is safe-home, gravity float, emergency stop, or raw joint control.",
+      "The collision scene or required controller state is unavailable and the operator does not accept that limitation."
+    ],
+    "side_effects": [
+      "May require approval-gated activation of the Basic and Integrated arm Providers.",
+      "Stages a nonphysical Integrated Controller target and preview.",
+      "Does not itself authorize or execute physical motion."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "robot.arm.state.read",
+      "robot.motion.preview"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": [
+            "UP",
+            "DOWN",
+            "POSITIVE_X",
+            "NEGATIVE_X",
+            "POSITIVE_Z",
+            "NEGATIVE_Z"
+          ]
+        },
+        "distance_m": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 0.2
+        }
+      },
+      "required": [
+        "direction",
+        "distance_m"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.integrated_relative_effector_motion.preview.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "robot_arm.joint_state",
+    "robot_arm.gravity_float",
+    "robot_arm.control.operational_api_v2",
+    "robot.motion.arm.integrated.plan.direct.nonphysical",
+    "robot_arm.integrated.position_3dof_ik"
+  ],
+  "optional_capabilities": [
+    "robot_arm.integrated.semantic_scene_consumer"
+  ],
+  "route_policy": {
+    "provider_activation_sequence": [
+      {
+        "provider_id": "robot_arm.rebot_dm",
+        "required_residency": "HOT",
+        "reason": "Owns the hardware, joint feedback, gravity float, and fenced operational control."
+      },
+      {
+        "provider_id": "robot_arm.primary.integrated",
+        "required_residency": "HOT",
+        "reason": "Owns Cartesian IK preview and one-shot motion execution."
+      }
+    ],
+    "preview_then_approve": true,
+    "physical_execution_tool": "execute_integrated_motion_preview"
+  },
+  "published_streams": []
+}

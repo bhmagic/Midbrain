@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Midbrain</title>
+  <link rel="stylesheet" href="/assets/manager.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MIDBRAIN · SYSTEM PORTAL</p>
+        <h1>Midbrain</h1>
+        <p class="subtitle">Observe the system, enter Agent workflows, open guarded component tools, and shut down safely.</p>
+      </div>
+      <div class="header-actions">
+        <span id="refreshState" class="quiet-status">Connecting</span>
+        <button id="refreshButton" class="secondary-button" type="button">Refresh</button>
+        <a class="danger-button" href="/shutdown">Shut down Midbrain</a>
+      </div>
+    </header>
+
+    <section class="core-grid" aria-label="Core services">
+      <article class="metric-card">
+        <div class="metric-heading"><span>Manager</span><span id="managerLamp" class="lamp muted"></span></div>
+        <strong id="managerStatus">Checking</strong>
+        <small id="managerPolicy">Autostart policy unknown</small>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><span>Fabric</span><span id="fabricLamp" class="lamp muted"></span></div>
+        <strong id="fabricStatus">Checking</strong>
+        <small id="fabricDetails">No stream data yet</small>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><span>Providers</span><span class="lamp neutral"></span></div>
+        <strong id="providerMetric">0 configured</strong>
+        <small id="providerDetails">Waiting for Manager</small>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><span>Skills</span><span class="lamp neutral"></span></div>
+        <strong id="skillMetric">0 installed</strong>
+        <small id="skillDetails">Waiting for catalog</small>
+      </article>
+    </section>
+
+    <section class="agent-panel" aria-labelledby="agentHeading">
+      <div>
+        <p class="eyebrow">AGENT SURFACES</p>
+        <h2 id="agentHeading">Choose an Agent interaction surface</h2>
+        <p id="agentState" class="section-note">Checking whether the Agent service is available.</p>
+      </div>
+      <div class="agent-links">
+        <a id="regularAgentLink" class="agent-link" href="http://127.0.0.1:8000/" target="_blank" rel="noreferrer">
+          <span>Regular agent</span>
+          <small>Curated Skills, approved Provider lifecycle, relative IK, and safe-home</small>
+        </a>
+        <a id="developerAgentLink" class="agent-link developer" href="http://127.0.0.1:8000/dev" target="_blank" rel="noreferrer">
+          <span>Developer agent</span>
+          <small>Tool catalog, bindings, diagnostics, and direct development workflows</small>
+        </a>
+      </div>
+    </section>
+
+    <section class="component-section" aria-labelledby="providerHeading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PERSISTENT SERVICES</p>
+          <h2 id="providerHeading">Providers</h2>
+        </div>
+        <p class="section-note">Lifecycle and heartbeat status are Manager-owned. Observation pages are read-only.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Liveness</th>
+              <th>Residency</th>
+              <th>Heartbeat</th>
+              <th>Observation</th>
+            </tr>
+          </thead>
+          <tbody id="providerRows">
+            <tr><td colspan="5" class="empty-cell">Loading Provider registry…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="component-section" aria-labelledby="skillHeading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">FINITE WORK</p>
+          <h2 id="skillHeading">Skills</h2>
+        </div>
+        <p class="section-note">Idle is healthy for a finite Skill. Availability and last execution are shown separately.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Skill</th>
+              <th>Liveness</th>
+              <th>Last execution</th>
+              <th>Adapter</th>
+              <th>Observation</th>
+            </tr>
+          </thead>
+          <tbody id="skillRows">
+            <tr><td colspan="5" class="empty-cell">Loading Skill catalog…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <span>Primary portal · observation-first startup</span>
+      <span id="observedAt">No sample received</span>
+    </footer>
+  </main>
+  <script src="/assets/mainframe.js"></script>
+</body>
+</html>

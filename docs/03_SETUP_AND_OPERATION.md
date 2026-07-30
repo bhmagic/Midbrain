@@ -90,7 +90,17 @@ To set explicit SDK paths:
   -OrbbecBinDir "C:\Program Files\OrbbecSDK 2.8.6\bin"
 ```
 
-## Start
+## Start and enter Midbrain
+
+For normal Windows operation, double-click `Start Midbrain.cmd` from the
+workspace root. It starts Manager, Fabric, and the idle Agent UI service, then
+opens the main Midbrain portal at `http://127.0.0.1:7001/`.
+
+The portal is the primary interaction surface. Opening it does not activate a
+Provider, execute a Skill, or authorize physical motion. Providers remain
+`COLD` until an operator or approved Agent workflow requests them.
+
+Use the PowerShell launcher for automation, recovery, or development:
 
 ```powershell
 .\platform_core\scripts\run_workspace.ps1
@@ -98,35 +108,89 @@ To set explicit SDK paths:
 
 Options:
 
-- `-NoBrowser`: do not open the Test Agent UI automatically.
-- `-CoreOnly`: start Manager and Fabric without Python Providers or the GUI.
+- `-NoBrowser`: start without opening the portal.
+- `-StartAgentUi`: start the regular and developer Agent pages on port 8000.
+- `-AllowProviderAutoStart`: explicitly honor Provider `auto_start` entries.
+- `-CoreOnly`: compatibility alias for Manager + Fabric only; it cannot be
+  combined with `-StartAgentUi`.
 
-Default endpoints:
+`Start Midbrain.cmd` supplies `-StartAgentUi`. The direct PowerShell default
+does not. Neither path honors Provider auto-start without the explicit flag.
+
+## Operate from the main portal
+
+Use the portal in this order:
+
+1. Confirm the Manager and Fabric summaries are live.
+2. Read Provider and Skill cards before starting anything. Process liveness,
+   residency, readiness, data freshness, and active work are separate signals.
+3. Open a component's read-only observation page for its manifest,
+   capabilities, streams, latest state, and recent error details.
+4. Enter a component development UI only through its guarded link. Acknowledge
+   that administrative controls can overstep the Agent.
+5. If the component is stopped, review the activation request and confirm only
+   when the hardware and work area are ready.
+6. Open the regular Agent for ordinary tasks. Use the developer Agent when
+   wider Skill/Provider discovery is the purpose of the test.
+7. Use **Shut down Midbrain** when finished. It invokes
+   `platform_core\scripts\stop_workspace.ps1` through the guarded portal flow.
+
+The portal links have distinct authority:
+
+| Portal link | Purpose and side effects |
+|---|---|
+| Provider/Skill observation | Read-only state and diagnostics; does not activate or execute. |
+| Development UI | Requires overstepping acknowledgement; may request bounded activation before opening. |
+| Regular Agent | Curated typed Skills and approval-gated lifecycle or motion actions. |
+| Developer Agent | Wider typed discovery and testing; approval requirements remain. |
+| Shut down Midbrain | Runs the safety-ordered workspace stop after confirmation. |
+
+See [Midbrain Main GUI Portal](04_MAIN_GUI_PORTAL.md) for the complete operator
+workflow and recovery guidance.
+
+## Agent interaction from the portal
+
+Both Agent surfaces may inspect current runtime state and propose Provider
+lifecycle changes. Every lifecycle change presents a plain-language
+confirmation naming the Provider, requested state, and hardware consequence.
+
+For supported relative arm motion, the Agent should:
+
+1. Inspect current runtime state, even if an earlier conversation reported the
+   controllers running.
+2. Request approval for Basic to reach `HOT`.
+3. Request approval for Integrated to reach `HOT`.
+4. Produce a nonphysical IK preview from the latest measured pose.
+5. Present a separate approval for execution of that exact preview.
+6. Wait for the bounded controller result and report success only when physical
+   completion is confirmed.
+
+Repeated relative commands are cumulative from the latest measured pose. The
+Agent does not convert them into absolute world-coordinate requests. Safe-home
+is a separate approval-gated Basic Controller operation.
+
+Both Agent pages support per-run Agent model, reasoning-effort, and configured
+visual-backend selection. Terra with medium reasoning is the balanced default.
+A stronger model can improve interpretation but cannot replace controller
+validation, approval, fencing, collision checks, or physical safety controls.
+
+## Direct endpoints for development and recovery
+
+Use these when the portal is unavailable or when developing a component:
 
 | Service | URL |
 |---|---|
-| Manager health/control | `http://127.0.0.1:7001` |
+| Midbrain main portal | `http://127.0.0.1:7001/` |
+| Manager health/control | `http://127.0.0.1:7001/v1` |
 | Fabric health/state | `http://127.0.0.1:7002` |
 | Camera Provider control | `http://127.0.0.1:7101` |
 | Local VIO Provider control | `http://127.0.0.1:7102` |
 | FoundationPose Provider control | `http://127.0.0.1:7103` |
 | reBot Arm DM Basic control | `http://127.0.0.1:8791` |
 | reBot Arm Integrated control/GUI | `http://127.0.0.1:8793` |
-| Test Agent GUI | `http://127.0.0.1:8000` |
+| Regular Agent UI | `http://127.0.0.1:8000/` |
+| Developer Agent UI | `http://127.0.0.1:8000/dev` |
 | Calibration GUI | `http://127.0.0.1:8111` |
-
-## Normal startup sequence
-
-1. Secure the camera and leave it still.
-2. Start the workspace.
-3. Confirm the camera Provider becomes `HOT` and RGB/depth observations appear.
-4. The Test Agent starts Initialize Space Cognition automatically unless disabled.
-5. The Skill acquires motion inhibit and waits for the Local VIO Provider to observe it.
-6. The Local VIO initializer selects recent accelerometer and gyro windows in a common IMU time domain.
-7. Confirm the selected initialization counts reach the configured requirement, normally `80/80`.
-8. Confirm the initialization blocker becomes `none` and the Skill reaches `SUCCEEDED`.
-9. Confirm inertial propagation steps increase and `localization.body.pose` is available.
-10. Confirm the point-cloud GUI changes to `CAPTURING`.
 
 ## Status and stop
 
