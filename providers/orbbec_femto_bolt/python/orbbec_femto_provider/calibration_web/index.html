@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Femto Bolt Accelerometer Calibration</title>
+  <title>Femto Bolt Camera Development</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <header>
       <div>
         <p class="eyebrow">Orbbec Femto Bolt</p>
-        <h1>Six-position accelerometer calibration</h1>
-        <p class="subtle">Keep the workspace and camera Provider running. Each accepted pose is averaged for two seconds from raw shared-memory IMU samples.</p>
+        <h1>RGB-D camera development</h1>
+        <p class="subtle">Live Provider observations and device-specific calibration. Keep the workspace and camera Provider running.</p>
       </div>
       <div id="connectionBadge" class="badge neutral">Connecting</div>
     </header>
@@ -24,9 +24,28 @@
       <div><span>Config path</span><strong id="calibrationPath" class="path">—</strong></div>
     </section>
 
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Latest sensor frames</h2>
+          <p class="subtle">Provider-local RGB and depth aligned to the RGB grid. These images are copied directly from the camera shared-memory route.</p>
+        </div>
+      </div>
+      <div class="sensor-grid">
+        <figure>
+          <figcaption>RGB</figcaption>
+          <img id="rgbFrame" alt="Latest RGB frame">
+        </figure>
+        <figure>
+          <figcaption>Depth aligned to RGB</figcaption>
+          <img id="depthFrame" alt="Latest aligned depth frame">
+        </figure>
+      </div>
+    </section>
+
     <section class="panel live-panel">
       <div>
-        <h2>Live raw acceleration</h2>
+        <h2>Accelerometer calibration</h2>
         <p class="subtle">At rest, the dominant axis should approach ±9.80665 m/s². Use the live values to find each requested orientation.</p>
       </div>
       <div class="live-values">

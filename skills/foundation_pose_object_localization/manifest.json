@@ -1,0 +1,95 @@
+{
+  "skill_type": "foundation_pose_object_localization",
+  "version": "0.1.0",
+  "display_name": "FoundationPose Object Localization",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": false,
+    "disabled_reason": "Nested perception primitive; direct Agent use requires a future typed mask-or-bounding-box initialization contract.",
+    "tool_name": "localize_known_cad_object",
+    "description": "Run a bounded FoundationPose registration and tracking operation for a known CAD model using synchronized RGB-D evidence and an explicit initialization mask. This is a finite nested perception Skill, not a continuously resident Provider.",
+    "when_to_use": [
+      "A parent Skill has synchronized RGB-D frames, camera intrinsics, a known model ID, and a reviewed initialization mask.",
+      "Occasional high-cost CAD-model localization is needed inside a bounded workflow."
+    ],
+    "when_not_to_use": [
+      "Continuous low-latency object tracking is required.",
+      "No explicit mask or reviewed bounding-box initialization is available.",
+      "A generic unknown-object visual description is sufficient."
+    ],
+    "side_effects": [
+      "Loads a high-cost GPU model runtime for the bounded invocation.",
+      "May retain prepared estimators only within that invocation.",
+      "Releases owned estimator sessions and GPU caches when the invocation ends."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "camera.rgb.read",
+      "camera.depth.read",
+      "model_registry.read",
+      "gpu.compute"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "model_id": {
+          "type": "string"
+        },
+        "initialization_mask_ref": {
+          "type": "string"
+        },
+        "rgbd_bundle_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model_id",
+        "initialization_mask_ref",
+        "rgbd_bundle_ref"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.foundation_pose_object_localization.nested.v1",
+      "kind": "MANUAL_LOCAL_ONLY",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry"
+  ],
+  "optional_capabilities": [
+    "localization.vio.local_pose"
+  ],
+  "published_streams": [
+    "skills.foundation_pose_object_localization.status"
+  ],
+  "runtime_contract": {
+    "ownership": "SKILL",
+    "residency": "LOAD_ON_INVOCATION_RELEASE_ON_COMPLETION",
+    "default_execution_host": "PROVIDER",
+    "execution_host_reason": "The NVIDIA SDK and PyTorch CUDA runtime remain isolated in the FoundationPose Provider environment while the parent Skill owns the bounded job.",
+    "session_scope": "ONE_PARENT_SKILL_ATTEMPT",
+    "prepared_model_reuse_scope": "WITHIN_INVOCATION",
+    "requires_explicit_initialization_region": true,
+    "requires_synchronized_rgbd": true,
+    "result_transform_semantics": "CAMERA_FROM_SEMANTIC_OBJECT"
+  },
+  "compatibility": {
+    "legacy_provider_id": "perception.object_pose.foundation_pose",
+    "legacy_route": "PROVIDER_COMPATIBILITY",
+    "automatic_fallback": false,
+    "removal_condition": "Remove after all downstream consumers use the finite Skill contract and guarded hardware comparison is complete."
+  }
+}

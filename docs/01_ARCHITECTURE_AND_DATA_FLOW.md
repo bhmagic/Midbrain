@@ -37,17 +37,28 @@ The Fabric owns the framework-neutral timestamped transform graph. Current relev
 
 Static camera/IMU extrinsics come from the camera Provider. Dynamic Local VIO body transforms come from the VIO Provider. A forced reinitialization creates a new world frame and invalidates old map points because their coordinates belong to the previous epoch.
 
-The FoundationPose Provider publishes dynamic measurement edges from the selected camera optical frame to the observed Base and Gripper frames. It does not claim a world-frame transform. A separate bounded alignment Skill should aggregate stationary measurements, reject transients, resolve CAD symmetry using additional context, solve the camera-to-world relationship, and publish that relationship under its own authority. The Fabric can then compose the camera-relative object measurements with the independently established alignment.
+The finite FoundationPose Object Localization Skill produces camera-relative
+Base and Gripper measurements for a bounded parent operation. It does not claim
+a world-frame transform. Stationary Alignment owns sampling, transient
+rejection, CAD-symmetry resolution, camera-to-world solving, and publication
+under its own authority. The legacy Provider can still publish equivalent
+dynamic measurement edges for compatibility comparisons.
 
 ## FoundationPose object-pose flow
 
-1. Manager, Fabric, RGB-D camera Provider, and FoundationPose Provider are started.
-2. The tracking GUI freezes a synchronized RGB-D frame while the arm is stationary.
-3. OpenAI visual localization proposes a box and two positive object points for each target; the operator reviews them.
-4. SAM2 runs only on the padded target crop, then target-specific color refinement and radius-2 dilation improve mask continuity.
-5. FoundationPose registers the prepared CAD asset against the RGB-D frame and mask, then tracks subsequent observations.
-6. The Provider publishes `perception.object.pose`, status observations, and the Base/Gripper transform edges into the Fabric.
-7. Other Skills and Agents discover the capability and consume the transforms without depending on the GUI, OpenAI, or SAM2 implementation.
+1. Manager, Fabric, the RGB-D camera Provider, Local VIO, and the parent
+   Stationary Alignment Skill are available.
+2. The parent holds motion inhibit and captures synchronized RGB-D evidence
+   while the arm and camera remain stationary.
+3. Reviewed regions are converted into explicit Base/Gripper masks.
+4. The parent invokes `foundation_pose_object_localization` for one bounded
+   attempt and passes the current VIO epoch with its evidence.
+5. The nested Skill loads the FoundationPose runtime, registers the prepared
+   CAD asset, and returns camera-relative samples.
+6. The nested Skill closes estimator sessions, prepared-model caches, model
+   objects, and the CUDA raster context before returning.
+7. Stationary Alignment validates and aggregates the samples, then publishes
+   only its own reviewed alignment result.
 
 ## Startup data flow
 
@@ -59,8 +70,10 @@ The FoundationPose Provider publishes dynamic measurement edges from the selecte
    task.
 4. The Agent or bounded Skill inspects current runtime state and requests
    approval for required Provider activations.
-5. For spatial initialization, Initialize Space Cognition selects the camera,
-   depth, IMU, and VIO Providers after they are available.
+5. For spatial initialization, the formal Initialize / Re-establish Space
+   Cognition Skill selects the camera, depth, IMU, and VIO Providers. A
+   deliberate re-origin is approval-gated and revokes active workcell
+   calibration before changing epoch.
 6. The Skill acquires motion inhibit.
 7. It waits until Local VIO reports `motion_inhibited: true`.
 8. Local VIO creates a new session epoch.

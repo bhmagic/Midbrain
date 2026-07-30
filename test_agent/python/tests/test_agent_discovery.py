@@ -105,6 +105,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "preview_relative_effector_motion",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
+                "reinitialize_space_cognition",
                 "verify_rgbd_image_alignment",
             ],
         )
@@ -166,6 +167,12 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         observation = by_name["observe_pointed_object_from_pose"]
         self.assertFalse(observation.discoverable)
         self.assertIn("structured pointing-pixel", observation.disabled_reason)
+        foundation = by_name["localize_known_cad_object"]
+        self.assertFalse(foundation.discoverable)
+        self.assertEqual(
+            foundation.execution_adapter_kind,
+            "MANUAL_LOCAL_ONLY",
+        )
 
     def test_rgbd_skills_bind_geometry_without_making_generic_route_mandatory(
         self,

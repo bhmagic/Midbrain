@@ -90,6 +90,7 @@ The regular Agent can:
 - Inspect the current Provider and Skill catalog
 - Request approval to activate required Providers
 - Invoke its curated typed Skills
+- Request approval to establish a new spatial origin when explicitly asked
 - Preview supported relative arm motion
 - Request approval for the exact physical-motion preview
 - Request the Basic Controller safe-home operation
@@ -108,6 +109,12 @@ Each repeated relative request is another displacement from the latest
 measured pose. The Agent does not silently reinterpret it as an absolute
 world-coordinate request.
 
+`reinitialize_space_cognition` is a deliberate epoch transition, not a
+readiness check. Its approval warns that Midbrain will revoke active
+stationary-workcell calibration, reset Local VIO, clear observations bound to
+the old epoch, and require any later world-to-arm calibration to be established
+again. Keep the robot and camera stationary for the operation.
+
 The Agent page allows per-run model, reasoning-effort, and configured visual
 backend selection. Terra with medium reasoning is the balanced default. Model
 quality may improve planning and interpretation, but it never replaces
@@ -124,6 +131,12 @@ Developer mode is not an approval bypass. Provider lifecycle changes,
 safe-home, and physical execution retain their separate human confirmations.
 Use the regular Agent for ordinary operation and the developer Agent when the
 extra visibility is part of the test.
+
+FoundationPose is normally invoked as a finite nested Skill by Stationary
+Alignment. Its backend resources are released before the parent returns. If
+the compatibility Provider is used for diagnostics, stop every session and
+request `release_resources`, transition it to `WARM`, or let the bounded parent
+stop it when no foreign sessions remain.
 
 ## Shut down Midbrain
 

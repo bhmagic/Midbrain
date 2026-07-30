@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+import gc
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,6 +128,9 @@ class MockFoundationPoseBackend(FoundationPoseBackend):
 
     def reset(self, session_id: str) -> None:
         self.initialized.discard(session_id)
+
+    def close(self) -> None:
+        self.initialized.clear()
 
 
 class NvLabsFoundationPoseBackend(FoundationPoseBackend):
@@ -356,8 +360,26 @@ class NvLabsFoundationPoseBackend(FoundationPoseBackend):
             self._model_ids.clear()
             self._model_cache_keys.clear()
             self._idle_estimators.clear()
-            if self._torch is not None and bool(self._torch.cuda.is_available()):
-                self._torch.cuda.empty_cache()
+            torch_module = self._torch
+            self._scorer = None
+            self._refiner = None
+            self._glctx = None
+            self._FoundationPose = None
+            self._ScorePredictor = None
+            self._PoseRefinePredictor = None
+            self._trimesh = None
+            self._dr = None
+            self._torch = None
+            self._loaded = False
+        # Drop Python references before asking PyTorch to return unused CUDA
+        # allocations. This makes close() a reusable, explicit resource
+        # boundary rather than relying on process exit or eventual GC.
+        gc.collect()
+        if torch_module is not None and bool(torch_module.cuda.is_available()):
+            torch_module.cuda.empty_cache()
+            ipc_collect = getattr(torch_module.cuda, "ipc_collect", None)
+            if callable(ipc_collect):
+                ipc_collect()
 
     def diagnostics(self) -> dict[str, Any]:
         return {

@@ -20,13 +20,14 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import cv2
 import httpx
 import numpy as np
 
 PROVIDER_ROOT = Path(__file__).resolve().parent
+WEB_ROOT = PROVIDER_ROOT / "web"
 PYTHON_ROOT = PROVIDER_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -136,6 +137,7 @@ class FoundationPoseProvider:
         self.camera_frame = DEFAULT_CAMERA_FRAME
         self.last_camera_frame_number = -1
         self.last_status_publish_monotonic = 0.0
+        self.latest_measurements: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _create_backend(args: argparse.Namespace) -> FoundationPoseBackend:
@@ -184,10 +186,15 @@ class FoundationPoseProvider:
                         session.state = "STOPPED"
                         session.last_error = "Provider entered WARM residency"
                     self.backend.reset(session.session_id)
+                self.backend.close()
                 self.residency = "WARM"
                 self.ready = False
                 self._close_readers()
-        return {"status": "warm"}
+        return {
+            "status": "warm",
+            "resources_released": True,
+            "backend": self.backend.diagnostics(),
+        }
 
     def stop(self) -> dict[str, Any]:
         self.shutdown_event.set()
@@ -226,6 +233,8 @@ class FoundationPoseProvider:
             return self._relocalize(effective_request)
         if action in {"stop", "stop_tracking", "cancel"}:
             return self._stop_session(effective_request)
+        if action in {"release_resources", "release", "unload"}:
+            return self._release_resources()
         if action == "status":
             session_id = str(
                 effective_request.get("session_id") or ""
@@ -239,6 +248,30 @@ class FoundationPoseProvider:
             self.registry.reload()
             return self.registry.public_payload()
         raise ValueError(f"unsupported object-pose action: {action or 'empty'}")
+
+    def _release_resources(self) -> dict[str, Any]:
+        with self.iteration_lock:
+            with self.lock:
+                active = [
+                    session.session_id
+                    for session in self.sessions.values()
+                    if session.state in ACTIVE_STATES
+                ]
+                if active:
+                    raise RuntimeError(
+                        "cannot release FoundationPose resources while sessions "
+                        f"are active: {', '.join(sorted(active))}"
+                    )
+                for session in self.sessions.values():
+                    self.backend.reset(session.session_id)
+                self._close_readers()
+                self.backend.close()
+                diagnostics = self.backend.diagnostics()
+        return {
+            "status": "resources_released",
+            "resources_released": True,
+            "backend": diagnostics,
+        }
 
     def _create_session(self, request: dict[str, Any], *, operation: str) -> dict[str, Any]:
         if self.residency != "HOT":
@@ -744,6 +777,8 @@ class FoundationPoseProvider:
             "related_skill_id": session.related_skill_id,
             **transform,
         }
+        with self.lock:
+            self.latest_measurements[session.session_id] = dict(common)
         self.sequence += 1
         observations = [
             self._observation(
@@ -902,6 +937,10 @@ class FoundationPoseProvider:
                 "active_session_count": len(active),
                 "terminal_session_count": len(terminal),
                 "sessions": [session.public_payload() for session in self.sessions.values()],
+                "latest_measurements": [
+                    self.latest_measurements[key]
+                    for key in sorted(self.latest_measurements)
+                ],
                 "camera_frame": self.camera_frame,
                 "camera_calibration_revision": self.camera_calibration_revision,
                 "last_camera_frame_number": self.last_camera_frame_number,
@@ -931,8 +970,20 @@ class ControlHandler(BaseHTTPRequestHandler):
     provider: FoundationPoseProvider
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/health":
+        path = urlsplit(self.path).path
+        if path == "/health":
             self._reply(200, self.provider._status_payload())
+        elif path == "/v1/dev/models":
+            self._reply(200, self.provider.registry.public_payload())
+        elif path in {"/dev", "/dev/"}:
+            self._reply_file(WEB_ROOT / "developer.html", "text/html; charset=utf-8")
+        elif path == "/dev/developer.css":
+            self._reply_file(WEB_ROOT / "developer.css", "text/css; charset=utf-8")
+        elif path == "/dev/developer.js":
+            self._reply_file(
+                WEB_ROOT / "developer.js",
+                "text/javascript; charset=utf-8",
+            )
         else:
             self._reply(404, {"error": "not found"})
 
@@ -970,6 +1021,20 @@ class ControlHandler(BaseHTTPRequestHandler):
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _reply_file(self, path: Path, content_type: str) -> None:
+        try:
+            payload = path.read_bytes()
+        except OSError as error:
+            self._reply(500, {"error": f"development UI asset unavailable: {error}"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)

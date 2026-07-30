@@ -60,12 +60,19 @@ regular Agent. Use the Midbrain observation pages first; their developer link
 requires a separate confirmation that the operator is overstepping the
 ordinary agent workflow.
 
-When this optional service is started, it runs Initialize Space Cognition
-automatically approximately one second after startup unless
+When this optional service is started, it runs the formal Initialize /
+Re-establish Space Cognition Skill automatically in initialize-if-needed mode
+approximately one second after startup unless
 `AUTO_INITIALIZE_SPACE_COGNITION=false`. The workspace launcher sets that
 variable to `false` for `-StartAgentUi`, so an explicitly opened Agent surface
 still begins idle and prompt-driven. The normal workspace launch does not
 start this service.
+
+Both Agent surfaces can call the approval-gated
+`reinitialize_space_cognition` tool when the operator explicitly requests a new
+origin. It revokes active workcell calibration before resetting VIO, clears
+point observations from the old epoch, and resumes capture only against the
+new epoch. It is not a Provider-readiness probe.
 
 The current OpenAI Agents SDK evaluation is intentionally narrow. The
 `identify_pointed_object` function-tool description is the agent-visible Skill

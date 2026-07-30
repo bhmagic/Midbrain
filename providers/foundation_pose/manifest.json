@@ -1,8 +1,9 @@
 {
   "provider_type": "perception.object_pose.foundation_pose",
   "version": "0.3.0",
-  "display_name": "FoundationPose CAD Object Pose Provider",
+  "display_name": "FoundationPose Compatibility Provider",
   "manager_ids": ["perception.object_pose.foundation_pose"],
+  "architectural_role": "LEGACY_COMPATIBILITY_BACKEND",
   "ui": {
     "observation": {
       "kind": "MANAGER_HOSTED",
@@ -10,10 +11,9 @@
       "read_only": true
     },
     "developer": {
-      "label": "Legacy Tracking Development GUI",
-      "launch_command": ".\\providers\\foundation_pose\\scripts\\run_tracking_gui.ps1",
-      "stop_command": ".\\providers\\foundation_pose\\scripts\\stop_tracking_gui.ps1",
-      "availability": "SEPARATE_LEGACY_LOCAL_PROCESS"
+      "label": "FoundationPose Provider Development",
+      "url_from_control": "/dev",
+      "availability": "PROVIDER_RUNNING"
     }
   },
   "residency_modes": [
@@ -28,6 +28,7 @@
     "perception.object_pose.bounding_box_init",
     "perception.object_pose.relocalize",
     "perception.object_pose.stop",
+    "perception.object_pose.release_resources",
     "perception.object_pose.status",
     "perception.object_pose.model_registry"
   ],
@@ -68,6 +69,19 @@
     "manager_compatible": true,
     "shape": "{action, payload, request_id, related_skill_id}",
     "compatibility": "also accepts legacy direct top-level action fields"
+  },
+  "resource_release": {
+    "explicit_action": "release_resources",
+    "warm_transition_releases_backend": true,
+    "manager_stop_releases_process": true,
+    "reject_while_sessions_active": true,
+    "postcondition": "all owned estimator sessions, prepared-model caches, CUDA model objects, and raster contexts are released"
+  },
+  "migration": {
+    "replacement_skill": "foundation_pose_object_localization",
+    "default_parent_route": "FOUNDATIONPOSE_SKILL",
+    "automatic_provider_fallback": false,
+    "compatibility_provider_retained": true
   },
   "default_profile": "rebot_b601_dm",
   "model_registry": {

@@ -117,7 +117,8 @@ class Settings:
             (
                 "identify_pointed_object,"
                 "analyze_visual_scene,"
-                "verify_rgbd_image_alignment"
+                "verify_rgbd_image_alignment,"
+                "reinitialize_space_cognition"
             ),
         ).split(",")
         if item.strip()

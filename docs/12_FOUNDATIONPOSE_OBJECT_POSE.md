@@ -2,9 +2,19 @@
 
 ## Purpose and authority boundary
 
-The FoundationPose Provider supplies CAD-based 6D pose measurements for two robot-arm targets and publishes them through standard Midbrain observations and Fabric transform edges. It is a persistent perception service: other Skills and Agents can discover and consume its output without depending on its tracking GUI.
+The `foundation_pose_object_localization` Skill supplies CAD-based 6D pose
+measurements for known rigid targets inside bounded parent workflows. It is
+finite because model loading and registration are expensive and most robot
+tasks do not need continuous FoundationPose inference.
 
-The Provider owns camera-relative object measurements. It does not own robot motion, camera-to-world calibration, or world-frame truth. A separate bounded Skill must establish any world alignment and publish it under its own authority.
+The Skill owns camera-relative object measurements and its estimator-resource
+lifetime. It does not own robot motion, camera-to-world calibration, or
+world-frame truth. A parent such as Stationary Alignment must establish any
+world alignment and publish it under its own authority.
+
+The former `perception.object_pose.foundation_pose` Provider remains available
+as a compatibility route. It is not the default Stationary Alignment route and
+is never selected as an automatic fallback.
 
 ## Published targets
 
@@ -15,15 +25,20 @@ The Provider owns camera-relative object measurements. It does not own robot mot
 
 Each target uses its prepared CAD geometry and cached FoundationPose assets. The cache identity incorporates source content and preparation settings so future CAD models can be added without reusing incompatible derived data.
 
-## Capabilities and outputs
+## Skill contract and outputs
 
-The Provider registers with the Manager and exposes object-pose initialization, tracking, status, and target discovery through its manifest and control API. Its principal Fabric outputs are:
+The finite Skill requires synchronized RGB-D evidence, camera intrinsics, a
+known model ID, and an explicit reviewed mask or future typed bounding-box
+reference. During one invocation it can register, track, and collect multiple
+samples for its parent. It publishes lifecycle status on:
 
-- `perception.object.pose` observations carrying target identity, camera-relative pose, timestamps, validity, and diagnostics.
-- `transform.foundation_pose.object` observations backing dynamic transform edges from the selected camera optical frame to each observed target frame.
-- Provider and per-target status used to distinguish initialization, tracking, loss, errors, and requested versus achieved tracking rate.
+- `skills.foundation_pose_object_localization.status`
 
-The two targets share an observation stream schema, but the Fabric stores transform history by parent/child edge. Consumers should select by frame identity, not merely by the latest stream item.
+The parent receives `CAMERA_FROM_SEMANTIC_OBJECT` samples directly and remains
+responsible for epoch validation, aggregation, ambiguity resolution, and
+authoritative publication. The compatibility Provider continues publishing
+`perception.object.pose` and `transform.foundation_pose.object` for legacy
+consumers and guarded comparison.
 
 ## Installation
 
@@ -35,11 +50,20 @@ git lfs pull
 .\providers\foundation_pose\scripts\setup_sam2.ps1
 ```
 
-The first script creates the Provider environment, installs integration dependencies, seeds missing local configuration, and registers the Provider at its default control port. The SAM2 script installs the optional local segmentation path.
+Then install the finite runtime into Stationary Alignment:
+
+```powershell
+.\skills\stationary_world_arm_alignment\scripts\setup.ps1
+```
+
+The Provider setup preserves compatibility dependencies, seeds missing local
+model configuration, and registers the optional compatibility process. The
+Stationary setup installs the finite Skill runtime into the environment that
+owns the bounded job. SAM2 remains an optional legacy mask-development path.
 
 These scripts do not build the complete upstream NVLabs FoundationPose CUDA runtime. Prepare that compatible runtime separately and keep its checkout, compiled extensions, and environment outside Git.
 
-## Tracking GUI workflow
+## Compatibility tracking GUI workflow
 
 Launch the core workspace and RGB-D camera Provider, then run:
 
@@ -47,7 +71,8 @@ Launch the core workspace and RGB-D camera Provider, then run:
 .\providers\foundation_pose\scripts\run_tracking_gui.ps1
 ```
 
-Use this initialization sequence:
+Use this legacy initialization sequence only for diagnostics or guarded route
+comparison:
 
 1. Physically secure or separately disable the arm and keep it still.
 2. Freeze a synchronized RGB-D frame with both rigid targets visible.
@@ -58,7 +83,9 @@ Use this initialization sequence:
 7. Inspect the final mask. Prefer a connected mask covering rigid CAD-matched surfaces; do not start from a fragmented or contaminated result.
 8. Submit initialization, wait for registration to finish, and confirm both target transforms appear in the Fabric before releasing the arm.
 
-OpenAI and SAM2 are initialization aids only. Manual regions can replace them, and Fabric consumers do not need either dependency after tracking begins.
+OpenAI and SAM2 are initialization aids only. Normal Stationary Alignment
+creates and reviews its own bounded evidence and does not require a resident
+tracking process.
 
 ## Tracking rate
 
@@ -66,9 +93,16 @@ Base tracking is selectable up to 10 Hz. The experimental Gripper selector expos
 
 Higher Gripper rate did not resolve the observed pose instability. Treat mask quality, CAD symmetry, depth quality, occlusion, and target geometry as the primary debugging variables; use rate control mainly to balance latency and GPU load.
 
-## Consuming transforms from a Skill or Agent
+## Consuming finite results from a Skill or Agent
 
-Discover the Provider through the Manager capability catalog and discover current transform edges through the Fabric. To inspect the graph manually:
+Discover and invoke the parent finite Skill rather than waiting for a
+continuously updated FoundationPose transform. Stationary Alignment binds each
+result to synchronized capture provenance and a VIO session epoch, validates
+the candidate, and publishes reviewed world-to-arm calibration under its own
+authority.
+
+For compatibility diagnostics, current Provider transform edges can still be
+inspected manually:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:7002/v1/transforms
@@ -86,16 +120,20 @@ Use the Gripper child frame for the second transform. Check timestamps, validity
 
 ## Camera-to-world alignment workflow
 
-The bounded `skills/stationary_world_arm_alignment` Skill now implements this boundary. It:
+The bounded `skills/stationary_world_arm_alignment` Skill implements this
+boundary. It:
 
 1. Acquires motion inhibit and verifies that the arm and camera are stationary.
-2. Collects a time window of Base and Gripper measurements with synchronized timestamps and quality metadata.
+2. Invokes the finite FoundationPose Skill for required modes and collects a
+   time window of Base/Gripper measurements with synchronized timestamps and
+   quality metadata.
 3. Rejects warm-up, lost-track, outlier, and stale samples.
 4. Aggregates translation and rotation robustly rather than accepting one frame.
 5. Resolves symmetric CAD solutions using known Base/Gripper geometry, robot joint state, or another independent constraint.
 6. Solves the camera-to-world and arm-base transforms and retains source diagnostics.
 7. Publishes that alignment under the Skill's own source identity and coordinate-frame authority.
-8. Allows the Fabric transform graph to compose world, camera, Base, and Gripper relationships.
+8. Verifies that the nested Skill released every owned session and backend
+   resource before the parent result succeeds.
 
 This separation prevents a perception Provider from silently redefining world space and makes the alignment procedure reproducible by another Agent.
 
@@ -103,9 +141,12 @@ The Skill exposes `foundation_base_gripper`, `foundation_base_vlm_gripper`, and 
 
 ## Validation and limitations
 
-Run the Provider suite from the repository root:
+Run the finite Skill, Stationary Alignment, and compatibility Provider suites
+from the repository root:
 
 ```powershell
+.\skills\stationary_world_arm_alignment\.venv\Scripts\python.exe -m pytest -q skills\foundation_pose_object_localization\python\tests
+.\skills\stationary_world_arm_alignment\.venv\Scripts\python.exe -m pytest -q skills\stationary_world_arm_alignment\python\tests
 .\providers\foundation_pose\scripts\validate_publication.ps1
 ```
 

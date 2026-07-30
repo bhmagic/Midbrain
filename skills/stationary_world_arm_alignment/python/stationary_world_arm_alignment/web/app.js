@@ -174,6 +174,13 @@ function updateStatus(value) {
   el("cancel").disabled = !busy;
 
   const sessions = progress.provider_sessions || [];
+  const resultCount = sessions.reduce(
+    (total, session) => total + Number(session.result_count || 0),
+    0
+  );
+  el("foundation-summary").textContent = sessions.length
+    ? `${sessions.length} run session${sessions.length === 1 ? "" : "s"} · ${resultCount} result${resultCount === 1 ? "" : "s"}`
+    : "Idle; starts on demand for base alignment.";
   el("sessions").innerHTML = sessions.length ? sessions.map(session => `
     <div class="session">
       <strong>${escapeHtml(session.model_id || session.session_id || "session")}</strong>

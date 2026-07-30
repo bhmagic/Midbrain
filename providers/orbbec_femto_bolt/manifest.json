@@ -10,7 +10,7 @@
       "read_only": true
     },
     "developer": {
-      "label": "Accelerometer Calibration",
+      "label": "RGB-D Camera Development GUI",
       "url": "http://127.0.0.1:8111/",
       "launch_command": ".\\providers\\orbbec_femto_bolt\\scripts\\run_accelerometer_calibration.ps1",
       "stop_command": ".\\providers\\orbbec_femto_bolt\\scripts\\stop_accelerometer_calibration.ps1",

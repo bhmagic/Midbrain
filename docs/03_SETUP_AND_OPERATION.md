@@ -60,15 +60,20 @@ There is no repository-root Python environment. A component may install local
 editable dependencies into its own environment, but launch scripts always use
 the environment owned by the process they start.
 
-The workspace setup does not install FoundationPose or build the upstream NVLabs CUDA runtime. Set up that Provider separately after the core workspace:
+The workspace setup does not install FoundationPose or build the upstream
+NVLabs CUDA runtime. Install its assets/backend, then set up the Stationary
+Alignment parent. The finite Skill route is the default:
 
 ```powershell
 git lfs pull
 .\providers\foundation_pose\scripts\setup.ps1
-.\providers\foundation_pose\scripts\setup_sam2.ps1
+.\skills\stationary_world_arm_alignment\scripts\setup.ps1
 ```
 
-`setup.ps1` creates the Provider environment, installs Midbrain integration support, seeds missing local configuration, and registers the Provider. It does not compile the complete upstream FoundationPose runtime.
+The Provider setup preserves the compatibility runtime and seeds model assets.
+The Stationary setup installs the finite FoundationPose Skill runtime into the
+parent Skill environment. Neither command compiles the complete upstream
+FoundationPose runtime.
 
 Set up the two reBot arm Providers independently so each owns its own `.venv`:
 
@@ -221,9 +226,11 @@ Expected progression:
 
 Use **Clear point cloud** to remove accumulated display points without resetting VIO or changing the current coordinate epoch.
 
-## FoundationPose operator workflow
+## FoundationPose compatibility operator workflow
 
-Start the core workspace, camera Provider, and FoundationPose tracking GUI:
+The normal Stationary Alignment workflow invokes FoundationPose as a bounded
+Skill and releases its backend automatically. Use the legacy tracking GUI only
+for compatibility diagnostics or guarded route comparison:
 
 ```powershell
 .\providers\foundation_pose\scripts\run_tracking_gui.ps1
@@ -234,3 +241,7 @@ Keep the arm still during initialization. Freeze a suitable RGB-D frame, request
 The tested Base refinement uses median Lab color distance 30 followed by radius-2 dilation. The tested neon-green Gripper-root refinement uses a median RGB seed with 10% per-channel drift followed by radius-2 dilation. These are empirical defaults, not universal segmentation guarantees.
 
 Base tracking is selectable up to 10 Hz. The experimental Gripper selector exposes rates up to 60 Hz, but actual throughput remains bounded by inference and hardware load; raising the requested rate did not correct the observed Gripper stability problem. Use the lowest stable rate that supplies timely measurements.
+
+After a compatibility job, stop every owned session and send
+`release_resources`, or transition the Provider to `WARM`. Both paths unload
+the backend; the request is rejected while any session is still active.

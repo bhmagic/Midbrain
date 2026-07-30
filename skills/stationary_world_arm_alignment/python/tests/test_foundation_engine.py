@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import sys
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 import numpy as np
 
 from stationary_world_arm_alignment.foundation_engine import (
+    FOUNDATIONPOSE_SKILL_PACKAGE,
+    PROVIDER_EXECUTION_HOST,
     LocalFoundationPoseEngine,
     PROVIDER_COMPATIBILITY_ROUTE,
     SKILL_LOCAL_ROUTE,
+    _load_finite_foundation_pose_runtime,
     normalize_base_pose_engine_route,
+    normalize_foundation_pose_execution_host,
 )
 from stationary_world_arm_alignment.math3d import transform_payload
 
@@ -91,14 +97,68 @@ def _frame(frame_number):
     )
 
 
-def test_route_default_is_provider_compatibility() -> None:
-    assert normalize_base_pose_engine_route({}) == PROVIDER_COMPATIBILITY_ROUTE
+def test_route_default_is_finite_foundation_pose_skill() -> None:
+    assert normalize_base_pose_engine_route({}) == SKILL_LOCAL_ROUTE
     assert (
         normalize_base_pose_engine_route(
             {"base_pose_engine": {"active_route": "skill_local"}}
         )
         == SKILL_LOCAL_ROUTE
     )
+
+
+def test_finite_skill_defaults_to_provider_execution_host() -> None:
+    assert normalize_foundation_pose_execution_host({}) == (
+        PROVIDER_EXECUTION_HOST
+    )
+    assert normalize_foundation_pose_execution_host(
+        {
+            "base_pose_engine": {
+                "active_route": SKILL_LOCAL_ROUTE,
+                "foundation_pose_skill": {
+                    "execution_host": "provider",
+                },
+            }
+        }
+    ) == PROVIDER_EXECUTION_HOST
+
+
+def test_checked_out_finite_runtime_is_discovered_without_reinstall(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    package_dir = (
+        tmp_path
+        / "skills"
+        / "foundation_pose_object_localization"
+        / "python"
+        / FOUNDATIONPOSE_SKILL_PACKAGE
+    )
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(
+        "class FiniteFoundationPoseRuntime:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    previous_module = sys.modules.pop(FOUNDATIONPOSE_SKILL_PACKAGE, None)
+    real_import_module = importlib.import_module
+
+    def report_package_missing(name: str):
+        if name == FOUNDATIONPOSE_SKILL_PACKAGE:
+            raise ModuleNotFoundError(
+                f"No module named '{FOUNDATIONPOSE_SKILL_PACKAGE}'",
+                name=FOUNDATIONPOSE_SKILL_PACKAGE,
+            )
+        return real_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", report_package_missing)
+    try:
+        runtime_type = _load_finite_foundation_pose_runtime(tmp_path)
+        assert runtime_type.__name__ == "FiniteFoundationPoseRuntime"
+    finally:
+        sys.modules.pop(FOUNDATIONPOSE_SKILL_PACKAGE, None)
+        if previous_module is not None:
+            sys.modules[FOUNDATIONPOSE_SKILL_PACKAGE] = previous_module
 
 
 def test_local_engine_produces_provider_compatible_sample_shape() -> None:

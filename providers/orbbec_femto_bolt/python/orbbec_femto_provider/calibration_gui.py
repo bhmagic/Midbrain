@@ -10,8 +10,12 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+from PIL import Image
 
 from .accelerometer_calibration import (
     POSE_ORDER,
@@ -26,7 +30,12 @@ from .device_calibration import (
     load_or_create_accelerometer_calibration,
     write_accelerometer_calibration_document,
 )
-from .shared_memory_access import CameraSharedMemory, STREAM_ACCEL
+from .shared_memory_access import (
+    CameraSharedMemory,
+    STREAM_ACCEL,
+    STREAM_ALIGNED_DEPTH,
+    STREAM_COLOR,
+)
 
 
 class CalibrationSession:
@@ -122,6 +131,67 @@ class CalibrationSession:
                 "last_solution": self.last_solution,
                 "last_write": self.last_write,
             }
+
+    def latest_image(self, stream_kind: int) -> tuple[bytes, str]:
+        with self.lock:
+            reader = self._ensure_reader()
+            reference = reader.latest_ref(stream_kind)
+            if reference is None:
+                raise RuntimeError("the requested camera frame is unavailable")
+            payload = reader.read_ref(reference)
+            if stream_kind == STREAM_COLOR:
+                return self._encode_color(reference, payload), "image/jpeg"
+            if stream_kind == STREAM_ALIGNED_DEPTH:
+                return self._encode_depth(reference, payload), "image/png"
+            raise ValueError("unsupported observation stream")
+
+    @staticmethod
+    def _encode_color(reference: Any, payload: bytes) -> bytes:
+        format_name = str(reference.format_name or "").upper()
+        if format_name in {"MJPG", "MJPEG", "JPEG", "JPG"}:
+            return payload
+        size = (int(reference.width), int(reference.height))
+        if format_name == "RGB":
+            image = Image.frombytes("RGB", size, payload)
+        elif format_name == "BGR":
+            image = Image.frombytes("RGB", size, payload, "raw", "BGR")
+        else:
+            raise RuntimeError(f"unsupported color format: {format_name}")
+        output = BytesIO()
+        image.save(output, format="JPEG", quality=90)
+        return output.getvalue()
+
+    @staticmethod
+    def _encode_depth(reference: Any, payload: bytes) -> bytes:
+        width = int(reference.width)
+        height = int(reference.height)
+        count = width * height
+        values = np.frombuffer(payload, dtype="<u2", count=count)
+        if values.size != count:
+            raise RuntimeError("aligned-depth payload is shorter than its image grid")
+        values = values.reshape((height, width))
+        valid = values[values > 0]
+        if valid.size:
+            near = float(np.percentile(valid, 2.0))
+            far = float(np.percentile(valid, 98.0))
+            if far <= near:
+                far = near + 1.0
+            rendered = np.where(
+                values > 0,
+                np.clip(
+                    (far - values.astype(np.float32))
+                    * 255.0
+                    / (far - near),
+                    0,
+                    255,
+                ),
+                0,
+            ).astype(np.uint8)
+        else:
+            rendered = np.zeros((height, width), dtype=np.uint8)
+        output = BytesIO()
+        Image.fromarray(rendered, mode="L").save(output, format="PNG")
+        return output.getvalue()
 
     def capture(self, pose: str) -> dict[str, Any]:
         if pose not in POSE_ORDER:
@@ -257,6 +327,16 @@ class CalibrationHandler(BaseHTTPRequestHandler):
             if self.path == "/api/status":
                 self._json(HTTPStatus.OK, self.session.status())
                 return
+            if self.path.startswith("/api/frames/rgb"):
+                payload, content_type = self.session.latest_image(STREAM_COLOR)
+                self._bytes(HTTPStatus.OK, payload, content_type)
+                return
+            if self.path.startswith("/api/frames/depth"):
+                payload, content_type = self.session.latest_image(
+                    STREAM_ALIGNED_DEPTH
+                )
+                self._bytes(HTTPStatus.OK, payload, content_type)
+                return
             if self.path in {"/", "/index.html"}:
                 self._static("index.html", "text/html; charset=utf-8")
                 return
@@ -308,8 +388,16 @@ class CalibrationHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: HTTPStatus, body: dict[str, Any]) -> None:
         payload = json.dumps(body).encode("utf-8")
+        self._bytes(status, payload, "application/json")
+
+    def _bytes(
+        self,
+        status: HTTPStatus,
+        payload: bytes,
+        content_type: str,
+    ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()

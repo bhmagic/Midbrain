@@ -27,28 +27,17 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
     }
 }
 
-Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "pip")
-$OrbbecPython = (Resolve-Path (Join-Path $WorkspaceRoot "providers\orbbec_femto_bolt\python")).Path
 $FoundationPosePython = (
     Resolve-Path (Join-Path $WorkspaceRoot "providers\foundation_pose\python")
-).Path
-$FoundationPoseSkill = (
-    Resolve-Path (
-        Join-Path $WorkspaceRoot "skills\foundation_pose_object_localization"
-    )
 ).Path
 Invoke-Checked $VenvPython @(
     "-m",
     "pip",
     "install",
     "-e",
-    $OrbbecPython,
-    "-e",
     $FoundationPosePython,
-    "-e",
-    $FoundationPoseSkill,
     "-e",
     $SkillRoot
 )
 
-Write-Host "Skill environment ready: $VenvPython"
+Write-Host "FoundationPose Skill environment ready: $VenvPython"

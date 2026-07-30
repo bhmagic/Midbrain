@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -17,6 +18,11 @@ class ManagerClient:
 
     async def providers(self) -> list[dict[str, Any]]:
         response = await self._client.get(f"{self.base_url}/v1/providers")
+        response.raise_for_status()
+        return response.json()
+
+    async def ui_overview(self) -> dict[str, Any]:
+        response = await self._client.get(f"{self.base_url}/v1/ui/overview")
         response.raise_for_status()
         return response.json()
 
@@ -126,6 +132,36 @@ class ManagerClient:
 
     async def motion_inhibit_status(self) -> dict[str, Any]:
         response = await self._client.get(f"{self.base_url}/v1/motion/inhibit")
+        response.raise_for_status()
+        return response.json()
+
+    async def workcell_calibrations(self) -> dict[str, Any]:
+        response = await self._client.get(
+            f"{self.base_url}/v1/workcell-calibrations"
+        )
+        response.raise_for_status()
+        value = response.json()
+        return value if isinstance(value, dict) else {"activations": []}
+
+    async def revoke_workcell_calibration(
+        self,
+        activation_id: str,
+        *,
+        request_id: str,
+        revoked_by: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            (
+                f"{self.base_url}/v1/workcell-calibrations/"
+                f"{quote(activation_id, safe='')}/revoke"
+            ),
+            json={
+                "request_id": request_id,
+                "revoked_by": revoked_by,
+                "reason": reason,
+            },
+        )
         response.raise_for_status()
         return response.json()
 
