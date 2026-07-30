@@ -434,6 +434,10 @@ class ProviderSessionTests(unittest.TestCase):
                 transform_data["child_frame"],
                 "observed_object/test/base",
             )
+            self.assertEqual(
+                provider.latest_measurements["session-1"]["model_id"],
+                "robot_base",
+            )
             provider.http.close()
 
 

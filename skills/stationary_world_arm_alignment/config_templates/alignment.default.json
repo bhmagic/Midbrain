@@ -17,6 +17,7 @@
     "provider_fallback_available": true,
     "automatic_fallback_enabled": false,
     "foundation_pose_skill": {
+      "execution_host": "PROVIDER",
       "backend": "nvlabs",
       "foundationpose_root": "providers/foundation_pose/nvlabs/FoundationPose",
       "model_registry": "config/foundation_pose/models.json",

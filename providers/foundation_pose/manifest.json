@@ -11,10 +11,9 @@
       "read_only": true
     },
     "developer": {
-      "label": "Legacy Tracking Development GUI",
-      "launch_command": ".\\providers\\foundation_pose\\scripts\\run_tracking_gui.ps1",
-      "stop_command": ".\\providers\\foundation_pose\\scripts\\stop_tracking_gui.ps1",
-      "availability": "SEPARATE_LEGACY_LOCAL_PROCESS"
+      "label": "FoundationPose Provider Development",
+      "url_from_control": "/dev",
+      "availability": "PROVIDER_RUNNING"
     }
   },
   "residency_modes": [

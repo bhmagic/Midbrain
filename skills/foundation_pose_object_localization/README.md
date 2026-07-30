@@ -7,13 +7,15 @@ owns registration/tracking sessions for one bounded parent operation and
 releases them when that operation ends.
 
 The first production caller is Stationary World-Space Arm Finder. Its
-`FOUNDATIONPOSE_SKILL` route owns masks, sampling, VIO-epoch checks, and result
-validation; this Skill owns FoundationPose backend construction, estimator
-sessions, and cleanup.
+`FOUNDATIONPOSE_SKILL` route owns masks, sampling, VIO-epoch checks, result
+validation, and the bounded job lifetime. By default, the NVIDIA computation
+runs in the FoundationPose Provider process because that isolated environment
+owns PyTorch, CUDA, and the pinned NVLabs SDK. The Skill stops its sessions,
+requests explicit GPU-resource release, and stops the Provider after completion
+when no foreign session remains.
 
-The existing `perception.object_pose.foundation_pose` Provider remains a
-temporary compatibility backend. It is no longer the default Stationary
-Alignment route and must never be selected as an automatic fallback. Keeping
-that route during migration preserves existing session IDs, streams, and
-hardware comparison procedures without making a long-lived Provider the new
-architectural owner.
+The `perception.object_pose.foundation_pose` Provider is the execution host, not
+the workflow owner. It reports generic camera-relative CAD-object poses and
+does not decide robot roles, world alignment, calibration validity, or
+activation. An explicit `IN_PROCESS` execution host remains available for
+dependency-complete development environments, but it is not the default.

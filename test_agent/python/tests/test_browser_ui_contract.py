@@ -32,6 +32,11 @@ class BrowserUiContractTests(unittest.TestCase):
             / "calibration_web"
             / "styles.css",
             root
+            / "providers"
+            / "foundation_pose"
+            / "web"
+            / "developer.css",
+            root
             / "skills"
             / "stationary_world_arm_alignment"
             / "python"
@@ -173,6 +178,44 @@ class BrowserUiContractTests(unittest.TestCase):
         for color in ("#07111b", "#081019", "#0a0f14", "#47b7e8"):
             self.assertNotIn(color, gui)
 
+    def test_foundation_pose_browser_ui_matches_provider_duty(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        provider_root = root / "providers" / "foundation_pose"
+        manifest = json.loads(
+            (provider_root / "manifest.json").read_text(encoding="utf-8")
+        )
+        html = (provider_root / "web" / "developer.html").read_text(
+            encoding="utf-8"
+        )
+        script = (provider_root / "web" / "developer.js").read_text(
+            encoding="utf-8"
+        )
+        provider = (provider_root / "provider.py").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            manifest["ui"]["developer"]["url_from_control"],
+            "/dev",
+        )
+        self.assertEqual(
+            manifest["ui"]["developer"]["availability"],
+            "PROVIDER_RUNNING",
+        )
+        for expected in (
+            "Latest camera-relative poses",
+            "Installed CAD models",
+            "Release unused GPU resources",
+        ):
+            self.assertIn(expected, html)
+        for retired_workflow in (
+            "Start Midbrain + Providers",
+            "Ask VLM",
+            "Make SAM2 Masks",
+        ):
+            self.assertNotIn(retired_workflow, html)
+            self.assertNotIn(retired_workflow, script)
+        self.assertIn('path in {"/dev", "/dev/"}', provider)
+        self.assertIn('"latest_measurements"', provider)
+
     def test_authorization_popup_states_approval_does_not_execute(self) -> None:
         root = Path(__file__).resolve().parents[3]
         app = (
@@ -263,6 +306,10 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('id="spaceCognitionLinkPanel"', app)
         self.assertIn('id="spaceCognitionPanel"', app)
         self.assertIn("spaceCognitionPanel.hidden = true", app)
+        self.assertLess(
+            app.index('id="worldPointCloudPanel"'),
+            app.index('id="spaceCognitionLinkPanel"'),
+        )
         self.assertTrue(manifest["ui"]["developer"]["url"].endswith(route))
 
     def test_developer_boundary_requires_explicit_overstep_confirmation(

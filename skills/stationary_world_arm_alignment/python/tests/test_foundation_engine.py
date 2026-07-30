@@ -10,11 +10,13 @@ import numpy as np
 
 from stationary_world_arm_alignment.foundation_engine import (
     FOUNDATIONPOSE_SKILL_PACKAGE,
+    PROVIDER_EXECUTION_HOST,
     LocalFoundationPoseEngine,
     PROVIDER_COMPATIBILITY_ROUTE,
     SKILL_LOCAL_ROUTE,
     _load_finite_foundation_pose_runtime,
     normalize_base_pose_engine_route,
+    normalize_foundation_pose_execution_host,
 )
 from stationary_world_arm_alignment.math3d import transform_payload
 
@@ -103,6 +105,22 @@ def test_route_default_is_finite_foundation_pose_skill() -> None:
         )
         == SKILL_LOCAL_ROUTE
     )
+
+
+def test_finite_skill_defaults_to_provider_execution_host() -> None:
+    assert normalize_foundation_pose_execution_host({}) == (
+        PROVIDER_EXECUTION_HOST
+    )
+    assert normalize_foundation_pose_execution_host(
+        {
+            "base_pose_engine": {
+                "active_route": SKILL_LOCAL_ROUTE,
+                "foundation_pose_skill": {
+                    "execution_host": "provider",
+                },
+            }
+        }
+    ) == PROVIDER_EXECUTION_HOST
 
 
 def test_checked_out_finite_runtime_is_discovered_without_reinstall(

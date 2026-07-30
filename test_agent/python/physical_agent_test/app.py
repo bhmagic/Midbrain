@@ -1423,12 +1423,6 @@ PAGE = r"""
   <p class="sub" id="pageSubtitle">All adapter-bound Skills, Provider lifecycle tools, relative IK, controller-owned safe-home, selectable models, and detailed development controls</p>
   <div class="grid">
     <div>
-      <section class="card" id="spaceCognitionLinkPanel">
-        <div class="role-kicker">Skill development</div>
-        <h2>Space cognition</h2>
-        <p class="sub">Initialization, epoch reset, VIO diagnostics, and accumulated-world controls now live with the formal Space Cognition Skill.</p>
-        <a href="/dev/skills/initialize-space-cognition" style="color:var(--mb-warning)">Open Space Cognition development UI →</a>
-      </section>
       <section class="card" id="spaceCognitionPanel">
         <div class="role-kicker">Development controls</div>
         <h2>Space cognition</h2>
@@ -1491,17 +1485,25 @@ PAGE = r"""
         </details>
       </section>
     </div>
-    <section class="card" id="worldPointCloudPanel">
-      <div class="role-kicker">Observation</div>
-      <h2>World RGB point cloud</h2>
-      <button class="secondary" id="resetView">Reset isometric view</button>
-      <div class="viewer-wrap">
-        <canvas id="cloud"></canvas>
-        <div class="viewer-overlay" id="cloudStats">Waiting for pose and RGB-D…</div>
-        <div class="gravity-overlay" id="gravityStatus">↓ World gravity · -Y</div>
-      </div>
-      <p class="controls">Orthographic isometric view. Drag to orbit, mouse wheel to change parallel scale. Orange is world-down; cyan is the current camera pose. Points use world coordinates and fade linearly over 10 seconds.</p>
-    </section>
+    <div>
+      <section class="card" id="worldPointCloudPanel">
+        <div class="role-kicker">Observation</div>
+        <h2>World RGB point cloud</h2>
+        <button class="secondary" id="resetView">Reset isometric view</button>
+        <div class="viewer-wrap">
+          <canvas id="cloud"></canvas>
+          <div class="viewer-overlay" id="cloudStats">Waiting for pose and RGB-D…</div>
+          <div class="gravity-overlay" id="gravityStatus">↓ World gravity · -Y</div>
+        </div>
+        <p class="controls">Orthographic isometric view. Drag to orbit, mouse wheel to change parallel scale. Orange is world-down; cyan is the current camera pose. Points use world coordinates and fade linearly over 10 seconds.</p>
+      </section>
+      <section class="card" id="spaceCognitionLinkPanel">
+        <div class="role-kicker">Point-cloud recovery</div>
+        <h2>Space cognition</h2>
+        <p class="sub">If the world point cloud stops updating or the local frame has drifted, inspect Space Cognition before deliberately resetting its origin.</p>
+        <a href="/dev/skills/initialize-space-cognition" style="color:var(--mb-warning)">Open Space Cognition development UI →</a>
+      </section>
+    </div>
   </div>
 </main>
 <dialog id="authorizationDialog" aria-labelledby="authorizationTitle">

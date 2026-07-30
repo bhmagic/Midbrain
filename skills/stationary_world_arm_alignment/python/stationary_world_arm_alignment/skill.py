@@ -25,9 +25,12 @@ from .clients import FabricClient, FoundationPoseHealthClient, ManagerClient
 from .config import Settings, WORKSPACE_ROOT, load_skill_config
 from .foundation_engine import (
     LocalFoundationPoseEngine,
+    IN_PROCESS_EXECUTION_HOST,
+    PROVIDER_EXECUTION_HOST,
     PROVIDER_COMPATIBILITY_ROUTE,
     SKILL_LOCAL_ROUTE,
     normalize_base_pose_engine_route,
+    normalize_foundation_pose_execution_host,
 )
 from .lease import MotionInhibitKeeper
 from .math3d import (
@@ -85,17 +88,17 @@ class AlignmentSkill:
         self.base_pose_engine_route = normalize_base_pose_engine_route(
             self.config
         )
+        self.foundation_pose_execution_host = (
+            normalize_foundation_pose_execution_host(self.config)
+        )
         self.local_foundation_engine: LocalFoundationPoseEngine | None = None
         self.last_base_pose_engine_lifecycle: dict[str, Any] = {
             "route": self.base_pose_engine_route,
             "state": "NOT_STARTED",
             "owned_session_count_after": 0,
-            "gpu_resources_released": (
-                self.base_pose_engine_route != SKILL_LOCAL_ROUTE
-            ),
-            "backend_closed": (
-                self.base_pose_engine_route != SKILL_LOCAL_ROUTE
-            ),
+            "execution_host": self.foundation_pose_execution_host,
+            "gpu_resources_released": True,
+            "backend_closed": True,
         }
         self.cancel_event = asyncio.Event()
         self.running_lock = asyncio.Lock()
@@ -357,7 +360,7 @@ class AlignmentSkill:
                     vio_from_camera=vio_from_camera,
                 )
             else:
-                if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+                if self.foundation_pose_execution_host == PROVIDER_EXECUTION_HOST:
                     await self.manager.ensure_hot(
                         self.config["foundation_pose_provider_id"],
                         timeout_s=90.0,
@@ -458,7 +461,7 @@ class AlignmentSkill:
             )
             raise
         finally:
-            if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+            if self.foundation_pose_execution_host == PROVIDER_EXECUTION_HOST:
                 cleanup_errors: list[str] = []
                 for session_id in own_sessions:
                     try:
@@ -496,7 +499,8 @@ class AlignmentSkill:
                             self.config["foundation_pose_provider_id"]
                         )
                         self.last_base_pose_engine_lifecycle = {
-                            "route": PROVIDER_COMPATIBILITY_ROUTE,
+                            "route": self.base_pose_engine_route,
+                            "execution_host": PROVIDER_EXECUTION_HOST,
                             "state": "RELEASED_AND_STOPPED",
                             "owned_session_count_after": 0,
                             "owned_sessions": sorted(own_sessions),
@@ -510,7 +514,8 @@ class AlignmentSkill:
                         }
                     else:
                         self.last_base_pose_engine_lifecycle = {
-                            "route": PROVIDER_COMPATIBILITY_ROUTE,
+                            "route": self.base_pose_engine_route,
+                            "execution_host": PROVIDER_EXECUTION_HOST,
                             "state": "RETAINED_FOR_FOREIGN_SESSIONS",
                             "owned_session_count_after": 0,
                             "owned_sessions": sorted(own_sessions),
@@ -525,7 +530,8 @@ class AlignmentSkill:
                 except Exception as error:
                     cleanup_errors.append(str(error))
                     self.last_base_pose_engine_lifecycle = {
-                        "route": PROVIDER_COMPATIBILITY_ROUTE,
+                        "route": self.base_pose_engine_route,
+                        "execution_host": PROVIDER_EXECUTION_HOST,
                         "state": "CLEANUP_FAILED",
                         "owned_session_count_after": None,
                         "owned_sessions": sorted(own_sessions),
@@ -552,7 +558,7 @@ class AlignmentSkill:
             )
         }
         selected["base_pose_engine"] = self.base_pose_engine_route
-        if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+        if self.foundation_pose_execution_host == PROVIDER_EXECUTION_HOST:
             selected["foundation_pose_provider_id"] = self.config[
                 "foundation_pose_provider_id"
             ]
@@ -874,7 +880,8 @@ class AlignmentSkill:
                 self._find_value(response, "session_id") or session_id
             )
         self.last_base_pose_engine_lifecycle = {
-            "route": PROVIDER_COMPATIBILITY_ROUTE,
+            "route": self.base_pose_engine_route,
+            "execution_host": PROVIDER_EXECUTION_HOST,
             "state": "ACTIVE",
             "owned_session_count_after": len(sessions),
             "owned_sessions": sorted(sessions.values()),
@@ -1283,7 +1290,10 @@ class AlignmentSkill:
             dict[str, dict[str, list[np.ndarray]]]
         ] = []
         for attempt in range(1, maximum_attempts + 1):
-            if self.base_pose_engine_route == SKILL_LOCAL_ROUTE:
+            if (
+                self.foundation_pose_execution_host
+                == IN_PROCESS_EXECUTION_HOST
+            ):
                 samples, session_ids = await self._collect_skill_local_foundation(
                     skill_id=skill_id,
                     run_dir=run_dir,
@@ -1398,7 +1408,7 @@ class AlignmentSkill:
             )
             if accepted:
                 return samples, validations
-            if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+            if self.foundation_pose_execution_host == PROVIDER_EXECUTION_HOST:
                 for session_id in session_ids.values():
                     await self.manager.provider_request(
                         self.config["foundation_pose_provider_id"],

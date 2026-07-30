@@ -16,6 +16,8 @@ from .math3d import transform_from_payload
 
 PROVIDER_COMPATIBILITY_ROUTE = "PROVIDER_COMPATIBILITY"
 FOUNDATIONPOSE_SKILL_ROUTE = "FOUNDATIONPOSE_SKILL"
+PROVIDER_EXECUTION_HOST = "PROVIDER"
+IN_PROCESS_EXECUTION_HOST = "IN_PROCESS"
 # Backward-compatible import name for callers written during the route trial.
 SKILL_LOCAL_ROUTE = FOUNDATIONPOSE_SKILL_ROUTE
 BASE_POSE_ENGINE_ROUTES = {
@@ -90,6 +92,27 @@ def normalize_base_pose_engine_route(config: dict[str, Any]) -> str:
     if route not in BASE_POSE_ENGINE_ROUTES:
         raise ValueError(f"unsupported stationary base-pose engine route: {route}")
     return route
+
+
+def normalize_foundation_pose_execution_host(config: dict[str, Any]) -> str:
+    route = normalize_base_pose_engine_route(config)
+    if route == PROVIDER_COMPATIBILITY_ROUTE:
+        return PROVIDER_EXECUTION_HOST
+    engine_config = config.get("base_pose_engine") or {}
+    skill_config = (
+        engine_config.get("foundation_pose_skill")
+        or engine_config.get("skill_local")
+        or {}
+    )
+    host = str(
+        skill_config.get("execution_host") or PROVIDER_EXECUTION_HOST
+    ).upper()
+    if host not in {PROVIDER_EXECUTION_HOST, IN_PROCESS_EXECUTION_HOST}:
+        raise ValueError(
+            "unsupported FoundationPose Skill execution host: "
+            f"{host}"
+        )
+    return host
 
 
 class LocalFoundationPoseEngine:

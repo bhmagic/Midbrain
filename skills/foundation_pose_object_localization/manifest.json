@@ -78,6 +78,8 @@
   "runtime_contract": {
     "ownership": "SKILL",
     "residency": "LOAD_ON_INVOCATION_RELEASE_ON_COMPLETION",
+    "default_execution_host": "PROVIDER",
+    "execution_host_reason": "The NVIDIA SDK and PyTorch CUDA runtime remain isolated in the FoundationPose Provider environment while the parent Skill owns the bounded job.",
     "session_scope": "ONE_PARENT_SKILL_ATTEMPT",
     "prepared_model_reuse_scope": "WITHIN_INVOCATION",
     "requires_explicit_initialization_region": true,

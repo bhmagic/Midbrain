@@ -6,17 +6,17 @@ See `CHANGELOG.md` for the reviewed-activation, Agent discovery, GUI, and
 hardware-validation changes made during the 2026-07-29 system test.
 
 The default `FOUNDATIONPOSE_SKILL` route invokes the finite
-`foundation_pose_object_localization` nested Skill. It consumes fresh RGB-D
-frames directly and closes every owned estimator session, model object, CUDA
-cache, and raster context before samples can be returned to the parent
-alignment. The former `SKILL_LOCAL` spelling remains a configuration alias.
+`foundation_pose_object_localization` nested Skill. Stationary Alignment owns
+the bounded job, reviewed masks, sampling policy, VIO-epoch checks, and result
+validation. Its default `PROVIDER` execution host keeps PyTorch, CUDA, and the
+pinned NVLabs SDK in the FoundationPose Provider environment. At job
+completion, the Skill stops its sessions, explicitly releases GPU resources,
+and stops the Provider when no foreign sessions remain. The former
+`SKILL_LOCAL` spelling remains a configuration alias.
 
 `PROVIDER_COMPATIBILITY` remains an explicit migration route for guarded
-hardware comparison and downstream compatibility. Automatic fallback is
-disabled, so a finite-Skill failure cannot silently become a multi-minute
-Provider run. When the Provider route is selected, Stationary Alignment stops
-its sessions and asks Manager to stop the Provider once no foreign sessions
-remain.
+hardware comparison and downstream compatibility that bypasses the nested
+Skill contract. Automatic fallback remains disabled.
 
 The version 0.6 comparison contract is implemented in
 `stationary_world_arm_alignment.route_comparison`. A route-run record binds its
