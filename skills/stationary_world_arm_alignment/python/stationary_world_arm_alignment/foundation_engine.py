@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -19,6 +22,62 @@ BASE_POSE_ENGINE_ROUTES = {
     PROVIDER_COMPATIBILITY_ROUTE,
     FOUNDATIONPOSE_SKILL_ROUTE,
 }
+FOUNDATIONPOSE_SKILL_PACKAGE = "foundation_pose_object_localization"
+
+
+def _load_finite_foundation_pose_runtime(
+    workspace_root: Path,
+) -> type[Any]:
+    try:
+        module = importlib.import_module(FOUNDATIONPOSE_SKILL_PACKAGE)
+    except ModuleNotFoundError as error:
+        if error.name != FOUNDATIONPOSE_SKILL_PACKAGE:
+            raise RuntimeError(
+                "the finite FoundationPose Skill has a missing dependency; "
+                "run the stationary Skill setup"
+            ) from error
+
+        package_dir = (
+            workspace_root
+            / "skills"
+            / "foundation_pose_object_localization"
+            / "python"
+            / FOUNDATIONPOSE_SKILL_PACKAGE
+        )
+        package_init = package_dir / "__init__.py"
+        if not package_init.is_file():
+            raise RuntimeError(
+                "the finite FoundationPose Skill runtime is neither installed "
+                f"nor present in this checkout at {package_init}; run the "
+                "stationary Skill setup"
+            ) from error
+
+        spec = importlib.util.spec_from_file_location(
+            FOUNDATIONPOSE_SKILL_PACKAGE,
+            package_init,
+            submodule_search_locations=[str(package_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(
+                "the checked-out finite FoundationPose Skill package could "
+                f"not be loaded from {package_init}"
+            ) from error
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[FOUNDATIONPOSE_SKILL_PACKAGE] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if sys.modules.get(FOUNDATIONPOSE_SKILL_PACKAGE) is module:
+                del sys.modules[FOUNDATIONPOSE_SKILL_PACKAGE]
+            raise
+
+    runtime_type = getattr(module, "FiniteFoundationPoseRuntime", None)
+    if runtime_type is None:
+        raise RuntimeError(
+            "the finite FoundationPose Skill package does not export "
+            "FiniteFoundationPoseRuntime"
+        )
+    return runtime_type
 
 
 def normalize_base_pose_engine_route(config: dict[str, Any]) -> str:
@@ -54,16 +113,9 @@ class LocalFoundationPoseEngine:
             or engine_config.get("skill_local")
             or {}
         )
-        try:
-            from foundation_pose_object_localization import (
-                FiniteFoundationPoseRuntime,
-            )
-        except ImportError as error:
-            raise RuntimeError(
-                "the finite FoundationPose Skill runtime is unavailable; "
-                "run the stationary Skill setup before selecting "
-                "FOUNDATIONPOSE_SKILL"
-            ) from error
+        FiniteFoundationPoseRuntime = _load_finite_foundation_pose_runtime(
+            workspace_root
+        )
         runtime = FiniteFoundationPoseRuntime.from_config(local, workspace_root)
         return cls(
             runtime.backend,

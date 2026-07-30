@@ -10,7 +10,7 @@
     },
     "developer": {
       "label": "Space Cognition Development Controls",
-      "url": "http://127.0.0.1:8000/dev",
+      "url": "http://127.0.0.1:8000/dev/skills/initialize-space-cognition",
       "availability": "AGENT_RUNTIME"
     }
   },

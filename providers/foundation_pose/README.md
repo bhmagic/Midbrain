@@ -247,9 +247,23 @@ obtain it from the following sources, in precedence order:
 The mask should contain only visible pixels belonging to the rigid target.
 Occluded portions should not be painted in merely to complete the CAD shape.
 
-## VLM + SAM2 tracking GUI
+## Legacy VLM + SAM2 tracking GUI
 
-The provider-local GUI keeps orchestration on existing Midbrain interfaces. It
+This pre-boundary GUI is retained for compatibility and hardware diagnosis. It
+crosses the intended component boundary: workspace lifecycle, Base/Gripper
+selection, VLM proposals, SAM2 mask review, and multi-object workflow
+orchestration belong to Midbrain and Stationary World-Space Arm Finder rather
+than to the measurement Provider. Those controls do not define the Provider
+contract and should not be copied into its future browser developer UI.
+
+A future Provider-owned browser surface should stay model-generic and expose
+backend health, GPU residency, the model registry, active sessions, raw
+camera-relative pose results, and direct estimate/track/relocalize/stop/release
+diagnostics. Stationary Alignment remains responsible for producing reviewed
+initialization evidence and deciding how raw measurements become a
+world-to-arm calibration.
+
+The retained local GUI keeps orchestration on existing Midbrain interfaces. It
 starts Fabric and Manager with the existing workspace script, starts the Orbbec
 and FoundationPose Providers through Manager, reads camera and tracking
 observations from Fabric, and submits TRACK requests through Manager.

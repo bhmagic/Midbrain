@@ -474,6 +474,14 @@ async def developer_index() -> str:
 
 
 @app.get(
+    "/dev/skills/initialize-space-cognition",
+    response_class=HTMLResponse,
+)
+async def space_cognition_developer_index() -> str:
+    return PAGE
+
+
+@app.get(
     "/dev/skills/verify-rgbd-alignment",
     response_class=HTMLResponse,
 )
@@ -1330,6 +1338,7 @@ PAGE = r"""
       --mb-experimental: #cfcfcf;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       margin: 0;
       background:
@@ -1407,14 +1416,20 @@ PAGE = r"""
 <main>
   <nav style="display:flex;justify-content:space-between;gap:16px;margin-bottom:24px">
     <a href="http://127.0.0.1:7001/" style="color:var(--mb-muted);text-decoration:none">← Midbrain</a>
-    <a href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
+    <a id="secondaryNav" href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
   </nav>
   <div class="role-kicker">Development UI</div>
-  <h1>Physical Agent Developer</h1>
-  <p class="sub">All adapter-bound Skills, Provider lifecycle tools, relative IK, controller-owned safe-home, selectable models, and detailed development controls</p>
+  <h1 id="pageTitle">Physical Agent Developer</h1>
+  <p class="sub" id="pageSubtitle">All adapter-bound Skills, Provider lifecycle tools, relative IK, controller-owned safe-home, selectable models, and detailed development controls</p>
   <div class="grid">
     <div>
-      <section class="card">
+      <section class="card" id="spaceCognitionLinkPanel">
+        <div class="role-kicker">Skill development</div>
+        <h2>Space cognition</h2>
+        <p class="sub">Initialization, epoch reset, VIO diagnostics, and accumulated-world controls now live with the formal Space Cognition Skill.</p>
+        <a href="/dev/skills/initialize-space-cognition" style="color:var(--mb-warning)">Open Space Cognition development UI →</a>
+      </section>
+      <section class="card" id="spaceCognitionPanel">
         <div class="role-kicker">Development controls</div>
         <h2>Space cognition</h2>
         <div class="state-grid">
@@ -1433,7 +1448,7 @@ PAGE = r"""
         <div class="init-summary" id="initSummary">Automatic startup initialization has not reported yet.</div>
         <pre id="spaceStatus" class="status">Loading…</pre>
       </section>
-      <section class="card">
+      <section class="card" id="agentPromptPanel">
         <div class="role-kicker">Agent observation</div>
         <h2>Prompt</h2>
         <div class="state-card" id="bindingState"><div class="state-label">Camera capability binding</div><div class="state-value"><span class="state-lamp"></span><span class="state-text">NOT REQUESTED</span></div><div class="state-detail">Manager binding has not been requested</div></div>
@@ -1449,14 +1464,14 @@ PAGE = r"""
         <h2>Answer</h2>
         <pre id="answer">Ready.</pre>
       </section>
-      <section class="card">
+      <section class="card" id="replayPanel">
         <div class="role-kicker">Replay provenance</div>
         <h2>Hardware-isolated capture bundles</h2>
         <p class="sub">Read-only provenance: payload hashes, provider boot identity, calibration/VIO context, evidence coverage, and manual retention review. This surface cannot start hardware or call a controller.</p>
         <button class="secondary" id="refreshReplay">Refresh provenance</button>
         <pre id="replayProvenance">Loading replay bundles...</pre>
       </section>
-      <section class="card">
+      <section class="card" id="platformCatalogPanel">
         <div class="role-kicker">Diagnostics</div>
         <h2>Installed components</h2>
         <p class="sub">Compact live catalog from Midbrain. Newly installed Skill manifests appear here and in the main portal without changing this page.</p>
@@ -1476,7 +1491,7 @@ PAGE = r"""
         </details>
       </section>
     </div>
-    <section class="card">
+    <section class="card" id="worldPointCloudPanel">
       <div class="role-kicker">Observation</div>
       <h2>World RGB point cloud</h2>
       <button class="secondary" id="resetView">Reset isometric view</button>
@@ -1505,6 +1520,32 @@ PAGE = r"""
   </div>
 </dialog>
 <script>
+const dedicatedSpaceCognition = location.pathname.endsWith(
+  '/dev/skills/initialize-space-cognition'
+);
+const pageTitle = document.getElementById('pageTitle');
+const pageSubtitle = document.getElementById('pageSubtitle');
+const secondaryNav = document.getElementById('secondaryNav');
+const spaceCognitionLinkPanel = document.getElementById('spaceCognitionLinkPanel');
+const spaceCognitionPanel = document.getElementById('spaceCognitionPanel');
+const agentPromptPanel = document.getElementById('agentPromptPanel');
+const replayPanel = document.getElementById('replayPanel');
+const platformCatalogPanel = document.getElementById('platformCatalogPanel');
+if (dedicatedSpaceCognition) {
+  document.title = 'Space Cognition Development | Midbrain';
+  pageTitle.textContent = 'Space Cognition Development';
+  pageSubtitle.textContent =
+    'Initialize or deliberately re-establish the local spatial epoch, inspect VIO state, and review the accumulated world model.';
+  secondaryNav.href = '/dev';
+  secondaryNav.textContent = 'Developer agent';
+  spaceCognitionLinkPanel.hidden = true;
+  agentPromptPanel.hidden = true;
+  replayPanel.hidden = true;
+  platformCatalogPanel.hidden = true;
+} else {
+  document.title = 'Developer Agent | Midbrain';
+  spaceCognitionPanel.hidden = true;
+}
 const runButton = document.getElementById('run');
 const refreshReplayButton = document.getElementById('refreshReplay');
 const initializeButton = document.getElementById('initialize');
@@ -1542,6 +1583,7 @@ let latestCameraPose = null;
 let activeAuthorizationId = null;
 
 async function refreshAuthorization() {
+  if (dedicatedSpaceCognition) return;
   try {
     const response = await fetch('/api/authorizations?status=PENDING', {cache: 'no-store'});
     if (!response.ok) return;
@@ -1572,6 +1614,7 @@ async function refreshAuthorization() {
 }
 
 async function refreshReplayProvenance() {
+  if (dedicatedSpaceCognition) return;
   refreshReplayButton.disabled = true;
   try {
     const response = await fetch('/api/phase5/replay/bundles', {cache: 'no-store'});
@@ -2275,14 +2318,16 @@ resetViewButton.addEventListener('click', () => {
 });
 
 refreshStatus();
-refreshReplayProvenance();
+if (!dedicatedSpaceCognition) refreshReplayProvenance();
 renderCloud();
 refreshCloud();
 setInterval(refreshStatus, 2500);
-setInterval(refreshReplayProvenance, 10000);
+if (!dedicatedSpaceCognition) {
+  setInterval(refreshReplayProvenance, 10000);
+  setInterval(refreshAuthorization, 1000);
+  refreshAuthorization();
+}
 setInterval(refreshCloud, 300);
-setInterval(refreshAuthorization, 1000);
-refreshAuthorization();
 </script>
 </body>
 </html>

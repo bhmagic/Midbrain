@@ -247,6 +247,24 @@ class BrowserUiContractTests(unittest.TestCase):
             self.assertIn("reasoning_effort", surface)
             self.assertIn("vlm_model", surface)
 
+    def test_space_cognition_has_a_dedicated_development_surface(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        manifest = json.loads(
+            (
+                root / "skills" / "initialize_space_cognition" / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        route = "/dev/skills/initialize-space-cognition"
+        self.assertIn(f'"{route}"', app)
+        self.assertIn('id="spaceCognitionLinkPanel"', app)
+        self.assertIn('id="spaceCognitionPanel"', app)
+        self.assertIn("spaceCognitionPanel.hidden = true", app)
+        self.assertTrue(manifest["ui"]["developer"]["url"].endswith(route))
+
     def test_developer_boundary_requires_explicit_overstep_confirmation(
         self,
     ) -> None:
