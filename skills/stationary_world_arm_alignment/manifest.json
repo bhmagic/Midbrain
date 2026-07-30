@@ -113,6 +113,17 @@
     "perception.object_pose",
     "robot_arm.joint_state"
   ],
+  "required_subskills": [
+    {
+      "skill_type": "foundation_pose_object_localization",
+      "required_for_modes": [
+        "foundation_base_vlm_gripper",
+        "foundation_base_gripper"
+      ],
+      "invocation": "IN_PROCESS_FINITE",
+      "fallback": "PROVIDER_COMPATIBILITY_EXPLICIT_ONLY"
+    }
+  ],
   "published_streams": [
     "skills.stationary_world_arm_alignment.status",
     "skills.stationary_world_arm_alignment.result",
@@ -125,18 +136,23 @@
   "provider_residency": {
     "camera": "leave_running",
     "local_vio": "leave_running",
-    "foundation_pose": "compatibility_route_only_stop_after_skill_when_no_foreign_sessions_exist"
+    "foundation_pose": "legacy_compatibility_route_only_stop_after_skill_when_no_foreign_sessions_exist"
   },
   "base_pose_engine": {
     "owner": "calibrate_stationary_workcell",
-    "default_route": "PROVIDER_COMPATIBILITY",
+    "nested_skill": "foundation_pose_object_localization",
+    "default_route": "FOUNDATIONPOSE_SKILL",
     "available_routes": [
+      "FOUNDATIONPOSE_SKILL",
       "PROVIDER_COMPATIBILITY",
       "SKILL_LOCAL"
     ],
+    "legacy_route_aliases": {
+      "SKILL_LOCAL": "FOUNDATIONPOSE_SKILL"
+    },
     "automatic_fallback_enabled": false,
-    "skill_local_behavior": "finite_backend_lifetime_fresh_rgbd_samples_no_provider_session",
-    "provider_route_status": "compatibility_fallback_pending_guarded_hardware_comparison"
+    "skill_behavior": "finite_backend_lifetime_fresh_rgbd_samples_no_provider_session",
+    "provider_route_status": "legacy_compatibility_fallback_pending_guarded_hardware_comparison"
   },
   "environment": {
     "type": "python_venv",

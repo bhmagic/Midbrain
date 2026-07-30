@@ -148,6 +148,11 @@ fn static_asset(content_type: &'static str, body: &'static str) -> impl IntoResp
 
 pub(super) async fn overview(State(state): State<AppState>) -> Json<Value> {
     let provider_views = collect_provider_views(&state).await;
+    let live_catalog = load_manifest_catalog(&state.workspace_root).ok();
+    let skill_manifests = live_catalog
+        .as_ref()
+        .map(|catalog| &catalog.skills)
+        .unwrap_or(state.skill_manifests.as_ref());
     let fabric_health = fetch_json(&state, &format!("{}/health", state.fabric_url)).await;
     let streams = fetch_json(&state, &format!("{}/v1/streams", state.fabric_url)).await;
     let snapshot = fetch_json(&state, &format!("{}/v1/snapshot", state.fabric_url)).await;
@@ -168,7 +173,7 @@ pub(super) async fn overview(State(state): State<AppState>) -> Json<Value> {
         .iter()
         .map(|view| provider_summary(&state, view))
         .collect();
-    let skills: Vec<Value> = unique_manifest_records(&state.skill_manifests)
+    let skills: Vec<Value> = unique_manifest_records(skill_manifests)
         .into_iter()
         .map(|record| skill_summary(record, snapshot.as_ref().ok(), agent_online))
         .collect();
@@ -264,9 +269,12 @@ pub(super) async fn skill_detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let record = state
-        .skill_manifests
-        .get(&id)
+    let live_catalog = load_manifest_catalog(&state.workspace_root).ok();
+    let record = live_catalog
+        .as_ref()
+        .and_then(|catalog| catalog.skills.get(&id))
+        .or_else(|| state.skill_manifests.get(&id))
+        .cloned()
         .ok_or_else(|| not_found("skill", &id))?;
     let streams = fetch_json(&state, &format!("{}/v1/streams", state.fabric_url))
         .await
@@ -274,7 +282,7 @@ pub(super) async fn skill_detail(
     let snapshot = fetch_json(&state, &format!("{}/v1/snapshot", state.fabric_url))
         .await
         .unwrap_or_else(|error| json!({"error": error}));
-    let matching_streams = matching_manifest_streams(record, &streams);
+    let matching_streams = matching_manifest_streams(&record, &streams);
     let latest = latest_for_streams(&snapshot, &matching_streams);
     let agent_health = fetch_json_with_timeout(
         &state,
@@ -288,7 +296,7 @@ pub(super) async fn skill_detail(
         .and_then(|value| value.get("status"))
         .and_then(Value::as_str)
         .is_some_and(|value| value.eq_ignore_ascii_case("ok"));
-    let summary = skill_summary(record, Some(&snapshot), agent_online);
+    let summary = skill_summary(&record, Some(&snapshot), agent_online);
 
     Ok(Json(json!({
         "schema": "midbrain.skill_observation",
@@ -329,9 +337,13 @@ pub(super) async fn activate_developer_surface(
     }
     reject_if_shutdown_fenced(&state, "developer surface activation").await?;
 
+    let live_catalog = load_manifest_catalog(&state.workspace_root).ok();
     let manifest = match kind.as_str() {
         "provider" => state.provider_manifests.get(&id),
-        "skill" => state.skill_manifests.get(&id),
+        "skill" => live_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.skills.get(&id))
+            .or_else(|| state.skill_manifests.get(&id)),
         _ => {
             return Err(api_failure(
                 StatusCode::BAD_REQUEST,

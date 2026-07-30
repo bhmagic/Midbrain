@@ -49,6 +49,45 @@ class IntegratedRelativeMotionAdapter:
         self._pending: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
+    async def observation(self) -> dict[str, Any]:
+        """Return a read-only view of the Skill workflow and controller."""
+        now = time.monotonic()
+        async with self._lock:
+            self._pending = {
+                key: value
+                for key, value in self._pending.items()
+                if now - value["created_monotonic"] <= self.approval_ttl_s
+            }
+            pending = [
+                {
+                    "preview_id": preview_id,
+                    "motion_intent": value["motion_intent"],
+                    "direction": value["direction"],
+                    "distance_m": value["distance_m"],
+                    "start_position_m": value["start_position_m"],
+                    "target_position_m": value["target_position_m"],
+                    "expires_in_s": max(
+                        0.0,
+                        self.approval_ttl_s
+                        - (now - value["created_monotonic"]),
+                    ),
+                }
+                for preview_id, value in self._pending.items()
+            ]
+        try:
+            controller = await self.client.state()
+        except Exception as error:
+            controller = {
+                "status": "UNAVAILABLE",
+                "error": str(error),
+            }
+        return {
+            "skill": "integrated_relative_effector_motion",
+            "pending_previews": pending,
+            "controller": controller,
+            "read_only": True,
+        }
+
     async def preview(
         self,
         *,

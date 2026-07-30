@@ -62,6 +62,7 @@
         "availability": {
           "enum": [
             "PROVIDER_RUNNING",
+            "AGENT_RUNTIME",
             "SEPARATE_LOCAL_PROCESS",
             "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER",
             "SEPARATE_LEGACY_LOCAL_PROCESS",

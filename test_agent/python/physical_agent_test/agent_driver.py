@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,9 @@ class PrototypeAgentDriver:
         developer_mode: bool = False,
         integrated_motion_skill: IntegratedRelativeMotionAdapter | None = None,
         basic_safe_home_skill: BasicSafeHomeAdapter | None = None,
+        space_cognition_reinitializer: (
+            Callable[[str], Awaitable[dict[str, Any]]] | None
+        ) = None,
         session: Any | None = None,
         defer_loading: bool = False,
         adapter_timeout_s: float = 60.0,
@@ -103,6 +107,19 @@ class PrototypeAgentDriver:
                 identify_adapter
             ),
         }
+        if space_cognition_reinitializer is not None:
+            async def space_cognition_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                reason = arguments.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("reason must be non-empty text")
+                result = await space_cognition_reinitializer(reason.strip())
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.initialize_space_cognition.reinitialize.v1"
+            ] = BoundMethodSkillAdapter(space_cognition_adapter)
         if visual_scene_skill is not None:
             async def visual_adapter(arguments: dict[str, Any]) -> str:
                 question = arguments.get("question")
@@ -569,6 +586,16 @@ class PrototypeAgentDriver:
                 "stop, or healthy status for homing. Report completion only "
                 "when physical_motion_completed=true."
             )
+        if space_cognition_reinitializer is not None:
+            instructions += (
+                " Use reinitialize_space_cognition only when the operator "
+                "explicitly requests a new local origin or accepts recovery "
+                "from spatial drift. It is not a readiness probe. Approval "
+                "revokes active workcell calibrations, resets the VIO epoch, "
+                "and clears observations bound to the old epoch. After it "
+                "succeeds, any world-to-arm calibration required by a later "
+                "motion task must be established again."
+            )
         self.agent = Agent(
             name="Physical Agent Prototype Driver",
             model=model,
@@ -771,6 +798,31 @@ class PrototypeAgentDriver:
                 {
                     "label": "Preview",
                     "value": str(arguments.get("preview_id") or "unknown"),
+                },
+            ]
+        elif tool_name == "reinitialize_space_cognition":
+            reason = str(arguments.get("reason") or "not provided")
+            title = "Establish a new Midbrain spatial origin?"
+            summary = (
+                "The Agent is requesting a deliberate Local VIO epoch reset "
+                "from the current stationary pose."
+            )
+            warning = (
+                "This invalidates the current world coordinate epoch, revokes "
+                "active stationary-workcell calibrations, and clears "
+                "epoch-bound accumulated observations. The robot and camera "
+                "must remain stationary."
+            )
+            confirm_label = "Approve new spatial origin"
+            details = [
+                {"label": "Reason", "value": reason},
+                {
+                    "label": "Calibration effect",
+                    "value": "Active workcell calibration will be revoked",
+                },
+                {
+                    "label": "Motion",
+                    "value": "Inhibited during initialization",
                 },
             ]
         elif tool_name == "execute_basic_safe_home":

@@ -5,16 +5,18 @@ This finite Midbrain Skill aligns a stationary reBot arm base into a camera-orig
 See `CHANGELOG.md` for the reviewed-activation, Agent discovery, GUI, and
 hardware-validation changes made during the 2026-07-29 system test.
 
-Version 0.6 adds a versioned identical-observation comparison contract and
-closes the `SKILL_LOCAL` backend after every finite calibration attempt before
-its samples can be returned. Version 0.5 added the non-default `SKILL_LOCAL`
-base-pose engine route. It invokes a FoundationPose-compatible estimator inside
-the finite calibration operation, consumes fresh RGB-D frames directly, and
-produces the same sample contract as the existing Provider route.
-`PROVIDER_COMPATIBILITY` remains the default until the local route has been
-compared in the guarded hardware environment.
-Automatic fallback is disabled so a local failure cannot silently become a
-multi-minute Provider run.
+The default `FOUNDATIONPOSE_SKILL` route invokes the finite
+`foundation_pose_object_localization` nested Skill. It consumes fresh RGB-D
+frames directly and closes every owned estimator session, model object, CUDA
+cache, and raster context before samples can be returned to the parent
+alignment. The former `SKILL_LOCAL` spelling remains a configuration alias.
+
+`PROVIDER_COMPATIBILITY` remains an explicit migration route for guarded
+hardware comparison and downstream compatibility. Automatic fallback is
+disabled, so a finite-Skill failure cannot silently become a multi-minute
+Provider run. When the Provider route is selected, Stationary Alignment stops
+its sessions and asks Manager to stop the Provider once no foreign sessions
+remain.
 
 The version 0.6 comparison contract is implemented in
 `stationary_world_arm_alignment.route_comparison`. A route-run record binds its
@@ -50,8 +52,8 @@ Run `scripts\run_gui.ps1`. The launcher:
 - Starts passively. Opening the debugging GUI does not request camera, VIO, or
   arm residency; use **Request providers** when acquisition is intended.
 - Leaves the FoundationPose compatibility Provider stopped until a base
-  alignment explicitly using that route requests it. The `SKILL_LOCAL` route
-  does not start the Provider.
+  alignment explicitly using that route requests it. The default
+  `FOUNDATIONPOSE_SKILL` route does not start the Provider.
 
 Use `scripts\run_gui.ps1 -NoBrowser` to suppress browser opening, or `-NoCoreStart` to require that Manager and Fabric already be running. A partially running core is reported rather than automatically restarting the healthy half, because a restart could disrupt unrelated providers. Stop only the GUI with `scripts\stop_gui.ps1`; the Midbrain core and requested input providers remain available to other work.
 Legacy automatic input acquisition can be restored explicitly with

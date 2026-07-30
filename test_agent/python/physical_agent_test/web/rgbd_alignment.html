@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RGB-D Content and Registration Review</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", sans-serif;
+      --bg: #090909;
+      --surface: #141414;
+      --raised: #1d1d1d;
+      --border: #393939;
+      --text: #f1f1f1;
+      --muted: #a7a7a7;
+      --accent: #e6e6e6;
+      --warning: #f2b84b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 48px; }
+    nav { display: flex; justify-content: space-between; margin-bottom: 28px; }
+    a { color: var(--muted); text-decoration: none; }
+    .eyebrow { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 6px 0 8px; }
+    .subtle { color: var(--muted); line-height: 1.55; }
+    .panel { margin-top: 20px; padding: 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    button { padding: 10px 15px; border: 0; border-radius: 8px; background: var(--accent); color: #111; cursor: pointer; font-weight: 700; }
+    button:disabled { opacity: .55; cursor: progress; }
+    img { display: block; width: 100%; min-height: 300px; margin-top: 18px; object-fit: contain; border-radius: 10px; background: #050505; }
+    pre { max-height: 520px; overflow: auto; padding: 14px; border-radius: 9px; background: #0c0c0c; white-space: pre-wrap; word-break: break-word; }
+    .notice { color: var(--warning); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <nav>
+      <a href="http://127.0.0.1:7001/">← Midbrain</a>
+      <a href="/dev">Developer Agent</a>
+    </nav>
+    <p class="eyebrow">Finite Skill · Read-only validation</p>
+    <h1>RGB-D content and registration review</h1>
+    <p class="subtle">This Skill inspects one current synchronized RGB-D bundle. It checks the actual image grids, registered-depth boundary, timestamps, cadence, numeric edge correspondence, and a bounded visual-model review.</p>
+
+    <section class="panel">
+      <button id="validate" type="button">Validate current RGB-D bundle</button>
+      <p class="notice">Validation reads camera data and may call the configured visual model. It does not move hardware or publish a motion-usable transform.</p>
+      <img id="composite" alt="RGB, registered depth, and overlay validation composite">
+      <pre id="result">No validation has run.</pre>
+    </section>
+  </main>
+  <script>
+    const button = document.querySelector("#validate");
+    const result = document.querySelector("#result");
+    const composite = document.querySelector("#composite");
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      result.textContent = "Running bounded RGB-D content and alignment review…";
+      try {
+        const response = await fetch("/api/rgbd-alignment/validate", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            request: "Verify this RGB-D bundle for observation use. Inspect actual scene content, registration, valid boundary, and channel cadence."
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
+        result.textContent = JSON.stringify(data, null, 2);
+        composite.src = "/api/latest-rgbd-alignment-composite?t=" + Date.now();
+      } catch (error) {
+        result.textContent = "Error: " + error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

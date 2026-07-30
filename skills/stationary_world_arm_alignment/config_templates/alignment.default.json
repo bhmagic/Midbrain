@@ -13,10 +13,10 @@
   "foundation_base_frame": "observed_object/rebot_b601_dm/base",
   "foundation_gripper_frame": "observed_object/rebot_b601_dm/gripper_slider_support",
   "base_pose_engine": {
-    "active_route": "PROVIDER_COMPATIBILITY",
+    "active_route": "FOUNDATIONPOSE_SKILL",
     "provider_fallback_available": true,
     "automatic_fallback_enabled": false,
-    "skill_local": {
+    "foundation_pose_skill": {
       "backend": "nvlabs",
       "foundationpose_root": "providers/foundation_pose/nvlabs/FoundationPose",
       "model_registry": "config/foundation_pose/models.json",

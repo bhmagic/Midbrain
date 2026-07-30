@@ -116,6 +116,35 @@ class PreparedEstimatorCacheTests(unittest.TestCase):
             disabled.reset("session")
             self.assertFalse(disabled._idle_estimators)
 
+    def test_close_drops_runtime_objects_and_allows_future_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            backend = NvLabsFoundationPoseBackend(Path(directory))
+            cuda = SimpleNamespace(
+                is_available=lambda: False,
+            )
+            backend._loaded = True
+            backend._torch = SimpleNamespace(cuda=cuda)
+            backend._trimesh = object()
+            backend._dr = object()
+            backend._FoundationPose = object()
+            backend._ScorePredictor = object()
+            backend._PoseRefinePredictor = object()
+            backend._scorer = object()
+            backend._refiner = object()
+            backend._glctx = object()
+            backend._estimators["session"] = object()
+            backend._idle_estimators["model"] = [object()]
+
+            backend.close()
+
+            self.assertFalse(backend._loaded)
+            self.assertIsNone(backend._torch)
+            self.assertIsNone(backend._scorer)
+            self.assertIsNone(backend._refiner)
+            self.assertIsNone(backend._glctx)
+            self.assertFalse(backend._estimators)
+            self.assertFalse(backend._idle_estimators)
+
 
 if __name__ == "__main__":
     unittest.main()

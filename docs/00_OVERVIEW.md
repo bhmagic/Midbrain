@@ -15,7 +15,7 @@ The latest integrated release is **Space Cognition v0.3.10**:
 - Local VIO Provider v0.2.2
 - Test Agent GUI v0.2.9
 - Contracts v0.3.8
-- FoundationPose Provider v0.3.0
+- FoundationPose finite Skill v0.1.0 with Provider v0.3.0 compatibility route
 
 The operator reported v0.3.10 as performing well after the final startup correction. This is the best current practical baseline. It is not yet a production-qualified localization stack because formal trajectory measurements, deterministic replay, camera/IMU time-offset estimation, long-outage drift tests, and comparison with a mature native backend remain outstanding.
 
@@ -29,13 +29,16 @@ The operator reported v0.3.10 as performing well after the final startup correct
 - Large camera payloads use Windows named shared memory; Fabric carries generation-checked BufferRefs.
 - Device-bound six-position accelerometer calibration GUI with atomic write, backup, and live Provider reload.
 - Native timestamped transform graph with session epochs.
-- Initialize Space Cognition Skill with motion-inhibit handshake.
-- Forced VIO reinitialization creates a new coordinate epoch and resumes mapping.
+- Discoverable Initialize / Re-establish Space Cognition Skill with
+  motion-inhibit handshake and approval-gated epoch reset.
+- Forced VIO reinitialization revokes active workcell calibration, creates a
+  new coordinate epoch, clears epoch-bound mapping, and resumes capture.
 - Orthographic isometric point-cloud display with world-down arrow and camera frustum.
 - Inertial-first 15-state error-state filter with RGB-D corrections and optional synchronized IR/depth fallback.
 - Tuned quiet-IMU gravity leveling shown independently as OFF, READY, or ACTIVE.
 - Sample-rate-independent startup initialization verified in regression at 50 Hz.
-- Manager-discoverable FoundationPose tracking for independent Base and Gripper CAD targets.
+- Finite FoundationPose object localization for Base and Gripper CAD targets,
+  with explicit session, model, raster-context, and CUDA-cache release.
 - Camera-relative Base and Gripper transforms published into the Fabric for consumption by other Skills and Agents.
 - Reviewed initialization from OpenAI visual boxes and positive points, cropped SAM2 masks, target-specific color refinement, and prepared-asset caching.
 - reBot Arm DM Basic 0.1.20 with seven-joint feedback/control, fenced operational leases, gravity-float, safe-home, and tool-payload gravity compensation.

@@ -93,6 +93,12 @@ async function refreshStatus() {
   }
 }
 
+function refreshFrames() {
+  const revision = Date.now();
+  document.querySelector("#rgbFrame").src = `/api/frames/rgb?v=${revision}`;
+  document.querySelector("#depthFrame").src = `/api/frames/depth?v=${revision}`;
+}
+
 function renderStatus(data) {
   const badge = document.querySelector("#connectionBadge");
   badge.textContent = "Camera connected";
@@ -177,4 +183,6 @@ function showMessage(text, kind = "") {
 }
 
 refreshStatus();
+refreshFrames();
 setInterval(refreshStatus, 350);
+setInterval(refreshFrames, 500);

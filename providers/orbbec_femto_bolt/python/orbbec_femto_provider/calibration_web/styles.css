@@ -27,6 +27,19 @@ h2 { margin-bottom: 6px; font-size: 1.2rem; }
 .status-grid, .result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .status-grid div, .result-grid div, .live-values div { min-width: 0; }
 .status-grid span, .result-grid span, .live-values span { display: block; color: var(--muted); font-size: .82rem; margin-bottom: 4px; }
+.sensor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.sensor-grid figure { margin: 0; }
+.sensor-grid figcaption { margin-bottom: 8px; color: var(--muted); font-size: .82rem; font-weight: 700; }
+.sensor-grid img {
+  display: block;
+  width: 100%;
+  min-height: 260px;
+  max-height: 430px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #050505;
+}
 .path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; font-size: .86rem; }
 .badge { padding: 7px 11px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
 .badge.neutral { color: var(--muted); background: var(--panel-2); }
@@ -57,6 +70,7 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 
 @media (max-width: 800px) {
   header, .section-heading, .solve-panel { align-items: flex-start; flex-direction: column; }
+  .sensor-grid { grid-template-columns: 1fr; }
   .live-panel { grid-template-columns: 1fr; }
   .pose-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

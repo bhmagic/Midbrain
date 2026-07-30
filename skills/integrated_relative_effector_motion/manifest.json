@@ -9,9 +9,9 @@
       "read_only": true
     },
     "developer": {
-      "label": "Open Physical Agent Developer UI",
-      "url": "http://127.0.0.1:8000/dev",
-      "availability": "SEPARATE_LOCAL_PROCESS"
+      "label": "Relative Motion Skill Workflow",
+      "url": "http://127.0.0.1:8000/dev/skills/integrated-relative-effector-motion",
+      "availability": "AGENT_RUNTIME"
     }
   },
   "lifecycle": "FINITE",

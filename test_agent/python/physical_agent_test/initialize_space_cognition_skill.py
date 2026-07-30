@@ -19,6 +19,9 @@ class InitializationResult:
     selected_providers: dict[str, str]
     reused_physical_provider: bool
     motion_inhibit: dict[str, Any]
+    operation: str
+    previous_session_epoch: str | None
+    invalidated_workcell_activation_ids: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,11 +32,16 @@ class InitializationResult:
             "selected_providers": self.selected_providers,
             "reused_physical_provider": self.reused_physical_provider,
             "motion_inhibit": self.motion_inhibit,
+            "operation": self.operation,
+            "previous_session_epoch": self.previous_session_epoch,
+            "invalidated_workcell_activation_ids": list(
+                self.invalidated_workcell_activation_ids
+            ),
         }
 
 
 class InitializeSpaceCognitionSkill:
-    """One-time startup Skill that establishes local body pose cognition."""
+    """Finite Skill that establishes or deliberately replaces the local origin."""
 
     def __init__(
         self,
@@ -67,6 +75,13 @@ class InitializeSpaceCognitionSkill:
 
             skill_id = str(uuid.uuid4())
             inhibit_owner = f"skill:{skill_id}"
+            previous_vio = await self.fabric.latest_optional(
+                "localization.vio.status"
+            )
+            previous_vio_data = (previous_vio or {}).get("data") or {}
+            previous_session_epoch = str(
+                previous_vio_data.get("session_epoch") or ""
+            ) or None
             selected = {
                 "head_camera": self.camera_provider_id,
                 "head_depth": self.camera_provider_id,
@@ -127,12 +142,31 @@ class InitializeSpaceCognitionSkill:
 
                 await self.manager.set_hot(self.vio_provider_id)
                 await self._wait_for_vio_motion_inhibit()
+                invalidated_activation_ids: tuple[str, ...] = ()
+                if force_reset:
+                    invalidated_activation_ids = (
+                        await self._revoke_active_workcell_calibrations(
+                            skill_id=skill_id,
+                            previous_session_epoch=previous_session_epoch,
+                        )
+                    )
                 await self._publish_status(
                     skill_id,
                     "RUNNING",
                     "initialize_local_vio",
                     selected,
                     started_at_us=started_at_us,
+                    details={
+                        "operation": (
+                            "REESTABLISH_ORIGIN"
+                            if force_reset
+                            else "INITIALIZE_IF_NEEDED"
+                        ),
+                        "previous_session_epoch": previous_session_epoch,
+                        "invalidated_workcell_activation_ids": list(
+                            invalidated_activation_ids
+                        ),
+                    },
                 )
                 reset_result = await self._request_vio_initialization(
                     force_reset=force_reset,
@@ -141,6 +175,24 @@ class InitializeSpaceCognitionSkill:
                 vio_status = await self._wait_for_vio_tracking(
                     expected_epoch=reset_result.get("session_epoch")
                 )
+                if force_reset:
+                    late_invalidations = (
+                        await self._revoke_active_workcell_calibrations(
+                            skill_id=skill_id,
+                            previous_session_epoch=previous_session_epoch,
+                            preserve_session_epoch=str(
+                                vio_status["session_epoch"]
+                            ),
+                        )
+                    )
+                    invalidated_activation_ids = tuple(
+                        dict.fromkeys(
+                            (
+                                *invalidated_activation_ids,
+                                *late_invalidations,
+                            )
+                        )
+                    )
                 pose = await self.fabric.latest("localization.body.pose")
                 pose_data = pose.get("data") or {}
                 result = InitializationResult(
@@ -151,6 +203,15 @@ class InitializeSpaceCognitionSkill:
                     selected_providers=selected,
                     reused_physical_provider=True,
                     motion_inhibit=inhibit_status,
+                    operation=(
+                        "REESTABLISH_ORIGIN"
+                        if force_reset
+                        else "INITIALIZE_IF_NEEDED"
+                    ),
+                    previous_session_epoch=previous_session_epoch,
+                    invalidated_workcell_activation_ids=(
+                        invalidated_activation_ids
+                    ),
                 )
                 await self._publish_status(
                     skill_id,
@@ -163,6 +224,10 @@ class InitializeSpaceCognitionSkill:
                         "world_frame": result.world_frame,
                         "body_position_m": pose_data.get("position_m"),
                         "yaw_definition": "initial_body_forward_is_zero",
+                        "previous_session_epoch": previous_session_epoch,
+                        "invalidated_workcell_activation_ids": list(
+                            invalidated_activation_ids
+                        ),
                         "initialization_control_status": reset_result.get("status"),
                         "control_response_warning": reset_result.get("control_response_warning")
                         or reset_result.get("status_publish_warning"),
@@ -185,6 +250,50 @@ class InitializeSpaceCognitionSkill:
                     await self.manager.release_motion_inhibit(owner_id=inhibit_owner)
                 except Exception:
                     pass
+
+    async def _revoke_active_workcell_calibrations(
+        self,
+        *,
+        skill_id: str,
+        previous_session_epoch: str | None,
+        preserve_session_epoch: str | None = None,
+    ) -> tuple[str, ...]:
+        catalog = await self.manager.workcell_calibrations()
+        active = [
+            activation
+            for activation in catalog.get("activations") or []
+            if isinstance(activation, dict)
+            and str(activation.get("state") or "").upper() == "ACTIVE"
+            and activation.get("motion_usable") is True
+            and (
+                preserve_session_epoch is None
+                or str(activation.get("session_epoch") or "")
+                != preserve_session_epoch
+            )
+        ]
+        revoked: list[str] = []
+        for activation in active:
+            activation_id = str(activation.get("activation_id") or "").strip()
+            if not activation_id:
+                raise RuntimeError(
+                    "Manager returned an active workcell calibration without "
+                    "an activation_id"
+                )
+            await self.manager.revoke_workcell_calibration(
+                activation_id,
+                request_id=f"{skill_id}:revoke:{activation_id}",
+                revoked_by="skill.initialize_space_cognition",
+                reason=(
+                    "Local spatial origin is being re-established"
+                    + (
+                        f" from VIO epoch {previous_session_epoch}"
+                        if previous_session_epoch
+                        else ""
+                    )
+                ),
+            )
+            revoked.append(activation_id)
+        return tuple(revoked)
 
     async def _wait_for_vio_motion_inhibit(self) -> None:
         """Wait until the VIO Provider has observed the Manager inhibit state.

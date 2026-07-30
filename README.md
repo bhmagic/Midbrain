@@ -211,7 +211,8 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | Contracts                  | `contracts`                                                                | Framework-neutral Provider, Fabric, Skill, calibration, VIO, and safety contracts                          |
 | Orbbec Femto Bolt Provider | `providers/orbbec_femto_bolt`                                              | Brand-specific RGB, depth, infrared, point-cloud, IMU, calibration, identity, and static-transform support |
 | Local VIO Provider         | `providers/local_vio`                                                      | Brand-neutral camera-plus-IMU pose estimation and dynamic body transforms                                  |
-| FoundationPose Provider    | `providers/foundation_pose`                                                | CAD-based 6D pose estimation for the robot base and gripper, with camera-relative transforms in the Fabric |
+| FoundationPose finite Skill | `skills/foundation_pose_object_localization`                              | Bounded CAD-based 6D pose estimation with explicit estimator and GPU-resource cleanup                       |
+| FoundationPose compatibility Provider | `providers/foundation_pose`                                      | Legacy session/stream compatibility and guarded route comparison during migration                           |
 | reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
@@ -225,7 +226,11 @@ The current camera Provider publishes large RGB-D payloads through Windows named
 
 The Local VIO Provider consumes ordered IMU history and synchronized camera observations. It maintains a dynamic pose estimate and publishes body transforms into the Fabric.
 
-The FoundationPose Provider consumes RGB-D observations and target CAD models. Its GUI-assisted initialization uses reviewed object regions and masks, then publishes camera-relative Base and Gripper transforms into the Fabric for discovery by other Skills and Agents.
+The finite FoundationPose Skill consumes synchronized RGB-D observations,
+target CAD models, and explicit reviewed masks inside a bounded parent
+workflow. The compatibility Provider preserves the former independent
+tracking/session interface, but it is not the default Stationary Alignment
+route and can explicitly release its GPU runtime after a job.
 
 The canonical sanitized reBot B601-DM FoundationPose profile is published under [`providers/foundation_pose/defaults/rebot_b601_dm`](providers/foundation_pose/defaults/rebot_b601_dm). An identical runtime/restore copy is also published at [`config/foundation_pose`](config/foundation_pose), the registry location used by the supplied Manager configuration. Both contain retained STEP/OBJ source, prepared centered meshes, portable metadata, provenance, licenses, and the following reusable multi-view CAD atlases. Active calibration, local registry changes, caches, and camera captures remain excluded.
 
@@ -233,7 +238,14 @@ The canonical sanitized reBot B601-DM FoundationPose profile is published under 
 | --- | --- |
 | [![reBot base CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png) | [![reBot gripper CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png) |
 
-The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose Providers on demand, starts FoundationPose only for modes that need it, and stops FoundationPose after the bounded run when no foreign sessions remain. It publishes the stationary world-to-VIO and world-to-arm-base transforms, the full VIO-to-camera reference pose captured by the alignment, an RGB overlay with the projected base box and axes, and result-schema-v2 measurement provenance for upstream Skills. When neither of two FoundationPose attempts meets the strict VLM threshold, a bounded fallback may retain the geometrically better attempt only if it still satisfies the documented non-BAD geometry and fallback-confidence gates.
+The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose
+Providers on demand and invokes the finite FoundationPose Skill only for modes
+that need it. Every estimator attempt releases its sessions and GPU resources
+before returning. The legacy Provider route remains explicit-only; when used,
+the parent stops its sessions, requests resource release, and stops the
+Provider when no foreign sessions remain. The alignment publishes
+world-to-VIO and world-to-arm-base transforms, source diagnostics, and reviewed
+calibration provenance for upstream Skills.
 
 These components demonstrate how a brand-specific hardware Provider and a brand-neutral computational Provider can participate in the same runtime.
 
@@ -471,16 +483,18 @@ used. `setup_workspace.ps1` provisions the core Python components in dependency
 order; optional hardware and CUDA Providers retain their separate setup
 commands.
 
-Set up and launch the optional FoundationPose Provider separately:
+Install FoundationPose assets and the compatibility backend library, then set
+up Stationary Alignment. The alignment uses the finite Skill route by default:
 
 ```powershell
 git lfs pull
 .\providers\foundation_pose\scripts\setup.ps1
-.\providers\foundation_pose\scripts\setup_sam2.ps1
-.\providers\foundation_pose\scripts\run_tracking_gui.ps1
+.\skills\stationary_world_arm_alignment\scripts\setup.ps1
 ```
 
-The workspace setup does not build the full upstream NVLabs CUDA runtime. Follow the Provider guide for that environment before attempting live inference.
+The workspace setup does not build the full upstream NVLabs CUDA runtime.
+Follow the FoundationPose guide before attempting live inference. SAM2 and the
+legacy tracking GUI remain optional compatibility/development tools.
 
 Set up and open the alignment Skill monitor:
 

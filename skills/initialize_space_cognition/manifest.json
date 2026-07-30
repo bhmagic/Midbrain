@@ -1,0 +1,84 @@
+{
+  "skill_type": "initialize_space_cognition",
+  "version": "0.1.0",
+  "display_name": "Initialize / Re-establish Space Cognition",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Space Cognition Development Controls",
+      "url": "http://127.0.0.1:8000/dev",
+      "availability": "AGENT_RUNTIME"
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "reinitialize_space_cognition",
+    "description": "Deliberately establish a new local spatial origin from the robot's current stationary pose. This resets the Local VIO session epoch, clears epoch-bound accumulated world observations, and revokes active stationary-workcell calibrations before the origin changes. Use it to recover from VIO drift or to define a new local origin, not as a routine readiness check.",
+    "when_to_use": [
+      "The operator explicitly asks to reset, re-zero, re-origin, or readjust Midbrain's local spatial frame.",
+      "Local VIO has drifted or recovered with an origin that the operator no longer accepts.",
+      "A new physical setup requires all subsequent world-space observations to use a fresh epoch."
+    ],
+    "when_not_to_use": [
+      "The request only needs camera or VIO Providers started; use Provider lifecycle control instead.",
+      "An existing TRACKING epoch remains suitable for the task.",
+      "The robot or camera cannot remain stationary during gravity and origin initialization."
+    ],
+    "side_effects": [
+      "Acquires a Manager motion-inhibit lease while the spatial origin is established.",
+      "May start the camera and Local VIO Providers.",
+      "Revokes active stationary-workcell calibrations before changing the VIO epoch.",
+      "Clears accumulated world-point observations that belong to the previous epoch."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "camera.read",
+      "localization.vio.reset",
+      "motion.inhibit",
+      "workcell.calibration.revoke"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 300,
+          "description": "Why a new local spatial origin is required."
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.initialize_space_cognition.reinitialize.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": true
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.imu.accel",
+    "camera.imu.gyro",
+    "localization.vio.local_pose"
+  ],
+  "published_streams": [
+    "skills.initialize_space_cognition.status"
+  ],
+  "epoch_contract": {
+    "creates_new_epoch": true,
+    "old_epoch_data_remains_historical_only": true,
+    "active_workcell_calibrations_revoked_before_reset": true,
+    "downstream_consumers_must_match_session_epoch": true
+  }
+}

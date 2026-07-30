@@ -1,11 +1,12 @@
-# FoundationPose CAD Object Pose Provider
+# FoundationPose Compatibility Provider
 
 Version: **0.3.0**
 
-A Midbrain Resource Provider that exposes generic CAD-conditioned RGB-D object
-pose estimation and tracking through `perception.object_pose.*` capabilities.
-The Midbrain-facing interface is generic; NVLabs FoundationPose is the current
-backend adapter.
+This is the compatibility Provider for the finite
+`foundation_pose_object_localization` Skill. Existing Provider capabilities,
+session IDs, streams, and validation tools remain available while downstream
+callers migrate. New bounded workflows should use the Skill-owned runtime and
+must not rely on this process being continuously resident.
 
 The Provider is a **measurement reporter**. It publishes camera-relative object
 pose observations and timestamped transform measurements to the World State
@@ -47,13 +48,15 @@ observations. Receipt/inference-completion time is not substituted for the
 transform timestamp.
 
 The Manager owns Provider lifecycle. The Provider is registered with
-`auto_start: false` and is expected to be started/residency-controlled through
-the Manager.
+`auto_start: false`. Transitioning it to `WARM` releases all backend GPU
+resources. A bounded caller may also request `release_resources` after stopping
+all of its sessions; the request fails while any session remains active.
 
 ### Use from Skills and Agents
 
-Skills and Agents discover this Provider through the Manager capability catalog,
-then submit one `track` request per model through the Manager request endpoint.
+Legacy Skills and Agents discover this Provider through the Manager capability
+catalog, then submit one `track` request per model through the Manager request
+endpoint.
 The default reBot profile provides stable child frames for both reporters:
 
 - `observed_object/rebot_b601_dm/base`
@@ -219,6 +222,7 @@ Other actions:
 
 - `relocalize`
 - `stop`
+- `release_resources` after all sessions are stopped
 - `status`
 - `list_models`
 - `reload_models`
@@ -226,6 +230,10 @@ Other actions:
 `list_models` returns `role`, `description`, `semantic_frame`, and
 `default_child_frame` so Skills can identify the Base and Gripper reporters
 without depending on filename conventions.
+
+`release_resources` returns `resources_released: true` only after estimator
+sessions, prepared-model caches, CUDA model objects, and the raster context
+have been dropped. The backend can be loaded again by a later HOT job.
 
 ## Initialization mask input
 

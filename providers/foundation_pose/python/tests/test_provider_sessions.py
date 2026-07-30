@@ -75,6 +75,19 @@ class ProviderSessionTests(unittest.TestCase):
             self.assertEqual(session["operation"], "ESTIMATE")
             self.assertEqual(session["state"], "WAITING_FOR_INPUTS")
             self.assertTrue(session["child_frame"].startswith("observed_object/base/"))
+            with self.assertRaises(RuntimeError):
+                provider.handle_request({"action": "release_resources"})
+            provider.handle_request(
+                {
+                    "action": "stop",
+                    "session_id": session["session_id"],
+                }
+            )
+            release = provider.handle_request(
+                {"action": "release_resources"}
+            )
+            self.assertTrue(release["resources_released"])
+            self.assertEqual(release["status"], "resources_released")
             provider.http.close()
 
     def test_create_estimate_session_from_manager_payload(self) -> None:

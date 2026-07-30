@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relative End-Effector Motion Skill</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", sans-serif;
+      --bg: #090909;
+      --surface: #141414;
+      --border: #393939;
+      --text: #f1f1f1;
+      --muted: #a7a7a7;
+      --ok: #73d38b;
+      --warning: #f2b84b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 48px; }
+    nav { display: flex; justify-content: space-between; margin-bottom: 28px; }
+    a { color: var(--muted); text-decoration: none; }
+    .eyebrow { font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 6px 0 8px; }
+    .subtle { color: var(--muted); line-height: 1.55; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+    .panel { padding: 19px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .state { color: var(--warning); font-size: 20px; font-weight: 800; }
+    .state.ready { color: var(--ok); }
+    .dependency { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+    .dependency:first-child { border-top: 0; }
+    pre { max-height: 440px; overflow: auto; padding: 14px; border-radius: 9px; background: #0c0c0c; white-space: pre-wrap; word-break: break-word; }
+    .wide { grid-column: 1 / -1; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav>
+      <a href="http://127.0.0.1:7001/">← Midbrain</a>
+      <a href="/dev">Use through Developer Agent prompts</a>
+    </nav>
+    <p class="eyebrow">Finite Skill · Preview and approval workflow</p>
+    <h1>Integrated relative end-effector motion</h1>
+    <p class="subtle">This page observes the Skill boundary. New movement requests still enter through an Agent prompt; low-level controller tuning remains in the Integrated Controller Provider UI.</p>
+
+    <div class="grid">
+      <section class="panel">
+        <p class="eyebrow">Skill state</p>
+        <div id="skillState" class="state">Loading</div>
+        <p id="skillDetail" class="subtle">Reading pending previews.</p>
+      </section>
+      <section class="panel">
+        <p class="eyebrow">Required Providers</p>
+        <div id="dependencies"></div>
+      </section>
+      <section class="panel wide">
+        <p class="eyebrow">Pending exact previews</p>
+        <pre id="previews">Loading…</pre>
+      </section>
+      <section class="panel wide">
+        <p class="eyebrow">Integrated Controller observation</p>
+        <pre id="controller">Loading…</pre>
+      </section>
+    </div>
+  </main>
+  <script>
+    const providerOrder = [
+      ["robot_arm.rebot_dm", "Basic Controller"],
+      ["robot_arm.primary.integrated", "Integrated Controller"]
+    ];
+
+    function providerView(providers, id) {
+      return (providers || []).find((provider) => provider.id === id) || {};
+    }
+
+    async function refresh() {
+      try {
+        const [skillResponse, statusResponse] = await Promise.all([
+          fetch("/api/skills/integrated-relative-effector-motion/status", {cache: "no-store"}),
+          fetch("/api/status", {cache: "no-store"})
+        ]);
+        const skill = await skillResponse.json();
+        const status = await statusResponse.json();
+        if (!skillResponse.ok) throw new Error(skill.detail || "Skill observation is unavailable");
+
+        const pending = skill.pending_previews || [];
+        const state = document.querySelector("#skillState");
+        state.textContent = pending.length ? "PREVIEW AWAITING DECISION" : "IDLE";
+        state.className = pending.length ? "state" : "state ready";
+        document.querySelector("#skillDetail").textContent = pending.length
+          ? `${pending.length} exact preview${pending.length === 1 ? "" : "s"} remains within its approval window.`
+          : "No physical motion is pending.";
+        document.querySelector("#previews").textContent = pending.length
+          ? JSON.stringify(pending, null, 2)
+          : "No pending previews.";
+        document.querySelector("#controller").textContent = JSON.stringify(skill.controller, null, 2);
+
+        document.querySelector("#dependencies").replaceChildren(...providerOrder.map(([id, label]) => {
+          const provider = providerView(status.system_catalog?.providers, id);
+          const row = document.createElement("div");
+          row.className = "dependency";
+          const name = document.createElement("span");
+          const value = document.createElement("strong");
+          name.textContent = label;
+          value.textContent = provider.residency || provider.process_state || "UNAVAILABLE";
+          row.append(name, value);
+          return row;
+        }));
+      } catch (error) {
+        document.querySelector("#skillState").textContent = "UNAVAILABLE";
+        document.querySelector("#skillDetail").textContent = error.message;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 1500);
+  </script>
+</body>
+</html>

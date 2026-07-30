@@ -138,6 +138,62 @@ reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
     authorization_store,
     integrated,
 )
+space_cognition_skill = InitializeSpaceCognitionSkill(
+    manager,
+    fabric,
+    camera_provider_id=settings.head_camera_provider_id,
+    vio_provider_id=settings.local_vio_provider_id,
+    timeout_s=settings.space_cognition_timeout_s,
+)
+world_point_cloud = WorldPointCloudAccumulator(
+    fabric,
+    retention_s=settings.point_cloud_retention_s,
+    sample_stride=settings.point_cloud_sample_stride,
+    update_hz=settings.point_cloud_hz,
+    max_points=settings.point_cloud_max_points,
+)
+
+
+async def _reinitialize_space_cognition(reason: str) -> dict[str, Any]:
+    await world_point_cloud.begin_reinitialization()
+    try:
+        result = await space_cognition_skill.run(force_reset=True)
+        reset_result = result.get("result") or {}
+        session_epoch = str(reset_result.get("session_epoch") or "")
+        world_frame = str(reset_result.get("world_frame") or "")
+        if not session_epoch or not world_frame:
+            raise RuntimeError(
+                "forced reinitialization did not return a VIO session"
+            )
+        await world_point_cloud.switch_session(
+            session_epoch=session_epoch,
+            world_frame=world_frame,
+        )
+        result["requested_reason"] = reason
+        result["point_cloud_resumed"] = (
+            await world_point_cloud.wait_for_points(
+                session_epoch=session_epoch,
+                timeout_s=10.0,
+            )
+        )
+        if result["point_cloud_resumed"]:
+            result["message"] = (
+                "Origin reinitialized. The previous map was cleared because "
+                "it belonged to the old coordinate epoch, and new point "
+                "capture has resumed."
+            )
+        else:
+            result["message"] = (
+                "Origin reinitialized and the new epoch is active, but point "
+                "capture is still waiting for visual TRACKING and a fresh "
+                "RGB-D transform."
+            )
+        return result
+    except BaseException:
+        await world_point_cloud.resume_follow_latest()
+        raise
+
+
 discoverable_agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
 )
@@ -167,6 +223,7 @@ driver = PrototypeAgentDriver(
     provider_lifecycle_control=True,
     integrated_motion_skill=integrated_motion_agent_adapter,
     basic_safe_home_skill=basic_safe_home_agent_adapter,
+    space_cognition_reinitializer=_reinitialize_space_cognition,
     session=SQLiteSession(
         "midbrain-regular-agent-systemic-gui-v2",
         agent_session_database,
@@ -194,6 +251,7 @@ developer_driver = PrototypeAgentDriver(
     developer_mode=True,
     integrated_motion_skill=integrated_motion_agent_adapter,
     basic_safe_home_skill=basic_safe_home_agent_adapter,
+    space_cognition_reinitializer=_reinitialize_space_cognition,
     session=SQLiteSession(
         "midbrain-developer-agent-systemic-gui-v2",
         agent_session_database,
@@ -213,20 +271,6 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
     defer_loading=False,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
     max_turns=settings.openai_agent_max_turns,
-)
-space_cognition_skill = InitializeSpaceCognitionSkill(
-    manager,
-    fabric,
-    camera_provider_id=settings.head_camera_provider_id,
-    vio_provider_id=settings.local_vio_provider_id,
-    timeout_s=settings.space_cognition_timeout_s,
-)
-world_point_cloud = WorldPointCloudAccumulator(
-    fabric,
-    retention_s=settings.point_cloud_retention_s,
-    sample_stride=settings.point_cloud_sample_stride,
-    update_hz=settings.point_cloud_hz,
-    max_points=settings.point_cloud_max_points,
 )
 agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
@@ -409,6 +453,14 @@ class DeveloperApprovalDecision(BaseModel):
 REGULAR_PAGE = (
     Path(__file__).resolve().parent / "web" / "regular_agent.html"
 ).read_text(encoding="utf-8")
+RGBD_ALIGNMENT_PAGE = (
+    Path(__file__).resolve().parent / "web" / "rgbd_alignment.html"
+).read_text(encoding="utf-8")
+INTEGRATED_RELATIVE_MOTION_PAGE = (
+    Path(__file__).resolve().parent
+    / "web"
+    / "integrated_relative_motion.html"
+).read_text(encoding="utf-8")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -419,6 +471,22 @@ async def index() -> str:
 @app.get("/dev", response_class=HTMLResponse)
 async def developer_index() -> str:
     return PAGE
+
+
+@app.get(
+    "/dev/skills/verify-rgbd-alignment",
+    response_class=HTMLResponse,
+)
+async def rgbd_alignment_developer_index() -> str:
+    return RGBD_ALIGNMENT_PAGE
+
+
+@app.get(
+    "/dev/skills/integrated-relative-effector-motion",
+    response_class=HTMLResponse,
+)
+async def integrated_relative_motion_developer_index() -> str:
+    return INTEGRATED_RELATIVE_MOTION_PAGE
 
 
 @app.get("/health")
@@ -444,6 +512,7 @@ async def status() -> dict[str, Any]:
         body_pose,
         motion_inhibit,
         cloud_status,
+        system_overview,
     ) = await asyncio.gather(
         _safe(manager.health),
         _safe(fabric.health),
@@ -453,6 +522,7 @@ async def status() -> dict[str, Any]:
         _safe(lambda: fabric.latest_optional("localization.body.pose")),
         _safe(manager.motion_inhibit_status),
         _safe(world_point_cloud.status),
+        _safe(manager.ui_overview),
     )
     return {
         "manager": manager_health,
@@ -463,6 +533,7 @@ async def status() -> dict[str, Any]:
         "body_pose": body_pose,
         "motion_inhibit": motion_inhibit,
         "world_point_cloud": cloud_status,
+        "system_catalog": system_overview,
         "auto_initialize_enabled": settings.auto_initialize_space_cognition,
         "auto_initialize_state": auto_initialization_state,
         "auto_initialize_result": auto_initialization_result,
@@ -499,6 +570,11 @@ async def status() -> dict[str, Any]:
         },
         "bounded_operations": operation_registry.snapshot(),
     }
+
+
+@app.get("/api/skills/integrated-relative-effector-motion/status")
+async def integrated_relative_motion_status() -> dict[str, Any]:
+    return await integrated_motion_agent_adapter.observation()
 
 
 @app.get("/api/phase4/policy")
@@ -840,33 +916,11 @@ async def propose_observation_motion(
 async def initialize_space_cognition(request: InitializationRequest) -> dict[str, Any]:
     try:
         if request.force_reset:
-            await world_point_cloud.begin_reinitialization()
-        result = await space_cognition_skill.run(force_reset=request.force_reset)
-        if request.force_reset:
-            reset_result = result.get("result") or {}
-            session_epoch = str(reset_result.get("session_epoch") or "")
-            world_frame = str(reset_result.get("world_frame") or "")
-            if not session_epoch or not world_frame:
-                raise RuntimeError("forced reinitialization did not return a VIO session")
-            await world_point_cloud.switch_session(
-                session_epoch=session_epoch,
-                world_frame=world_frame,
+            return await _reinitialize_space_cognition(
+                "Operator requested reinitialization from the Agent GUI"
             )
-            result["point_cloud_resumed"] = await world_point_cloud.wait_for_points(
-                session_epoch=session_epoch,
-                timeout_s=10.0,
-            )
-            if result["point_cloud_resumed"]:
-                result["message"] = (
-                    "Origin reinitialized. The previous map was cleared because it belonged to "
-                    "the old coordinate epoch, and new point capture has resumed."
-                )
-            else:
-                result["message"] = (
-                    "Origin reinitialized and the new epoch is active, but point capture is still "
-                    "waiting for visual TRACKING and a fresh RGB-D transform."
-                )
-        elif result.get("status") == "already_initialized":
+        result = await space_cognition_skill.run(force_reset=False)
+        if result.get("status") == "already_initialized":
             result["message"] = (
                 "Space cognition was already initialized automatically at GUI startup. "
                 "Use Force reinitialize only when a new local origin is required."
@@ -1303,6 +1357,13 @@ PAGE = r"""
     pre { white-space: pre-wrap; word-break: break-word; background: #101010; padding: 12px; border-radius: 8px; min-height: 72px; max-height: 520px; overflow: auto; }
     img { width: 100%; min-height: 220px; object-fit: contain; background: #050505; border-radius: 8px; }
     .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .catalog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .catalog-list { display: grid; gap: 7px; }
+    .catalog-item { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid var(--mb-border); border-radius: 8px; background: #101010; }
+    .catalog-item a { color: var(--mb-text); text-decoration: none; overflow-wrap: anywhere; }
+    .catalog-item span { color: var(--mb-muted); font-size: 11px; white-space: nowrap; }
+    details { margin-top: 12px; color: var(--mb-muted); }
+    details summary { cursor: pointer; }
     .status { font-size: 12px; color: #d1d1d1; }
     .viewer-wrap { position: relative; width: 100%; height: min(68vh, 720px); min-height: 430px; background: #050505; border-radius: 10px; overflow: hidden; }
     #cloud { display: block; width: 100%; height: 100%; cursor: grab; }
@@ -1339,7 +1400,7 @@ PAGE = r"""
     .decision-actions button { margin: 0; }
     .decision-note { color: var(--mb-warning); font-size: 12px; }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .viewer-wrap { height: 55vh; } }
-    @media (max-width: 640px) { .sensor-grid, .model-controls { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { .sensor-grid, .catalog-grid, .model-controls { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -1384,26 +1445,9 @@ PAGE = r"""
         <textarea id="prompt">Take a screenshot and identify the object I am pointing at. Use only the RGB image.</textarea>
         <div>
           <button class="primary" id="run">Run prompt</button>
-          <button class="secondary" id="refresh">Refresh frames</button>
         </div>
         <h2>Answer</h2>
         <pre id="answer">Ready.</pre>
-      </section>
-      <section class="card">
-        <div class="role-kicker">Observation</div>
-        <h2>Latest sensor frames</h2>
-        <div class="sensor-grid">
-          <div><p>RGB</p><img id="image" alt="Latest RGB frame"></div>
-          <div><p>Depth</p><img id="depth" alt="Latest depth frame"></div>
-        </div>
-      </section>
-      <section class="card">
-        <div class="role-kicker">RGB-D quality control</div>
-        <h2>Content and registration review</h2>
-        <p class="sub">A bounded VLM reviews actual RGB, registered depth, overlay, boundary, timing, and cadence evidence. Image presence alone is not accepted.</p>
-        <button class="primary" id="validateRgbd">Validate RGB-D</button>
-        <img id="rgbdComposite" alt="RGB, registered depth, and overlay validation composite">
-        <pre id="rgbdResult">No validation has run.</pre>
       </section>
       <section class="card">
         <div class="role-kicker">Replay provenance</div>
@@ -1414,8 +1458,22 @@ PAGE = r"""
       </section>
       <section class="card">
         <div class="role-kicker">Diagnostics</div>
-        <h2>Platform status</h2>
-        <pre id="status" class="status">Loading…</pre>
+        <h2>Installed components</h2>
+        <p class="sub">Compact live catalog from Midbrain. Newly installed Skill manifests appear here and in the main portal without changing this page.</p>
+        <div class="catalog-grid">
+          <div>
+            <h3>Providers <span id="providerCount"></span></h3>
+            <div id="providerCatalog" class="catalog-list"></div>
+          </div>
+          <div>
+            <h3>Skills <span id="skillCount"></span></h3>
+            <div id="skillCatalog" class="catalog-list"></div>
+          </div>
+        </div>
+        <details>
+          <summary>Core runtime details</summary>
+          <pre id="status" class="status">Loading…</pre>
+        </details>
       </section>
     </div>
     <section class="card">
@@ -1448,9 +1506,7 @@ PAGE = r"""
 </dialog>
 <script>
 const runButton = document.getElementById('run');
-const refreshButton = document.getElementById('refresh');
 const refreshReplayButton = document.getElementById('refreshReplay');
-const validateRgbdButton = document.getElementById('validateRgbd');
 const initializeButton = document.getElementById('initialize');
 const resetButton = document.getElementById('reset');
 const clearCloudButton = document.getElementById('clearCloud');
@@ -1466,10 +1522,6 @@ const answer = document.getElementById('answer');
 const agentModel = document.getElementById('agentModel');
 const reasoningEffort = document.getElementById('reasoningEffort');
 const vlmModel = document.getElementById('vlmModel');
-const image = document.getElementById('image');
-const depth = document.getElementById('depth');
-const rgbdComposite = document.getElementById('rgbdComposite');
-const rgbdResult = document.getElementById('rgbdResult');
 const replayProvenance = document.getElementById('replayProvenance');
 const statusBox = document.getElementById('status');
 const spaceStatus = document.getElementById('spaceStatus');
@@ -1593,10 +1645,28 @@ function populateModelSelect(select, values, selectedValue, labeler) {
   select.dataset.loaded = 'true';
 }
 
-function refreshImages() {
-  const stamp = Date.now();
-  image.src = '/api/latest-image?t=' + stamp;
-  depth.src = '/api/latest-depth?t=' + stamp;
+function renderComponentCatalog(targetId, items) {
+  const target = document.getElementById(targetId);
+  target.replaceChildren();
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'catalog-item';
+    const link = document.createElement('a');
+    const state = document.createElement('span');
+    link.textContent = item.display_name || item.id || 'Unknown component';
+    link.href = 'http://127.0.0.1:7001' + (item.observation_url || '/');
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    state.textContent = item.status || 'UNKNOWN';
+    row.append(link, state);
+    target.append(row);
+  }
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'catalog-item';
+    empty.textContent = 'None discovered';
+    target.append(empty);
+  }
 }
 
 async function refreshStatus() {
@@ -1625,6 +1695,19 @@ async function refreshStatus() {
     const vioData = (data.vio && data.vio.data) || {};
     const poseData = (data.body_pose && data.body_pose.data) || {};
     const cloudData = data.world_point_cloud || {};
+    const systemCatalog = data.system_catalog || {};
+    const catalogProviders = Array.isArray(systemCatalog.providers)
+      ? systemCatalog.providers
+      : [];
+    const catalogSkills = Array.isArray(systemCatalog.skills)
+      ? systemCatalog.skills
+      : [];
+    renderComponentCatalog('providerCatalog', catalogProviders);
+    renderComponentCatalog('skillCatalog', catalogSkills);
+    document.getElementById('providerCount').textContent =
+      '(' + catalogProviders.length + ')';
+    document.getElementById('skillCount').textContent =
+      '(' + catalogSkills.length + ')';
     const binding = data.capability_binding || {};
     const bindingValidity = binding.validity || binding.status || 'NOT_REQUESTED';
     const bindingIssues = Array.isArray(binding.validation_issues)
@@ -1777,9 +1860,15 @@ async function refreshStatus() {
       'rotation: ' + rotationSource + ' · innovation ' + disagreementDegrees + '\n' +
       'features: ' + featureMode + ' · IR ' + irInliers + '/' + irKeypoints + ' · map: ' + cloudCaptureState;
     statusBox.textContent = JSON.stringify({
-      manager: data.manager,
-      fabric: data.fabric,
-      providers: data.providers,
+      core: systemCatalog.core || {
+        manager: data.manager,
+        fabric: data.fabric
+      },
+      component_counts: {
+        providers: catalogProviders.length,
+        skills: catalogSkills.length,
+        agent_exposed_skills: (data.agent_skill_catalog || []).length
+      },
       motion_inhibit: data.motion_inhibit,
       auto_initialize_state: data.auto_initialize_state,
       auto_initialize_error: data.auto_initialize_error
@@ -1796,6 +1885,13 @@ async function refreshStatus() {
 }
 
 async function requestInitialization(forceReset) {
+  if (forceReset && !window.confirm(
+    'Establish a new Midbrain spatial origin? This revokes the active ' +
+    'workcell calibration, clears observations bound to the old VIO epoch, ' +
+    'and requires the robot and camera to remain stationary.'
+  )) {
+    return;
+  }
   initializeButton.disabled = true;
   resetButton.disabled = true;
   spaceStatus.textContent = forceReset ? 'Reinitializing local origin and restarting the map…' : 'Checking startup initialization…';
@@ -1886,7 +1982,6 @@ runButton.addEventListener('click', async () => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
     await handleDeveloperAgentResult(data);
-    refreshImages();
     refreshStatus();
   } catch (error) {
     answer.textContent = 'Error: ' + error;
@@ -1894,30 +1989,7 @@ runButton.addEventListener('click', async () => {
     runButton.disabled = false;
   }
 });
-refreshButton.addEventListener('click', refreshImages);
 refreshReplayButton.addEventListener('click', refreshReplayProvenance);
-validateRgbdButton.addEventListener('click', async () => {
-  validateRgbdButton.disabled = true;
-  rgbdResult.textContent = 'Running bounded RGB-D content and alignment review\u2026';
-  try {
-    const response = await fetch('/api/rgbd-alignment/validate', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        request: 'Verify this RGB-D bundle for observation use. Inspect actual scene content, registration, valid boundary, and channel cadence.'
-      })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
-    rgbdResult.textContent = JSON.stringify(data, null, 2);
-    rgbdComposite.src = '/api/latest-rgbd-alignment-composite?t=' + Date.now();
-    await refreshStatus();
-  } catch (error) {
-    rgbdResult.textContent = 'Error: ' + error;
-  } finally {
-    validateRgbdButton.disabled = false;
-  }
-});
 
 const canvas = document.getElementById('cloud');
 const gl = canvas.getContext('webgl', {alpha: false, antialias: true});
@@ -2202,7 +2274,6 @@ resetViewButton.addEventListener('click', () => {
   target = [0, 0, 1.5];
 });
 
-refreshImages();
 refreshStatus();
 refreshReplayProvenance();
 renderCloud();

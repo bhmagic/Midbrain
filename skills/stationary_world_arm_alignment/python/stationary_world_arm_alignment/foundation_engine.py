@@ -12,29 +12,34 @@ from .math3d import transform_from_payload
 
 
 PROVIDER_COMPATIBILITY_ROUTE = "PROVIDER_COMPATIBILITY"
-SKILL_LOCAL_ROUTE = "SKILL_LOCAL"
+FOUNDATIONPOSE_SKILL_ROUTE = "FOUNDATIONPOSE_SKILL"
+# Backward-compatible import name for callers written during the route trial.
+SKILL_LOCAL_ROUTE = FOUNDATIONPOSE_SKILL_ROUTE
 BASE_POSE_ENGINE_ROUTES = {
     PROVIDER_COMPATIBILITY_ROUTE,
-    SKILL_LOCAL_ROUTE,
+    FOUNDATIONPOSE_SKILL_ROUTE,
 }
 
 
 def normalize_base_pose_engine_route(config: dict[str, Any]) -> str:
     route = str(
         (config.get("base_pose_engine") or {}).get("active_route")
-        or PROVIDER_COMPATIBILITY_ROUTE
+        or FOUNDATIONPOSE_SKILL_ROUTE
     ).upper()
+    if route == "SKILL_LOCAL":
+        route = FOUNDATIONPOSE_SKILL_ROUTE
     if route not in BASE_POSE_ENGINE_ROUTES:
         raise ValueError(f"unsupported stationary base-pose engine route: {route}")
     return route
 
 
 class LocalFoundationPoseEngine:
-    """Finite Skill-owned adapter around a FoundationPose-compatible backend."""
+    """Stationary sampling adapter around the finite FoundationPose Skill runtime."""
 
-    def __init__(self, backend: Any, registry: Any):
+    def __init__(self, backend: Any, registry: Any, *, runtime: Any | None = None):
         self.backend = backend
         self.registry = registry
+        self.runtime = runtime
         self.last_diagnostics: dict[str, Any] = {}
 
     @classmethod
@@ -43,49 +48,28 @@ class LocalFoundationPoseEngine:
         config: dict[str, Any],
         workspace_root: Path,
     ) -> "LocalFoundationPoseEngine":
-        local = (config.get("base_pose_engine") or {}).get("skill_local") or {}
+        engine_config = config.get("base_pose_engine") or {}
+        local = (
+            engine_config.get("foundation_pose_skill")
+            or engine_config.get("skill_local")
+            or {}
+        )
         try:
-            from foundation_pose_provider.backend import (
-                MockFoundationPoseBackend,
-                NvLabsFoundationPoseBackend,
+            from foundation_pose_object_localization import (
+                FiniteFoundationPoseRuntime,
             )
-            from foundation_pose_provider.model_registry import ObjectModelRegistry
         except ImportError as error:
             raise RuntimeError(
-                "the temporary FoundationPose backend library route is unavailable; "
-                "run the stationary Skill setup before selecting SKILL_LOCAL"
+                "the finite FoundationPose Skill runtime is unavailable; "
+                "run the stationary Skill setup before selecting "
+                "FOUNDATIONPOSE_SKILL"
             ) from error
-
-        registry_path = Path(
-            str(local.get("model_registry") or "config/foundation_pose/models.json")
+        runtime = FiniteFoundationPoseRuntime.from_config(local, workspace_root)
+        return cls(
+            runtime.backend,
+            runtime.registry,
+            runtime=runtime,
         )
-        if not registry_path.is_absolute():
-            registry_path = workspace_root / registry_path
-        backend_name = str(local.get("backend") or "nvlabs").lower()
-        if backend_name == "mock":
-            backend = MockFoundationPoseBackend()
-        elif backend_name == "nvlabs":
-            root_value = str(
-                local.get("foundationpose_root")
-                or "providers/foundation_pose/nvlabs/FoundationPose"
-            )
-            root = Path(root_value)
-            if not root.is_absolute():
-                root = workspace_root / root
-            backend = NvLabsFoundationPoseBackend(
-                root,
-                estimate_iterations=int(local.get("estimate_iterations") or 5),
-                track_iterations=int(local.get("track_iterations") or 2),
-                debug_level=int(local.get("debug_level") or 0),
-                debug_dir=workspace_root
-                / str(local.get("debug_dir") or "debug/stationary_foundation_pose"),
-                prepared_model_cache_size=int(
-                    local.get("prepared_model_cache_size") or 4
-                ),
-            )
-        else:
-            raise ValueError(f"unsupported local FoundationPose backend: {backend_name}")
-        return cls(backend, ObjectModelRegistry(registry_path))
 
     @staticmethod
     def _camera_matrix(intrinsics: dict[str, Any]) -> np.ndarray:
@@ -132,9 +116,13 @@ class LocalFoundationPoseEngine:
             for role in roles
         }
         models = {
-            role: self.registry.get(
-                model_ids[role],
-                require_mesh=getattr(self.backend, "name", "") != "mock",
+            role: (
+                self.runtime.model(model_ids[role])
+                if self.runtime is not None
+                else self.registry.get(
+                    model_ids[role],
+                    require_mesh=getattr(self.backend, "name", "") != "mock",
+                )
             )
             for role in roles
         }
@@ -212,7 +200,8 @@ class LocalFoundationPoseEngine:
                     for role in roles
                 }
                 diagnostics = {
-                    "engine_route": SKILL_LOCAL_ROUTE,
+                    "engine_route": FOUNDATIONPOSE_SKILL_ROUTE,
+                    "skill_type": "foundation_pose_object_localization",
                     "backend": getattr(self.backend, "name", type(self.backend).__name__),
                     "attempt": int(attempt),
                     "counts": counts,
@@ -246,4 +235,5 @@ class LocalFoundationPoseEngine:
                     pass
 
     async def close(self) -> None:
-        await asyncio.to_thread(self.backend.close)
+        close = self.runtime.close if self.runtime is not None else self.backend.close
+        await asyncio.to_thread(close)

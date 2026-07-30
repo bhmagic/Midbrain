@@ -130,6 +130,24 @@ class IntegratedRelativeMotionAdapterTests(
         )
         self.assertEqual(client.engage_count, 0)
 
+    async def test_observation_reports_pending_preview_without_mutation(
+        self,
+    ) -> None:
+        client = _IntegratedClient()
+        adapter = IntegratedRelativeMotionAdapter(client)
+        preview = await adapter.preview(direction="UP", distance_m=0.2)
+
+        observation = await adapter.observation()
+
+        self.assertTrue(observation["read_only"])
+        self.assertEqual(
+            observation["pending_previews"][0]["preview_id"],
+            preview["preview_id"],
+        )
+        self.assertEqual(observation["controller"]["residency"], "HOT")
+        self.assertEqual(client.engage_count, 0)
+        self.assertEqual(client.trigger_count, 0)
+
     async def test_unreachable_controller_returns_recovery_route(self) -> None:
         adapter = IntegratedRelativeMotionAdapter(_OfflineIntegratedClient())
 

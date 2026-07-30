@@ -91,8 +91,8 @@ def _frame(frame_number):
     )
 
 
-def test_route_default_is_provider_compatibility() -> None:
-    assert normalize_base_pose_engine_route({}) == PROVIDER_COMPATIBILITY_ROUTE
+def test_route_default_is_finite_foundation_pose_skill() -> None:
+    assert normalize_base_pose_engine_route({}) == SKILL_LOCAL_ROUTE
     assert (
         normalize_base_pose_engine_route(
             {"base_pose_engine": {"active_route": "skill_local"}}

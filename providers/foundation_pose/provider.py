@@ -184,10 +184,15 @@ class FoundationPoseProvider:
                         session.state = "STOPPED"
                         session.last_error = "Provider entered WARM residency"
                     self.backend.reset(session.session_id)
+                self.backend.close()
                 self.residency = "WARM"
                 self.ready = False
                 self._close_readers()
-        return {"status": "warm"}
+        return {
+            "status": "warm",
+            "resources_released": True,
+            "backend": self.backend.diagnostics(),
+        }
 
     def stop(self) -> dict[str, Any]:
         self.shutdown_event.set()
@@ -226,6 +231,8 @@ class FoundationPoseProvider:
             return self._relocalize(effective_request)
         if action in {"stop", "stop_tracking", "cancel"}:
             return self._stop_session(effective_request)
+        if action in {"release_resources", "release", "unload"}:
+            return self._release_resources()
         if action == "status":
             session_id = str(
                 effective_request.get("session_id") or ""
@@ -239,6 +246,30 @@ class FoundationPoseProvider:
             self.registry.reload()
             return self.registry.public_payload()
         raise ValueError(f"unsupported object-pose action: {action or 'empty'}")
+
+    def _release_resources(self) -> dict[str, Any]:
+        with self.iteration_lock:
+            with self.lock:
+                active = [
+                    session.session_id
+                    for session in self.sessions.values()
+                    if session.state in ACTIVE_STATES
+                ]
+                if active:
+                    raise RuntimeError(
+                        "cannot release FoundationPose resources while sessions "
+                        f"are active: {', '.join(sorted(active))}"
+                    )
+                for session in self.sessions.values():
+                    self.backend.reset(session.session_id)
+                self._close_readers()
+                self.backend.close()
+                diagnostics = self.backend.diagnostics()
+        return {
+            "status": "resources_released",
+            "resources_released": True,
+            "backend": diagnostics,
+        }
 
     def _create_session(self, request: dict[str, Any], *, operation: str) -> dict[str, Any]:
         if self.residency != "HOT":

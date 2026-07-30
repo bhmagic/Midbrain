@@ -459,6 +459,7 @@ class AlignmentSkill:
             raise
         finally:
             if self.base_pose_engine_route == PROVIDER_COMPATIBILITY_ROUTE:
+                cleanup_errors: list[str] = []
                 for session_id in own_sessions:
                     try:
                         await self.manager.provider_request(
@@ -470,8 +471,10 @@ class AlignmentSkill:
                             },
                             related_skill_id=skill_id,
                         )
-                    except Exception:
-                        pass
+                    except Exception as error:
+                        cleanup_errors.append(
+                            f"stop session {session_id}: {error}"
+                        )
                 try:
                     health = await self.foundation_health.health()
                     active_foreign = [
@@ -481,11 +484,55 @@ class AlignmentSkill:
                         and str(session.get("state")) not in TERMINAL_POSE_STATES
                     ]
                     if not active_foreign:
+                        release_result = await self.manager.provider_request(
+                            self.config["foundation_pose_provider_id"],
+                            action="release_resources",
+                            payload={
+                                "reason": "stationary alignment job complete",
+                            },
+                            related_skill_id=skill_id,
+                        )
                         await self.manager.stop_provider(
                             self.config["foundation_pose_provider_id"]
                         )
-                except Exception:
-                    pass
+                        self.last_base_pose_engine_lifecycle = {
+                            "route": PROVIDER_COMPATIBILITY_ROUTE,
+                            "state": "RELEASED_AND_STOPPED",
+                            "owned_session_count_after": 0,
+                            "owned_sessions": sorted(own_sessions),
+                            "gpu_resources_released": bool(
+                                release_result.get("resources_released")
+                            ),
+                            "backend_closed": bool(
+                                release_result.get("resources_released")
+                            ),
+                            "cleanup_errors": cleanup_errors,
+                        }
+                    else:
+                        self.last_base_pose_engine_lifecycle = {
+                            "route": PROVIDER_COMPATIBILITY_ROUTE,
+                            "state": "RETAINED_FOR_FOREIGN_SESSIONS",
+                            "owned_session_count_after": 0,
+                            "owned_sessions": sorted(own_sessions),
+                            "foreign_sessions": [
+                                str(session.get("session_id"))
+                                for session in active_foreign
+                            ],
+                            "gpu_resources_released": False,
+                            "backend_closed": False,
+                            "cleanup_errors": cleanup_errors,
+                        }
+                except Exception as error:
+                    cleanup_errors.append(str(error))
+                    self.last_base_pose_engine_lifecycle = {
+                        "route": PROVIDER_COMPATIBILITY_ROUTE,
+                        "state": "CLEANUP_FAILED",
+                        "owned_session_count_after": None,
+                        "owned_sessions": sorted(own_sessions),
+                        "gpu_resources_released": False,
+                        "backend_closed": False,
+                        "cleanup_errors": cleanup_errors,
+                    }
             if keeper:
                 try:
                     await keeper.release()
@@ -826,6 +873,14 @@ class AlignmentSkill:
             sessions[role] = str(
                 self._find_value(response, "session_id") or session_id
             )
+        self.last_base_pose_engine_lifecycle = {
+            "route": PROVIDER_COMPATIBILITY_ROUTE,
+            "state": "ACTIVE",
+            "owned_session_count_after": len(sessions),
+            "owned_sessions": sorted(sessions.values()),
+            "gpu_resources_released": False,
+            "backend_closed": False,
+        }
         return sessions
 
     async def _collect_skill_local_foundation(
@@ -843,26 +898,11 @@ class AlignmentSkill:
     ]:
         if self.local_foundation_engine is not None:
             raise RuntimeError(
-                "a SKILL_LOCAL base-pose engine is already active"
+                "a FOUNDATIONPOSE_SKILL base-pose engine is already active"
             )
-        engine = LocalFoundationPoseEngine.from_config(
-            self.config,
-            WORKSPACE_ROOT,
+        foundation_skill_run_id = (
+            f"{skill_id}:foundation_pose_object_localization:{attempt}"
         )
-        self.local_foundation_engine = engine
-        backend_name = getattr(
-            engine.backend,
-            "name",
-            type(engine.backend).__name__,
-        )
-        self.last_base_pose_engine_lifecycle = {
-            "route": SKILL_LOCAL_ROUTE,
-            "state": "ACTIVE",
-            "backend": backend_name,
-            "owned_session_count_after": None,
-            "gpu_resources_released": False,
-            "backend_closed": False,
-        }
         roles = ["base", *(["gripper"] if include_gripper else [])]
         masks: dict[str, np.ndarray] = {}
         for role in roles:
@@ -924,12 +964,56 @@ class AlignmentSkill:
                     "motion_inhibit": keeper.status(),
                 },
             )
+            await self._publish_foundation_skill_status(
+                run_id=foundation_skill_run_id,
+                parent_skill_id=skill_id,
+                attempt=attempt,
+                state="RUNNING",
+                phase="ESTIMATE_AND_TRACK",
+                details={
+                    "samples": counts,
+                    "required_counts": required_counts,
+                    "engine": diagnostics,
+                },
+            )
 
+        engine_config = self.config.get("base_pose_engine") or {}
         local_config = (
-            (self.config.get("base_pose_engine") or {}).get("skill_local")
+            engine_config.get("foundation_pose_skill")
+            or engine_config.get("skill_local")
             or {}
         )
         capture = RgbdCapture(self.fabric, self.config["camera_frame"])
+        engine = LocalFoundationPoseEngine.from_config(
+            self.config,
+            WORKSPACE_ROOT,
+        )
+        self.local_foundation_engine = engine
+        backend_name = getattr(
+            engine.backend,
+            "name",
+            type(engine.backend).__name__,
+        )
+        self.last_base_pose_engine_lifecycle = {
+            "route": SKILL_LOCAL_ROUTE,
+            "state": "ACTIVE",
+            "backend": backend_name,
+            "owned_session_count_after": None,
+            "gpu_resources_released": False,
+            "backend_closed": False,
+        }
+        await self._publish_foundation_skill_status(
+            run_id=foundation_skill_run_id,
+            parent_skill_id=skill_id,
+            attempt=attempt,
+            state="RUNNING",
+            phase="LOAD_BACKEND",
+            details={
+                "backend": backend_name,
+                "engine_route": SKILL_LOCAL_ROUTE,
+                "resource_policy": "RELEASE_ON_COMPLETION",
+            },
+        )
         primary_error: BaseException | None = None
         sessions: dict[str, str] = {}
         try:
@@ -961,7 +1045,7 @@ class AlignmentSkill:
                 close_error = str(error)
                 if primary_error is None:
                     raise RuntimeError(
-                        "SKILL_LOCAL FoundationPose backend cleanup failed: "
+                        "FOUNDATIONPOSE_SKILL backend cleanup failed: "
                         f"{error}"
                     ) from error
             finally:
@@ -980,6 +1064,30 @@ class AlignmentSkill:
                     "backend_closed": close_error is None,
                     "cleanup_error": close_error,
                 }
+                await self._publish_foundation_skill_status(
+                    run_id=foundation_skill_run_id,
+                    parent_skill_id=skill_id,
+                    attempt=attempt,
+                    state=(
+                        "SUCCEEDED"
+                        if primary_error is None and close_error is None
+                        else "CANCELLED"
+                        if isinstance(primary_error, asyncio.CancelledError)
+                        else "FAILED"
+                    ),
+                    phase="RELEASE_BACKEND",
+                    details={
+                        "owned_sessions": sorted(sessions.values()),
+                        "resources_released": close_error is None,
+                        "backend_closed": close_error is None,
+                        "cleanup_error": close_error,
+                        "error": (
+                            None
+                            if primary_error is None
+                            else str(primary_error)
+                        ),
+                    },
+                )
 
     async def _wait_for_foundation(
         self,
@@ -2478,6 +2586,53 @@ class AlignmentSkill:
             ),
         ]
         await self.fabric.publish_batch(observations)
+
+    async def _publish_foundation_skill_status(
+        self,
+        *,
+        run_id: str,
+        parent_skill_id: str,
+        attempt: int,
+        state: str,
+        phase: str,
+        details: dict[str, Any],
+    ) -> None:
+        now_us = time.time_ns() // 1000
+        self.sequence = getattr(self, "sequence", 0) + 1
+        try:
+            await self.fabric.publish(
+                {
+                    "schema": "physical_agent.skill_status",
+                    "schema_version": 1,
+                    "stream": (
+                        "skills.foundation_pose_object_localization.status"
+                    ),
+                    "provider_id": (
+                        "skill.foundation_pose_object_localization"
+                    ),
+                    "provider_instance_id": run_id,
+                    "boot_id": run_id,
+                    "sequence": self.sequence,
+                    "observed_at_us": now_us,
+                    "freshness_ms": None,
+                    "related_skill_id": parent_skill_id,
+                    "valid": state not in {"FAILED", "CANCELLED"},
+                    "data": {
+                        "skill_id": run_id,
+                        "skill": "foundation_pose_object_localization",
+                        "parent_skill_id": parent_skill_id,
+                        "attempt": attempt,
+                        "state": state,
+                        "phase": phase,
+                        "updated_at_us": now_us,
+                        "details": details,
+                    },
+                }
+            )
+        except Exception:
+            # Parent execution and cleanup remain authoritative when Fabric is
+            # temporarily unavailable.
+            pass
 
     def _observation(
         self,

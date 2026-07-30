@@ -2,6 +2,18 @@
   "skill_type": "verify_rgbd_alignment",
   "version": "0.1.0",
   "display_name": "Verify RGB-D Image Content and Alignment",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "RGB-D Content and Registration Review",
+      "url": "http://127.0.0.1:8000/dev/skills/verify-rgbd-alignment",
+      "availability": "AGENT_RUNTIME"
+    }
+  },
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,

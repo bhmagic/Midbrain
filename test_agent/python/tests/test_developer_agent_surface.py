@@ -39,6 +39,10 @@ class _BasicSafeHomeSkill:
         return {"status": "SAFE_HOME_COMPLETED"}
 
 
+async def _reinitialize_space(reason: str):
+    return {"status": "initialized", "reason": reason}
+
+
 class DeveloperAgentSurfaceTests(unittest.TestCase):
     def test_developer_driver_adds_bounded_provider_tools(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -164,6 +168,35 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             "Move the arm to configured safe-home?",
         )
         self.assertIn("physical arm motion", approval["warning"])
+
+    def test_space_reinitialization_is_typed_and_approval_gated(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"reinitialize_space_cognition"},
+            space_cognition_reinitializer=_reinitialize_space,
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+
+        self.assertIn("reinitialize_space_cognition", tools)
+        self.assertTrue(tools["reinitialize_space_cognition"].needs_approval)
+
+        item = SimpleNamespace(
+            tool_name="reinitialize_space_cognition",
+            tool_namespace=None,
+            raw_item={
+                "arguments": '{"reason":"recover from accumulated VIO drift"}'
+            },
+        )
+        approval = PrototypeAgentDriver._approval_description(item)
+
+        self.assertEqual(
+            approval["title"],
+            "Establish a new Midbrain spatial origin?",
+        )
+        self.assertIn("revokes active", approval["warning"])
 
 
 if __name__ == "__main__":
