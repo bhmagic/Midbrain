@@ -1,6 +1,11 @@
-# Tutorial: Camera IMU Calibration GUI
+# Archived Tutorial: Camera IMU Calibration GUI
 
-This tutorial uses the standalone calibration GUI as the second example and functional check. It validates the camera Provider's raw IMU access, device identity, calibration storage, quality checks, atomic file replacement, backup behavior, and live reload.
+This historical tutorial records the pre-portal workflow. Commands and UI
+navigation may no longer match the current system. Start from the canonical
+[Midbrain Main GUI Portal](../04_MAIN_GUI_PORTAL.md) and enter calibration
+through the camera Provider's developer UI instead.
+
+The tutorial uses the standalone calibration GUI as the second example and functional check. It validates the camera Provider's raw IMU access, device identity, calibration storage, quality checks, atomic file replacement, backup behavior, and live reload.
 
 ## Safety boundary
 

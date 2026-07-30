@@ -23,7 +23,7 @@
       ],
       "cwd": "${PHYSICAL_AGENT_ROOT}",
       "control_url": "http://127.0.0.1:7101",
-      "auto_start": true,
+      "auto_start": false,
       "graceful_stop_timeout_ms": 8000,
       "heartbeat_timeout_ms": 3500,
       "env": {}

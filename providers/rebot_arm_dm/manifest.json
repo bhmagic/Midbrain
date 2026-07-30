@@ -2,6 +2,21 @@
   "provider_type": "robot_arm.rebot_dm",
   "version": "0.1.20",
   "display_name": "reBot Arm DM Basic Controller",
+  "manager_ids": ["robot_arm.rebot_dm"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Calibration and Hardware Development GUI",
+      "url": "http://127.0.0.1:8792/",
+      "launch_command": ".\\providers\\rebot_arm_dm\\scripts\\run_calibration.ps1",
+      "stop_command": ".\\providers\\rebot_arm_dm\\scripts\\stop_calibration.ps1",
+      "availability": "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER"
+    }
+  },
   "residency_modes": [
     "HOT",
     "WARM",

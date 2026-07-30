@@ -26,6 +26,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+mod ui;
+
 #[derive(Debug, Clone, Deserialize)]
 struct ProviderFile {
     providers: Vec<ProviderConfig>,
@@ -472,6 +474,11 @@ struct AppState {
     manager_boot_id: String,
     http: reqwest::Client,
     fabric_url: String,
+    agent_ui_url: String,
+    workspace_root: PathBuf,
+    provider_autostart_enabled: bool,
+    provider_manifests: Arc<HashMap<String, ui::ManifestRecord>>,
+    skill_manifests: Arc<HashMap<String, ui::ManifestRecord>>,
 }
 
 #[tokio::main]
@@ -489,6 +496,11 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "config/providers.json".to_string());
     let bind = env::var("MANAGER_BIND").unwrap_or_else(|_| "127.0.0.1:7001".to_string());
     let fabric_url = env::var("FABRIC_URL").unwrap_or_else(|_| "http://127.0.0.1:7002".to_string());
+    let agent_ui_url =
+        env::var("AGENT_UI_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+    let provider_autostart_enabled = env::var("MANAGER_PROVIDER_AUTOSTART_ENABLED")
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("true") || value == "1");
     let shutdown_execution_enabled = env::var("MANAGER_SHUTDOWN_EXECUTION_ENABLED")
         .ok()
         .is_some_and(|value| value.eq_ignore_ascii_case("true") || value == "1");
@@ -506,6 +518,13 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(|provider| (provider.id.clone(), provider))
         .collect();
+    let config_path = std::fs::canonicalize(&config_path)
+        .with_context(|| format!("resolving provider config {config_path}"))?;
+    let workspace_root = config_path
+        .parent()
+        .and_then(FsPath::parent)
+        .ok_or_else(|| anyhow!("provider config must be inside a workspace config directory"))?;
+    let manifest_catalog = ui::load_manifest_catalog(workspace_root)?;
 
     let state = AppState {
         configs: Arc::new(configs),
@@ -525,9 +544,36 @@ async fn main() -> Result<()> {
         manager_boot_id: Uuid::new_v4().to_string(),
         http: reqwest::Client::new(),
         fabric_url,
+        agent_ui_url,
+        workspace_root: workspace_root.to_path_buf(),
+        provider_autostart_enabled,
+        provider_manifests: Arc::new(manifest_catalog.providers),
+        skill_manifests: Arc::new(manifest_catalog.skills),
     };
 
     let app = Router::new()
+        .route("/", get(ui::mainframe))
+        .route("/assets/manager.css", get(ui::manager_css))
+        .route("/assets/mainframe.js", get(ui::mainframe_js))
+        .route("/assets/component.js", get(ui::component_js))
+        .route(
+            "/assets/developer-confirm.js",
+            get(ui::developer_confirm_js),
+        )
+        .route("/assets/shutdown.js", get(ui::shutdown_js))
+        .route("/observe/provider/:id", get(ui::component_page))
+        .route("/observe/skill/:id", get(ui::component_page))
+        .route("/developer/provider/:id", get(ui::developer_page))
+        .route("/developer/skill/:id", get(ui::developer_page))
+        .route("/shutdown", get(ui::shutdown_page))
+        .route("/v1/ui/overview", get(ui::overview))
+        .route("/v1/ui/providers/:id", get(ui::provider_detail))
+        .route("/v1/ui/skills/:id", get(ui::skill_detail))
+        .route(
+            "/v1/ui/developer/:kind/:id/activate",
+            post(ui::activate_developer_surface),
+        )
+        .route("/v1/ui/shutdown", post(ui::shutdown_midbrain))
         .route("/health", get(health))
         .route("/v1/providers", get(list_providers))
         .route("/v1/capabilities", get(list_capabilities))
@@ -585,23 +631,27 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     info!(%bind, "Resource Provider Manager listening");
 
-    let auto_state = state.clone();
-    tokio::spawn(async move {
-        let adoption_grace_ms = auto_state
-            .configs
-            .values()
-            .filter(|provider| provider.auto_start)
-            .map(|provider| provider.heartbeat_timeout_ms)
-            .max()
-            .unwrap_or_else(default_heartbeat_timeout)
-            .clamp(1_000, 10_000);
-        sleep(Duration::from_millis(adoption_grace_ms)).await;
-        for provider in auto_state.configs.values().filter(|p| p.auto_start) {
-            if let Err(err) = start_provider_inner(&auto_state, &provider.id).await {
-                error!(provider_id = %provider.id, error = %err, "auto-start failed");
+    if state.provider_autostart_enabled {
+        let auto_state = state.clone();
+        tokio::spawn(async move {
+            let adoption_grace_ms = auto_state
+                .configs
+                .values()
+                .filter(|provider| provider.auto_start)
+                .map(|provider| provider.heartbeat_timeout_ms)
+                .max()
+                .unwrap_or_else(default_heartbeat_timeout)
+                .clamp(1_000, 10_000);
+            sleep(Duration::from_millis(adoption_grace_ms)).await;
+            for provider in auto_state.configs.values().filter(|p| p.auto_start) {
+                if let Err(err) = start_provider_inner(&auto_state, &provider.id).await {
+                    error!(provider_id = %provider.id, error = %err, "auto-start failed");
+                }
             }
-        }
-    });
+        });
+    } else {
+        info!("Provider auto-start is disabled; Manager is starting in observation-first mode");
+    }
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -611,6 +661,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "resource-provider-manager",
+        "provider_autostart_enabled": state.provider_autostart_enabled,
         "shutdown_execution_enabled": state.shutdown_execution_enabled,
         "workcell_calibration_activation_identity_configured":
             state.review_auth_secret.len() >= 32,
@@ -1468,6 +1519,10 @@ async fn publish_workcell_calibration(
 }
 
 async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderView>> {
+    Json(collect_provider_views(&state).await)
+}
+
+async fn collect_provider_views(state: &AppState) -> Vec<ProviderView> {
     let mut processes = state.processes.lock().await;
     let reports = state.reports.lock().await;
     let mut result = Vec::new();
@@ -1492,7 +1547,7 @@ async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderView>
         });
     }
     result.sort_by(|a, b| a.config.id.cmp(&b.config.id));
-    Json(result)
+    result
 }
 
 async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<CapabilityView>> {
@@ -1984,8 +2039,7 @@ async fn hot_provider(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     reject_if_shutdown_fenced(&state, "provider HOT transition").await?;
-    ensure_started(&state, &id).await.map_err(internal_error)?;
-    call_control(&state, &id, "/v1/control/hot")
+    ensure_provider_hot(&state, &id)
         .await
         .map(Json)
         .map_err(internal_error)
@@ -2972,6 +3026,25 @@ async fn ensure_started(state: &AppState, id: &str) -> Result<()> {
     Ok(())
 }
 
+async fn ensure_provider_hot(state: &AppState, id: &str) -> Result<Value> {
+    ensure_started(state, id).await?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match call_control_with_timeout(state, id, "/v1/control/hot", Duration::from_millis(750))
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(anyhow!(
+                    "provider {id} did not accept HOT within 15 seconds: {error}"
+                ));
+            }
+            Err(_) => {}
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn start_provider_inner(state: &AppState, id: &str) -> Result<Value> {
     let config = state
         .configs
@@ -3080,6 +3153,15 @@ async fn start_provider_inner(state: &AppState, id: &str) -> Result<Value> {
 }
 
 async fn call_control(state: &AppState, id: &str, path: &str) -> Result<Value> {
+    call_control_with_timeout(state, id, path, Duration::from_secs(10)).await
+}
+
+async fn call_control_with_timeout(
+    state: &AppState,
+    id: &str,
+    path: &str,
+    timeout: Duration,
+) -> Result<Value> {
     let config = state
         .configs
         .get(id)
@@ -3091,7 +3173,7 @@ async fn call_control(state: &AppState, id: &str, path: &str) -> Result<Value> {
     let response = state
         .http
         .post(format!("{base}{path}"))
-        .timeout(Duration::from_secs(10))
+        .timeout(timeout)
         .send()
         .await
         .with_context(|| format!("calling provider control endpoint {path}"))?;
@@ -3602,6 +3684,11 @@ mod tests {
             manager_boot_id: "manager-test-boot".to_string(),
             http: reqwest::Client::new(),
             fabric_url: "http://127.0.0.1:9".to_string(),
+            agent_ui_url: "http://127.0.0.1:9".to_string(),
+            workspace_root: PathBuf::from("."),
+            provider_autostart_enabled: false,
+            provider_manifests: Arc::new(HashMap::new()),
+            skill_manifests: Arc::new(HashMap::new()),
         }
     }
 

@@ -1,6 +1,10 @@
-# Tutorial: Mock Agent, Point Cloud, and Pose
+# Archived Tutorial: Mock Agent, Point Cloud, and Pose
 
-This tutorial uses the Test Agent as both an example client and a functional check of the Manager, Fabric, camera Provider, Local VIO Provider, and transform flow.
+This historical tutorial records the pre-portal workflow. Commands and UI
+navigation may no longer match the current system. Start from the canonical
+[Midbrain Main GUI Portal](../04_MAIN_GUI_PORTAL.md) instead.
+
+The tutorial uses the Test Agent as both an example client and a functional check of the Manager, Fabric, camera Provider, Local VIO Provider, and transform flow.
 
 ## What it demonstrates
 

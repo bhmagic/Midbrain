@@ -22,6 +22,10 @@ class CapturedRgb:
     data_route: dict[str, Any] | None
 
 
+class CameraObservationUnavailable(RuntimeError):
+    """The configured camera has not published a current RGB frame reference."""
+
+
 class RgbCapture:
     def __init__(self, fabric: FabricClient, screenshot_dir: Path):
         self.fabric = fabric
@@ -42,7 +46,14 @@ class RgbCapture:
         )
         last_error: Exception | None = None
         for _ in range(3):
-            observation = await self.fabric.latest("camera.rgb.frame_ref")
+            observation = await self.fabric.latest_optional(
+                "camera.rgb.frame_ref"
+            )
+            if observation is None:
+                raise CameraObservationUnavailable(
+                    "camera.rgb.frame_ref is unavailable because no camera "
+                    "Provider is currently publishing RGB observations"
+                )
             observed_provider_id = str(observation.get("provider_id") or "")
             if provider_id and observed_provider_id != provider_id:
                 raise RuntimeError(

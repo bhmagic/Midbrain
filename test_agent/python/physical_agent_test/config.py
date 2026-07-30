@@ -24,12 +24,29 @@ load_dotenv(WORKSPACE_ROOT / "config" / "api_keys.env", override=False)
 load_dotenv(WORKSPACE_ROOT / "config" / "system.env", override=False)
 
 
+def _csv_environment(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        value
+        for value in (
+            item.strip() for item in os.getenv(name, default).split(",")
+        )
+        if value
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     workspace_root: Path = WORKSPACE_ROOT
     package_root: Path = PACKAGE_ROOT
     manager_url: str = os.getenv("MANAGER_URL", "http://127.0.0.1:7001")
     fabric_url: str = os.getenv("FABRIC_URL", "http://127.0.0.1:7002")
+    basic_controller_url: str = os.getenv(
+        "BASIC_CONTROLLER_URL",
+        "http://127.0.0.1:8791",
+    )
+    basic_operation_timeout_s: float = float(
+        os.getenv("BASIC_OPERATION_TIMEOUT_S", "60")
+    )
     integrated_controller_url: str = os.getenv(
         "INTEGRATED_CONTROLLER_URL",
         "http://127.0.0.1:8793",
@@ -40,9 +57,20 @@ class Settings:
     ui_host: str = os.getenv("UI_HOST", "127.0.0.1")
     ui_port: int = int(os.getenv("UI_PORT", "8000"))
     openai_model: str = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6-terra")
+    openai_agent_models: tuple[str, ...] = _csv_environment(
+        "OPENAI_AGENT_MODELS",
+        "gpt-5.6-terra,gpt-5.6-sol,gpt-5.6-luna",
+    )
+    openai_agent_reasoning_effort: str = os.getenv(
+        "OPENAI_AGENT_REASONING_EFFORT",
+        "medium",
+    ).strip().lower()
     openai_agent_tool_choice: str = os.getenv(
         "OPENAI_AGENT_TOOL_CHOICE",
-        "required",
+        "auto",
+    )
+    openai_agent_max_turns: int = int(
+        os.getenv("OPENAI_AGENT_MAX_TURNS", "16")
     )
     authorization_signing_secret: str = os.getenv(
         "MIDBRAIN_AUTHORIZATION_SECRET",

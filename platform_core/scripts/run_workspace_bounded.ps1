@@ -1,6 +1,8 @@
 param(
     [switch]$NoBrowser,
     [switch]$CoreOnly,
+    [switch]$StartAgentUi,
+    [switch]$AllowProviderAutoStart,
     [ValidateRange(2, 120)]
     [int]$StartupTimeoutSeconds = 15
 )
@@ -45,7 +47,8 @@ function Test-TcpPortOpen {
 function Start-IndependentProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [string]$Arguments = ""
+        [string]$Arguments = "",
+        [hashtable]$Environment = @{}
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -55,7 +58,31 @@ function Start-IndependentProcess {
     $startInfo.UseShellExecute = $true
     $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
 
-    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $previousEnvironment = @{}
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $name = [string]$entry.Key
+        $previousEnvironment[$name] = [System.Environment]::GetEnvironmentVariable(
+            $name,
+            [System.EnvironmentVariableTarget]::Process
+        )
+        [System.Environment]::SetEnvironmentVariable(
+            $name,
+            [string]$entry.Value,
+            [System.EnvironmentVariableTarget]::Process
+        )
+    }
+    try {
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+    }
+    finally {
+        foreach ($entry in $previousEnvironment.GetEnumerator()) {
+            [System.Environment]::SetEnvironmentVariable(
+                [string]$entry.Key,
+                $entry.Value,
+                [System.EnvironmentVariableTarget]::Process
+            )
+        }
+    }
     if ($null -eq $process) {
         throw "Failed to start $FilePath"
     }
@@ -131,12 +158,16 @@ function Assert-RustBinaryCurrent {
     }
 }
 
+if ($CoreOnly -and $StartAgentUi) {
+    throw "-CoreOnly and -StartAgentUi cannot be combined."
+}
+
 foreach ($required in @($managerExe, $fabricExe, $providerConfig)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Missing required file: $required. Run setup_workspace.ps1 first."
     }
 }
-if (-not $CoreOnly -and -not (Test-Path -LiteralPath $agentPython)) {
+if ($StartAgentUi -and -not (Test-Path -LiteralPath $agentPython)) {
     throw "Test-agent environment is missing at $agentPython. Run setup_workspace.ps1."
 }
 Assert-RustBinaryCurrent `
@@ -150,11 +181,13 @@ Assert-RustBinaryCurrent `
 
 $providerDocument = Get-Content -Raw -LiteralPath $providerConfig | ConvertFrom-Json
 $unattendedArmAutoStarts = @(
-    $providerDocument.providers |
-        Where-Object {
-            [bool]$_.auto_start -and [string]$_.id -like "robot_arm.*"
-        } |
-        ForEach-Object { [string]$_.id }
+    if ($AllowProviderAutoStart) {
+        $providerDocument.providers |
+            Where-Object {
+                [bool]$_.auto_start -and [string]$_.id -like "robot_arm.*"
+            } |
+            ForEach-Object { [string]$_.id }
+    }
 )
 if ($unattendedArmAutoStarts.Count -gt 0) {
     throw (
@@ -163,9 +196,11 @@ if ($unattendedArmAutoStarts.Count -gt 0) {
     )
 }
 $autoStartProviderIds = @(
-    $providerDocument.providers |
-        Where-Object { [bool]$_.auto_start } |
-        ForEach-Object { [string]$_.id }
+    if ($AllowProviderAutoStart) {
+        $providerDocument.providers |
+            Where-Object { [bool]$_.auto_start } |
+            ForEach-Object { [string]$_.id }
+    }
 )
 
 function Stop-BoundedAutoStartProviders {
@@ -207,7 +242,7 @@ function Stop-BoundedAutoStartProviders {
 }
 
 $requiredPorts = @(7002, 7001)
-if (-not $CoreOnly) {
+if ($StartAgentUi) {
     $requiredPorts += 8000
 }
 foreach ($port in $requiredPorts) {
@@ -241,10 +276,14 @@ try {
         -TimeoutSeconds $StartupTimeoutSeconds |
         Out-Null
 
+    $providerAutoStartValue = if ($AllowProviderAutoStart) { "true" } else { "false" }
     $managerArguments = '"' + $providerConfig.Replace('"', '\"') + '"'
     $managerProcess = Start-IndependentProcess `
         -FilePath $managerExe `
-        -Arguments $managerArguments
+        -Arguments $managerArguments `
+        -Environment @{
+            "MANAGER_PROVIDER_AUTOSTART_ENABLED" = $providerAutoStartValue
+        }
     $started.Add($managerProcess)
     Wait-BoundedHealth `
         -Url "http://127.0.0.1:7001/health" `
@@ -252,10 +291,13 @@ try {
         -TimeoutSeconds $StartupTimeoutSeconds |
         Out-Null
 
-    if (-not $CoreOnly) {
+    if ($StartAgentUi) {
         $uiProcess = Start-IndependentProcess `
             -FilePath $agentPython `
-            -Arguments "-m physical_agent_test.app"
+            -Arguments "-m physical_agent_test.app" `
+            -Environment @{
+                "AUTO_INITIALIZE_SPACE_COGNITION" = "false"
+            }
         $started.Add($uiProcess)
         Wait-BoundedHealth `
             -Url "http://127.0.0.1:8000/health" `
@@ -290,14 +332,19 @@ catch {
 
 Write-Host "Manager: http://127.0.0.1:7001"
 Write-Host "Fabric:  http://127.0.0.1:7002"
+Write-Host "Main UI: http://127.0.0.1:7001/"
 if ($null -ne $uiProcess) {
-    Write-Host "Test UI: http://127.0.0.1:8000"
-    if (-not $NoBrowser) {
-        Start-Process "http://127.0.0.1:8000"
-    }
+    Write-Host "Regular agent UI:   http://127.0.0.1:8000/"
+    Write-Host "Developer agent UI: http://127.0.0.1:8000/dev"
 }
 else {
-    Write-Host "Test-agent UI was not started."
+    Write-Host "Agent UI was not started. Add -StartAgentUi when it is needed."
+}
+if (-not $AllowProviderAutoStart) {
+    Write-Host "Provider auto-start is disabled for this launch."
+}
+if (-not $NoBrowser) {
+    Start-Process "http://127.0.0.1:7001/"
 }
 Write-Host "PID file: $pidsFile"
 Write-Host "Stop: platform_core\scripts\stop_workspace.ps1"

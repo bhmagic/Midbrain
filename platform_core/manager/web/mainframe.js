@@ -1,0 +1,176 @@
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+function setLamp(id, tone) {
+  const lamp = $(id);
+  lamp.className = `lamp ${tone || "muted"}`;
+}
+
+function statusChip(status, tone) {
+  const chip = document.createElement("span");
+  chip.className = `status-chip ${tone || "muted"}`;
+  chip.textContent = status || "UNKNOWN";
+  return chip;
+}
+
+function textCell(value, fallback = "—") {
+  const cell = document.createElement("td");
+  cell.textContent = value == null || value === "" ? fallback : String(value);
+  return cell;
+}
+
+function componentCell(item) {
+  const cell = document.createElement("td");
+  const name = document.createElement("span");
+  const identity = document.createElement("span");
+  name.className = "component-name";
+  identity.className = "component-id";
+  name.textContent = item.display_name || item.id;
+  identity.textContent = item.id;
+  cell.append(name, identity);
+  return cell;
+}
+
+function statusCell(item) {
+  const cell = document.createElement("td");
+  cell.append(statusChip(item.status, item.tone));
+  return cell;
+}
+
+function observationCell(item) {
+  const cell = document.createElement("td");
+  const link = document.createElement("a");
+  link.className = "observation-link";
+  link.href = item.observation_url;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = "Open observation";
+  cell.append(link);
+  return cell;
+}
+
+function renderProviders(providers) {
+  const body = $("providerRows");
+  body.replaceChildren();
+  if (!providers.length) {
+    const row = document.createElement("tr");
+    const cell = textCell("No Providers are configured.");
+    cell.colSpan = 5;
+    cell.className = "empty-cell";
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+  for (const provider of providers) {
+    const row = document.createElement("tr");
+    const lastSeen = provider.last_seen
+      ? new Date(provider.last_seen).toLocaleTimeString()
+      : "No heartbeat";
+    row.append(
+      componentCell(provider),
+      statusCell(provider),
+      textCell(provider.residency || provider.process_state),
+      textCell(lastSeen),
+      observationCell(provider),
+    );
+    body.append(row);
+  }
+}
+
+function renderSkills(skills) {
+  const body = $("skillRows");
+  body.replaceChildren();
+  if (!skills.length) {
+    const row = document.createElement("tr");
+    const cell = textCell("No Skill manifests were found.");
+    cell.colSpan = 5;
+    cell.className = "empty-cell";
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+  for (const skill of skills) {
+    const row = document.createElement("tr");
+    const adapter = skill.availability || {};
+    const adapterState = [
+      adapter.adapter_kind || "NO ADAPTER",
+      adapter.runtime_ready ? "ready" : "not running",
+    ].join(" · ");
+    row.append(
+      componentCell(skill),
+      statusCell(skill),
+      textCell(skill.last_state || "No completed run"),
+      textCell(adapterState),
+      observationCell(skill),
+    );
+    body.append(row);
+  }
+}
+
+function summarizeProviders(items) {
+  const active = items.filter((item) => item.status !== "COLD").length;
+  const ready = items.filter((item) => item.status === "HOT / READY").length;
+  return `${active} active · ${ready} ready`;
+}
+
+function summarizeSkills(items) {
+  const running = items.filter((item) => item.status === "RUNNING").length;
+  const unavailable = items.filter((item) => item.status === "UNAVAILABLE").length;
+  return `${running} running · ${unavailable} unavailable`;
+}
+
+async function refresh() {
+  $("refreshState").textContent = "Refreshing";
+  try {
+    const response = await fetch("/v1/ui/overview", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Overview returned ${response.status}`);
+    }
+    const data = await response.json();
+    const manager = data.core?.manager || {};
+    const fabric = data.core?.fabric || {};
+    const providers = data.providers || [];
+    const skills = data.skills || [];
+
+    $("managerStatus").textContent = String(manager.status || "unknown").toUpperCase();
+    $("managerPolicy").textContent = manager.provider_autostart_enabled
+      ? "Registry Provider autostart enabled"
+      : "Observation-first · Provider autostart disabled";
+    setLamp("managerLamp", manager.status === "ok" ? "ok" : "danger");
+
+    $("fabricStatus").textContent = String(fabric.status || "unavailable").toUpperCase();
+    $("fabricDetails").textContent = fabric.status === "ok"
+      ? `${fabric.stream_count || 0} streams · ${fabric.transform_edge_count || 0} transform edges`
+      : (fabric.error || "Fabric health unavailable");
+    setLamp("fabricLamp", fabric.status === "ok" ? "ok" : "danger");
+
+    $("providerMetric").textContent = `${providers.length} configured`;
+    $("providerDetails").textContent = summarizeProviders(providers);
+    $("skillMetric").textContent = `${skills.length} installed`;
+    $("skillDetails").textContent = summarizeSkills(skills);
+
+    const agents = data.agents || {};
+    $("agentState").textContent = agents.online
+      ? "Agent runtime is online. Regular and developer profiles share the same bounded backend."
+      : "Agent runtime is offline by design. Start it explicitly when either agent surface is needed.";
+    $("regularAgentLink").href = agents.regular_url || "http://127.0.0.1:8000/";
+    $("developerAgentLink").href = agents.developer_url || "http://127.0.0.1:8000/dev";
+    $("regularAgentLink").dataset.online = String(Boolean(agents.online));
+    $("developerAgentLink").dataset.online = String(Boolean(agents.online));
+
+    renderProviders(providers);
+    renderSkills(skills);
+    $("observedAt").textContent = `Observed ${new Date(data.observed_at).toLocaleString()}`;
+    $("refreshState").textContent = "Live";
+  } catch (error) {
+    $("refreshState").textContent = "Unavailable";
+    setLamp("managerLamp", "danger");
+    $("managerStatus").textContent = "UNAVAILABLE";
+    $("managerPolicy").textContent = error.message;
+  }
+}
+
+$("refreshButton").addEventListener("click", refresh);
+refresh();
+window.setInterval(refresh, 2000);

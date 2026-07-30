@@ -2,6 +2,20 @@
   "skill_type": "vegetable_cutting",
   "version": "0.3.0",
   "display_name": "Supervised Vegetable Cutting Skill",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Manual Cutting Development GUI",
+      "url": "http://127.0.0.1:8012/",
+      "launch_command": ".\\skills\\vegetable_cutting\\scripts\\run_gui.ps1",
+      "stop_command": ".\\skills\\vegetable_cutting\\scripts\\stop_gui.ps1",
+      "availability": "SEPARATE_MANUAL_ONLY_PROCESS"
+    }
+  },
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,

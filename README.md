@@ -33,7 +33,7 @@ Midbrain separates a robotic system into five primary concepts:
 
 | Concept       | Responsibility                                                                                                       |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Manager**   | Hosts, supervises, discovers, allocates, and coordinates Providers and their resources.                              |
+| **Manager**   | Hosts the systemic dashboard; supervises, discovers, allocates, and coordinates Providers and their resources.       |
 | **Fabric**    | Maintains timestamped observations, transforms, shared state, and synchronized access to data produced by Providers. |
 | **Providers** | Own hardware devices or persistent computational services and expose stable capabilities through contracts.          |
 | **Skills**    | Perform bounded operations that start, use Provider resources, produce a result, and end.                            |
@@ -216,8 +216,9 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
 | Supervised Vegetable Cutting Skill | `skills/vegetable_cutting`                                           | Manual-only, non-discoverable experimental cutting workflow with explicit operator takeover, reviewed motion gates, and external hard-stop requirements |
-| Test Agent                 | `test_agent`                                                               | Mock Agent and initialization Skill used to exercise the complete platform                                 |
-| Point-cloud and pose GUI   | `test_agent`                                                               | Live world-frame point cloud, camera pose, reset controls, and estimator diagnostics                       |
+| Test Agent                 | `test_agent`                                                               | Separate regular and developer OpenAI Agents SDK surfaces used to exercise the platform                    |
+| Midbrain main GUI portal   | `platform_core/manager/web`                                                | Primary system entry for observation, guarded component access, Agents, and shutdown                       |
+| Point-cloud and pose GUI   | `test_agent`                                                               | Developer-only live world-frame point cloud, camera pose, reset controls, and estimator diagnostics        |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |
 
 The current camera Provider publishes large RGB-D payloads through Windows named shared memory and publishes generation-checked references through the Fabric.
@@ -411,18 +412,58 @@ Future Providers may support other operating systems, hardware devices, transpor
 
 ---
 
-## Setup
+## Setup and main interaction portal
 
-From Developer PowerShell:
+Run setup once from Developer PowerShell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-
 .\platform_core\scripts\setup_workspace.ps1
+```
+
+For normal operation, double-click
+[Start Midbrain.cmd](Start%20Midbrain.cmd). It starts Manager, Fabric, and the
+idle Agent UI service, then opens the Midbrain main GUI at
+`http://127.0.0.1:7001/`.
+
+The main GUI is the primary interaction portal. Use it to:
+
+1. Confirm Manager and Fabric are live.
+2. Inspect Provider and Skill liveness, readiness, freshness, and current
+   observations.
+3. Open a read-only component observation page.
+4. Request guarded activation before entering a component development UI.
+5. Open the regular Agent for ordinary tasks or the developer Agent for wider
+   discovery and testing.
+6. Review Provider lifecycle and physical-motion approvals in plain language.
+7. Shut down the entire workspace through the safety-ordered shutdown link.
+
+Opening Midbrain does not activate a Provider, run a Skill, or authorize
+motion. Providers remain `COLD` until explicitly requested, even when an older
+machine-local registry contains `auto_start: true`.
+
+The canonical operator guide is
+[Midbrain Main GUI Portal](docs/04_MAIN_GUI_PORTAL.md). It explains the
+dashboard signals, observation pages, activation prompts, Agent workflows,
+developer escalation, failure recovery, and shutdown.
+
+The direct PowerShell launcher remains a setup, automation, and recovery
+interface:
+
+```powershell
 .\platform_core\scripts\run_workspace.ps1
 ```
 
-Core setup and launch both run a non-interactive initializer. A clean checkout receives `config\system.env`, blank `config\api_keys.env`, and `config\providers.json` from the checked-in root examples; existing local files are preserved. The audited baseline/generation matrix is documented in [`config/BASELINE_INVENTORY.md`](config/BASELINE_INVENTORY.md).
+Its default starts Manager and Fabric and opens the portal. Add
+`-StartAgentUi` to start the Agent service; use
+`-AllowProviderAutoStart` only when legacy automatic Provider startup is
+intentional.
+
+Core setup and launch both run a non-interactive initializer. A clean checkout
+receives `config\system.env`, blank `config\api_keys.env`, and
+`config\providers.json` from checked-in examples; existing local files are
+preserved. The audited baseline/generation matrix is documented in
+[`config/BASELINE_INVENTORY.md`](config/BASELINE_INVENTORY.md).
 
 Every Python Skill, Provider, and the Test Agent/OpenAI Agents SDK owns a
 private `.venv` inside its component folder. The repository-root `.venv` is not
@@ -448,50 +489,35 @@ Set up and open the alignment Skill monitor:
 .\skills\stationary_world_arm_alignment\scripts\run_gui.ps1
 ```
 
-Default local endpoints:
+Direct local endpoints for development and recovery:
 
 | Service             | URL                     |
 | ------------------- | ----------------------- |
-| Manager             | `http://127.0.0.1:7001` |
+| Midbrain main GUI portal | `http://127.0.0.1:7001/` |
+| Manager API         | `http://127.0.0.1:7001/v1` |
 | Fabric              | `http://127.0.0.1:7002` |
-| Test Agent GUI      | `http://127.0.0.1:8000` |
+| Regular Agent UI    | `http://127.0.0.1:8000/` |
+| Developer Agent UI  | `http://127.0.0.1:8000/dev` |
 | Arm Alignment Skill GUI | `http://127.0.0.1:8011` |
 | IMU Calibration GUI | `http://127.0.0.1:8111` |
 | FoundationPose control API | `http://127.0.0.1:7103` |
 
 ---
 
-## Tutorials and functional checks
+## Operator guides
 
-The two mock applications are maintained as examples, tutorials, and end-to-end functional checks.
+Start with the [Midbrain Main GUI Portal](docs/04_MAIN_GUI_PORTAL.md). The
+portal replaces the earlier component-first tutorials as the canonical path
+for normal interaction.
 
-### Point cloud and pose
+The former point-cloud/pose and IMU-calibration tutorials are preserved under
+[`docs/archive`](docs/archive/README.md) for regression history. They may
+contain old paths or direct-launch assumptions and should not be treated as
+current startup instructions.
 
-The [point-cloud and pose tutorial](docs/04_TUTORIAL_POINT_CLOUD_AND_POSE.md) demonstrates:
-
-* Starting the managed workspace
-* Connecting the mock Agent
-* Running the initialization Skill
-* Accessing camera and pose Providers
-* Reading world state from the Fabric
-* Displaying a live world-frame point cloud
-* Inspecting pose and estimator diagnostics
-* Testing pose reset behavior
-
-This example demonstrates the Agent–Skill–Manager–Provider–Fabric execution path.
-
-### IMU calibration
-
-The [IMU calibration tutorial](docs/05_TUTORIAL_IMU_CALIBRATION.md) demonstrates:
-
-* Invoking a bounded calibration workflow
-* Capturing six physical camera orientations
-* Solving accelerometer scale and offset
-* Writing device-bound calibration data
-* Reloading the camera Provider
-* Verifying the resulting calibration
-
-These examples are operational checks and development tools. They are not production qualification or safety certification.
+Specialized component guides remain useful after entering through Midbrain.
+They describe advanced development workflows, not an alternative system home
+page.
 
 ### Base and Gripper object pose
 

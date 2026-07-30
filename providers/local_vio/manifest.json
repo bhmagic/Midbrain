@@ -2,6 +2,14 @@
   "provider_type": "localization.local_vio",
   "version": "0.2.2",
   "display_name": "Local Inertial-First RGB-D VIO Provider",
+  "manager_ids": ["localization.local_vio"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
   "residency_modes": ["HOT", "WARM", "COLD"],
   "capabilities": [
     "localization.vio.local_pose",

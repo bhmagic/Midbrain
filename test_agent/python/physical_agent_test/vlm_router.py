@@ -5,6 +5,7 @@ import base64
 import hashlib
 import os
 import time
+from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
@@ -21,6 +22,21 @@ except ModuleNotFoundError:
     OpenAI = None
 
 from .phase4_policy import report_operation_progress
+
+
+_selected_vlm_model: ContextVar[str | None] = ContextVar(
+    "selected_vlm_model",
+    default=None,
+)
+
+
+def set_vlm_model_selection(model_id: str | None) -> Token:
+    normalized = str(model_id or "").strip() or None
+    return _selected_vlm_model.set(normalized)
+
+
+def reset_vlm_model_selection(token: Token) -> None:
+    _selected_vlm_model.reset(token)
 
 
 class VisionLanguageBackend(Protocol):
@@ -187,8 +203,22 @@ class VisionLanguageRouter:
         started = time.monotonic()
         input_sha256 = hashlib.sha256(image_bytes).hexdigest()
         failures: list[dict[str, str]] = []
+        selected_model = _selected_vlm_model.get()
+        backends = self.backends
+        maximum_attempts = self.maximum_attempts
+        if selected_model is not None:
+            backends = [
+                backend
+                for backend in self.backends
+                if backend.model_id == selected_model
+            ]
+            if not backends:
+                raise ValueError(
+                    f"selected VLM model is unavailable: {selected_model}"
+                )
+            maximum_attempts = 1
         for attempt, backend in enumerate(
-            self.backends[: self.maximum_attempts],
+            backends[:maximum_attempts],
             start=1,
         ):
             report_operation_progress(

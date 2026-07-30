@@ -1,8 +1,14 @@
 param(
     [switch]$Quiet,
     [switch]$UseManagerShutdownExecution,
-    [switch]$UseLocalShutdownFallback
+    [switch]$UseLocalShutdownFallback,
+    [ValidateRange(0, 5000)]
+    [int]$DelayMilliseconds = 0
 )
+
+if ($DelayMilliseconds -gt 0) {
+    Start-Sleep -Milliseconds $DelayMilliseconds
+}
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $workspace = Get-WorkspaceRoot
@@ -34,6 +40,44 @@ function Get-ProviderStopTimeoutSeconds {
         $timeoutMs = [Math]::Max(1000, [int]$property.Value)
     }
     return [int]([Math]::Ceiling($timeoutMs / 1000.0) + 5)
+}
+
+function Stop-AdvertisedDeveloperSurfaces {
+    $workspacePath = (Resolve-Path -LiteralPath $workspace).Path
+    $manifestPaths = @(
+        Get-ChildItem -LiteralPath (Join-Path $workspace "providers") -Filter "manifest.json" -Recurse -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath (Join-Path $workspace "skills") -Filter "manifest.json" -Recurse -File -ErrorAction SilentlyContinue
+    )
+    foreach ($manifestPath in $manifestPaths) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath.FullName -Raw | ConvertFrom-Json
+            $uiProperty = $manifest.PSObject.Properties["ui"]
+            if ($null -eq $uiProperty) { continue }
+            $developerProperty = $uiProperty.Value.PSObject.Properties["developer"]
+            if ($null -eq $developerProperty) { continue }
+            $developer = $developerProperty.Value
+            $stopProperty = $developer.PSObject.Properties["stop_command"]
+            if ($null -eq $stopProperty) { continue }
+            $relative = [string]$stopProperty.Value
+            $relative = $relative -replace "^[.\\/]+", ""
+            $stopScript = (Resolve-Path -LiteralPath (Join-Path $workspace $relative)).Path
+            if (
+                -not $stopScript.StartsWith(
+                    $workspacePath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -or
+                [System.IO.Path]::GetExtension($stopScript) -ne ".ps1"
+            ) {
+                throw "Refusing developer stop command outside the workspace: $stopScript"
+            }
+            & $stopScript -Quiet
+        }
+        catch {
+            if (-not $Quiet) {
+                Write-Host "Could not stop developer surface from $($manifestPath.FullName): $($_.Exception.Message)"
+            }
+        }
+    }
 }
 
 $managerReachable = $false
@@ -75,6 +119,8 @@ if ($UseManagerShutdownExecution -and $UseLocalShutdownFallback) {
         "mutually exclusive."
     )
 }
+
+Stop-AdvertisedDeveloperSurfaces
 
 $managerExecutionRequested = [bool]$UseManagerShutdownExecution
 $managerHealth = $null

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Midbrain Component Observation</title>
+  <link rel="stylesheet" href="/assets/manager.css">
+</head>
+<body>
+  <main class="shell detail-shell">
+    <nav class="detail-nav" aria-label="Component navigation">
+      <a id="developerLink" class="developer-nav" href="#">Developer controls…</a>
+      <a href="/">Midbrain →</a>
+    </nav>
+
+    <header class="detail-header">
+      <div>
+        <p id="componentKind" class="eyebrow">COMPONENT · OBSERVATION</p>
+        <h1 id="componentName">Loading component</h1>
+        <p id="componentId" class="subtitle">Waiting for Manager</p>
+      </div>
+      <div id="componentStatus" class="large-status muted">CHECKING</div>
+    </header>
+
+    <section class="detail-metrics">
+      <article class="metric-card">
+        <span class="metric-label">Lifecycle</span>
+        <strong id="lifecycleValue">Unknown</strong>
+        <small id="lifecycleDetail">No report</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Readiness</span>
+        <strong id="readinessValue">Unknown</strong>
+        <small id="readinessDetail">No capability report</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Streams</span>
+        <strong id="streamValue">0 observed</strong>
+        <small id="streamDetail">No Fabric catalog</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Identity</span>
+        <strong id="identityValue">Unavailable</strong>
+        <small id="identityDetail">No boot identity</small>
+      </article>
+    </section>
+
+    <section class="analytics-grid">
+      <article class="data-panel span-two">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">FABRIC</p>
+            <h2>Published observations</h2>
+          </div>
+          <span id="streamFreshness" class="quiet-status">No streams</span>
+        </div>
+        <div id="streamCards" class="stream-grid">
+          <p class="empty-cell">Waiting for Fabric stream catalog…</p>
+        </div>
+      </article>
+
+      <article class="data-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">CAPABILITIES</p>
+            <h2>Readiness map</h2>
+          </div>
+        </div>
+        <div id="capabilityList" class="capability-list">
+          <p class="empty-cell">No capability data</p>
+        </div>
+      </article>
+
+      <article class="data-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">DIAGNOSTICS</p>
+            <h2>Provider or Skill report</h2>
+          </div>
+        </div>
+        <pre id="reportData">Waiting for report…</pre>
+      </article>
+
+      <article class="data-panel span-two">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">LATEST DATA</p>
+            <h2>Observation payloads and references</h2>
+          </div>
+          <span class="read-only-label">READ ONLY</span>
+        </div>
+        <pre id="latestData">Waiting for observations…</pre>
+      </article>
+    </section>
+
+    <footer>
+      <span>This surface cannot start Providers, invoke Skills, or command hardware.</span>
+      <span id="observedAt">No sample received</span>
+    </footer>
+  </main>
+  <script src="/assets/component.js"></script>
+</body>
+</html>

@@ -2,6 +2,52 @@
 
 ## Unreleased — Canonical monorepo Git workflow
 
+- Made workspace startup observation-first: the default now launches only
+  Manager and Fabric, opens Midbrain, and ignores Provider
+  auto-start entries unless explicitly enabled.
+- Added root-level Windows double-click entrypoints for starting Manager,
+  Fabric, and the idle Agent UI service without Providers, and for stopping the
+  recorded workspace processes.
+- Added confirmed cold-Provider/development-UI activation from component
+  boundaries and a guarded whole-workspace shutdown action on the Midbrain UI.
+- Added approval-gated Provider lifecycle control to the regular Agent, changed
+  Agent approvals from raw SDK JSON to human-readable confirmations, and added
+  a preview-then-approve relative IK workflow to both Agent profiles. Approved
+  motion now sends the existing one-shot commit and reports the controller's
+  bounded terminal completion instead of stopping at target-edit engagement.
+- Defined repeated relative wording as another displacement from the current
+  measured pose, removed the Agent-facing prior-target retry tool, and exposed
+  approval-gated Basic Controller safe-home.
+- Raised the configurable Agent SDK turn ceiling from seven to sixteen so a
+  bounded inspect, two-Provider activation, preview, and approval workflow can
+  reach its final response.
+- Changed the regular Agent tool-choice default to `auto`, rotated the GUI Agent
+  session keys, and converted an unreachable Integrated Controller preview into
+  a structured Basic-then-Integrated recovery route instead of a repeated raw
+  connection error.
+- Reframed the Manager-hosted Midbrain GUI as the canonical interaction portal,
+  added a complete portal operator guide, and moved the superseded point-cloud
+  and IMU component-first tutorials into the documentation archive.
+- Added a discoverable Relative End-Effector Motion Skill contract with the
+  explicit Basic-then-Integrated `HOT` Provider activation sequence.
+- Added per-run Agent model, reasoning-effort, and configured VLM selectors to
+  both Agent UIs, with Terra and medium reasoning as balanced defaults.
+- Fixed Windows extended-path handling that prevented the camera and Basic arm
+  development launchers from resolving `$PSScriptRoot`, and made the Midbrain
+  shutdown action start `stop_workspace.ps1` directly.
+- Changed missing-camera visual Agent calls from raw Fabric 404 failures to an
+  actionable `PROVIDER_ACTIVATION_REQUIRED` result.
+- Added Manager-hosted systemic liveness and information-rich observation
+  pages for Providers and Skills, with manifest-defined UI metadata and an
+  explicit confirmation boundary before entering developer surfaces.
+- Split the OpenAI Agents SDK browser service into regular and developer
+  Agent UIs. The developer Agent can inspect adapter-bound Skills and
+  configured Providers, while Provider residency changes use resumable,
+  explicit SDK approvals.
+- Added a language-neutral component observation-UI contract so Provider
+  implementations can migrate independently; future Rust migration should
+  prioritize hardware-bound Providers whose SDK and timing requirements are
+  comparatively stable.
 - Replaced publication-snapshot development with a normal branch-based monorepo workflow rooted in the existing GitHub history.
 - Added the supervised vegetable-cutting prototype as a manual-only, non-discoverable experimental Skill while excluding generated plans, runtime captures, logs, environments, and package metadata.
 - Expanded repository ignores for local orchestration state, publication copies, variant Rust targets, runtime audit data, replay payloads, and external FoundationPose/SAM2 checkouts.

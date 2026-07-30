@@ -13,6 +13,11 @@ its separation from deterministic Manager provider binding.
 Document 12 defines Fabric-visible direct data-route discovery without putting
 large or latency-sensitive payloads through the Fabric.
 
+Document 13 defines the Manager-hosted Midbrain portal,
+implementation-neutral component observation pages, finite-Skill liveness
+semantics, and the guarded transition to development surfaces. Its descriptor schema is
+`schemas/component_ui.v1.schema.json`.
+
 Documents 00-05 retain the v0.2 foundations and incorporate the v0.3.11
 safety-critical process-escalation and layered-authority-lineage rules.
 Documents 06-10 add the interfaces required for camera/IMU pose tracking and

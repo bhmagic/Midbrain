@@ -67,6 +67,27 @@ class _BindingManager:
         }
 
 
+class _ColdBindingManager:
+    base_url = "http://127.0.0.1:7001"
+
+    async def bind_capabilities(self, *_args, **_kwargs):
+        return {
+            "binding_id": "binding-cold",
+            "status": "RESOLVED",
+            "validity": "FALLBACK_REQUIRES_ACTIVATION",
+            "selections": [
+                {
+                    "capability": "camera.rgb",
+                    "provider_id": "camera.femto_bolt",
+                    "requires_activation": True,
+                }
+            ],
+        }
+
+    async def capability_binding(self, _binding_id: str):
+        return await self.bind_capabilities()
+
+
 class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_catalog_exposes_only_discoverable_skills_by_default(self) -> None:
         workspace = Path(__file__).resolve().parents[3]
@@ -81,9 +102,27 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "execute_reviewed_observation_motion",
                 "identify_pointed_object",
                 "locate_effector_front",
+                "preview_relative_effector_motion",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
                 "verify_rgbd_image_alignment",
+            ],
+        )
+        relative_motion = next(
+            descriptor
+            for descriptor in descriptors
+            if descriptor.tool_name == "preview_relative_effector_motion"
+        )
+        self.assertEqual(
+            [
+                item["provider_id"]
+                for item in relative_motion.route_policy[
+                    "provider_activation_sequence"
+                ]
+            ],
+            [
+                "robot_arm.rebot_dm",
+                "robot_arm.primary.integrated",
             ],
         )
         self.assertEqual(
@@ -222,7 +261,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(driver.agent.model_settings.tool_choice, "required")
         self.assertFalse(driver.agent.model_settings.parallel_tool_calls)
         self.assertIn(
-            "deliberately narrow initial skill-discovery evaluation",
+            "deliberately narrow initial agent surface",
             str(driver.agent.instructions),
         )
         self.assertEqual(driver.agent.tools[0].name, "identify_pointed_object")
@@ -275,6 +314,26 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(binding["validity"], "CURRENT")
         self.assertEqual(manager.revalidation_count, 1)
+
+    async def test_cold_camera_returns_actionable_result_without_capture(
+        self,
+    ) -> None:
+        skill = PointingIdentificationSkill(
+            capture=None,  # type: ignore[arg-type]
+            model="test-model",
+            manager=_ColdBindingManager(),  # type: ignore[arg-type]
+            fallback_camera_provider_id="camera.femto_bolt",
+        )
+
+        result = json.loads(await skill.run("What is visible?"))
+
+        self.assertEqual(result["status"], "PROVIDER_ACTIVATION_REQUIRED")
+        self.assertEqual(result["provider_id"], "camera.femto_bolt")
+        self.assertFalse(result["physical_action_submitted"])
+        self.assertEqual(
+            result["developer_activation_url"],
+            "http://127.0.0.1:7001/developer/provider/camera.femto_bolt",
+        )
 
 
 if __name__ == "__main__":

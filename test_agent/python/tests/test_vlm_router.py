@@ -3,7 +3,11 @@ from __future__ import annotations
 import time
 import unittest
 
-from physical_agent_test.vlm_router import VisionLanguageRouter
+from physical_agent_test.vlm_router import (
+    VisionLanguageRouter,
+    reset_vlm_model_selection,
+    set_vlm_model_selection,
+)
 
 
 class _Backend:
@@ -85,6 +89,24 @@ class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.text, "usable")
         self.assertIn("timeout after", result.failed_attempts[0]["error"])
+
+    async def test_explicit_model_selection_uses_only_that_model(self) -> None:
+        first = _Backend("first", "small", result="small result")
+        selected = _Backend("selected", "large", result="large result")
+        router = VisionLanguageRouter([first, selected])
+        token = set_vlm_model_selection("large")
+        try:
+            result = await router.generate(
+                image_bytes=b"image",
+                mime_type="image/jpeg",
+                prompt="Inspect",
+            )
+        finally:
+            reset_vlm_model_selection(token)
+
+        self.assertEqual(result.model_id, "large")
+        self.assertEqual(first.call_count, 0)
+        self.assertEqual(selected.call_count, 1)
 
 
 if __name__ == "__main__":

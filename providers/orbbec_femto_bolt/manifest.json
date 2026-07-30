@@ -2,6 +2,21 @@
   "provider_type": "camera.femto_bolt",
   "version": "0.3.1",
   "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera Provider",
+  "manager_ids": ["camera.femto_bolt"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Accelerometer Calibration",
+      "url": "http://127.0.0.1:8111/",
+      "launch_command": ".\\providers\\orbbec_femto_bolt\\scripts\\run_accelerometer_calibration.ps1",
+      "stop_command": ".\\providers\\orbbec_femto_bolt\\scripts\\stop_accelerometer_calibration.ps1",
+      "availability": "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER"
+    }
+  },
   "residency_modes": [
     "HOT",
     "WARM",

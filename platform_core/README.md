@@ -33,11 +33,32 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Operate
 
+For normal desktop operation, use `Start Midbrain.cmd` in the repository root.
+It opens the Manager-hosted Midbrain GUI at `http://127.0.0.1:7001/`. That GUI
+is the primary portal for system observation, Provider and Skill access, Agent
+entry, guarded developer escalation, and whole-workspace shutdown.
+
+Use direct scripts for setup, automation, or recovery:
+
 ```powershell
 .\platform_core\scripts\run_workspace.ps1
 .\platform_core\scripts\check_status.ps1
 .\platform_core\scripts\stop_workspace.ps1
 ```
+
+The default launch is deliberately observation-first: it starts only Manager
+and Fabric and opens the portal. Midbrain lists every configured Provider and
+manifest-declared Skill, distinguishes process liveness from readiness and data
+freshness, and links to a separate read-only observation page for each
+component. Provider auto-start is disabled unless the operator supplies
+`-AllowProviderAutoStart`. The direct launcher starts the Agent service only
+with `-StartAgentUi`; the desktop `Start Midbrain.cmd` entrypoint supplies that
+option so both Agent links are ready from the portal.
+
+Component ports and scripts remain implementation and recovery interfaces.
+Normal users should not need to memorize them. See
+[`docs/04_MAIN_GUI_PORTAL.md`](../docs/04_MAIN_GUI_PORTAL.md) for the canonical
+operator workflow.
 
 ## Provider stop escalation
 
@@ -121,12 +142,15 @@ Use the bounded automation entrypoint directly in the existing PowerShell
 session:
 
 ```powershell
-.\platform_core\scripts\run_workspace_bounded.ps1 -CoreOnly -NoBrowser
+.\platform_core\scripts\run_workspace_bounded.ps1 -NoBrowser
 ```
 
-Both launcher names now refuse occupied core ports and unattended arm
-auto-start configurations, create independent core processes, apply a deadline
-to every health gate, and record PIDs only after all requested services are
-healthy. They do not call the legacy pre-start shutdown path. A failed health
-gate first gives configured non-arm auto-start providers a bounded stop request
-and then stops the core processes created by that launcher invocation.
+Both launcher names refuse occupied requested ports, create independent
+processes, apply a deadline to every health gate, and record PIDs only after
+all requested services are healthy. They do not call the legacy pre-start
+shutdown path. `-CoreOnly` remains a compatibility alias for the new default
+and cannot be combined with `-StartAgentUi`. When explicit Provider auto-start
+is enabled, the launcher still refuses unattended arm auto-start
+configurations. A failed health gate first gives configured non-arm auto-start
+Providers a bounded stop request and then stops the processes created by that
+launcher invocation.

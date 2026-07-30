@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .manager_client import ManagerClient
-from .rgb_capture import RgbCapture
+from .rgb_capture import CameraObservationUnavailable, RgbCapture
 from .phase4_policy import Phase4Policy, report_operation_progress
 from .vlm_router import VisionLanguageRouter, build_default_vlm_router
 
@@ -35,15 +35,20 @@ class PointingIdentificationSkill:
         report_operation_progress("BIND_CAMERA")
         binding = await self._bind_camera(skill_id)
         self.last_binding = dict(binding)
+        if binding.get("validity") == "FALLBACK_REQUIRES_ACTIVATION":
+            return self._activation_required_result(binding, skill_id)
         report_operation_progress("CAPTURE_RGB")
-        captured = await self.capture.capture_latest(
-            provider_id=self._camera_provider_id(binding),
-            binding_id=(
-                str(binding.get("binding_id"))
-                if binding.get("binding_id") is not None
-                else None
-            ),
-        )
+        try:
+            captured = await self.capture.capture_latest(
+                provider_id=self._camera_provider_id(binding),
+                binding_id=(
+                    str(binding.get("binding_id"))
+                    if binding.get("binding_id") is not None
+                    else None
+                ),
+            )
+        except CameraObservationUnavailable:
+            return self._activation_required_result(binding, skill_id)
         binding = await self._revalidate_camera_binding(binding)
         self.last_binding = dict(binding)
         validity = binding.get("validity")
@@ -74,6 +79,34 @@ class PointingIdentificationSkill:
             "data_route": captured.data_route,
         }
         return json.dumps(result, ensure_ascii=False)
+
+    def _activation_required_result(
+        self,
+        binding: dict[str, Any],
+        skill_id: str,
+    ) -> str:
+        provider_id = self._camera_provider_id(binding)
+        manager_url = str(
+            getattr(self.manager, "base_url", "http://127.0.0.1:7001")
+        ).rstrip("/")
+        return json.dumps(
+            {
+                "status": "PROVIDER_ACTIVATION_REQUIRED",
+                "skill_id": skill_id,
+                "required_capability": "camera.rgb",
+                "provider_id": provider_id,
+                "message": (
+                    "Visual analysis needs a live RGB observation. The camera "
+                    "Provider is currently cold or has not published a frame."
+                ),
+                "developer_activation_url": (
+                    f"{manager_url}/developer/provider/{provider_id}"
+                ),
+                "physical_action_submitted": False,
+                "capability_binding": binding,
+            },
+            ensure_ascii=False,
+        )
 
     async def _bind_camera(self, skill_id: str) -> dict[str, Any]:
         if self.manager is None:

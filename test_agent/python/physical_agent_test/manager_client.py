@@ -63,6 +63,20 @@ class ManagerClient:
         response.raise_for_status()
         return response.json()
 
+    async def set_residency(
+        self,
+        provider_id: str,
+        action: str,
+    ) -> dict[str, Any]:
+        normalized = action.strip().lower()
+        if normalized not in {"start", "hot", "warm", "stop"}:
+            raise ValueError("action must be start, hot, warm, or stop")
+        response = await self._client.post(
+            f"{self.base_url}/v1/providers/{provider_id}/{normalized}"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def provider_request(
         self,
         provider_id: str,

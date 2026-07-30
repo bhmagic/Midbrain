@@ -2,6 +2,19 @@
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
   "version": "0.8.0",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
+  "manager_ids": ["robot_arm.primary.integrated"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Direct Arm Development Controls",
+      "url_from_control": "/",
+      "availability": "PROVIDER_RUNNING"
+    }
+  },
   "residency_modes": [
     "HOT",
     "WARM",
@@ -54,6 +67,14 @@
     "robot_arm.joint_state",
     "robot_arm.gravity_float",
     "robot_arm.control.operational_api_v2"
+  ],
+  "provider_dependencies": [
+    {
+      "provider_id": "robot_arm.rebot_dm",
+      "required_residency": "HOT",
+      "activation_order": 1,
+      "reason": "The Basic Controller owns hardware access, joint feedback, gravity float, and the fenced operational lease."
+    }
   ],
   "published_streams": [
     "robot_arm.integrated.status",

@@ -31,8 +31,13 @@ Never place keys in source, screenshots, logs, commit messages, issues, or Power
 
 The root recovery template is `config/providers.json.example`. An identical package fallback is kept at `platform_core/config_templates/providers.json.example`. They register:
 
-- `camera.femto_bolt` at control port `7101`, auto-start enabled.
+- `camera.femto_bolt` at control port `7101`, auto-start disabled.
 - `localization.local_vio` at control port `7102`, auto-start disabled until requested.
+
+The workspace launcher ignores all preserved `auto_start: true` values unless
+the operator explicitly supplies `-AllowProviderAutoStart`. This keeps an
+older machine-local registry from silently activating hardware during a normal
+Midbrain launch.
 
 The FoundationPose `scripts\setup.ps1` installer merges its Provider registration into the machine-local configuration without overwriting unrelated entries. Its default control port is `7103`, and its persistent model/target settings live under `config/foundation_pose`.
 

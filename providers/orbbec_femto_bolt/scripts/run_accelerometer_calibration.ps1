@@ -53,7 +53,41 @@ if ($NoBrowser) {
     $arguments += "--no-browser"
 }
 
-& $python @arguments
-if ($LASTEXITCODE -ne 0) {
-    throw "Accelerometer calibration GUI exited with code $LASTEXITCODE."
+$stopScript = Join-Path $PSScriptRoot "stop_accelerometer_calibration.ps1"
+& $stopScript -Quiet
+$logsRoot = Join-Path $provider "logs"
+$runRoot = Join-Path $provider "run"
+$pidFile = Join-Path $runRoot "accelerometer_calibration.pid.json"
+New-Item -ItemType Directory -Force -Path $logsRoot, $runRoot | Out-Null
+$process = Start-Process `
+    -FilePath $python `
+    -ArgumentList $arguments `
+    -WorkingDirectory $provider `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $logsRoot "accelerometer_calibration.out.log") `
+    -RedirectStandardError (Join-Path $logsRoot "accelerometer_calibration.err.log") `
+    -PassThru
+@{
+    gui = $process.Id
+    url = "http://127.0.0.1:$Port/"
+} | ConvertTo-Json | Set-Content -LiteralPath $pidFile -Encoding UTF8
+
+$deadline = (Get-Date).AddSeconds(30)
+do {
+    if ($process.HasExited) {
+        throw "Accelerometer calibration GUI exited with code $($process.ExitCode)."
+    }
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 1 | Out-Null
+        break
+    }
+    catch {
+        Start-Sleep -Milliseconds 250
+    }
+} while ((Get-Date) -lt $deadline)
+if ((Get-Date) -ge $deadline) {
+    throw "Timed out waiting for the accelerometer calibration GUI."
+}
+if (-not $NoBrowser) {
+    Start-Process "http://127.0.0.1:$Port/"
 }

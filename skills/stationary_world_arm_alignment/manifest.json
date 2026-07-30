@@ -2,6 +2,20 @@
   "skill_type": "stationary_world_arm_alignment",
   "version": "0.7.0",
   "display_name": "Stationary World-Space Arm Finder",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Alignment Development and Review GUI",
+      "url": "http://127.0.0.1:8011/",
+      "launch_command": ".\\skills\\stationary_world_arm_alignment\\scripts\\run_gui.ps1",
+      "stop_command": ".\\skills\\stationary_world_arm_alignment\\scripts\\stop_gui.ps1",
+      "availability": "SEPARATE_LOCAL_PROCESS"
+    }
+  },
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,
