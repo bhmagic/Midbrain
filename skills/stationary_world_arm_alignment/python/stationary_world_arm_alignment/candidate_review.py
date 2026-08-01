@@ -386,6 +386,21 @@ class CandidateReviewService:
                 "INVALID_CANDIDATE_STATE",
                 "candidate is not in the immutable review-required state",
             )
+        frame_contract = candidate.get("frame_contract")
+        if (
+            candidate.get("schema_version") != 3
+            or not isinstance(frame_contract, dict)
+            or frame_contract.get("convention_id")
+            != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+            or frame_contract.get("camera_optical_convention_id")
+            != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            or frame_contract.get("legacy_candidate_compatibility")
+            != "REJECT"
+        ):
+            raise CandidateReviewError(
+                "LEGACY_SPATIAL_CONVENTION",
+                "candidate predates the Z-up spatial convention and must be regenerated",
+            )
         if result.get("valid") is not True:
             raise CandidateReviewError(
                 "INVALID_CANDIDATE",

@@ -6,6 +6,20 @@ from urllib.parse import quote
 import httpx
 
 
+def _manager_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("error", "detail", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    text = response.text.strip()
+    return text if text else response.reason_phrase
+
+
 class ManagerClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -142,6 +156,28 @@ class ManagerClient:
         response.raise_for_status()
         value = response.json()
         return value if isinstance(value, dict) else {"activations": []}
+
+    async def activate_workcell_calibration(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.base_url}/v1/workcell-calibrations/activate",
+            json=request,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(
+                "Manager rejected workcell calibration activation "
+                f"({response.status_code}): {_manager_error_detail(response)}"
+            ) from error
+        value = response.json()
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                "Manager returned a non-object calibration activation"
+            )
+        return value
 
     async def revoke_workcell_calibration(
         self,

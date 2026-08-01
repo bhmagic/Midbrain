@@ -40,6 +40,12 @@ class BasicSafeHomeAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "SAFE_HOME_COMPLETED")
         self.assertTrue(result["physical_motion_completed"])
+        self.assertEqual(
+            result["integrated_controller_recovery"][
+                "required_before_next_integrated_preview"
+            ],
+            "EXPLICIT_APPROVED_HOT",
+        )
         self.assertEqual(client.safe_home_count, 1)
 
     async def test_failed_safe_home_is_not_reported_as_complete(self) -> None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "physical-ai-local-vio-provider"
-version = "0.2.2"
+version = "0.4.0"
 description = "Inertial-first RGB-D visual-inertial Resource Provider with optional IR/depth corrections"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
   "numpy>=2.0,<3",
   "opencv-python-headless>=4.10,<5",
   "Pillow>=10,<13",
-  "orbbec-femto-provider>=0.3.0,<0.4"
+  "orbbec-femto-provider>=0.4.0,<0.5"
 ]
 
 [tool.setuptools.packages.find]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -13,7 +14,11 @@ from locate_effector_front import (
 )
 
 from .phase4_policy import report_operation_progress
-from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
+from .spatial_registration_adapter import (
+    CAMERA_OPTICAL_CONVENTION_ID,
+    WORLD_CONVENTION_ID,
+    SpatialRegistrationSkillAdapter,
+)
 from .vlm_router import VisionLanguageRouter
 
 
@@ -193,6 +198,7 @@ class EffectorFrontSkillAdapter:
         router: VisionLanguageRouter,
         *,
         maximum_source_age_at_completion_ms: float = 60_000.0,
+        evidence_dir: Path | None = None,
     ):
         if float(maximum_source_age_at_completion_ms) <= 0.0:
             raise ValueError(
@@ -202,6 +208,9 @@ class EffectorFrontSkillAdapter:
         self.router = router
         self.maximum_source_age_at_completion_ms = float(
             maximum_source_age_at_completion_ms
+        )
+        self.evidence_dir = (
+            evidence_dir.resolve() if evidence_dir is not None else None
         )
         self.last_result: dict[str, Any] | None = None
 
@@ -222,6 +231,20 @@ class EffectorFrontSkillAdapter:
             frame.depth_m,
             valid_region=context.valid_region,
         )
+        evidence_image: dict[str, Any] | None = None
+        if self.evidence_dir is not None:
+            self.evidence_dir.mkdir(parents=True, exist_ok=True)
+            evidence_path = (
+                self.evidence_dir / f"{skill_id}-evidence.png"
+            )
+            evidence_path.write_bytes(image_bytes)
+            evidence_image = {
+                "path": str(evidence_path),
+                "mime_type": "image/png",
+                "purpose": (
+                    "RGB_DEPTH_VALIDITY_EFFECTOR_LOCALIZATION_EVIDENCE"
+                ),
+            }
         report_operation_progress("VLM_LOCATE_EFFECTOR_FRONT")
         inference = await self.router.generate(
             image_bytes=image_bytes,
@@ -291,8 +314,11 @@ class EffectorFrontSkillAdapter:
                 context
             ),
             "selected_route_metadata": self.spatial.route_metadata(context),
+            "source_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+            "target_convention_id": WORLD_CONVENTION_ID,
             "vlm_route": inference.as_dict(),
             "vlm_evidence": evidence,
+            "evidence_image": evidence_image,
             "input_temporal_evidence": {
                 "policy_id": EFFECTOR_FRONT_TEMPORAL_POLICY_ID,
                 "source_observed_at_us": int(frame.timestamp_us),

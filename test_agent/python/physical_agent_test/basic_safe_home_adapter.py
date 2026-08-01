@@ -43,8 +43,21 @@ class BasicSafeHomeAdapter:
             "physical_motion_completed": completed,
             "provider_state_before": provider_state,
             "details": details,
+            "integrated_controller_recovery": {
+                "expected_after_safe_home_preemption": True,
+                "physical_motion_authorized": False,
+                "required_before_next_integrated_preview": (
+                    "EXPLICIT_APPROVED_HOT"
+                ),
+                "reason": (
+                    "Safe-home is owned by Basic and preempts any Integrated "
+                    "Basic-controller lease."
+                ),
+            },
             "message": (
-                "The Basic Controller confirmed safe-home completion."
+                "The Basic Controller confirmed safe-home completion. A "
+                "later Integrated motion must explicitly recover Integrated "
+                "to HOT before creating a fresh preview."
                 if completed
                 else "The Basic Controller did not confirm safe-home "
                 f"completion: {details.get('reason') or 'unknown reason'}."

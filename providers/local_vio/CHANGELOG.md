@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 - 2026-07-30
+
+- Added a bounded fixed-rig stationary attestation for VIO initialization.
+  It supplies stationary IMU evidence without acquiring the global
+  motion-inhibit lease, resetting the epoch, or revoking an arm-controller
+  lease.
+- Published the active stationary-initialization gate and attestation Skill
+  identity in VIO status diagnostics.
+
+## 0.3.0 - 2026-07-30
+
+- Migrated every new VIO epoch to positive X initial leveled forward, positive
+  Y left, and positive Z opposite gravity.
+- Changed the estimator gravity vector from world negative Y to world negative
+  Z without altering hardware accelerometer calibration or camera/IMU
+  extrinsics.
+- Kept camera optical X-right, Y-down, Z-forward explicit and added a
+  gravity-leveled camera frame for camera-relative 3D reasoning.
+- Marked pre-migration epochs as historical `LEGACY_Y_UP_V1` data that must not
+  be silently reinterpreted.
+- Added basis, gravity propagation, heading preservation, and camera-level
+  regression coverage.
+
 ## 0.2.3 - 2026-07-29
 
 - Stopped treating a cached Fabric `camera.rgbd.bundle` ring reference as

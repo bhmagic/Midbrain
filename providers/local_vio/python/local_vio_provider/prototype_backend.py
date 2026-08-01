@@ -16,7 +16,7 @@ from .math3d import (
 )
 
 STANDARD_GRAVITY_MPS2 = 9.80665
-WORLD_UP = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+WORLD_UP = np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -1079,9 +1079,9 @@ def _gravity_target_rotation(current_rotation: np.ndarray, up_camera: np.ndarray
 
     heading_world = _horizontal_heading(current[:, 2])
     if heading_world is None:
-        right_world = _horizontal_heading(current[:, 0])
-        if right_world is not None:
-            heading_world = np.cross(right_world, WORLD_UP)
+        left_world = _horizontal_heading(-current[:, 0])
+        if left_world is not None:
+            heading_world = np.cross(left_world, WORLD_UP)
             heading_world /= max(1e-12, float(np.linalg.norm(heading_world)))
     if heading_world is None:
         return gravity_aligned_world_from_camera(up_c)
@@ -1089,21 +1089,20 @@ def _gravity_target_rotation(current_rotation: np.ndarray, up_camera: np.ndarray
     forward_hint_camera = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     forward_camera = forward_hint_camera - up_c * float(np.dot(forward_hint_camera, up_c))
     if float(np.linalg.norm(forward_camera)) < 1e-6:
-        forward_hint_camera = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        forward_camera = forward_hint_camera - up_c * float(np.dot(forward_hint_camera, up_c))
+        return gravity_aligned_world_from_camera(up_c)
     forward_camera /= max(1e-12, float(np.linalg.norm(forward_camera)))
-    right_camera = np.cross(up_c, forward_camera)
-    right_camera /= max(1e-12, float(np.linalg.norm(right_camera)))
-    forward_camera = np.cross(right_camera, up_c)
+    left_camera = np.cross(up_c, forward_camera)
+    left_camera /= max(1e-12, float(np.linalg.norm(left_camera)))
+    forward_camera = np.cross(left_camera, up_c)
     forward_camera /= max(1e-12, float(np.linalg.norm(forward_camera)))
 
-    right_world = np.cross(WORLD_UP, heading_world)
-    right_world /= max(1e-12, float(np.linalg.norm(right_world)))
-    heading_world = np.cross(right_world, WORLD_UP)
+    left_world = np.cross(WORLD_UP, heading_world)
+    left_world /= max(1e-12, float(np.linalg.norm(left_world)))
+    heading_world = np.cross(left_world, WORLD_UP)
     heading_world /= max(1e-12, float(np.linalg.norm(heading_world)))
 
-    camera_basis = np.column_stack((right_camera, up_c, forward_camera))
-    world_basis = np.column_stack((right_world, WORLD_UP, heading_world))
+    camera_basis = np.column_stack((forward_camera, left_camera, up_c))
+    world_basis = np.column_stack((heading_world, left_world, WORLD_UP))
     return world_basis @ camera_basis.T
 
 

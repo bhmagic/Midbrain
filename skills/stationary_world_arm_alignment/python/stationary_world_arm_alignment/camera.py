@@ -15,6 +15,12 @@ from .clients import FabricClient
 from .math3d import deproject_pixel
 
 
+WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
+
+
 @dataclass(frozen=True)
 class RgbdFrame:
     rgb: np.ndarray
@@ -33,7 +39,7 @@ class RgbdFrame:
 class TipDepth:
     pixel_yx: tuple[int, int]
     depth_m: float
-    camera_xyz_m: np.ndarray
+    camera_system_xyz_m: np.ndarray
     method: str
     valid_pixel_count: int
     cluster_span_m: float
@@ -68,6 +74,19 @@ class RgbdCapture:
             if not bundle_observation:
                 raise RuntimeError("RGB-D bundle is unavailable")
             bundle = bundle_observation.get("data") or {}
+            coordinate_conventions = (
+                bundle.get("coordinate_conventions") or {}
+            )
+            if (
+                coordinate_conventions.get("rgb")
+                != CAMERA_OPTICAL_CONVENTION_ID
+                or coordinate_conventions.get("aligned_depth")
+                != CAMERA_OPTICAL_CONVENTION_ID
+            ):
+                raise RuntimeError(
+                    "RGB-D bundle does not declare native optical "
+                    "X-right/Y-down/Z-forward coordinates"
+                )
             rgb_ref = bundle.get("rgb")
             depth_ref = bundle.get("depth_aligned_to_rgb")
             if not isinstance(rgb_ref, dict) or not isinstance(depth_ref, dict):
@@ -90,11 +109,30 @@ class RgbdCapture:
             finally:
                 reader.close()
             calibration = calibration_observation.get("data") or {}
+            calibration_conventions = (
+                calibration.get("coordinate_conventions") or {}
+            )
+            if (
+                calibration_conventions.get("color")
+                != CAMERA_OPTICAL_CONVENTION_ID
+            ):
+                raise RuntimeError(
+                    "camera calibration does not identify the color optical "
+                    "coordinate convention"
+                )
             intrinsics = calibration.get("rgb_intrinsic") or {}
             if float(intrinsics.get("fx") or 0) <= 0:
                 raise RuntimeError("camera RGB intrinsics are invalid")
             pose = pose_observation.get("data") or {}
             vio = (vio_observation or {}).get("data") or {}
+            if (
+                pose.get("convention_id") != WORLD_CONVENTION_ID
+                or vio.get("convention_id") != WORLD_CONVENTION_ID
+            ):
+                raise RuntimeError(
+                    "VIO pose/status do not declare the convention-V2 Z-up "
+                    "world"
+                )
             epoch = str(pose.get("session_epoch") or vio.get("session_epoch") or "")
             world = str(pose.get("world_frame") or "")
             if not epoch or not world:
@@ -291,11 +329,90 @@ def tip_depth_from_near_cluster(
     return TipDepth(
         pixel_yx=center,
         depth_m=depth,
-        camera_xyz_m=deproject_pixel(center, depth, frame.intrinsics),
+        camera_system_xyz_m=deproject_pixel(
+            center,
+            depth,
+            frame.intrinsics,
+        ),
         method=method,
         valid_pixel_count=int(cluster.size),
         cluster_span_m=float(np.ptp(cluster)) if cluster.size else 0.0,
     )
+
+
+def segmented_surface_depth(
+    frame: RgbdFrame,
+    mask: np.ndarray,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """Estimate the nearest coherent surface inside a segmented object mask."""
+    selection = np.asarray(mask) > 0
+    if selection.shape != frame.depth_m.shape:
+        raise ValueError("segmentation mask and aligned depth shapes differ")
+    pixel_y, pixel_x = np.nonzero(selection)
+    values = frame.depth_m[pixel_y, pixel_x]
+    valid = (
+        np.isfinite(values)
+        & (values >= float(config["minimum_depth_m"]))
+        & (values <= float(config["maximum_depth_m"]))
+    )
+    values = values[valid]
+    pixel_y = pixel_y[valid]
+    pixel_x = pixel_x[valid]
+    minimum_pixels = int(config["minimum_cluster_pixels"])
+    if values.size < minimum_pixels:
+        raise RuntimeError(
+            "the segmented gripper has too few valid aligned-depth pixels"
+        )
+    near = float(np.percentile(values, 10.0))
+    maximum_span = float(config["maximum_near_cluster_span_m"])
+    cluster_selection = (
+        (values >= near - 0.005)
+        & (values <= near + maximum_span)
+    )
+    cluster = values[cluster_selection]
+    if cluster.size < minimum_pixels:
+        raise RuntimeError(
+            "the segmented gripper has no coherent foreground depth surface"
+        )
+    depth_m = float(np.median(cluster))
+    mad_m = float(np.median(np.abs(cluster - depth_m)))
+    cluster_y = pixel_y[cluster_selection].astype(np.float64)
+    cluster_x = pixel_x[cluster_selection].astype(np.float64)
+    intrinsics = frame.intrinsics
+    camera_x = (
+        (cluster_x - float(intrinsics["cx"]))
+        * cluster
+        / float(intrinsics["fx"])
+    )
+    camera_y = (
+        (cluster_y - float(intrinsics["cy"]))
+        * cluster
+        / float(intrinsics["fy"])
+    )
+    camera_point = np.asarray(
+        [
+            np.median(camera_x),
+            np.median(camera_y),
+            np.median(cluster),
+        ],
+        dtype=np.float64,
+    )
+    return {
+        "method": "SEGMENTED_MASK_NEAREST_COHERENT_SURFACE",
+        "depth_m": depth_m,
+        "camera_system_xyz_m": camera_point.tolist(),
+        "median_pixel_yx": [
+            float(np.median(cluster_y)),
+            float(np.median(cluster_x)),
+        ],
+        "valid_mask_pixel_count": int(values.size),
+        "cluster_pixel_count": int(cluster.size),
+        "cluster_span_m": float(np.ptp(cluster)),
+        "cluster_mad_m": mad_m,
+        "near_percentile_m": near,
+        "maximum_cluster_span_m": maximum_span,
+    }
 
 
 def encode_rgb_jpeg(rgb: np.ndarray, quality: int = 92) -> bytes:

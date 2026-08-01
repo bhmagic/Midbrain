@@ -21,9 +21,23 @@ The long-term goal is to provide a reusable foundation for robotic systems that 
 
 The latest system-housecleaning and guarded physical validation are recorded in the [Changelog](CHANGELOG.md), [Build and Validation Report](BUILD_REPORT.md), and [Phase 5 completion record](docs/reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md). The work separates durable mechanism from task policy, makes control submissions auditable, adds discoverable Skill and data-route contracts, introduces lease and authorization enforcement, and exercises a decision-only Agents SDK path through reviewed motion.
 
-Cartesian direction understanding remains an open safety and correctness problem. Natural-language directions such as "up", "front", and axis names must not be assumed to map directly across camera, world, arm-base, controlled-frame, tool, and object frames. The current workcell's observed mapping is installation-specific. See [Cartesian Axis and Alignment Open Issue](docs/reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+Midbrain now defines one canonical 3D language contract: world/robot +X is
+front, +Y is left, and +Z is up opposite gravity. Natural-language directions
+are resolved in that world frame and transformed into the arm-base frame before
+IK. A preview-scoped confirmation that arm-base +Z is gravity-up and +X is
+robot-front may supply the default identity rotation without VIO. Camera-based
+verification is separate: after fixed-rig confirmation, a non-resetting VIO
+check establishes gravity-aligned before/after effector images and an
+independent displacement verdict. Native optical coordinates remain X-right,
+Y-down, Z-forward and require
+explicit `camera_system_x`, `camera_system_y`, and `camera_system_z` naming at
+component boundaries. Old Y-up VIO epochs and their dependent alignments are
+legacy evidence and are rejected. See
+[Spatial Frame Convention](contracts/14_spatial_frame_convention_v2.md).
 
-The vegetable-cutting experiment that motivated part of this validation is retained in the monorepo as a manual-only, non-discoverable experimental Skill. It does not grant autonomous motion authority and is not a production deployment.
+The vegetable-cutting experiment that exposed several directional defects is
+archived under `docs/archive/legacy_skills/vegetable_cutting`. It is excluded
+from setup, validation, and agent discovery and is not a production Skill.
 
 ---
 
@@ -216,7 +230,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
-| Supervised Vegetable Cutting Skill | `skills/vegetable_cutting`                                           | Manual-only, non-discoverable experimental cutting workflow with explicit operator takeover, reviewed motion gates, and external hard-stop requirements |
+| Archived Vegetable Cutting Prototype | `docs/archive/legacy_skills/vegetable_cutting`                    | Historical, non-loadable experiment retained only for evidence and future decomposition into smaller Skills |
 | Test Agent                 | `test_agent`                                                               | Separate regular and developer OpenAI Agents SDK surfaces used to exercise the platform                    |
 | Midbrain main GUI portal   | `platform_core/manager/web`                                                | Primary system entry for observation, guarded component access, Agents, and shutdown                       |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Developer-only live world-frame point cloud, camera pose, reset controls, and estimator diagnostics        |

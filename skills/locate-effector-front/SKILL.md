@@ -33,6 +33,8 @@ edges, dispensing nozzles, or other task-specific action geometry.
 
 ## Change log
 
+- 0.2.0 (2026-07-30): Added explicit camera-system optical-axis names and
+  spatial convention provenance.
 - 0.1.0 (2026-07-29): Added the general registered-depth effector-front
   landmark contract, including the paired-front rule for a bare two-jaw
   gripper, nearest distal valid-depth behavior for reflective or thin tools,

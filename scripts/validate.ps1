@@ -87,7 +87,12 @@ if ((Test-Path (Join-Path $workspace $activeProvidersConfig)) -and
 $jsonFiles = @(
     $jsonRelativePaths |
         Sort-Object -Unique |
-        ForEach-Object { Get-Item -LiteralPath (Join-Path $workspace $_) }
+        ForEach-Object {
+            $candidate = Join-Path $workspace $_
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                Get-Item -LiteralPath $candidate
+            }
+        }
 )
 foreach ($jsonFile in $jsonFiles) {
     Get-Content -Raw $jsonFile.FullName | ConvertFrom-Json | Out-Null
@@ -112,7 +117,6 @@ if (-not $SkipPython) {
         "skills\locate-effector-front",
         "skills\register_tool_to_control_frame",
         "skills\stationary_world_arm_alignment",
-        "skills\vegetable_cutting",
         "test_agent\python"
     )) {
         Invoke-Checked -FilePath $python -Arguments @(
@@ -131,7 +135,6 @@ if (-not $SkipPython) {
         (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
         (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
         (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
-        (Join-Path $workspace "skills\vegetable_cutting\python"),
         (Join-Path $workspace "test_agent\python")
     )
     $previousPythonPath = $env:PYTHONPATH
@@ -147,7 +150,6 @@ if (-not $SkipPython) {
             (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
             (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
-            (Join-Path $workspace "skills\vegetable_cutting\python"),
             (Join-Path $workspace "test_agent\python")
         )
         Invoke-Checked -FilePath $python -Arguments @(
@@ -160,7 +162,6 @@ if (-not $SkipPython) {
             (Join-Path $workspace "skills\register_tool_to_control_frame\python\tests"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python\tests"),
             (Join-Path $workspace "skills\stationary_world_arm_alignment\python\tests"),
-            (Join-Path $workspace "skills\vegetable_cutting\python\tests"),
             (Join-Path $workspace "test_agent\python\tests")
         )
     }
@@ -182,7 +183,6 @@ if (-not $SkipPython) {
         "skills\locate-effector-front",
         "skills\register_tool_to_control_frame",
         "skills\stationary_world_arm_alignment",
-        "skills\vegetable_cutting",
         "test_agent\python"
     )) {
         Invoke-Checked -FilePath $python -Arguments @(

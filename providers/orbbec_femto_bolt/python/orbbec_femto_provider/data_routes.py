@@ -8,6 +8,14 @@ DIRECT_RGBD_ROUTE_ID = "camera.femto_bolt.rgbd.windows_shared_memory.v2"
 DIRECT_RGBD_ROUTE_CAPABILITY = "camera.rgbd.route.direct_shared_memory"
 GENERIC_RGBD_ROUTE_ID = "camera.rgbd.shared_memory.flexible.v1"
 GENERIC_RGBD_ROUTE_CAPABILITY = "camera.rgbd.route.generic_shared_memory"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
+CAMERA_SYSTEM_AXIS_NAMES = {
+    "x": "camera_system_x",
+    "y": "camera_system_y",
+    "z": "camera_system_z",
+}
 
 
 def _positive_int(value: Any) -> int | None:
@@ -46,6 +54,8 @@ def _channel_descriptor(
         "reference_stream": reference_stream,
         "reference_schema": "physical_agent.buffer_ref",
         "coordinate_frame": coordinate_frame,
+        "coordinate_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+        "coordinate_axis_names": dict(CAMERA_SYSTEM_AXIS_NAMES),
         "available": bool(reference and width and height),
         "native_grid": {
             "width": width,
@@ -305,10 +315,18 @@ def build_direct_rgbd_route(
             "rgb": {
                 "stream": "camera.rgb.frame_ref",
                 "coordinate_frame": "femto_bolt_color_optical_frame",
+                "coordinate_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+                "coordinate_axis_names": dict(
+                    CAMERA_SYSTEM_AXIS_NAMES
+                ),
             },
             "depth": {
                 "stream": "camera.depth.frame_ref",
                 "coordinate_frame": "femto_bolt_depth_optical_frame",
+                "coordinate_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+                "coordinate_axis_names": dict(
+                    CAMERA_SYSTEM_AXIS_NAMES
+                ),
                 "units": "millimeters",
             },
             "synchronized_bundle": {

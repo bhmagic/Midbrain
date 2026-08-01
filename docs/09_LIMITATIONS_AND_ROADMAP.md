@@ -1,12 +1,26 @@
 # Limitations and Roadmap
 
-## Cartesian direction and alignment remain unresolved
+## Spatial convention is implemented; physical qualification remains
 
-The system does not yet have a sufficiently general contract for statements such as "move up", "move forward", or "rotate 45 degrees." Camera, world, arm-base, controlled-frame, tool, and object frames can use different axis conventions, signs, origins, and transform ages. The observed mapping in the current workcell—physical vertical primarily corresponding to arm-base `+X`—is installation-specific and must not be generalized.
+The software contract now defines ordinary 3D language in a canonical world
+frame: +X front, +Y left, and +Z up opposite measured gravity. Motion Skills
+resolve that vector through a current timestamped transform before arm-base IK.
+Raw arm axes require explicit `ARM_BASE_*` names. Raw camera optical components
+retain X-right, Y-down, Z-forward geometry but use explicit
+`camera_system_x/y/z` names. Two-dimensional image directions are a separate,
+explicit vocabulary.
 
-A future motion request must carry a semantic direction, source and target frame IDs, transform revision and timestamps, gravity provenance when relevant, uncertainty, and the resolved numeric vector used for planning. The consuming Skill must judge freshness according to its own latency budget; Fabric remains a passive, fast timestamped-state transport.
+Old Y-up VIO epochs, maps, points, calibration candidates, and previews are
+rejected rather than reinterpreted. A missing world-to-arm transform fails
+closed; a bounded development identity assumption requires an explicit
+installation attestation. Camera-relative 3D language requires explicit
+gravity-leveled semantics and ignores camera pitch and roll.
 
-Until that contract and its qualification suite are complete, natural-language Cartesian directions remain reviewed development inputs. See [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+This implementation still requires physical cross-axis qualification on each
+installation, including side-mounted arms, camera-heading degeneracy, transform
+age/revision faults, and post-restart epoch changes. Natural-language Cartesian
+motion therefore remains previewed and operator-authorized. See
+[Spatial Frame Convention](../contracts/14_spatial_frame_convention_v2.md).
 
 ## Current estimator limits
 
@@ -43,7 +57,10 @@ Until that contract and its qualification suite are complete, natural-language C
 - The Provider serializes expensive GPU work, so requested rates are upper bounds rather than guaranteed throughput.
 - OpenAI boxes and SAM2 masks are initialization aids, not safety-rated perception. Operator review remains required.
 - Color refinements are empirical for the present lighting and materials. Lab distance 30 plus radius-2 dilation worked for the Base; median RGB with 10% drift plus radius-2 dilation worked for the neon-green Gripper root.
-- A bounded stationary camera/world-to-arm alignment Skill is implemented for the current workcell. General axis semantics, uncertainty qualification, and broader hardware/camera portability remain open.
+- A bounded stationary camera/world-to-arm alignment Skill is implemented for
+  the current workcell. Side-mounted bases are represented by their transform
+  instead of being rotated to look upright. Uncertainty qualification and
+  broader hardware/camera portability remain open.
 
 ## Highest-priority milestone
 
@@ -73,4 +90,5 @@ Before expanding autonomous robot motion:
 - complete physical acceptance for every advertised motion profile;
 - keep emergency stop independent from software recovery;
 - review every hardware-specific Provider separately.
-- require explicit frame and resolved-vector evidence for semantic Cartesian commands.
+- physically qualify explicit frame and resolved-vector enforcement for
+  semantic Cartesian commands across representative mounts.

@@ -7,8 +7,7 @@ import numpy as np
 
 from stationary_world_arm_alignment.pose_validation import (
     load_model_geometry,
-    pose_verdict_best_of_two_acceptable,
-    pose_verdict_accepted,
+    projected_visual_scale_review,
     render_pose_overlay,
     select_best_pose_validation,
 )
@@ -40,6 +39,12 @@ def test_render_pose_overlay_projects_box_and_axes() -> None:
     assert diagnostics["positive_depth_corner_count"] == 8
     assert diagnostics["visible_corner_count"] == 8
     assert diagnostics["axis_origin_visible"] is True
+    assert diagnostics["image_size_px"] == [640, 480]
+    assert np.allclose(
+        diagnostics["projected_box_xyxy_px"],
+        [264.444444, 184.444444, 375.555556, 295.555556],
+        atol=1e-5,
+    )
 
 
 def test_legacy_full_mode_is_hidden_and_dim_dual_mode_is_available() -> None:
@@ -81,60 +86,94 @@ def test_manifest_discovers_only_public_modes_and_source_contracts() -> None:
     }
 
 
-def test_verdict_requires_reasonable_confident_non_bad_pose() -> None:
-    acceptable = {
-        "pose_reasonable": True,
-        "confidence": 0.81,
-        "box_fit": "ACCEPTABLE",
-        "orientation_fit": "GOOD",
-    }
-    assert pose_verdict_accepted(acceptable, 0.7)
-    assert not pose_verdict_accepted({**acceptable, "confidence": 0.69}, 0.7)
-    assert not pose_verdict_accepted({**acceptable, "box_fit": "BAD"}, 0.7)
-    assert not pose_verdict_accepted({**acceptable, "pose_reasonable": False}, 0.7)
+def test_projected_visual_scale_review_accepts_inclusive_boundaries() -> None:
+    image_shape = (1000, 1000, 3)
+    visual_box = [0, 0, 1000, 1000]
+
+    lower = projected_visual_scale_review(
+        {"projected_box_xyxy_px": [0.0, 0.0, 750.0, 750.0]},
+        visual_box,
+        image_shape,
+    )
+    upper = projected_visual_scale_review(
+        {"projected_box_xyxy_px": [0.0, 0.0, 1250.0, 1250.0]},
+        visual_box,
+        image_shape,
+    )
+
+    assert lower["equivalent_linear_scale_ratio"] == 0.75
+    assert upper["equivalent_linear_scale_ratio"] == 1.25
+    assert lower["within_tolerance"] is True
+    assert upper["within_tolerance"] is True
+    assert lower["warning"] is None
+    assert upper["warning"] is None
 
 
-def test_best_of_two_selects_geometry_before_rejection_confidence() -> None:
+def test_projected_visual_scale_review_rejects_just_outside_boundaries() -> None:
+    image_shape = (1000, 1000, 3)
+    visual_box = [0, 0, 1000, 1000]
+
+    lower = projected_visual_scale_review(
+        {"projected_box_xyxy_px": [0.0, 0.0, 749.0, 749.0]},
+        visual_box,
+        image_shape,
+    )
+    upper = projected_visual_scale_review(
+        {"projected_box_xyxy_px": [0.0, 0.0, 1251.0, 1251.0]},
+        visual_box,
+        image_shape,
+    )
+
+    assert lower["equivalent_linear_scale_ratio"] == 0.749
+    assert np.isclose(upper["equivalent_linear_scale_ratio"], 1.251)
+    assert lower["within_tolerance"] is False
+    assert upper["within_tolerance"] is False
+    assert "outside" in lower["warning"]
+    assert "outside" in upper["warning"]
+
+
+def test_projected_visual_scale_review_uses_linear_area_equivalent() -> None:
+    review = projected_visual_scale_review(
+        {"projected_box_xyxy_px": [10.0, 20.0, 410.0, 120.0]},
+        [100, 200, 300, 600],
+        (500, 1000, 3),
+    )
+
+    assert review["visual_size_px"] == [400.0, 100.0]
+    assert review["projected_size_px"] == [400.0, 100.0]
+    assert review["width_ratio"] == 1.0
+    assert review["height_ratio"] == 1.0
+    assert review["area_ratio"] == 1.0
+    assert review["equivalent_linear_scale_ratio"] == 1.0
+    assert review["within_tolerance"] is True
+
+
+def test_projected_visual_scale_review_degenerate_box_is_warning() -> None:
+    review = projected_visual_scale_review(
+        {"projected_box_xyxy_px": None},
+        [100, 200, 300, 600],
+        (500, 1000, 3),
+    )
+
+    assert review["available"] is False
+    assert review["within_tolerance"] is False
+    assert review["equivalent_linear_scale_ratio"] is None
+    assert "could not be compared" in review["warning"]
+
+
+def test_best_of_two_selects_smallest_deterministic_scale_mismatch() -> None:
     validations = [
         {
-            "verdict": {
-                "pose_reasonable": False,
-                "confidence": 0.99,
-                "box_fit": "BAD",
-                "orientation_fit": "BAD",
-            },
+            "scale_review": {"mismatch_fraction": 0.31},
             "projection": {"visible_corner_count": 8},
         },
         {
-            "verdict": {
-                "pose_reasonable": True,
-                "confidence": 0.65,
-                "box_fit": "ACCEPTABLE",
-                "orientation_fit": "GOOD",
-            },
+            "scale_review": {"mismatch_fraction": 0.27},
             "projection": {"visible_corner_count": 6},
         },
     ]
-    selected = select_best_pose_validation(validations)
-    assert selected == 1
-    assert pose_verdict_best_of_two_acceptable(
-        validations[selected]["verdict"],
-        0.6,
-    )
-    assert not pose_verdict_accepted(
-        validations[selected]["verdict"],
-        0.7,
-    )
 
-
-def test_best_of_two_never_accepts_bad_geometry() -> None:
-    verdict = {
-        "pose_reasonable": False,
-        "confidence": 0.99,
-        "box_fit": "BAD",
-        "orientation_fit": "ACCEPTABLE",
-    }
-    assert not pose_verdict_best_of_two_acceptable(verdict, 0.6)
+    assert select_best_pose_validation(validations) == 1
 
 
 def test_base_geometry_comes_from_foundation_pose_registry() -> None:
@@ -148,16 +187,59 @@ def test_base_geometry_comes_from_foundation_pose_registry() -> None:
     assert mesh_from_semantic.shape == (4, 4)
 
 
-def test_vlm_validation_sends_only_overlay_and_base_atlas() -> None:
+def test_base_geometry_uses_the_explicit_runtime_registry(tmp_path: Path) -> None:
+    workspace_root = Path(__file__).resolve().parents[4]
+    mesh_path = (
+        workspace_root
+        / "providers"
+        / "foundation_pose"
+        / "defaults"
+        / "rebot_b601_dm"
+        / "models"
+        / "Base_clean_centered.obj"
+    )
+    expected = np.eye(4, dtype=np.float64)
+    expected[:3, :3] = np.array(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    expected[:3, 3] = [0.01, -0.02, -0.03]
+    registry_path = tmp_path / "models.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "revision": "test-runtime-registry",
+                "models": [
+                    {
+                        "model_id": "robot_arm_root",
+                        "mesh_path": str(mesh_path),
+                        "scale_to_m": 0.001,
+                        "mesh_from_semantic": expected.reshape(-1).tolist(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, _, mesh_from_semantic = load_model_geometry(
+        str(workspace_root),
+        "robot_arm_root",
+        str(registry_path),
+    )
+
+    assert np.array_equal(mesh_from_semantic, expected)
+
+
+def test_vlm_axis_review_sends_only_overlay_and_uses_category() -> None:
     workspace_root = Path(__file__).resolve().parents[4]
     observed: dict = {}
     verdict = {
-        "pose_reasonable": True,
-        "confidence": 0.9,
-        "box_fit": "GOOD",
-        "orientation_fit": "ACCEPTABLE",
-        "matched_reference_view": "front-left",
-        "reasons": [],
+        "base_x_relation_to_gripper": "AWAY_FROM_GRIPPER",
+        "notes": "The red +X arrow points opposite the visible gripper.",
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -189,6 +271,13 @@ def test_vlm_validation_sends_only_overlay_and_base_atlas() -> None:
     asyncio.run(run())
     content = observed["input"][0]["content"]
     images = [item for item in content if item["type"] == "input_image"]
-    assert len(images) == 2
+    assert len(images) == 1
     assert images[0]["image_url"].startswith("data:image/jpeg;base64,")
-    assert images[1]["image_url"].startswith("data:image/png;base64,")
+    prompt = " ".join(
+        item["text"] for item in content if item["type"] == "input_text"
+    )
+    assert "red +X arrow" in prompt
+    assert "Ignore projected box size" in prompt
+    assert observed["text"]["format"]["name"] == (
+        "foundation_pose_base_axis_review"
+    )

@@ -341,9 +341,10 @@ Manager-owned activation is now implemented at
 `POST /v1/workcell-calibrations/activate`. It verifies the exact candidate and
 decision digest, signed reviewer identity, current camera
 provider/instance/boot/calibration, current tracking VIO epoch/frame,
-confidence/error bounds, frame semantics, and expiry. Only one unexpired
-activation may be active. Explicit revocation publishes a newer
-non-motion-usable edge, and Fabric suppresses the older static transform.
+confidence/error bounds, frame semantics, and expiry. A fresh reviewed
+activation supersedes the prior active record and makes it non-motion-usable.
+Explicit revocation publishes a newer non-motion-usable edge, and Fabric
+suppresses the older static transform.
 Live end-to-end activation still requires a fresh camera/VIO calibration run.
 
 ## Camera-access diagnosis

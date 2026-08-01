@@ -126,6 +126,31 @@ class OperationRegistry:
             operation.last_progress_monotonic = time.monotonic()
             operation.stage = str(stage)
 
+    def extend_current_hard_timeout(
+        self,
+        hard_timeout_s: float,
+        *,
+        stage: str,
+    ) -> None:
+        """Latch a longer deadline for the currently executing finite operation."""
+
+        requested_timeout = float(hard_timeout_s)
+        if requested_timeout <= 0.0:
+            raise ValueError("extended hard timeout must be positive")
+        operation_id = _current_operation_id.get()
+        if operation_id is None:
+            return
+        with self._lock:
+            operation = self._operations.get(operation_id)
+            if operation is None or operation.state != "RUNNING":
+                return
+            operation.hard_timeout_s = max(
+                operation.hard_timeout_s,
+                requested_timeout,
+            )
+            operation.last_progress_monotonic = time.monotonic()
+            operation.stage = str(stage)
+
     async def run(
         self,
         label: str,
@@ -176,11 +201,13 @@ class OperationRegistry:
                     hard_age = now - current.started_monotonic
                     idle_age = now - current.last_progress_monotonic
                     stage = current.stage
-                if hard_age >= hard_timeout:
+                    effective_hard_timeout = current.hard_timeout_s
+                if hard_age >= effective_hard_timeout:
                     task.cancel()
                     await _consume_cancel(task)
                     message = (
-                        f"{label} exceeded its {hard_timeout:.3f}s hard deadline "
+                        f"{label} exceeded its "
+                        f"{effective_hard_timeout:.3f}s hard deadline "
                         f"during {stage}"
                     )
                     self._finish(
@@ -311,6 +338,18 @@ def install_operation_registry(registry: OperationRegistry) -> None:
 def report_operation_progress(stage: str) -> None:
     if _registry is not None:
         _registry.touch(stage)
+
+
+def extend_current_operation_hard_timeout(
+    hard_timeout_s: float,
+    *,
+    stage: str,
+) -> None:
+    if _registry is not None:
+        _registry.extend_current_hard_timeout(
+            hard_timeout_s,
+            stage=stage,
+        )
 
 
 async def await_with_progress_heartbeat(

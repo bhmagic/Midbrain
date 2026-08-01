@@ -32,7 +32,7 @@ class InertialFirstBackendTests(unittest.TestCase):
             timestamp = index * 20_000
             backend.add_accelerometer(
                 timestamp,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=True,
             )
             backend.add_gyroscope(timestamp, np.zeros(3))
@@ -49,7 +49,7 @@ class InertialFirstBackendTests(unittest.TestCase):
             timestamp = 5_000_000 + index * 20_000
             backend.add_accelerometer(
                 timestamp,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=True,
             )
             backend.add_gyroscope(timestamp, np.array([0.01, -0.02, 0.005]))
@@ -78,7 +78,7 @@ class InertialFirstBackendTests(unittest.TestCase):
             timestamp = 10_000_000 + index * 20_000
             backend.add_accelerometer(
                 timestamp,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=True,
             )
             backend.add_gyroscope(timestamp, np.zeros(3))
@@ -100,7 +100,7 @@ class InertialFirstBackendTests(unittest.TestCase):
             timestamp = index * 20_000
             backend.add_accelerometer(
                 timestamp,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
             backend.add_gyroscope(timestamp, np.zeros(3))
@@ -118,15 +118,15 @@ class InertialFirstBackendTests(unittest.TestCase):
             timestamp = index * 20_000
             backend.add_accelerometer(
                 timestamp,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
-            backend.add_gyroscope(timestamp, np.array([0.0, rate, 0.0]))
+            backend.add_gyroscope(timestamp, np.array([0.0, -rate, 0.0]))
         predicted = backend.predict_latest()
         self.assertIsNotNone(predicted)
         assert predicted is not None
         forward = predicted.world_from_camera[:3, :3] @ np.array([0.0, 0.0, 1.0])
-        yaw = math.atan2(forward[0], forward[2])
+        yaw = math.atan2(forward[1], forward[0])
         self.assertGreater(abs(yaw), 1.35)
         self.assertLess(abs(yaw), 1.50)
         self.assertEqual(predicted.pose_update_mode, "IMU_FAST_PROPAGATION")
@@ -138,6 +138,7 @@ class InertialFirstBackendTests(unittest.TestCase):
         predicted = backend.state.position_world_m.copy()
         position_variance_before = float(backend.state.covariance[3, 3])
         measurement = np.eye(4)
+        measurement[:3, :3] = backend.state.rotation_world_from_imu
         measurement[:3, 3] = np.array([0.08, 0.0, 0.0])
         candidate = _VisualCandidate(
             sensor="RGBD",

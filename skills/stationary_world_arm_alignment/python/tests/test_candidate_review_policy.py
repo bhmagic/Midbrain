@@ -18,11 +18,43 @@ def _skill(mode: str) -> AlignmentSkill:
     return skill
 
 
-def test_shadow_mode_preserves_legacy_prior_alignment_reuse() -> None:
+def _v2_candidate(candidate_id: str) -> dict:
+    return {
+        "candidate_id": candidate_id,
+        "schema": (
+            "midbrain.skill.stationary_world_arm_alignment."
+            "calibration_candidate"
+        ),
+        "schema_version": 3,
+        "quality_provenance": {
+            "semantic_alignment": {
+                "status": "PASSED",
+            }
+        },
+        "frame_contract": {
+            "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+            "camera_optical_convention_id": (
+                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            ),
+            "legacy_candidate_compatibility": "REJECT",
+        },
+    }
+
+
+def test_shadow_mode_rejects_legacy_and_accepts_v2_prior() -> None:
     skill = _skill("SHADOW")
 
+    assert not skill._prior_alignment_review_usable(
+        {
+            "review_state": "CANDIDATE_REVIEW_REQUIRED",
+            "motion_usable": False,
+            "expires_at_us": 1,
+        },
+        {},
+    )
     assert skill._prior_alignment_review_usable(
         {
+            "candidate": _v2_candidate("candidate-v2"),
             "review_state": "CANDIDATE_REVIEW_REQUIRED",
             "motion_usable": False,
             "expires_at_us": 1,
@@ -52,6 +84,7 @@ def test_enforced_mode_requires_matching_active_manager_registration() -> None:
     prior = {
         "alignment_id": "candidate-1",
         "vio_session_epoch": "epoch-1",
+        "candidate": _v2_candidate("candidate-1"),
         "review_state": "CANDIDATE_REVIEW_REQUIRED",
         "motion_usable": False,
         "expires_at_us": now_us + 1_000_000,
@@ -91,17 +124,11 @@ def test_enforced_prior_selection_ignores_rejected_latest_candidate() -> None:
     skill = _skill("ENFORCED")
     approved = {
         "alignment_id": "approved-1",
-        "candidate": {
-            "candidate_id": "approved-1",
-            "schema": "test.candidate",
-        },
+        "candidate": _v2_candidate("approved-1"),
     }
     rejected = {
         "alignment_id": "rejected-2",
-        "candidate": {
-            "candidate_id": "rejected-2",
-            "schema": "test.candidate",
-        },
+        "candidate": _v2_candidate("rejected-2"),
     }
     skill.store = SimpleNamespace(
         latest=lambda: rejected,
@@ -135,10 +162,7 @@ def test_enforced_prior_selection_rejects_digest_mismatch_and_revocation() -> No
     skill = _skill("ENFORCED")
     prior = {
         "alignment_id": "candidate-1",
-        "candidate": {
-            "candidate_id": "candidate-1",
-            "schema": "test.candidate",
-        },
+        "candidate": _v2_candidate("candidate-1"),
     }
     skill.store = SimpleNamespace(
         latest=lambda: prior,

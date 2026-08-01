@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/contracts/spatial_vector.v2.schema.json",
+  "title": "Midbrain framed spatial vector V2",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "convention_id",
+    "frame_id",
+    "observed_at_us",
+    "vector",
+    "units"
+  ],
+  "properties": {
+    "schema": {
+      "const": "physical_agent.spatial_vector"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "convention_id": {
+      "enum": [
+        "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+      ]
+    },
+    "frame_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observed_at_us": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "session_epoch": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "calibration_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "semantic_direction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "vector": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "units": {
+      "enum": [
+        "UNITLESS",
+        "METRES"
+      ]
+    },
+    "transform_provenance": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

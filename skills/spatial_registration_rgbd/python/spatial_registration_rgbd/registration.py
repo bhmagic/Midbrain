@@ -187,12 +187,15 @@ def register_rgbd_point(
         policy=depth_policy,
         valid_region=valid_region,
     )
-    camera_point = deproject_pixel(
+    camera_system_xyz_m = deproject_pixel(
         selection.pixel_yx,
         selection.depth_m,
         intrinsics,
     )
-    target_point = transform_point(target_from_camera, camera_point)
+    target_point = transform_point(
+        target_from_camera,
+        camera_system_xyz_m,
+    )
     return {
         "schema": "physical_agent.spatial_registration_rgbd",
         "schema_version": 1,
@@ -201,7 +204,11 @@ def register_rgbd_point(
         "target_frame": str(target_frame),
         "rgb_pixel_yx": [float(rgb_pixel_yx[0]), float(rgb_pixel_yx[1])],
         "registered_depth_pixel_yx": list(selection.pixel_yx),
-        "camera_point_m": camera_point.tolist(),
+        "camera_system_point_m": {
+            "camera_system_x": float(camera_system_xyz_m[0]),
+            "camera_system_y": float(camera_system_xyz_m[1]),
+            "camera_system_z": float(camera_system_xyz_m[2]),
+        },
         "target_point_m": target_point.tolist(),
         "depth_selection": selection.as_dict(),
         "calibration_revision": calibration_revision,

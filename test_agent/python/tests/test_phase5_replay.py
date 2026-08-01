@@ -95,6 +95,9 @@ def _generic_route_fields(mapping_name: str) -> dict:
         return {
             "available": True,
             "channel_id": channel_id,
+            "coordinate_convention_id": (
+                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            ),
             "native_grid": {
                 "width": width,
                 "height": height,
@@ -654,6 +657,17 @@ class _ReplaySpatialFabric:
                 "depth_aligned_to_rgb": (
                     materialization.references["registered_depth"]
                 ),
+                "coordinate_conventions": {
+                    "rgb": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                    "depth": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                    "aligned_depth": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                },
             },
         }
         self.calibration_observation = {
@@ -667,6 +681,11 @@ class _ReplaySpatialFabric:
                     "cy": 1.0,
                 },
                 "calibration_revision": "replay-calibration",
+                "coordinate_conventions": {
+                    "color": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                },
             },
         }
 
@@ -684,6 +703,9 @@ class _ReplaySpatialFabric:
                 "data": {
                     "world_frame": "replay-world",
                     "session_epoch": "replay-vio-epoch",
+                    "convention_id": (
+                        "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                    ),
                 },
             }
         if stream == "localization.vio.status":
@@ -693,6 +715,9 @@ class _ReplaySpatialFabric:
                 "data": {
                     "tracking_state": "TRACKING",
                     "session_epoch": "replay-vio-epoch",
+                    "convention_id": (
+                        "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                    ),
                 },
             }
         return None

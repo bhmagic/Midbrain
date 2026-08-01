@@ -32,6 +32,10 @@ DEFAULT_MAXIMUM_SOURCE_AGE_MS: dict[str, float | None] = {
     "body_pose": 500.0,
     "vio_status": 1_000.0,
 }
+WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
 
 
 class RgbdFrameSource(Protocol):
@@ -203,6 +207,8 @@ class SpatialRegistrationSkillAdapter:
             "camera_capture": self.capture_provenance(context),
             "transform_provenance": self.transform_provenance(context),
             "selected_route_metadata": self.route_metadata(context),
+            "source_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+            "target_convention_id": WORLD_CONVENTION_ID,
             "input_temporal_evidence": {
                 "policy_id": SPATIAL_INPUT_TEMPORAL_POLICY_ID,
                 "evaluated_inputs": dict(context.temporal_evidence),
@@ -252,6 +258,10 @@ class SpatialRegistrationSkillAdapter:
         )
         if not isinstance(selected_route, dict):
             raise RuntimeError("selected RGB-D route metadata disappeared")
+        self._validate_coordinate_conventions(
+            selected_route=selected_route,
+            frame=frame,
+        )
 
         report_operation_progress("REVALIDATE_RGBD_BINDING")
         binding = await self._revalidate_binding(binding)
@@ -704,6 +714,13 @@ class SpatialRegistrationSkillAdapter:
             raise RuntimeError("VIO pose or status data is unavailable")
         if str(vio_data.get("tracking_state") or "") != "TRACKING":
             raise RuntimeError("VIO is not in TRACKING state")
+        if (
+            vio_data.get("convention_id") != WORLD_CONVENTION_ID
+            or pose_data.get("convention_id") != WORLD_CONVENTION_ID
+        ):
+            raise RuntimeError(
+                "VIO pose/status do not declare the convention-V2 Z-up world"
+            )
         expected_epoch = str(frame.session_epoch)
         if str(pose_data.get("session_epoch") or "") != expected_epoch:
             raise RuntimeError("body pose does not match the captured VIO epoch")
@@ -712,6 +729,66 @@ class SpatialRegistrationSkillAdapter:
         if str(pose_data.get("world_frame") or "") != str(frame.world_frame):
             raise RuntimeError("body pose world frame changed during RGB-D capture")
         return temporal_evidence
+
+    @staticmethod
+    def _validate_coordinate_conventions(
+        *,
+        selected_route: dict[str, Any],
+        frame: Any,
+    ) -> None:
+        products = selected_route.get("products")
+        if not isinstance(products, dict):
+            raise RuntimeError("RGB-D route has no product metadata")
+        channels = products.get("channels")
+        descriptors: list[dict[str, Any]] = []
+        if isinstance(channels, dict):
+            for name in ("rgb", "depth_registered_to_rgb"):
+                descriptor = channels.get(name)
+                if not isinstance(descriptor, dict):
+                    raise RuntimeError(
+                        f"RGB-D route has no {name} channel descriptor"
+                    )
+                descriptors.append(descriptor)
+        else:
+            for name in ("rgb", "depth"):
+                descriptor = products.get(name)
+                if not isinstance(descriptor, dict):
+                    raise RuntimeError(
+                        f"RGB-D route has no {name} product descriptor"
+                    )
+                descriptors.append(descriptor)
+        if any(
+            descriptor.get("coordinate_convention_id")
+            != CAMERA_OPTICAL_CONVENTION_ID
+            for descriptor in descriptors
+        ):
+            raise RuntimeError(
+                "RGB-D route does not explicitly declare native camera "
+                "optical X-right/Y-down/Z-forward coordinates"
+            )
+
+        observations = (
+            frame.observations if isinstance(frame.observations, dict) else {}
+        )
+        bundle = observations.get("bundle")
+        bundle_data = (
+            bundle.get("data") if isinstance(bundle, dict) else None
+        )
+        conventions = (
+            bundle_data.get("coordinate_conventions")
+            if isinstance(bundle_data, dict)
+            else None
+        )
+        if (
+            not isinstance(conventions, dict)
+            or conventions.get("rgb") != CAMERA_OPTICAL_CONVENTION_ID
+            or conventions.get("aligned_depth")
+            != CAMERA_OPTICAL_CONVENTION_ID
+        ):
+            raise RuntimeError(
+                "captured RGB-D bundle has no explicit optical coordinate "
+                "convention"
+            )
 
     def _evaluate_observation_time(
         self,

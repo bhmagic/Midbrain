@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from physical_agent_test.agent_driver import PrototypeAgentDriver
+from physical_agent_test.agent_driver import (
+    PrototypeAgentDriver,
+    build_midbrain_runtime_snapshot,
+    build_turn_safe_session_input,
+)
 
 
 class _PointingSkill:
@@ -44,6 +49,123 @@ async def _reinitialize_space(reason: str):
 
 
 class DeveloperAgentSurfaceTests(unittest.TestCase):
+    def test_session_history_limit_keeps_reasoning_call_turn_intact(
+        self,
+    ) -> None:
+        history = [
+            {"role": "user", "content": "move the arm"},
+            {"type": "reasoning", "id": "rs_required"},
+            {
+                "type": "function_call",
+                "id": "fc_required",
+                "call_id": "call_required",
+                "name": "inspect_midbrain_runtime",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_required",
+                "output": "{}",
+            },
+            *[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": f"item-{index}",
+                }
+                for index in range(30)
+            ],
+        ]
+
+        combined = build_turn_safe_session_input(
+            history,
+            [{"role": "user", "content": "establish coordinates"}],
+            limit=32,
+        )
+
+        self.assertEqual(combined[0]["role"], "user")
+        self.assertEqual(combined[1]["id"], "rs_required")
+        self.assertEqual(combined[2]["id"], "fc_required")
+        self.assertEqual(combined[-1]["content"], "establish coordinates")
+
+    def test_runtime_snapshot_keeps_complete_manager_evidence(
+        self,
+    ) -> None:
+        snapshot = build_midbrain_runtime_snapshot(
+            [
+                {
+                    "config": {
+                        "id": "robot_arm.primary.integrated",
+                        "display_name": "Integrated",
+                        "command": "large command",
+                        "env": {
+                            "CONTROLLER_MODE": "POSE_6DOF",
+                            "SECRET": "must not enter model context",
+                        },
+                    },
+                    "process_state": "running",
+                    "report": {
+                        "residency": "RECOVERY_REQUIRED",
+                        "health": "DEGRADED",
+                        "ready": False,
+                        "details": {
+                            "fault_reason": "Basic lease lost",
+                            "ik_mode": "POSE_6DOF",
+                            "observed_at_us": 123,
+                            "model_view": {"large": ["telemetry"] * 100},
+                        },
+                        "last_seen": "2026-07-31T12:00:00Z",
+                    },
+                }
+            ],
+            [
+                {
+                    "capability": "robot.motion.arm.integrated.pose_6dof",
+                    "provider_id": "robot_arm.primary.integrated",
+                    "available": False,
+                    "last_seen": "2026-07-31T12:00:01Z",
+                }
+            ],
+            eligible_skill_tools=["calibrate_stationary_workcell"],
+        )
+
+        provider = snapshot["providers"][0]
+        self.assertEqual(
+            provider["report"]["details"]["fault_reason"],
+            "Basic lease lost",
+        )
+        self.assertEqual(
+            provider["report"]["details"]["ik_mode"],
+            "POSE_6DOF",
+        )
+        self.assertEqual(
+            provider["report"]["details"]["observed_at_us"],
+            123,
+        )
+        self.assertIn("model_view", provider["report"]["details"])
+        self.assertEqual(
+            provider["report"]["last_seen"],
+            "2026-07-31T12:00:00Z",
+        )
+        self.assertEqual(provider["config"]["command"], "large command")
+        self.assertEqual(
+            provider["config"]["env"]["CONTROLLER_MODE"],
+            "POSE_6DOF",
+        )
+        self.assertEqual(
+            provider["config"]["env"]["SECRET"],
+            "[REDACTED]",
+        )
+        self.assertNotIn("must not enter model context", str(snapshot))
+        self.assertEqual(
+            snapshot["capabilities"][0]["last_seen"],
+            "2026-07-31T12:00:01Z",
+        )
+        self.assertEqual(
+            snapshot["eligible_skill_tools"],
+            ["calibrate_stationary_workcell"],
+        )
+
     def test_developer_driver_adds_bounded_provider_tools(self) -> None:
         root = Path(__file__).resolve().parents[3]
         driver = PrototypeAgentDriver(
@@ -61,6 +183,11 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn("set_provider_residency", tools)
         self.assertFalse(tools["inspect_midbrain_runtime"].needs_approval)
         self.assertTrue(tools["set_provider_residency"].needs_approval)
+        self.assertIn(
+            "Never answer by asking for conversational permission",
+            driver.agent.instructions,
+        )
+        self.assertIsNone(driver.run_config.session_input_callback)
 
     def test_regular_driver_exposes_confirmed_provider_lifecycle(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -98,6 +225,14 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             tools["execute_integrated_motion_preview"].needs_approval
         )
         self.assertTrue(tools["execute_basic_safe_home"].needs_approval)
+        self.assertIn(
+            "instead of answering with a permission request",
+            driver.agent.instructions,
+        )
+        self.assertIn(
+            "call set_provider_residency immediately",
+            driver.agent.instructions,
+        )
 
     def test_provider_approval_is_human_readable(self) -> None:
         item = SimpleNamespace(
@@ -124,7 +259,6 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
                 {"label": "Requested state", "value": "HOT"},
             ],
         )
-
     def test_motion_approval_explains_immediate_one_shot_commit(self) -> None:
         item = SimpleNamespace(
             tool_name="execute_integrated_motion_preview",
@@ -134,6 +268,8 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
                     '{"preview_id":"preview-1","direction":"UP",'
                     '"motion_intent":"NEW_RELATIVE_MOVE",'
                     '"distance_m":0.2,"original_request_distance_m":0.2,'
+                    '"requested_speed_m_s":0.2,'
+                    '"planned_duration_s":1.2,'
                     '"target_position_m":[0.1,0.4,0.3]}'
                 )
             },
@@ -149,8 +285,19 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn(
             {
                 "label": "Trigger",
-                "value": "Immediate approved one-shot commit",
+                "value": "Immediate approved MIT one-shot commit",
             },
+            approval["details"],
+        )
+        self.assertIn(
+            {
+                "label": "Requested speed",
+                "value": "0.2 m/s nominal average",
+            },
+            approval["details"],
+        )
+        self.assertIn(
+            {"label": "Planned duration", "value": "1.2 s"},
             approval["details"],
         )
 
@@ -197,6 +344,44 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             "Establish a new Midbrain spatial origin?",
         )
         self.assertIn("revokes active", approval["warning"])
+
+
+class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lifecycle_result_tells_agent_to_continue_without_repeat(
+        self,
+    ) -> None:
+        class _ConfiguredManager(_Manager):
+            async def providers(self):
+                return [{"config": {"id": "camera.femto_bolt"}}]
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_ConfiguredManager(),
+            developer_mode=True,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        raw = await tool.on_invoke_tool(
+            None,
+            json.dumps(
+                {
+                    "provider_id": "camera.femto_bolt",
+                    "action": "hot",
+                }
+            ),
+        )
+        result = json.loads(raw)
+
+        self.assertTrue(result["lifecycle_request_complete"])
+        self.assertEqual(result["requested_action"], "HOT")
+        self.assertIn("Do not request", result["agent_instruction"])
+        self.assertIn("Continue", result["agent_instruction"])
 
 
 if __name__ == "__main__":

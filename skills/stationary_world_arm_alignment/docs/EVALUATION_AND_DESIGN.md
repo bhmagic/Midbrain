@@ -5,9 +5,16 @@
 The alignment is practical as a finite Skill, with four explicit limits:
 
 - FoundationPose registration is a long, monolithic GPU operation. Its independent control-server health endpoint exposes phase, liveness, last frame, result count, error, and latency, but no real percentage. The monitor therefore reports indeterminate progress with live evidence.
-- The base's symmetry is exactly a two-candidate choice. The Skill never searches intermediate yaw angles.
+- FoundationPose can return any discrete axis-sign hypothesis. Host code uses
+  VIO/world up and the gripper's raw base-frame X sign to choose exactly one of
+  identity, X-180, Y-180, or Z-180 at the centered CAD mesh origin. The VLM
+  segments the gripper but does not calculate an angle or metric residual.
+  Perspective RGB-arrow review is a warning fallback when exact aligned
+  gripper depth is unavailable.
 - A VLM pixel alone is not metric. Even VLM-only refinement still reads aligned depth, the current VIO transform, and arm kinematics; "VLM-only" means FoundationPose is not started.
-- The VLM gripper point, robot tool frame, and physical beak are not identical. The base run uses a documented weighted rough fusion and learns a tool-local beak offset for later refinement. A measured offset in configuration is preferable.
+- The VLM gripper point, robot tool frame, and physical beak are not identical.
+  The base run never equates them for translation. Translation fusion requires
+  a configured rigid tool-to-feature extrinsic.
 
 ## FoundationPose-base + VLM-gripper data flow
 
@@ -19,13 +26,35 @@ The alignment is practical as a finite Skill, with four explicit limits:
 6. Generate local binary masks and submit one FoundationPose session for the base only.
 7. Poll FoundationPose's existing `/health` endpoint while collecting timestamped Fabric poses.
 8. Transform every camera-relative FoundationPose sample into the same VIO world at its source timestamp.
-9. Compare the base semantic +Z axis to VIO world-up (+Y). Correct an upside-down FoundationPose hypothesis with a semantic 180-degree X rotation before projection; the later 0/180 yaw decision remains independent.
-10. Project the base mesh's 3D box and semantic XYZ axes onto the live RGB using the upright averaged camera-relative pose.
-11. Send that exact RGB composite and the eight-angle base CAD atlas to the VLM. If explicitly rejected, reset every attempt session and create new session IDs so FoundationPose performs a fresh register-from-mask operation. Only one retry is permitted.
-12. Robustly average accepted base samples, test only the 0- and 180-degree yaw candidates, and select the one whose arm tool is closest to the gripper evidence.
-13. Fuse the configured translation estimates, define a new world frame with VIO orientation and the reference camera optical center as origin, then publish the transforms and overlay artifact.
+9. Treat FoundationPose output as `camera_from_mesh`. The model registry gives
+   `mesh_from_semantic`; the published chain is
+   `camera_from_mesh @ mesh_from_semantic`, with no inverse or transpose.
+   Express VIO/world +Z in the same camera optical frame and record the raw
+   base-Z dot product.
+10. Project the base mesh's 3D box and semantic XYZ axes onto the live RGB.
+    Host code compares projected and observed box width and height. A maximum
+    mismatch over 25 percent resets the estimator for one fresh registration,
+    for at most two attempts.
+11. Use the VLM gripper mask and aligned depth to express a gripper surface
+    point in the raw fitted base frame. Combine its X sign with the base-Z/up
+    hemisphere: `up+toward -> identity`, `up+away -> Z-180`,
+    `down+toward -> X-180`, and `down+away -> Y-180`. Apply that one rotation
+    at the centered mesh origin before `mesh_from_semantic`. The observed mesh
+    center must remain fixed; X/Y correction recomputes the semantic root,
+    while Z correction leaves it unchanged. If exact gripper depth is
+    unavailable, use the bounded perspective RGB-arrow review and record that
+    fallback as a warning. Residual tilt or missing up remains a warning.
+12. If both attempts exceed the size threshold, retain the attempt with the
+    smaller host-calculated mismatch and attach a warning. Add a VLM
+    translation term only when a measured tool-to-beak extrinsic is configured.
+    Compose the final base pose from the timestamped reference camera
+    transform; retain VIO sample drift only as diagnostics, then publish the
+    candidate.
 
-The `foundation_base_gripper` mode runs FoundationPose on both objects. It is exposed as the slow dim-scene mode. It uses the FoundationPose gripper and arm kinematics to resolve base yaw, gives VLM translation only a small auxiliary weight, and applies the same base overlay validation and bounded fresh-registration retry.
+The `foundation_base_gripper` mode runs FoundationPose on both objects. It is
+exposed as the slow dim-scene mode, reports the additional gripper pose, and
+applies the same deterministic projected-size comparison, categorical visual
+RGB-D yaw sign decision, and bounded fresh-registration retry.
 
 ## Beak cases
 
@@ -36,7 +65,7 @@ The `foundation_base_gripper` mode runs FoundationPose on both objects. It is ex
 
 ## VLM-gripper-only adjustment
 
-The public mode is `vlm_gripper_only`. It requires a valid prior alignment, the same VIO epoch by default, valid depth, and learned or configured tool-to-beak geometry. It locks rotation and the previous symmetry decision. A first correction over 5 cm triggers two additional VLM inferences on the same stationary RGB-D frame; the closest pair of the three translation estimates is averaged and the third is discarded. The former 5 cm hard rejection is removed.
+The public mode is `vlm_gripper_only`. It requires a valid prior alignment, the same VIO epoch by default, valid depth, and learned or configured tool-to-beak geometry. It locks the reviewed rotation and previous discrete yaw decision. A first correction over 5 cm triggers two additional VLM inferences on the same stationary RGB-D frame; the closest pair of the three translation estimates is averaged and the third is discarded. The former 5 cm hard rejection is removed.
 
 ## Upstream measurement labels
 
@@ -51,7 +80,13 @@ The dual-FoundationPose result carries both records because its VLM beak remains
 
 ## Safety and quality
 
-The Skill accepts an armed arm or a home arm, but both must be stationary. It does not command motion. A moving arm fails preflight unless the caller explicitly enables active-control interruption. No partial transform is published on failure or cancellation. Results retain VIO epoch, camera calibration revision, source timestamp, fusion diagnostics, symmetry scores, and VLM evidence.
+The Skill accepts an armed arm or a home arm, but both must be stationary. It
+does not command motion. A moving arm fails preflight unless the caller
+explicitly enables active-control interruption. No partial transform is
+published on cancellation. Results retain VIO epoch, camera calibration
+revision, source timestamp, camera-versus-VIO drift diagnostics, deterministic
+projected-size evidence, the exact discrete-orientation choice, VLM evidence, and any
+base-up or exhausted-retry warnings.
 
 ## Expiry and renewal
 

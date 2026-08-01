@@ -455,6 +455,12 @@ class IntegratedService:
             termination = copy.deepcopy(self.safe_termination)
         return {
             **self.controller.snapshot(),
+            "controller_identity": {
+                "provider_id": self.config["provider_id"],
+                "provider_instance_id": self.platform.instance_id,
+                "boot_id": self.platform.boot_id,
+                "configuration_sha256": _canonical_sha256(self.config),
+            },
             "safe_termination": termination,
             "fabric_input": copy.deepcopy(self.fabric_input_status),
             "scene_input": copy.deepcopy(self.scene_input_status),
@@ -1506,7 +1512,7 @@ class IntegratedService:
         service = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "ArmIntegratedMIT/0.8.0"
+            server_version = "ArmIntegratedMIT/0.8.1"
 
             def log_message(self, fmt, *args):
                 try:

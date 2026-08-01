@@ -32,7 +32,11 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from local_vio_provider.math3d import make_transform, matrix_to_quaternion_xyzw
+from local_vio_provider.math3d import (
+    gravity_leveled_world_from_camera_level,
+    make_transform,
+    matrix_to_quaternion_xyzw,
+)
 from local_vio_provider.prototype_backend import PoseResult
 from local_vio_provider.inertial_first_backend import InertialFirstRgbdVio
 from orbbec_femto_provider.shared_memory_access import (
@@ -48,6 +52,43 @@ from orbbec_femto_provider.shared_memory_access import (
 BODY_FRAME = "body_base"
 COLOR_FRAME = "femto_bolt_color_optical_frame"
 IMU_FRAME = "femto_bolt_imu_frame"
+WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
+
+
+def require_camera_coordinate_conventions(
+    calibration_data: dict[str, Any],
+    bundle_data: dict[str, Any],
+    *,
+    ir_enabled: bool,
+) -> None:
+    calibration_conventions = (
+        calibration_data.get("coordinate_conventions") or {}
+    )
+    required_calibration_channels = ["color"]
+    if ir_enabled:
+        required_calibration_channels.append("infrared")
+    invalid_calibration = [
+        channel
+        for channel in required_calibration_channels
+        if calibration_conventions.get(channel)
+        != CAMERA_OPTICAL_CONVENTION_ID
+    ]
+    bundle_conventions = bundle_data.get("coordinate_conventions") or {}
+    invalid_bundle = [
+        channel
+        for channel in ("rgb", "aligned_depth")
+        if bundle_conventions.get(channel)
+        != CAMERA_OPTICAL_CONVENTION_ID
+    ]
+    if invalid_calibration or invalid_bundle:
+        raise RuntimeError(
+            "Local VIO requires explicit native camera optical convention "
+            "metadata; invalid calibration channels="
+            f"{invalid_calibration}, invalid RGB-D channels={invalid_bundle}"
+        )
 
 
 class LocalVioProvider:
@@ -84,6 +125,7 @@ class LocalVioProvider:
         )
         self.session_epoch = ""
         self.world_frame = ""
+        self.camera_level_frame = ""
         self.sequence = 0
         self.last_rgb_frame = -1
         self.last_accel_frame = -1
@@ -101,6 +143,8 @@ class LocalVioProvider:
         self.last_tracking_state = "STOPPED"
         self.last_result: Optional[PoseResult] = None
         self.motion_inhibited = False
+        self.fixed_rig_attestation_until_monotonic = 0.0
+        self.fixed_rig_attestation_skill_id: Optional[str] = None
         self.last_static_transform_epoch: Optional[str] = None
         self.last_inertial_prediction_us = -1
         self.last_inertial_publish_monotonic = 0.0
@@ -150,6 +194,36 @@ class LocalVioProvider:
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         action = str(request.get("action") or "").strip().lower()
+        if action == "attest_fixed_rig_stationary":
+            payload = request.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            if payload.get("fixed_rig_confirmed") is not True:
+                raise ValueError(
+                    "fixed_rig_confirmed=true is required for stationary "
+                    "VIO attestation"
+                )
+            duration_s = float(payload.get("duration_s") or 0.0)
+            if not 1.0 <= duration_s <= 120.0:
+                raise ValueError(
+                    "fixed-rig stationary attestation duration_s must be "
+                    "between 1 and 120"
+                )
+            related_skill_id = str(
+                request.get("related_skill_id") or ""
+            ) or None
+            with self.lock:
+                self.fixed_rig_attestation_until_monotonic = (
+                    time.monotonic() + duration_s
+                )
+                self.fixed_rig_attestation_skill_id = related_skill_id
+            return {
+                "status": "fixed_rig_stationary_attested",
+                "duration_s": duration_s,
+                "session_epoch": self.session_epoch,
+                "world_frame": self.world_frame,
+                "related_skill_id": related_skill_id,
+                "epoch_reset": False,
+            }
         if action in {"reset", "initialize", "force_reset"}:
             with self.iteration_lock:
                 with self.lock:
@@ -177,6 +251,9 @@ class LocalVioProvider:
     def _reset_session(self, reason: str) -> None:
         self.session_epoch = str(uuid.uuid4())
         self.world_frame = f"local_vio/{self.session_epoch}"
+        self.camera_level_frame = (
+            f"camera_level/femto_bolt_color/{self.session_epoch}"
+        )
         # Sequence is scoped to provider instance + boot ID and must never move
         # backward. Resetting it caused Fabric to reject every post-reset update.
         self.last_rgb_frame = -1
@@ -187,6 +264,8 @@ class LocalVioProvider:
         self.last_static_transform_epoch = None
         self.last_inertial_prediction_us = -1
         self.last_inertial_publish_monotonic = 0.0
+        self.fixed_rig_attestation_until_monotonic = 0.0
+        self.fixed_rig_attestation_skill_id = None
         self._close_reader()
         self.backend.reset()
         self.ready = False
@@ -235,6 +314,13 @@ class LocalVioProvider:
             time.sleep(self.args.poll_interval)
             return
 
+        calibration_data = calibration_observation.get("data") or {}
+        bundle = bundle_observation.get("data") or {}
+        require_camera_coordinate_conventions(
+            calibration_data,
+            bundle,
+            ir_enabled=bool(getattr(self.args, "ir_enabled", True)),
+        )
         self._configure_calibration(calibration_observation)
         self._configure_accelerometer(accel_calibration_observation)
         self.motion_inhibited = bool(
@@ -242,7 +328,6 @@ class LocalVioProvider:
             and (motion_observation.get("data") or {}).get("inhibited", False)
         )
 
-        bundle = bundle_observation.get("data") or {}
         rgb_reference = bundle.get("rgb")
         aligned_reference = bundle.get("depth_aligned_to_rgb")
         if not isinstance(rgb_reference, dict) or not isinstance(aligned_reference, dict):
@@ -521,6 +606,10 @@ class LocalVioProvider:
             STREAM_GYRO,
             after_frame_number=self.last_gyro_frame,
         )
+        fixed_rig_attested = self._fixed_rig_attestation_active()
+        stationary_initialization_gate = (
+            self.motion_inhibited or fixed_rig_attested
+        )
         for sample in accel_samples:
             if self.last_accel_frame >= 0 and sample.frame_number > self.last_accel_frame + 1:
                 self.imu_gap_count += sample.frame_number - self.last_accel_frame - 1
@@ -528,7 +617,7 @@ class LocalVioProvider:
             self.backend.add_accelerometer(
                 self._sample_timestamp(sample),
                 corrected,
-                motion_inhibited=self.motion_inhibited,
+                motion_inhibited=stationary_initialization_gate,
             )
             self.last_accel_frame = max(self.last_accel_frame, sample.frame_number)
         for sample in gyro_samples:
@@ -539,6 +628,12 @@ class LocalVioProvider:
                 np.array([sample.x, sample.y, sample.z], dtype=np.float64),
             )
             self.last_gyro_frame = max(self.last_gyro_frame, sample.frame_number)
+
+    def _fixed_rig_attestation_active(self) -> bool:
+        return (
+            time.monotonic()
+            < self.fixed_rig_attestation_until_monotonic
+        )
 
     def _publish_result(self, result: PoseResult) -> None:
         observations: list[dict[str, Any]] = []
@@ -579,6 +674,16 @@ class LocalVioProvider:
         )
         world_from_body = adjustment @ raw_world_from_body
         world_from_camera = adjustment @ result.world_from_camera
+        try:
+            world_from_camera_level = (
+                gravity_leveled_world_from_camera_level(world_from_camera)
+            )
+            camera_level_valid = True
+            camera_level_reason = None
+        except ValueError as error:
+            world_from_camera_level = None
+            camera_level_valid = False
+            camera_level_reason = str(error)
         position = world_from_body[:3, 3]
         orientation = matrix_to_quaternion_xyzw(world_from_body[:3, :3])
 
@@ -605,7 +710,14 @@ class LocalVioProvider:
                 "world_frame": self.world_frame,
                 "body_frame": BODY_FRAME,
                 "camera_frame": COLOR_FRAME,
+                "camera_level_frame": self.camera_level_frame,
                 "session_epoch": self.session_epoch,
+                "convention_id": WORLD_CONVENTION_ID,
+                "camera_optical_convention_id": (
+                    CAMERA_OPTICAL_CONVENTION_ID
+                ),
+                "camera_level_valid": camera_level_valid,
+                "camera_level_invalid_reason": camera_level_reason,
                 "position_m": position.tolist(),
                 "orientation_xyzw": orientation.tolist(),
                 "linear_velocity_world_mps": result.velocity_world_mps.tolist(),
@@ -641,8 +753,8 @@ class LocalVioProvider:
                 "imu_state_timestamp_us": result.imu_state_timestamp_us,
                 "filter_position_std_m": list(result.filter_position_std_m),
                 "filter_rotation_std_rad": list(result.filter_rotation_std_rad),
-                "world_up_axis": [0.0, 1.0, 0.0],
-                "world_down_axis": [0.0, -1.0, 0.0],
+                "world_up_axis": [0.0, 0.0, 1.0],
+                "world_down_axis": [0.0, 0.0, -1.0],
                 "gravity_stabilization": {
                     "correction_applied": result.gravity_correction_applied,
                     "tilt_error_rad": result.gravity_tilt_error_rad,
@@ -720,6 +832,57 @@ class LocalVioProvider:
                     ),
                 ]
             )
+            if world_from_camera_level is not None:
+                observations.append(
+                    self._observation(
+                        stream="transform.local_vio.camera_level",
+                        schema="physical_agent.transform",
+                        sequence=self.sequence,
+                        observed_at_us=result.timestamp_us,
+                        coordinate_frame=self.world_frame,
+                        calibration_revision=(
+                            self.camera_calibration_revision
+                        ),
+                        data={
+                            "parent_frame": self.world_frame,
+                            "child_frame": self.camera_level_frame,
+                            "translation_m": (
+                                world_from_camera_level[:3, 3].tolist()
+                            ),
+                            "rotation_xyzw": (
+                                matrix_to_quaternion_xyzw(
+                                    world_from_camera_level[:3, :3]
+                                ).tolist()
+                            ),
+                            "is_static": False,
+                            "authority": (
+                                f"{self.provider_id}:{self.instance_id}"
+                            ),
+                            "session_epoch": self.session_epoch,
+                            "convention_id": WORLD_CONVENTION_ID,
+                            "source_frame": COLOR_FRAME,
+                            "source_convention_id": (
+                                CAMERA_OPTICAL_CONVENTION_ID
+                            ),
+                            "axis_semantics": {
+                                "positive_x": (
+                                    "optical forward projected onto the "
+                                    "gravity-horizontal plane"
+                                ),
+                                "positive_y": "camera-relative left",
+                                "positive_z": "opposite gravity",
+                            },
+                            "covariance_6x6": (
+                                self._result_covariance(result)
+                            ),
+                            "continuity": (
+                                "CONTINUOUS_GRAVITY_LEVELED_WITHIN_EPOCH"
+                            ),
+                            "tracking_state": result.tracking_state,
+                        },
+                        freshness_ms=500,
+                    )
+                )
 
         response = self.http.post(
             f"{self.args.fabric_url}/v1/observations/batch",
@@ -787,10 +950,28 @@ class LocalVioProvider:
             "world_frame": self.world_frame,
             "body_frame": BODY_FRAME,
             "camera_frame": COLOR_FRAME,
+            "camera_level_frame": self.camera_level_frame,
+            "convention_id": WORLD_CONVENTION_ID,
+            "camera_optical_convention_id": (
+                CAMERA_OPTICAL_CONVENTION_ID
+            ),
             "backend": self.args.backend,
             "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
             "production_backend_target": "openvins_or_basalt_native_adapter",
             "motion_inhibited": self.motion_inhibited,
+            "fixed_rig_stationary_attested": (
+                self._fixed_rig_attestation_active()
+            ),
+            "fixed_rig_attestation_skill_id": (
+                self.fixed_rig_attestation_skill_id
+            ),
+            "stationary_initialization_gate": (
+                "GLOBAL_MOTION_INHIBIT"
+                if self.motion_inhibited
+                else "FIXED_RIG_OPERATOR_ATTESTATION"
+                if self._fixed_rig_attestation_active()
+                else "NONE"
+            ),
             "gravity_sample_count": result.gravity_sample_count,
             "gravity_samples_required": self.args.gravity_samples,
             "gravity_std_mps2": result.gravity_std_mps2,
@@ -822,8 +1003,8 @@ class LocalVioProvider:
             "estimated_accelerometer_bias_mps2": list(result.estimated_accel_bias_mps2),
             "filter_position_std_m": list(result.filter_position_std_m),
             "filter_rotation_std_rad": list(result.filter_rotation_std_rad),
-            "world_up_axis": [0.0, 1.0, 0.0],
-            "world_down_axis": [0.0, -1.0, 0.0],
+            "world_up_axis": [0.0, 0.0, 1.0],
+            "world_down_axis": [0.0, 0.0, -1.0],
             "visual_inlier_count": result.inlier_count,
             "visual_match_count": result.match_count,
             "feature_preprocess_mode": result.feature_preprocess_mode,
@@ -1057,11 +1238,17 @@ class LocalVioProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.2.2",
+                "provider_version": "0.4.0",
                 "backend": self.args.backend,
                 "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
-                "world_up_axis": [0.0, 1.0, 0.0],
-                "world_down_axis": [0.0, -1.0, 0.0],
+                "world_frame": self.world_frame,
+                "camera_level_frame": self.camera_level_frame,
+                "convention_id": WORLD_CONVENTION_ID,
+                "camera_optical_convention_id": (
+                    CAMERA_OPTICAL_CONVENTION_ID
+                ),
+                "world_up_axis": [0.0, 0.0, 1.0],
+                "world_down_axis": [0.0, 0.0, -1.0],
                 "gravity_stabilization": {
                     "correction_applied": self.backend.last_gravity_correction_applied,
                     "tilt_error_rad": self.backend.last_gravity_tilt_error_rad,

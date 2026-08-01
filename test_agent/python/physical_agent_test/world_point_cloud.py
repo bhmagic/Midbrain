@@ -15,12 +15,27 @@ from .fabric_client import FabricClient
 from orbbec_femto_provider.shared_memory_access import CameraSharedMemory
 
 COLOR_FRAME = "femto_bolt_color_optical_frame"
+WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
+CALIBRATION_ACTIVATION_STREAM = "manager.workcell_calibration.activation"
+LIVE_VIO_CAMERA_AUTHORITY = "LIVE_VIO_CAMERA_POSE"
+REVIEWED_STATIONARY_CAMERA_AUTHORITY = "REVIEWED_STATIONARY_CAMERA"
+UNRESOLVED_TRANSFORM_AUTHORITY = "UNRESOLVED"
 
 
 @dataclass
 class PointChunk:
     created_monotonic: float
     points_xyzrgb: np.ndarray
+
+
+@dataclass(frozen=True)
+class ReviewedStationaryCameraTransform:
+    vio_from_camera: np.ndarray
+    calibration_revision: str
+    activation_id: str
 
 
 class WorldPointCloudAccumulator:
@@ -59,6 +74,9 @@ class WorldPointCloudAccumulator:
         self.capture_reason = "point-cloud task has not started"
         self.last_vio_tracking_state: str | None = None
         self.last_vio_message: str | None = None
+        self.transform_authority = UNRESOLVED_TRANSFORM_AUTHORITY
+        self.calibration_revision: str | None = None
+        self.calibration_activation_id: str | None = None
 
     async def start(self) -> None:
         if self.task is not None and self.task.done():
@@ -103,6 +121,9 @@ class WorldPointCloudAccumulator:
                 self.last_error = None
                 self.last_transient_error = None
                 self.last_success_monotonic = None
+                self.transform_authority = UNRESOLVED_TRANSFORM_AUTHORITY
+                self.calibration_revision = None
+                self.calibration_activation_id = None
             self.suspended = False
             self.capture_state = "WAITING_FOR_NEW_SESSION_FRAME"
             self.capture_reason = "new VIO epoch accepted; waiting for the first tracked RGB-D frame"
@@ -112,9 +133,14 @@ class WorldPointCloudAccumulator:
         async with self.capture_lock:
             self._close_reader()
             async with self.lock:
+                self.chunks.clear()
                 self.last_frame_number = -1
                 self.session_epoch = None
                 self.world_frame = None
+                self.last_success_monotonic = None
+                self.transform_authority = UNRESOLVED_TRANSFORM_AUTHORITY
+                self.calibration_revision = None
+                self.calibration_activation_id = None
             self.suspended = False
             self.capture_state = "FOLLOWING_LATEST_SESSION"
             self.capture_reason = "reset failed; following the latest published VIO session"
@@ -152,6 +178,9 @@ class WorldPointCloudAccumulator:
                 "task_running": self.task is not None and not self.task.done(),
                 "last_vio_tracking_state": self.last_vio_tracking_state,
                 "last_vio_message": self.last_vio_message,
+                "transform_authority": self.transform_authority,
+                "calibration_revision": self.calibration_revision,
+                "calibration_activation_id": self.calibration_activation_id,
                 "dropped_buffer_frames": self.dropped_buffer_frames,
                 "last_transient_error": self.last_transient_error,
                 "seconds_since_last_chunk": seconds_since_last_chunk,
@@ -212,11 +241,13 @@ class WorldPointCloudAccumulator:
                 calibration_observation,
                 pose_observation,
                 vio_observation,
+                activation_observation,
             ) = await asyncio.gather(
                 self.fabric.latest_optional("camera.rgbd.bundle"),
                 self.fabric.latest_optional("camera.calibration"),
                 self.fabric.latest_optional("localization.body.pose"),
                 self.fabric.latest_optional("localization.vio.status"),
+                self.fabric.latest_optional(CALIBRATION_ACTIVATION_STREAM),
             )
             if not bundle_observation or not calibration_observation or not pose_observation:
                 self.capture_state = "WAITING_FOR_INPUTS"
@@ -244,6 +275,12 @@ class WorldPointCloudAccumulator:
                     + (self.last_vio_message or "waiting for visual tracking in the active epoch")
                 )
                 return
+            if vio_data.get("convention_id") != WORLD_CONVENTION_ID:
+                self.capture_state = "PAUSED_SPATIAL_CONVENTION_MISMATCH"
+                self.capture_reason = (
+                    "VIO epoch is not MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                )
+                return
             if self.session_epoch != str(session_epoch):
                 self._close_reader()
                 async with self.lock:
@@ -255,7 +292,40 @@ class WorldPointCloudAccumulator:
             else:
                 self.world_frame = str(world_frame)
 
+            reviewed_camera_transform = _reviewed_stationary_camera_transform(
+                activation_observation,
+                session_epoch=str(session_epoch),
+                vio_world_frame=str(world_frame),
+            )
+            if reviewed_camera_transform is None:
+                await self._set_transform_authority(
+                    LIVE_VIO_CAMERA_AUTHORITY,
+                    calibration_revision=None,
+                    activation_id=None,
+                )
+            else:
+                await self._set_transform_authority(
+                    REVIEWED_STATIONARY_CAMERA_AUTHORITY,
+                    calibration_revision=reviewed_camera_transform.calibration_revision,
+                    activation_id=reviewed_camera_transform.activation_id,
+                )
+
             bundle = bundle_observation.get("data") or {}
+            bundle_conventions = bundle.get("coordinate_conventions") or {}
+            if (
+                bundle_conventions.get("rgb")
+                != CAMERA_OPTICAL_CONVENTION_ID
+                or bundle_conventions.get("aligned_depth")
+                != CAMERA_OPTICAL_CONVENTION_ID
+            ):
+                self.capture_state = (
+                    "PAUSED_CAMERA_CONVENTION_UNDECLARED"
+                )
+                self.capture_reason = (
+                    "RGB-D bundle does not explicitly declare native camera "
+                    "optical X-right/Y-down/Z-forward coordinates"
+                )
+                return
             rgb_reference = bundle.get("rgb")
             depth_reference = bundle.get("depth_aligned_to_rgb")
             if not isinstance(rgb_reference, dict) or not isinstance(depth_reference, dict):
@@ -274,13 +344,16 @@ class WorldPointCloudAccumulator:
             calibration = calibration_observation.get("data") or {}
             intrinsics = calibration.get("rgb_intrinsic") or {}
             timestamp_us = self._reference_timestamp(rgb_reference)
-            transform = await self.fabric.transform(
-                from_frame=COLOR_FRAME,
-                to_frame=str(world_frame),
-                at_us=timestamp_us,
-                max_extrapolation_us=750_000,
-                session_epoch=str(session_epoch),
-            )
+            if reviewed_camera_transform is None:
+                transform: dict[str, Any] | np.ndarray = await self.fabric.transform(
+                    from_frame=COLOR_FRAME,
+                    to_frame=str(world_frame),
+                    at_us=timestamp_us,
+                    max_extrapolation_us=750_000,
+                    session_epoch=str(session_epoch),
+                )
+            else:
+                transform = reviewed_camera_transform.vio_from_camera
             points = self._make_world_points(rgb, depth_m, intrinsics, transform)
             self.last_frame_number = frame_number
             if points.size == 0:
@@ -290,16 +363,49 @@ class WorldPointCloudAccumulator:
                 self.chunks.append(PointChunk(now, points))
                 self.last_success_monotonic = now
                 self.capture_state = "CAPTURING"
-                self.capture_reason = "visual tracking and world transform are valid"
+                if (
+                    self.transform_authority
+                    == REVIEWED_STATIONARY_CAMERA_AUTHORITY
+                ):
+                    self.capture_reason = (
+                        "using the exact Manager-reviewed stationary camera reference"
+                    )
+                else:
+                    self.capture_reason = (
+                        "using the timestamped live VIO camera pose"
+                    )
                 self._purge_locked(now)
                 self._enforce_limit_locked()
+
+    async def _set_transform_authority(
+        self,
+        authority: str,
+        *,
+        calibration_revision: str | None,
+        activation_id: str | None,
+    ) -> None:
+        current_key = (
+            self.transform_authority,
+            self.calibration_revision,
+            self.calibration_activation_id,
+        )
+        next_key = (authority, calibration_revision, activation_id)
+        if current_key == next_key:
+            return
+        async with self.lock:
+            self.chunks.clear()
+            self.last_frame_number = -1
+            self.last_success_monotonic = None
+            self.transform_authority = authority
+            self.calibration_revision = calibration_revision
+            self.calibration_activation_id = activation_id
 
     def _make_world_points(
         self,
         rgb: np.ndarray,
         depth_m: np.ndarray,
         intrinsics: dict[str, Any],
-        transform: dict[str, Any],
+        transform: dict[str, Any] | np.ndarray,
     ) -> np.ndarray:
         fx = float(intrinsics.get("fx", 0.0))
         fy = float(intrinsics.get("fy", 0.0))
@@ -319,7 +425,7 @@ class WorldPointCloudAccumulator:
         u = grid_x[valid].astype(np.float64)
         v = grid_y[valid].astype(np.float64)
         z_valid = z[valid].astype(np.float64)
-        camera_points = np.column_stack(
+        camera_system_points = np.column_stack(
             (
                 (u - cx) * z_valid / fx,
                 (v - cy) * z_valid / fy,
@@ -327,11 +433,19 @@ class WorldPointCloudAccumulator:
                 np.ones_like(z_valid),
             )
         )
-        rotation = quaternion_xyzw_to_matrix(transform["rotation_xyzw"])
-        world_from_camera = np.eye(4, dtype=np.float64)
-        world_from_camera[:3, :3] = rotation
-        world_from_camera[:3, 3] = np.asarray(transform["translation_m"], dtype=np.float64)
-        world_points = (world_from_camera @ camera_points.T).T[:, :3]
+        if isinstance(transform, np.ndarray):
+            world_from_camera = _validated_transform_matrix(
+                transform,
+                "camera projection transform",
+            )
+        else:
+            world_from_camera = _matrix_from_transform(
+                transform,
+                "camera projection transform",
+            )
+        world_points = (
+            world_from_camera @ camera_system_points.T
+        ).T[:, :3]
         colors = rgb[grid_y[valid], grid_x[valid]].astype(np.float32) / 255.0
         return np.concatenate((world_points.astype(np.float32), colors), axis=1)
 
@@ -433,4 +547,116 @@ def quaternion_xyzw_to_matrix(value: Any) -> np.ndarray:
             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
         ],
         dtype=np.float64,
+    )
+
+
+def _matrix_from_transform(value: Any, label: str) -> np.ndarray:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    try:
+        translation = np.asarray(value["translation_m"], dtype=np.float64)
+        quaternion = np.asarray(value["rotation_xyzw"], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"{label} is not a valid rigid transform") from error
+    if translation.shape != (3,) or not np.all(np.isfinite(translation)):
+        raise ValueError(f"{label}.translation_m must contain three finite values")
+    if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
+        raise ValueError(f"{label}.rotation_xyzw must contain four finite values")
+    quaternion_norm = float(np.linalg.norm(quaternion))
+    if quaternion_norm <= 1e-9:
+        raise ValueError(f"{label}.rotation_xyzw must be non-zero")
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = quaternion_xyzw_to_matrix(quaternion)
+    matrix[:3, 3] = translation
+    return matrix
+
+
+def _validated_transform_matrix(value: Any, label: str) -> np.ndarray:
+    matrix = np.asarray(value, dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"{label} must be a finite 4x4 matrix")
+    if not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9):
+        raise ValueError(f"{label} must have a rigid homogeneous final row")
+    rotation = matrix[:3, :3]
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6):
+        raise ValueError(f"{label} rotation must be orthonormal")
+    if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6):
+        raise ValueError(f"{label} rotation must be right-handed")
+    return matrix
+
+
+def _reviewed_stationary_camera_transform(
+    observation: Any,
+    *,
+    session_epoch: str,
+    vio_world_frame: str,
+    now_us: int | None = None,
+) -> ReviewedStationaryCameraTransform | None:
+    if not isinstance(observation, dict):
+        return None
+    if observation.get("valid") is not True:
+        return None
+    if observation.get("stream") != CALIBRATION_ACTIVATION_STREAM:
+        return None
+    if observation.get("schema") != "physical_agent.workcell_calibration_activation":
+        return None
+    if observation.get("provider_id") != "manager.workcell_calibration":
+        return None
+    data = observation.get("data")
+    if not isinstance(data, dict):
+        return None
+    if data.get("state") != "ACTIVE" or data.get("motion_usable") is not True:
+        return None
+    if str(data.get("session_epoch") or "") != session_epoch:
+        return None
+    if str(data.get("vio_world_frame") or "") != vio_world_frame:
+        return None
+    if data.get("camera_frame") != COLOR_FRAME:
+        return None
+    if data.get("convention_id") != WORLD_CONVENTION_ID:
+        return None
+    if data.get("camera_optical_convention_id") != CAMERA_OPTICAL_CONVENTION_ID:
+        return None
+    expiry = data.get("expires_at_us")
+    if isinstance(expiry, bool) or not isinstance(expiry, int):
+        return None
+    current_time_us = time.time_ns() // 1_000 if now_us is None else int(now_us)
+    if expiry <= current_time_us:
+        return None
+    calibration_revision = str(data.get("calibration_revision") or "")
+    activation_id = str(data.get("activation_id") or "")
+    if not calibration_revision or not activation_id:
+        return None
+    if str(observation.get("calibration_revision") or "") != calibration_revision:
+        return None
+    observation_expiry = observation.get("expires_at_us")
+    if (
+        isinstance(observation_expiry, bool)
+        or not isinstance(observation_expiry, int)
+        or observation_expiry <= current_time_us
+    ):
+        return None
+    transforms = data.get("transforms")
+    if not isinstance(transforms, dict):
+        return None
+    try:
+        world_from_camera = _matrix_from_transform(
+            transforms.get("world_from_camera"),
+            "activation.transforms.world_from_camera",
+        )
+        world_from_vio = _matrix_from_transform(
+            transforms.get("world_from_vio"),
+            "activation.transforms.world_from_vio",
+        )
+        vio_from_camera = np.linalg.inv(world_from_vio) @ world_from_camera
+        vio_from_camera = _validated_transform_matrix(
+            vio_from_camera,
+            "reviewed VIO-from-camera transform",
+        )
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    return ReviewedStationaryCameraTransform(
+        vio_from_camera=vio_from_camera,
+        calibration_revision=calibration_revision,
+        activation_id=activation_id,
     )

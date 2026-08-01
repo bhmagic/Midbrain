@@ -10,6 +10,7 @@ from stationary_world_arm_alignment.camera import (
     RgbdCapture,
     RgbdFrame,
     make_initial_mask,
+    segmented_surface_depth,
     tip_depth_from_near_cluster,
 )
 
@@ -39,6 +40,31 @@ def test_mask_falls_back_to_box_when_color_segmentation_is_too_small() -> None:
         minimum_pixels=200,
     )
     assert np.count_nonzero(mask) >= 100
+
+
+def test_segmented_surface_depth_uses_nearest_coherent_cluster() -> None:
+    depth = np.full((20, 20), 2.0, np.float32)
+    depth[5:15, 5:15] = 1.1
+    depth[8:12, 8:12] = 0.8
+    mask = np.zeros((20, 20), np.uint8)
+    mask[5:15, 5:15] = 255
+    evidence = segmented_surface_depth(
+        frame(depth),
+        mask,
+        {
+            "minimum_depth_m": 0.15,
+            "maximum_depth_m": 5.0,
+            "minimum_cluster_pixels": 6,
+            "maximum_near_cluster_span_m": 0.05,
+        },
+    )
+
+    assert np.isclose(evidence["depth_m"], 0.8)
+    assert evidence["cluster_pixel_count"] == 16
+    assert np.allclose(
+        evidence["camera_system_xyz_m"],
+        [-0.004, -0.004, 0.8],
+    )
 
 
 def test_local_cluster_selects_near_beak() -> None:
@@ -115,7 +141,12 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
                             "fy": 100.0,
                             "cx": 0.0,
                             "cy": 0.0,
-                        }
+                        },
+                        "coordinate_conventions": {
+                            "color": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            )
+                        },
                     }
                 }
             if stream == "localization.body.pose":
@@ -123,10 +154,20 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
                     "data": {
                         "session_epoch": "epoch",
                         "world_frame": "vio",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
                     }
                 }
             if stream == "localization.vio.status":
-                return {"data": {"session_epoch": "epoch"}}
+                return {
+                    "data": {
+                        "session_epoch": "epoch",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
+                    }
+                }
             if stream == "camera.rgbd.data_routes":
                 return None
             if stream == "camera.rgbd.bundle":
@@ -142,6 +183,14 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
                 }
                 return {
                     "data": {
+                        "coordinate_conventions": {
+                            "rgb": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                            "aligned_depth": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                        },
                         "rgb": {**common, "format_name": "RGB"},
                         "depth_aligned_to_rgb": {
                             **common,
@@ -195,13 +244,44 @@ def test_capture_does_not_mislabel_decode_errors_as_buffer_expiry(
     class FakeFabric:
         async def latest_optional(self, stream: str) -> dict:
             if stream == "camera.calibration":
-                return {"data": {"rgb_intrinsic": {"fx": 1.0}}}
+                return {
+                    "data": {
+                        "rgb_intrinsic": {"fx": 1.0},
+                        "coordinate_conventions": {
+                            "color": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            )
+                        },
+                    }
+                }
             if stream == "localization.body.pose":
-                return {"data": {"session_epoch": "epoch", "world_frame": "vio"}}
+                return {
+                    "data": {
+                        "session_epoch": "epoch",
+                        "world_frame": "vio",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
+                    }
+                }
             if stream == "localization.vio.status":
-                return {"data": {}}
+                return {
+                    "data": {
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        )
+                    }
+                }
             return {
                 "data": {
+                    "coordinate_conventions": {
+                        "rgb": (
+                            "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                        ),
+                        "aligned_depth": (
+                            "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                        ),
+                    },
                     "rgb": {
                         "mapping_name": "camera-test",
                         "generation": 1,

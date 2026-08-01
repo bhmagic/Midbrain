@@ -416,10 +416,15 @@ struct WorkcellCalibrationActivationRecord {
     vio_world_frame: String,
     camera_frame: String,
     arm_base_frame: String,
+    convention_id: String,
+    camera_optical_convention_id: String,
     camera_provider_id: String,
     camera_provider_instance_id: String,
     camera_boot_id: String,
     camera_calibration_revision: String,
+    vio_provider_id: String,
+    vio_provider_instance_id: String,
+    vio_boot_id: String,
     transforms: Value,
     reviewer: Value,
     last_transition_reason: String,
@@ -732,40 +737,13 @@ async fn activate_workcell_calibration(
             }
             return Ok((StatusCode::OK, Json(existing.clone())));
         }
-        if records
-            .values()
-            .any(|record| record.state == "ACTIVE" && record.expires_at > Utc::now())
-        {
-            return Err(api_error(
-                StatusCode::CONFLICT,
-                "an active workcell calibration must be revoked or expire before another is activated",
-            ));
-        }
     }
 
-    let (camera_observation, vio_observation) = tokio::join!(
-        fetch_fabric_latest(&state, "camera.calibration"),
-        fetch_fabric_latest(&state, "localization.vio.status"),
-    );
-    let camera_observation = camera_observation.map_err(|error| {
-        api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("current camera calibration is unavailable: {error}"),
-        )
-    })?;
-    let vio_observation = vio_observation.map_err(|error| {
-        api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("current VIO status is unavailable: {error}"),
-        )
-    })?;
     let reports = state.reports.lock().await.clone();
     let record = build_workcell_activation_record(
         &request,
         request_sha256,
         &reports,
-        &camera_observation,
-        &vio_observation,
         &state.review_auth_secret,
         Utc::now(),
     )
@@ -778,12 +756,33 @@ async fn activate_workcell_calibration(
                 format!("workcell calibration was not activated because Fabric publication failed: {error}"),
             )
         })?;
-    state
-        .workcell_calibrations
-        .lock()
-        .await
-        .insert(record.activation_id.clone(), record.clone());
+    let mut records = state.workcell_calibrations.lock().await;
+    supersede_active_workcell_calibrations(&mut records, &record, Utc::now());
+    records.insert(record.activation_id.clone(), record.clone());
     Ok((StatusCode::CREATED, Json(record)))
+}
+
+fn supersede_active_workcell_calibrations(
+    records: &mut HashMap<String, WorkcellCalibrationActivationRecord>,
+    replacement: &WorkcellCalibrationActivationRecord,
+    now: DateTime<Utc>,
+) {
+    for record in records.values_mut() {
+        if record.state != "ACTIVE" {
+            continue;
+        }
+        record.motion_usable = false;
+        if record.expires_at <= now {
+            record.state = "EXPIRED".to_string();
+            record.last_transition_reason = "activation lifetime expired".to_string();
+        } else {
+            record.state = "SUPERSEDED".to_string();
+            record.last_transition_reason = format!(
+                "superseded by newer reviewed activation {}",
+                replacement.activation_id
+            );
+        }
+    }
 }
 
 async fn revoke_workcell_calibration(
@@ -839,8 +838,6 @@ fn build_workcell_activation_record(
     request: &WorkcellCalibrationActivationRequest,
     request_sha256: String,
     reports: &HashMap<String, ProviderReport>,
-    camera_observation: &Value,
-    vio_observation: &Value,
     review_auth_secret: &[u8],
     now: DateTime<Utc>,
 ) -> Result<WorkcellCalibrationActivationRecord> {
@@ -857,12 +854,12 @@ fn build_workcell_activation_record(
     require_json_string(&request.candidate, "schema", "candidate")?;
     if request.candidate["schema"]
         != "midbrain.skill.stationary_world_arm_alignment.calibration_candidate"
-        || request.candidate["schema_version"] != 2
+        || request.candidate["schema_version"] != 3
         || request.candidate["review_state"] != "CANDIDATE_REVIEW_REQUIRED"
         || request.candidate["motion_usable"] != false
     {
         return Err(anyhow!(
-            "candidate must be an immutable version-2 review-required, non-motion-usable calibration"
+            "candidate must be an immutable version-3 review-required, non-motion-usable calibration"
         ));
     }
     let candidate_id = require_json_string(&request.candidate, "candidate_id", "candidate")?;
@@ -883,18 +880,116 @@ fn build_workcell_activation_record(
     if candidate_expires_at_us <= now_us {
         return Err(anyhow!("calibration candidate has expired"));
     }
-    let confidence = request.candidate["confidence"]
+    let semantic_alignment = &request.candidate["quality_provenance"]["semantic_alignment"];
+    let semantic_status = semantic_alignment["status"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate semantic alignment status is required"))?;
+    let base_x_relation_to_gripper = semantic_alignment["base_x_relation_to_gripper"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate base-X relation to the gripper is required"))?;
+    let selected_base_yaw_flip_deg = semantic_alignment["selected_base_yaw_flip_deg"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("candidate selected base-yaw flip is required"))?;
+    let fitted_base_yaw_deg = semantic_alignment["fitted_base_yaw_deg"]
         .as_f64()
-        .ok_or_else(|| anyhow!("candidate confidence is required for activation"))?;
-    let translation_error = request.candidate["bounded_error_estimate"]["translation_m"]
+        .ok_or_else(|| anyhow!("candidate fitted base yaw is required"))?;
+    let yaw_correction_translation_norm_m = semantic_alignment["yaw_correction_translation_norm_m"]
         .as_f64()
-        .ok_or_else(|| anyhow!("candidate translation error bound is required"))?;
-    let rotation_error = request.candidate["bounded_error_estimate"]["rotation_rad"]
+        .ok_or_else(|| anyhow!("candidate yaw-correction translation norm is required"))?;
+    let world_up_available = semantic_alignment["world_up_available"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("candidate world-up availability is required"))?;
+    let raw_base_z_dot_world_up = semantic_alignment["raw_base_z_dot_world_up"]
         .as_f64()
-        .ok_or_else(|| anyhow!("candidate rotation error bound is required"))?;
-    if confidence < 0.70 || translation_error > 0.01 || rotation_error > 0.05 {
+        .ok_or_else(|| anyhow!("candidate raw base-Z/world-up dot is required"))?;
+    let corrected_base_z_dot_world_up = semantic_alignment["corrected_base_z_dot_world_up"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate corrected base-Z/world-up dot is required"))?;
+    let upright_hemisphere_flip_required = semantic_alignment["upright_hemisphere_flip_required"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("candidate upright-hemisphere decision is required"))?;
+    let selected_orientation_correction_axis = semantic_alignment
+        ["selected_orientation_correction_axis"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate orientation-correction axis is required"))?;
+    let selected_orientation_correction_deg = semantic_alignment
+        ["selected_orientation_correction_deg"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("candidate orientation-correction angle is required"))?;
+    let orientation_correction_count = semantic_alignment["orientation_correction_count"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("candidate orientation-correction count is required"))?;
+    let orientation_correction_translation_norm_m = semantic_alignment
+        ["orientation_correction_translation_norm_m"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate orientation-correction translation is required"))?;
+    let orientation_application_origin = semantic_alignment["orientation_application_origin"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate orientation-application origin is required"))?;
+    let orientation_application_order = semantic_alignment["orientation_application_order"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate orientation-application order is required"))?;
+    let mesh_hypothesis_correction_translation_norm_m = semantic_alignment
+        ["mesh_hypothesis_correction_translation_norm_m"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate mesh-hypothesis translation norm is required"))?;
+    let mesh_center_translation_preserved = semantic_alignment["mesh_center_translation_preserved"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("candidate mesh-center preservation result is required"))?;
+    let semantic_root_translation_adjustment_norm_m = semantic_alignment
+        ["semantic_root_translation_adjustment_norm_m"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate semantic-root adjustment norm is required"))?;
+    let expected_yaw_flip_deg = match base_x_relation_to_gripper {
+        "TOWARD_GRIPPER" | "UNCLEAR" => Some(0),
+        "AWAY_FROM_GRIPPER" => Some(180),
+        _ => None,
+    };
+    let expected_upright_flip = raw_base_z_dot_world_up < 0.0;
+    let expected_x_flip = base_x_relation_to_gripper == "AWAY_FROM_GRIPPER";
+    let expected_orientation_axis = match (expected_upright_flip, expected_x_flip) {
+        (false, false) => "NONE",
+        (false, true) => "Z",
+        (true, false) => "X",
+        (true, true) => "Y",
+    };
+    let expected_orientation_count = if expected_orientation_axis == "NONE" {
+        0
+    } else {
+        1
+    };
+    let expected_orientation_deg = if expected_orientation_count == 0 {
+        0
+    } else {
+        180
+    };
+    if !matches!(semantic_status, "PASSED" | "PASSED_WITH_WARNINGS")
+        || expected_yaw_flip_deg != Some(selected_base_yaw_flip_deg)
+        || (fitted_base_yaw_deg - selected_base_yaw_flip_deg as f64).abs() > 1e-9
+        || !fitted_base_yaw_deg.is_finite()
+        || yaw_correction_translation_norm_m.abs() > 1e-9
+        || !yaw_correction_translation_norm_m.is_finite()
+        || !world_up_available
+        || !raw_base_z_dot_world_up.is_finite()
+        || !corrected_base_z_dot_world_up.is_finite()
+        || corrected_base_z_dot_world_up < -1e-9
+        || upright_hemisphere_flip_required != expected_upright_flip
+        || selected_orientation_correction_axis != expected_orientation_axis
+        || selected_orientation_correction_deg != expected_orientation_deg
+        || orientation_correction_count != expected_orientation_count
+        || !orientation_correction_translation_norm_m.is_finite()
+        || orientation_correction_translation_norm_m.abs() > 1e-9
+        || orientation_application_origin != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
+        || orientation_application_order
+            != "parent_from_mesh @ mesh_hypothesis_correction @ mesh_from_semantic"
+        || !mesh_hypothesis_correction_translation_norm_m.is_finite()
+        || mesh_hypothesis_correction_translation_norm_m.abs() > 1e-9
+        || !mesh_center_translation_preserved
+        || !semantic_root_translation_adjustment_norm_m.is_finite()
+        || semantic_root_translation_adjustment_norm_m < 0.0
+    {
         return Err(anyhow!(
-            "candidate does not satisfy activation quality limits"
+            "candidate does not satisfy exact base-yaw review invariants or single base-orientation invariants"
         ));
     }
 
@@ -910,22 +1005,33 @@ fn build_workcell_activation_record(
         require_json_string(frame_contract, "camera_frame", "candidate.frame_contract")?;
     let arm_base_frame =
         require_json_string(frame_contract, "arm_base_frame", "candidate.frame_contract")?;
+    let convention_id =
+        require_json_string(frame_contract, "convention_id", "candidate.frame_contract")?;
+    let camera_optical_convention_id = require_json_string(
+        frame_contract,
+        "camera_optical_convention_id",
+        "candidate.frame_contract",
+    )?;
+    if convention_id != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+        || camera_optical_convention_id != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+        || frame_contract["legacy_candidate_compatibility"] != "REJECT"
+    {
+        return Err(anyhow!(
+            "candidate uses an unsupported or legacy spatial convention"
+        ));
+    }
     if frame_contract["transform_semantics"] != "PARENT_FROM_CHILD" {
         return Err(anyhow!(
             "candidate frame transform semantics must be PARENT_FROM_CHILD"
         ));
     }
-    let session_epoch = require_json_string(
-        &request.candidate["vio_provenance"],
-        "session_epoch",
-        "candidate.vio_provenance",
-    )?;
-    if require_json_string(
-        &request.candidate["vio_provenance"],
-        "world_frame",
-        "candidate.vio_provenance",
-    )? != vio_world_frame
-    {
+    let vio = &request.candidate["vio_provenance"];
+    let vio_provider_id = require_json_string(vio, "provider_id", "candidate.vio_provenance")?;
+    let vio_provider_instance_id =
+        require_json_string(vio, "provider_instance_id", "candidate.vio_provenance")?;
+    let vio_boot_id = require_json_string(vio, "boot_id", "candidate.vio_provenance")?;
+    let session_epoch = require_json_string(vio, "session_epoch", "candidate.vio_provenance")?;
+    if require_json_string(vio, "world_frame", "candidate.vio_provenance")? != vio_world_frame {
         return Err(anyhow!("candidate VIO frame contract is inconsistent"));
     }
     validate_transform_payload(
@@ -940,6 +1046,17 @@ fn build_workcell_activation_record(
         &request.candidate["transforms"]["world_from_base"],
         "candidate.transforms.world_from_base",
     )?;
+    let documented_base_z_dot_world_up = transform_z_dot_parent_z(
+        &request.candidate["transforms"]["world_from_base"],
+        "candidate.transforms.world_from_base",
+    )?;
+    if documented_base_z_dot_world_up < -1e-9
+        || (documented_base_z_dot_world_up - corrected_base_z_dot_world_up).abs() > 1e-6
+    {
+        return Err(anyhow!(
+            "documented world_from_base +Z does not match the reviewed world-up orientation"
+        ));
+    }
 
     let candidate_sha256 = canonical_json_sha256(&request.candidate);
     let identity = verify_review_identity_assertion(
@@ -994,42 +1111,51 @@ fn build_workcell_activation_record(
         "calibration_revision",
         "candidate.camera_provenance",
     )?;
-    let report = reports
+    let camera_report = reports
         .get(&camera_provider_id)
         .ok_or_else(|| anyhow!("candidate camera provider has no current Manager report"))?;
-    if report.expired
-        || !report.ready
-        || report.health != "HEALTHY"
-        || report.instance_id != camera_provider_instance_id
-        || report.boot_id != camera_boot_id
+    if camera_report.expired
+        || !camera_report.ready
+        || camera_report.health != "HEALTHY"
+        || camera_report.instance_id != camera_provider_instance_id
+        || camera_report.boot_id != camera_boot_id
     {
         return Err(anyhow!(
             "candidate camera provider identity or health is no longer current"
         ));
     }
-    if camera_observation["provider_id"] != camera_provider_id
-        || camera_observation["provider_instance_id"] != camera_provider_instance_id
-        || camera_observation["boot_id"] != camera_boot_id
-        || camera_observation["data"]["revision"] != camera_calibration_revision
-    {
+    let current_camera_calibration_revision = require_json_string(
+        &camera_report.details,
+        "calibration_revision",
+        "current camera provider report details",
+    )?;
+    if current_camera_calibration_revision != camera_calibration_revision {
         return Err(anyhow!(
             "current camera calibration provenance does not match the candidate"
         ));
     }
-    if vio_observation["data"]["session_epoch"] != session_epoch
-        || vio_observation["data"]["world_frame"] != vio_world_frame
-        || vio_observation["data"]["tracking_state"] != "TRACKING"
-        || vio_observation["valid"] == false
+    let vio_report = reports
+        .get(&vio_provider_id)
+        .ok_or_else(|| anyhow!("candidate VIO provider has no current Manager report"))?;
+    if vio_report.expired
+        || !vio_report.ready
+        || vio_report.health != "HEALTHY"
+        || vio_report.residency != "HOT"
+        || vio_report.instance_id != vio_provider_instance_id
+        || vio_report.boot_id != vio_boot_id
     {
         return Err(anyhow!(
-            "current VIO epoch, frame, or tracking state does not match the candidate"
+            "candidate VIO provider identity, health, or readiness is no longer current"
         ));
     }
-    let vio_observed_at_us = vio_observation["observed_at_us"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("current VIO observation timestamp is missing"))?;
-    if now_us.saturating_sub(vio_observed_at_us) > 1_500_000 {
-        return Err(anyhow!("current VIO observation is stale"));
+    if vio_report.details["session_epoch"] != session_epoch
+        || vio_report.details["world_frame"] != vio_world_frame
+        || vio_report.details["convention_id"] != convention_id
+        || vio_report.details["tracking_state"] != "TRACKING"
+    {
+        return Err(anyhow!(
+            "current VIO epoch, frame, convention, or tracking state does not match the candidate"
+        ));
     }
 
     let requested_expires_at_us = now_us.saturating_add(request.duration_ms.saturating_mul(1000));
@@ -1056,10 +1182,15 @@ fn build_workcell_activation_record(
         vio_world_frame,
         camera_frame,
         arm_base_frame,
+        convention_id,
+        camera_optical_convention_id,
         camera_provider_id,
         camera_provider_instance_id,
         camera_boot_id,
         camera_calibration_revision,
+        vio_provider_id,
+        vio_provider_instance_id,
+        vio_boot_id,
         transforms: request.candidate["transforms"].clone(),
         reviewer: reviewer.clone(),
         last_transition_reason: "reviewed calibration activated".to_string(),
@@ -1190,6 +1321,34 @@ fn validate_transform_payload(value: &Value, scope: &str) -> Result<()> {
         return Err(anyhow!("{scope} quaternion is not normalized"));
     }
     Ok(())
+}
+
+fn transform_z_dot_parent_z(value: &Value, scope: &str) -> Result<f64> {
+    let rotation = value["rotation_xyzw"]
+        .as_array()
+        .ok_or_else(|| anyhow!("{scope}.rotation_xyzw must be an array"))?;
+    if rotation.len() != 4 {
+        return Err(anyhow!("{scope}.rotation_xyzw must contain four values"));
+    }
+    let quaternion = rotation
+        .iter()
+        .map(|item| {
+            item.as_f64()
+                .ok_or_else(|| anyhow!("{scope}.rotation_xyzw contains a non-number"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !quaternion.iter().all(|item| item.is_finite()) {
+        return Err(anyhow!(
+            "{scope}.rotation_xyzw contains a non-finite number"
+        ));
+    }
+    let norm_squared = quaternion.iter().map(|item| item * item).sum::<f64>();
+    if norm_squared <= 1e-18 {
+        return Err(anyhow!("{scope}.rotation_xyzw has zero norm"));
+    }
+    let x = quaternion[0];
+    let y = quaternion[1];
+    Ok(1.0 - 2.0 * (x * x + y * y) / norm_squared)
 }
 
 fn verify_review_identity_assertion(
@@ -1400,23 +1559,6 @@ fn sha256(message: &[u8]) -> [u8; 32] {
     output
 }
 
-async fn fetch_fabric_latest(state: &AppState, stream: &str) -> Result<Value> {
-    let response = state
-        .http
-        .get(format!(
-            "{}/v1/latest/{}",
-            state.fabric_url.trim_end_matches('/'),
-            stream
-        ))
-        .timeout(Duration::from_secs(2))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(anyhow!("Fabric returned {}", response.status()));
-    }
-    Ok(response.json().await?)
-}
-
 async fn publish_workcell_calibration(
     state: &AppState,
     record: &WorkcellCalibrationActivationRecord,
@@ -1455,6 +1597,8 @@ async fn publish_workcell_calibration(
                 "authority": "manager.workcell_calibration_activation",
                 "session_epoch": record.session_epoch,
                 "calibration_revision": record.calibration_revision,
+                "convention_id": record.convention_id,
+                "camera_optical_convention_id": record.camera_optical_convention_id,
                 "continuity": "REVIEWED_CALIBRATION_ACTIVATION",
                 "review_state": review_state,
                 "activation_state": activation_state,
@@ -3720,17 +3864,16 @@ mod tests {
 
     fn activation_fixture(
         now: DateTime<Utc>,
+        semantic_status: &str,
     ) -> (
         WorkcellCalibrationActivationRequest,
         HashMap<String, ProviderReport>,
-        Value,
-        Value,
     ) {
         let now_us = now.timestamp_micros() as u64;
         let secret = b"test-review-auth-secret-with-at-least-32-bytes";
         let candidate = json!({
             "schema": "midbrain.skill.stationary_world_arm_alignment.calibration_candidate",
-            "schema_version": 2,
+            "schema_version": 3,
             "candidate_id": "alignment-1",
             "workcell_calibration_revision": "alignment-1",
             "created_at_us": now_us - 1_000_000,
@@ -3738,18 +3881,44 @@ mod tests {
             "review_state": "CANDIDATE_REVIEW_REQUIRED",
             "review_mode": "ENFORCED",
             "motion_usable": false,
-            "method": {"skill_version": "0.7.0"},
+            "method": {"skill_version": "0.8.5"},
             "frame_contract": {
                 "world_frame": "world/stationary_camera/alignment-1",
                 "vio_world_frame": "local_vio/epoch-1",
                 "camera_frame": "femto_bolt_color_optical_frame",
                 "arm_base_frame": "rebot_arm_base",
+                "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+                "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+                "legacy_candidate_compatibility": "REJECT",
                 "transform_semantics": "PARENT_FROM_CHILD"
             },
-            "confidence": 0.9,
+            "confidence": 0.0,
             "bounded_error_estimate": {
-                "translation_m": 0.002,
-                "rotation_rad": 0.01
+                "translation_m": 99.0,
+                "rotation_rad": 99.0
+            },
+            "quality_provenance": {
+                "semantic_alignment": {
+                    "status": semantic_status,
+                    "source": "CURRENT_FOUNDATIONPOSE_VLM_BASE_X_REVIEW",
+                    "base_x_relation_to_gripper": "AWAY_FROM_GRIPPER",
+                    "selected_base_yaw_flip_deg": 180,
+                    "fitted_base_yaw_deg": 180.0,
+                    "yaw_correction_translation_norm_m": 0.0,
+                    "world_up_available": true,
+                    "raw_base_z_dot_world_up": -1.0,
+                    "corrected_base_z_dot_world_up": 1.0,
+                    "upright_hemisphere_flip_required": true,
+                    "selected_orientation_correction_axis": "Y",
+                    "selected_orientation_correction_deg": 180,
+                    "orientation_correction_count": 1,
+                    "orientation_correction_translation_norm_m": 0.0,
+                    "orientation_application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
+                    "orientation_application_order": "parent_from_mesh @ mesh_hypothesis_correction @ mesh_from_semantic",
+                    "mesh_hypothesis_correction_translation_norm_m": 0.0,
+                    "mesh_center_translation_preserved": true,
+                    "semantic_root_translation_adjustment_norm_m": 0.089249989
+                }
             },
             "camera_provenance": {
                 "provider_id": "camera.femto_bolt",
@@ -3761,8 +3930,12 @@ mod tests {
                 "source_buffer_refs": {}
             },
             "vio_provenance": {
+                "provider_id": "localization.local_vio",
+                "provider_instance_id": "localization.local_vio-instance",
+                "boot_id": "localization.local_vio-boot",
                 "world_frame": "local_vio/epoch-1",
-                "session_epoch": "epoch-1"
+                "session_epoch": "epoch-1",
+                "reference_timestamp_us": now_us - 100_000
             },
             "transforms": {
                 "world_from_camera": {
@@ -3824,26 +3997,25 @@ mod tests {
             review_identity_assertion: assertion,
             duration_ms: 20_000,
         };
-        let reports = HashMap::from([(
-            "camera.femto_bolt".to_string(),
-            provider_report("camera.femto_bolt", "camera.rgbd.bundle", true, true, "HOT"),
-        )]);
-        let camera_observation = json!({
-            "provider_id": "camera.femto_bolt",
-            "provider_instance_id": "camera.femto_bolt-instance",
-            "boot_id": "camera.femto_bolt-boot",
-            "data": {"revision": "camera-calibration"}
-        });
-        let vio_observation = json!({
-            "observed_at_us": now_us - 100_000,
-            "valid": true,
-            "data": {
-                "session_epoch": "epoch-1",
-                "world_frame": "local_vio/epoch-1",
-                "tracking_state": "TRACKING"
-            }
-        });
-        (request, reports, camera_observation, vio_observation)
+        let mut camera_report =
+            provider_report("camera.femto_bolt", "camera.rgbd.bundle", true, true, "HOT");
+        camera_report.details["calibration_revision"] = json!("camera-calibration");
+        let mut vio_report = provider_report(
+            "localization.local_vio",
+            "localization.vio.tracking_status",
+            true,
+            true,
+            "HOT",
+        );
+        vio_report.details["session_epoch"] = json!("epoch-1");
+        vio_report.details["world_frame"] = json!("local_vio/epoch-1");
+        vio_report.details["convention_id"] = json!("MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2");
+        vio_report.details["tracking_state"] = json!("TRACKING");
+        let reports = HashMap::from([
+            ("camera.femto_bolt".to_string(), camera_report),
+            ("localization.local_vio".to_string(), vio_report),
+        ]);
+        (request, reports)
     }
 
     #[test]
@@ -3889,13 +4061,11 @@ mod tests {
     #[test]
     fn reviewed_workcell_activation_requires_current_exact_provenance() {
         let now = Utc::now();
-        let (request, reports, camera, vio) = activation_fixture(now);
+        let (request, reports) = activation_fixture(now, "PASSED");
         let record = build_workcell_activation_record(
             &request,
             "request-digest".to_string(),
             &reports,
-            &camera,
-            &vio,
             b"test-review-auth-secret-with-at-least-32-bytes",
             now,
         )
@@ -3904,20 +4074,242 @@ mod tests {
         assert!(record.motion_usable);
         assert_eq!(record.camera_frame, "femto_bolt_color_optical_frame");
         assert_eq!(record.arm_base_frame, "rebot_arm_base");
+        assert_eq!(record.convention_id, "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2");
 
-        let mut restarted_camera = camera;
-        restarted_camera["boot_id"] = json!("different-boot");
+        let mut changed_calibration_reports = reports.clone();
+        changed_calibration_reports
+            .get_mut("camera.femto_bolt")
+            .expect("camera report must exist")
+            .details["calibration_revision"] = json!("different-calibration");
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &changed_calibration_reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("camera calibration change must invalidate the candidate");
+        assert!(error.to_string().contains("camera calibration provenance"));
+
+        let mut changed_vio_reports = reports;
+        changed_vio_reports
+            .get_mut("localization.local_vio")
+            .expect("VIO report must exist")
+            .details["session_epoch"] = json!("different-epoch");
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &changed_vio_reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("VIO epoch change must invalidate the candidate");
+        assert!(error.to_string().contains("current VIO epoch"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_accepts_warning_semantics_without_retired_geometry_gates() {
+        let now = Utc::now();
+        let (request, reports) = activation_fixture(now, "PASSED_WITH_WARNINGS");
+        let record = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("warning-only semantics and retired quality bounds must not block activation");
+        assert_eq!(record.state, "ACTIVE");
+        assert!(record.motion_usable);
+    }
+
+    #[test]
+    fn newer_reviewed_workcell_activation_supersedes_the_current_one() {
+        let now = Utc::now();
+        let (request, reports) = activation_fixture(now, "PASSED");
+        let replacement = build_workcell_activation_record(
+            &request,
+            "replacement-request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("replacement fixture should activate");
+        let mut active = replacement.clone();
+        active.activation_id = "active-before-recalibration".to_string();
+        active.motion_usable = true;
+        let mut expired = replacement.clone();
+        expired.activation_id = "expired-before-recalibration".to_string();
+        expired.expires_at = now - ChronoDuration::milliseconds(1);
+        expired.motion_usable = true;
+        let mut records = HashMap::from([
+            (active.activation_id.clone(), active),
+            (expired.activation_id.clone(), expired),
+        ]);
+
+        supersede_active_workcell_calibrations(&mut records, &replacement, now);
+
+        let superseded = records
+            .get("active-before-recalibration")
+            .expect("the prior active record should remain auditable");
+        assert_eq!(superseded.state, "SUPERSEDED");
+        assert!(!superseded.motion_usable);
+        assert!(superseded
+            .last_transition_reason
+            .contains(&replacement.activation_id));
+        let expired = records
+            .get("expired-before-recalibration")
+            .expect("the expired record should remain auditable");
+        assert_eq!(expired.state, "EXPIRED");
+        assert!(!expired.motion_usable);
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_continuous_base_yaw_correction() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["selected_base_yaw_flip_deg"] = json!(34);
+        request.candidate["quality_provenance"]["semantic_alignment"]["fitted_base_yaw_deg"] =
+            json!(34.0);
         let error = build_workcell_activation_record(
             &request,
             "request-digest".to_string(),
             &reports,
-            &restarted_camera,
-            &vio,
             b"test-review-auth-secret-with-at-least-32-bytes",
             now,
         )
-        .expect_err("camera restart must invalidate the candidate");
-        assert!(error.to_string().contains("camera calibration provenance"));
+        .expect_err("a continuous post-fit base yaw correction must fail closed");
+        assert!(error
+            .to_string()
+            .contains("exact base-yaw review invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_direction_flip_mismatch() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["base_x_relation_to_gripper"] = json!("TOWARD_GRIPPER");
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("the selected yaw must match the reviewed base-X direction");
+        assert!(error
+            .to_string()
+            .contains("exact base-yaw review invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_translated_yaw_correction() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["yaw_correction_translation_norm_m"] = json!(0.001);
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("a base-root yaw decision must never translate the base origin");
+        assert!(error
+            .to_string()
+            .contains("exact base-yaw review invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_accepts_one_upside_down_away_hypothesis() {
+        let now = Utc::now();
+        let (request, reports) = activation_fixture(now, "PASSED_WITH_WARNINGS");
+
+        build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("one mesh-centered Y-180 hypothesis must be activation-eligible");
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_duplicate_orientation_corrections() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["orientation_correction_count"] = json!(2);
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("a duplicated orientation correction must fail closed");
+        assert!(error
+            .to_string()
+            .contains("single base-orientation invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_downward_corrected_base_z() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["corrected_base_z_dot_world_up"] = json!(-0.998);
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("a downward corrected base +Z must fail closed");
+        assert!(error
+            .to_string()
+            .contains("single base-orientation invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_moved_mesh_center() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["quality_provenance"]["semantic_alignment"]
+            ["mesh_center_translation_preserved"] = json!(false);
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("moving the observed CAD center must fail closed");
+        assert!(error
+            .to_string()
+            .contains("single base-orientation invariants"));
+    }
+
+    #[test]
+    fn reviewed_workcell_activation_rejects_documented_downward_base_z() {
+        let now = Utc::now();
+        let (mut request, reports) = activation_fixture(now, "PASSED");
+        request.candidate["transforms"]["world_from_base"]["rotation_xyzw"] =
+            json!([1.0, 0.0, 0.0, 0.0]);
+        let error = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("a serialized downward base +Z must fail closed");
+        assert!(error.to_string().contains("documented world_from_base +Z"));
     }
 
     #[test]

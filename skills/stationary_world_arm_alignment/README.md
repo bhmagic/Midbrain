@@ -2,6 +2,56 @@
 
 This finite Midbrain Skill aligns a stationary reBot arm base into a camera-origin world frame. All Skill orchestration, configuration, run artifacts, calibration revisions, schemas, tests, and the monitoring GUI live in this folder.
 
+Version 0.8.5 uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. Robot-base local axes
+remain positive X forward, positive Y left, and positive Z model-up. World
+semantic directions are transformed into that local frame when motion is
+planned.
+
+FoundationPose remains authoritative for the observed centered CAD mesh pose.
+The Provider and nested Skill both use
+`camera_from_semantic = camera_from_mesh @ mesh_from_semantic`; no inverse,
+transpose, optical-axis swap, or quaternion reordering is inserted. The base
+pose sampler, overlay renderer, and hypothesis selector all load that transform
+from the same configured live model registry. The default
+model's `mesh_from_semantic` rotation is identity and its Z translation is
+`-0.0446249945 m`, placing the arm-base semantic origin at the original CAD
+datum below the centered mesh.
+
+The raw visual pose can select any discrete sign hypothesis. Host code chooses
+at most one proper rotation from identity, X-180, Y-180, or Z-180 at the
+centered CAD mesh origin. Current VIO/world up selects the +Z hemisphere and
+the segmented RGB-D gripper point selects the +X sign. Only after that single
+choice does `mesh_from_semantic` compute the arm-base/table datum. This keeps
+the fitted mesh center fixed and avoids retaining a semantic root on the wrong
+side of an upside-down fit. Residual base tilt is warning-only; unavailable
+world up also produces a warning rather than failing the finite alignment.
+
+Post-fit validation is intentionally narrow. Host code compares the projected
+CAD box's width and height with the tight visible base box. A maximum mismatch
+over 25 percent starts one fresh retry, for at most two FoundationPose
+attempts. The VLM locates the gripper, then host code combines that mask with
+aligned depth and expresses its 3D surface point in the raw fitted base frame.
+The four-case selection is `up+toward -> identity`, `up+away -> Z-180`,
+`down+toward -> X-180`, and `down+away -> Y-180`. Thus a pure front/back
+ambiguity preserves the semantic root, while correcting an upside-down mesh
+hypothesis intentionally recomputes that root across the fixed mesh center.
+The perspective RGB-arrow review is used only when aligned gripper depth is
+unavailable, and that fallback is retained as a warning.
+
+Because this is a stationary-camera calibration, the final transform is
+composed from the validated camera-frame CAD pose and the timestamped reference
+camera transform. VIO-frame pose samples are retained as drift diagnostics but
+cannot translate or rotate the stationary base fit while inference is running.
+
+If both finite attempts exceed the 25-percent projected-size threshold, the
+Skill retains the attempt with the smaller measured mismatch and returns it
+with an explicit warning. Run artifacts preserve both comparisons and visual
+direction decisions for diagnosis.
+
+All older Y-up candidates and activations must be regenerated. Candidate schema
+version 3 records both the world convention and the native camera optical
+convention.
+
 See `CHANGELOG.md` for the reviewed-activation, Agent discovery, GUI, and
 hardware-validation changes made during the 2026-07-29 system test.
 
@@ -83,15 +133,21 @@ A reviewed candidate becomes motion-usable only through Manager
 `POST /v1/workcell-calibrations/activate`. Manager verifies the exact
 candidate digest and signed reviewer identity, current camera
 provider/instance/boot/calibration, current tracking VIO epoch, frame contract,
-quality bounds, and expiry before publishing the active transform. Only one
-unexpired activation may be active. Use
+the bounded two-attempt validation record, the single mesh-centered
+orientation proof, and expiry before publishing the active transform. Manager
+rejects a downward corrected +Z, a mismatched discrete axis, more than one
+correction, a translated mesh correction, or a moved CAD mesh center. Residual
+tilt and projected-size warnings remain visible but are not activation vetoes.
+A fresh successful activation
+supersedes the prior active record and makes it non-motion-usable without a
+separate revoke/expire dialogue. Use
 `POST /v1/workcell-calibrations/{activation_id}/revoke` to publish an
 authoritative non-motion-usable revocation; a later static observation cannot
 silently revive the older edge.
 
 ## CLI
 
-Use `scripts\run.ps1 -Mode foundation_base_vlm_gripper`, `scripts\run.ps1 -Mode foundation_base_gripper`, `scripts\run.ps1 -Mode vlm_gripper_only`, or the default `auto`. Auto selects `vlm_gripper_only` only when the prior calibration belongs to the current VIO epoch and its base is upright. Add `-ArmIsHome` when that assertion is useful. The Skill does not command the arm.
+Use `scripts\run.ps1 -Mode foundation_base_vlm_gripper`, `scripts\run.ps1 -Mode foundation_base_gripper`, `scripts\run.ps1 -Mode vlm_gripper_only`, or the default `auto`. Auto selects `vlm_gripper_only` only when a convention-V2 prior calibration belongs to the current VIO epoch. Add `-ArmIsHome` when that assertion is useful. The Skill does not command the arm.
 
 For an in-session multimodal reviewer such as Codex, invoke the Python entry
 point with `--vision-route REVIEWED_FILE --review-timeout-s 300`. The Skill
@@ -106,15 +162,15 @@ The manifest exposes these three concrete modes to upstream Skills:
 
 | Mode | Base source | Primary gripper source | Intended use |
 |---|---|---|---|
-| `foundation_base_gripper` | FoundationPose base pose | FoundationPose gripper pose | Slow, dim-scene path using both CAD models |
-| `foundation_base_vlm_gripper` | FoundationPose base pose | VLM RGB-D foremost-beak point | Faster default base registration |
+| `foundation_base_gripper` | FoundationPose base pose | Segmented RGB-D gripper surface point | Slow, dim-scene path that also reports the gripper CAD pose |
+| `foundation_base_vlm_gripper` | FoundationPose base pose | Segmented RGB-D gripper surface point | Faster default base registration |
 | `vlm_gripper_only` | Prior alignment with rotation locked | VLM RGB-D foremost-beak point | Later translation adjustment without starting FoundationPose |
 
 `auto` selects one of the latter two modes and publishes the selected concrete mode. The old `vlm_refine` API value remains a hidden compatibility alias and is canonicalized to `vlm_gripper_only`; new callers should not use it.
 
 Result schema version 3 retains `mode_contract`, `gripper_measurements`, and
 `gripper_cross_source_comparison`, and adds an expiring, non-motion-usable
-version-2 calibration candidate with an explicit world/VIO/arm-base frame
+version-3 calibration candidate with an explicit world/VIO/arm-base frame
 contract, estimator, error-bound, camera-route, BufferRef, calibration, and
 VIO provenance. Every gripper measurement identifies its
 `source_type`, physical `semantic_point`, coordinate frame, position, and role.
@@ -134,13 +190,20 @@ legacy fallback or a new alignment.
 
 Run `scripts\check.ps1` for compilation and unit tests. Hardware validation should first use an empty, stationary workspace, then compare the published arm-base transform against a measured fiducial or known contact point before allowing downstream motion planning to trust it.
 
-Base-pose validation allows two fresh FoundationPose attempts. A strict pass
-returns immediately. If both miss the strict threshold, the Skill ranks them
-by geometric reasonableness, box fit, orientation fit, confidence, and visible
-projection coverage. The better attempt is accepted only when its box and
-orientation remain non-BAD and it clears the configured fallback confidence;
-otherwise its overlay is retained for diagnosis while the alignment stays
-invalid.
+Base-pose validation allows at most two fresh FoundationPose attempts. Host
+code calculates projected-to-observed base-box width and height ratios; a
+maximum relative mismatch at or below 25 percent returns immediately, while a
+larger mismatch starts the second attempt. The VLM supplies the gripper mask;
+host RGB-D math determines whether the raw base +X or -X half-space contains
+the gripper. Host transform math combines that sign with world-up and applies
+exactly one centered-mesh hypothesis from identity/X-180/Y-180/Z-180 before
+the semantic-root offset. It cannot move the observed mesh center or choose an
+intermediate angle. If exact aligned gripper depth is missing,
+the bounded visual-arrow classification is retained as a warning fallback. If
+both attempts exceed the size threshold, the one with the smaller calculated
+mismatch is returned with a warning and both overlays remain available for
+review. Residual base tilt or unavailable world-up is likewise a warning, not
+an alignment error.
 
 ## Runtime files
 

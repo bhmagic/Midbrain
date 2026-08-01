@@ -1,6 +1,6 @@
 {
   "skill_type": "integrated_relative_effector_motion",
-  "version": "0.1.0",
+  "version": "0.4.2",
   "display_name": "Integrated Relative End-Effector Motion",
   "ui": {
     "observation": {
@@ -19,18 +19,22 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "preview_relative_effector_motion",
-    "description": "Preview one new relative end-effector displacement from the current measured pose through the Integrated Controller. Repeated requests are cumulative: each request creates another displacement from the latest measured pose. Before using this Skill, inspect runtime and activate robot_arm.rebot_dm to HOT first, then robot_arm.primary.integrated to HOT. In the arm-base frame, UP is positive Y because gravity is negative Y. PREVIEW_READY is not a completed workflow: immediately call the returned required_next_tool with its arguments unchanged to present the separate physical-execution approval.",
+    "description": "Preview a relative end-effector translation, bounded controlled-frame yaw, or both from the measured pose. Activate robot_arm.rebot_dm before robot_arm.primary.integrated. World language uses +X front, +Y left, +Z up; explicit world axes require a reviewed transform, while raw arm axes use ARM_BASE_POSITIVE_* names. PRESERVE_MEASURED_CONTROLLED_FRAME retains measured POSE_6DOF orientation. APPLY_CONTROLLED_FRAME_YAW_DELTA composes intrinsic yaw about controlled +Z: positive turns left, negative turns right, and magnitude is limited to 45 degrees. Rotation-only uses direction NONE and distance_m 0. requested_speed_m_s is nominal, not constant Cartesian speed; Provider safety may lengthen duration. Visual evidence is best-effort. On PREVIEW_READY, call required_next_tool unchanged.",
     "when_to_use": [
-      "The operator requests a new relative Cartesian end-effector displacement.",
+      "The operator requests a new relative Cartesian end-effector translation, controlled-frame head yaw, or combined pose change.",
       "The Basic and Integrated arm Providers can be activated in dependency order.",
-      "A fresh measured controlled-frame pose is available."
+      "A fresh measured controlled-frame pose is available.",
+      "Optional fixed-rig visual evidence may be collected when available."
     ],
     "when_not_to_use": [
       "The request is safe-home, gravity float, emergency stop, or raw joint control.",
-      "The collision scene or required controller state is unavailable and the operator does not accept that limitation."
+      "The collision scene or required controller state is unavailable and the operator does not accept that limitation.",
+      "The requested semantic direction cannot be resolved from an operator-confirmed mount or a measured transform."
     ],
     "side_effects": [
       "May require approval-gated activation of the Basic and Integrated arm Providers.",
+      "After fixed-rig confirmation, may non-destructively start or verify camera and VIO tracking without resetting the epoch.",
+      "May capture best-effort gravity-aligned effector evidence before and after an approved move.",
       "Stages a nonphysical Integrated Controller target and preview.",
       "Does not itself authorize or execute physical motion."
     ],
@@ -46,18 +50,114 @@
         "direction": {
           "type": "string",
           "enum": [
+            "NONE",
             "UP",
             "DOWN",
+            "FRONT",
+            "BACK",
+            "LEFT",
+            "RIGHT",
+            "NORTH",
+            "SOUTH",
+            "EAST",
+            "WEST",
             "POSITIVE_X",
             "NEGATIVE_X",
+            "POSITIVE_Y",
+            "NEGATIVE_Y",
             "POSITIVE_Z",
-            "NEGATIVE_Z"
+            "NEGATIVE_Z",
+            "ARM_BASE_POSITIVE_X",
+            "ARM_BASE_NEGATIVE_X",
+            "ARM_BASE_POSITIVE_Y",
+            "ARM_BASE_NEGATIVE_Y",
+            "ARM_BASE_POSITIVE_Z",
+            "ARM_BASE_NEGATIVE_Z"
           ]
+        },
+        "reference_frame": {
+          "type": "string",
+          "enum": [
+            "WORLD",
+            "CAMERA_LEVEL",
+            "ARM_BASE"
+          ],
+          "default": "WORLD",
+          "description": "WORLD is required for ordinary unqualified 3D language and explicit signed world axes. Explicit signed world axes require a reviewed motion-usable world-to-arm transform and cannot use the upright arm fallback. CAMERA_LEVEL is only for explicit gravity-leveled camera-relative 3D language. ARM_BASE is only for explicit ARM_BASE signed-axis commands."
+        },
+        "arm_mount_assumption": {
+          "type": "string",
+          "enum": [
+            "UNKNOWN",
+            "CONFIRMED_X_FORWARD_Z_UP",
+            "REJECTED_OR_UNKNOWN"
+          ],
+          "default": "UNKNOWN",
+          "description": "Use CONFIRMED_X_FORWARD_Z_UP only after the operator explicitly confirms base +Z opposite gravity and base +X along workcell front."
+        },
+        "camera_level_assumption": {
+          "type": "string",
+          "enum": [
+            "UNKNOWN",
+            "CONFIRMED_GRAVITY_LEVELED",
+            "REJECTED_OR_UNKNOWN"
+          ],
+          "default": "UNKNOWN",
+          "description": "Use CONFIRMED_GRAVITY_LEVELED only after the operator confirms that camera front/left/right ignore pitch and roll and up is opposite gravity."
+        },
+        "fixed_vio_rig_assumption": {
+          "type": "string",
+          "enum": [
+            "UNKNOWN",
+            "CONFIRMED_FIXED_STATIONARY_RIG",
+            "REJECTED_OR_UNKNOWN"
+          ],
+          "default": "UNKNOWN",
+          "description": "Use CONFIRMED_FIXED_STATIONARY_RIG only after the operator confirms the camera and IMU are rigidly fixed together and can remain stationary for VIO checking and before/after visual evidence."
+        },
+        "orientation_policy": {
+          "type": "string",
+          "enum": [
+            "POSITION_ONLY",
+            "PRESERVE_MEASURED_CONTROLLED_FRAME",
+            "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+          ],
+          "default": "POSITION_ONLY",
+          "description": "Use PRESERVE_MEASURED_CONTROLLED_FRAME when the operator asks to keep the effector head, pointing direction, attitude, or full 3D orientation during translation. Use APPLY_CONTROLLED_FRAME_YAW_DELTA for a bounded intrinsic turn about the measured controlled-frame +Z axis. Both policies bind an exact POSE_6DOF target."
+        },
+        "controlled_frame_yaw_delta_deg": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": -45.0,
+              "maximum": 45.0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required and nonzero only for APPLY_CONTROLLED_FRAME_YAW_DELTA. This is intrinsic yaw about the measured controlled +Z axis: positive turns controlled +X toward +Y (left), and negative turns it toward -Y (right)."
         },
         "distance_m": {
           "type": "number",
-          "minimum": 0.001,
-          "maximum": 0.2
+          "minimum": 0.0,
+          "maximum": 0.2,
+          "description": "Translation distance. Use exactly 0 with direction NONE for rotation-only motion; positive translations must be from 0.001 to 0.2 m."
+        },
+        "requested_speed_m_s": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0.0,
+              "maximum": 0.2
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional nominal average endpoint speed. The adapter requests distance_m / requested_speed_m_s seconds; the Provider may lengthen the trajectory for joint-rate safety. This is not constant instantaneous Cartesian velocity."
         }
       },
       "required": [
@@ -80,9 +180,16 @@
     "robot_arm.integrated.position_3dof_ik"
   ],
   "optional_capabilities": [
+    "localization.vio.local_pose",
+    "world.transforms.timestamped",
+    "robot_arm.integrated.pose_6dof_ik",
     "robot_arm.integrated.semantic_scene_consumer"
   ],
   "route_policy": {
+    "spatial_convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+    "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+    "anonymous_xyz_allowed": false,
+    "ordinary_language_may_select_optical_axis": false,
     "provider_activation_sequence": [
       {
         "provider_id": "robot_arm.rebot_dm",
@@ -96,7 +203,35 @@
       }
     ],
     "preview_then_approve": true,
-    "physical_execution_tool": "execute_integrated_motion_preview"
+    "orientation_preservation": "MEASURED_CONTROLLED_FRAME_RPY_WITH_POSE_6DOF",
+    "controlled_frame_yaw_delta": {
+      "composition": "R_TARGET_EQUALS_R_MEASURED_TIMES_RZ_DELTA",
+      "positive_direction": "CONTROLLED_POSITIVE_X_TOWARD_POSITIVE_Y_LEFT",
+      "negative_direction": "CONTROLLED_POSITIVE_X_TOWARD_NEGATIVE_Y_RIGHT",
+      "maximum_absolute_degrees": 45.0,
+      "rotation_only_direction": "NONE"
+    },
+    "motion_intents": {
+      "translation": "NEW_RELATIVE_MOVE",
+      "combined_translation_and_yaw": "NEW_RELATIVE_POSE_MOVE",
+      "rotation_only": "NEW_RELATIVE_ROTATION"
+    },
+    "before_after_visual_verification": "BEST_EFFORT_WHEN_FIXED_RIG_CONFIRMED",
+    "missing_visual_depth_may_veto_ik_preview": false,
+    "visual_verification_is_independent_of_direction_definition": true,
+    "vio_readiness_check_may_reset_epoch": false,
+    "vio_readiness_check_may_acquire_global_motion_inhibit": false,
+    "integrated_recovery_transition": "EXPLICIT_APPROVED_HOT",
+    "physical_execution_tool": "execute_integrated_motion_preview",
+    "explicit_world_axis_requires_reviewed_transform": true,
+    "explicit_world_axis_may_use_arm_mount_fallback": false,
+    "reviewed_world_transform_precedes_mount_fallback": true,
+    "requested_speed_semantics": "NOMINAL_AVERAGE_ENDPOINT_SPEED",
+    "requested_speed_max_m_s": 0.2,
+    "trajectory_duration_range_s": [
+      0.25,
+      8.0
+    ]
   },
   "published_streams": []
 }

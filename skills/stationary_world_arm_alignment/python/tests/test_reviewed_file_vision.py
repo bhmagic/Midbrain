@@ -132,7 +132,9 @@ def test_repeated_localization_uses_distinct_review_artifacts(
     )
 
 
-def test_reviewed_pose_validation_binds_exact_request(tmp_path: Path) -> None:
+def test_reviewed_axis_validation_binds_exact_categorical_request(
+    tmp_path: Path,
+) -> None:
     workspace_root = Path(__file__).resolve().parents[4]
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -141,20 +143,16 @@ def test_reviewed_pose_validation_binds_exact_request(tmp_path: Path) -> None:
         run_dir,
         timeout_s=2.0,
     )
-    verdict = {
-        "pose_reasonable": True,
-        "confidence": 0.85,
-        "box_fit": "GOOD",
-        "orientation_fit": "ACCEPTABLE",
-        "matched_reference_view": "front",
-        "reasons": [],
+    review = {
+        "base_x_relation_to_gripper": "UNCLEAR",
+        "notes": "The arrow is occluded by the arm.",
     }
 
     async def run() -> dict:
         answer = asyncio.create_task(
             _answer_request(
                 run_dir / "pose_validation_attempt_1_review_request.json",
-                verdict,
+                review,
             )
         )
         result = await vision.validate_base_pose(
@@ -165,7 +163,21 @@ def test_reviewed_pose_validation_binds_exact_request(tmp_path: Path) -> None:
         return result
 
     result = asyncio.run(run())
-    assert result["pose_reasonable"] is True
+    assert result["base_x_relation_to_gripper"] == "UNCLEAR"
+    assert result["notes"] == "The arrow is occluded by the arm."
     assert result["review_provenance"]["review_kind"] == (
         "FOUNDATIONPOSE_BASE_VALIDATION"
     )
+    request = json.loads(
+        (
+            run_dir / "pose_validation_attempt_1_review_request.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert len(request["artifacts"]) == 1
+    assert request["artifacts"][0]["label"] == "live_pose_overlay"
+    assert "Look only at the red base +X arrow" in request["instructions"]
+    schema = request["output_schema"]
+    assert schema["required"] == [
+        "base_x_relation_to_gripper",
+        "notes",
+    ]

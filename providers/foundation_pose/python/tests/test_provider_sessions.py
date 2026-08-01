@@ -165,7 +165,14 @@ class ProviderSessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             transform = np.eye(4)
-            transform[0, 3] = 0.1
+            transform[:3, :3] = np.array(
+                [
+                    [0.0, -1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            )
+            transform[:3, 3] = [0.1, 0.2, -0.05]
             registry = root / "models.json"
             registry.write_text(
                 json.dumps(
@@ -237,7 +244,13 @@ class ProviderSessionTests(unittest.TestCase):
             )
             self.assertEqual(session.state, "COMPLETED")
             self.assertEqual(session.result_count, 1)
-            np.testing.assert_allclose(captured["camera_from_semantic"][:3, 3], [0.1, 0.0, 0.75])
+            expected = np.eye(4)
+            expected[2, 3] = 0.75
+            expected = expected @ transform
+            np.testing.assert_allclose(
+                captured["camera_from_semantic"],
+                expected,
+            )
             self.assertEqual(captured["observed_at_us"], 123456)
             provider.http.close()
 
@@ -410,6 +423,10 @@ class ProviderSessionTests(unittest.TestCase):
             pose_data = observations[0]["data"]
             transform_data = observations[1]["data"]
 
+            self.assertEqual(
+                observations[0]["coordinate_convention_id"],
+                MODULE.CAMERA_OPTICAL_CONVENTION_ID,
+            )
             self.assertEqual(pose_data["object_role"], "robot_base")
             self.assertEqual(
                 pose_data["semantic_frame"],
@@ -422,6 +439,22 @@ class ProviderSessionTests(unittest.TestCase):
             self.assertEqual(
                 transform_data["source"]["semantic_frame"],
                 "robot/arm_root",
+            )
+            self.assertEqual(
+                pose_data["parent_convention_id"],
+                MODULE.CAMERA_OPTICAL_CONVENTION_ID,
+            )
+            self.assertEqual(
+                pose_data["parent_axis_names"],
+                [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+            )
+            self.assertEqual(
+                transform_data["parent_convention_id"],
+                MODULE.CAMERA_OPTICAL_CONVENTION_ID,
             )
             observations = batch["observations"]
             self.assertEqual(observations[0]["observed_at_us"], 123456)

@@ -44,13 +44,13 @@ def canonical_run_mode(mode: RunMode) -> RunMode:
 MODE_CONTRACTS: dict[str, dict[str, Any]] = {
     str(RunMode.FOUNDATION_BASE_VLM_GRIPPER): {
         "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
-        "gripper_alignment_source": "VLM_RGBD_BEAK",
+        "gripper_alignment_source": "VLM_GRIPPER_RGBD_BASE_X_RELATION",
         "foundation_pose_models": ["base"],
         "requires_prior_alignment": False,
     },
     str(RunMode.FOUNDATION_BASE_GRIPPER): {
         "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
-        "gripper_alignment_source": "FOUNDATIONPOSE_GRIPPER_POSE",
+        "gripper_alignment_source": "FOUNDATIONPOSE_GRIPPER_AUXILIARY_ONLY",
         "foundation_pose_models": ["base", "gripper"],
         "requires_prior_alignment": False,
     },

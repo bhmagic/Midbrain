@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "manager_ids": ["robot_arm.primary.integrated"],
   "ui": {

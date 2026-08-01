@@ -16,6 +16,7 @@
     "frame_contract",
     "confidence",
     "bounded_error_estimate",
+    "quality_provenance",
     "camera_provenance",
     "vio_provenance",
     "transforms"
@@ -25,7 +26,7 @@
       "const": "midbrain.skill.stationary_world_arm_alignment.calibration_candidate"
     },
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "candidate_id": {
       "type": "string",
@@ -63,7 +64,11 @@
       "required": [
         "world_frame",
         "vio_world_frame",
+        "camera_frame",
         "arm_base_frame",
+        "convention_id",
+        "camera_optical_convention_id",
+        "legacy_candidate_compatibility",
         "transform_semantics"
       ],
       "properties": {
@@ -75,9 +80,22 @@
           "type": "string",
           "minLength": 1
         },
+        "camera_frame": {
+          "type": "string",
+          "minLength": 1
+        },
         "arm_base_frame": {
           "type": "string",
           "minLength": 1
+        },
+        "convention_id": {
+          "const": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+        },
+        "camera_optical_convention_id": {
+          "const": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+        },
+        "legacy_candidate_compatibility": {
+          "const": "REJECT"
         },
         "transform_semantics": {
           "const": "PARENT_FROM_CHILD"
@@ -96,11 +114,49 @@
     "bounded_error_estimate": {
       "type": "object"
     },
+    "quality_provenance": {
+      "type": "object"
+    },
     "camera_provenance": {
       "type": "object"
     },
     "vio_provenance": {
-      "type": "object"
+      "type": "object",
+      "required": [
+        "provider_id",
+        "provider_instance_id",
+        "boot_id",
+        "world_frame",
+        "session_epoch",
+        "reference_timestamp_us"
+      ],
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "world_frame": {
+          "type": "string",
+          "minLength": 1
+        },
+        "session_epoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_timestamp_us": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
     },
     "transforms": {
       "type": "object"

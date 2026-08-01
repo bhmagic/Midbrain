@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 — 2026-07-30
+
+- Named raw optical point components `camera_system_x`,
+  `camera_system_y`, and `camera_system_z`.
+- Added explicit source optical and target world convention identities to
+  agent results.
+
 ## 0.1.0 — 2026-07-29
 
 - Added the general registered-depth effector-front landmark contract.

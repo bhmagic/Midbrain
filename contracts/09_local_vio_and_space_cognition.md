@@ -1,6 +1,6 @@
 # Local VIO and Initialize Space Cognition Contract
 
-Status: v0.3.8 working draft.
+Status: v0.4 working draft.
 
 ## Local VIO Resource Provider
 
@@ -13,7 +13,18 @@ The Provider continuously consumes ordered IMU observations, visual observations
 
 The current prototype treats head and body as one rigid pose. A future articulated neck Provider publishes timestamped body/head transforms through the Fabric graph.
 
-Tracking states include `INITIALIZING`, `TRACKING`, `DEGRADED`, `LOST`, and `RESET_REQUIRED`. Every reset creates a new world frame `local_vio/<session-epoch>`. Position is initialized at `(0,0,0)`; roll and pitch are gravity aligned; yaw zero is the initial body-forward direction. The canonical local world uses `+Y` as up and `-Y` as gravity down.
+Tracking states include `INITIALIZING`, `TRACKING`, `DEGRADED`, `LOST`, and `RESET_REQUIRED`. Every reset creates a new world frame `local_vio/<session-epoch>`. Position is initialized at `(0,0,0)`; roll and pitch are gravity aligned; yaw zero is the initial leveled body/camera-forward direction. The canonical local world implements `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`: `+X` is initial leveled forward, `+Y` is left, `+Z` is opposite gravity, and gravity is `[0, 0, -g]`.
+
+The sensor-native camera optical frame remains `+X` image right, `+Y` image
+down, and `+Z` optical forward. VIO consumes that explicitly identified frame;
+it does not rename or reinterpret the optical axes. The Provider also publishes
+a derived `camera_level/<camera-id>/<session-epoch>` frame when optical forward
+has a well-conditioned gravity-horizontal projection.
+
+The Z-up migration creates a new VIO epoch. Data recorded under the former
+Y-up convention is `LEGACY_Y_UP_V1` and is never silently reinterpreted.
+Hardware accelerometer calibration, axis metadata, bias/scale values,
+hardware identity, and camera/IMU extrinsics remain unchanged.
 
 ## Inertial-first estimator requirement
 

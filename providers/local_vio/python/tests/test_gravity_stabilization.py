@@ -9,6 +9,10 @@ from local_vio_provider.prototype_backend import (
     STANDARD_GRAVITY_MPS2,
     PrototypeRgbdImuOdometry,
 )
+from local_vio_provider.math3d import (
+    gravity_aligned_world_from_camera,
+    gravity_leveled_world_from_camera_level,
+)
 
 
 class GravityStabilizationTests(unittest.TestCase):
@@ -98,21 +102,26 @@ class GravityStabilizationTests(unittest.TestCase):
         roll = math.radians(10.0)
         yaw_rotation = np.array(
             [
-                [math.cos(yaw), 0.0, math.sin(yaw)],
-                [0.0, 1.0, 0.0],
-                [-math.sin(yaw), 0.0, math.cos(yaw)],
+                [math.cos(yaw), -math.sin(yaw), 0.0],
+                [math.sin(yaw), math.cos(yaw), 0.0],
+                [0.0, 0.0, 1.0],
             ],
             dtype=np.float64,
         )
         roll_rotation = np.array(
             [
-                [math.cos(roll), -math.sin(roll), 0.0],
-                [math.sin(roll), math.cos(roll), 0.0],
-                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, math.cos(roll), -math.sin(roll)],
+                [0.0, math.sin(roll), math.cos(roll)],
             ],
             dtype=np.float64,
         )
-        backend.world_from_camera[:3, :3] = yaw_rotation @ roll_rotation
+        level_rotation = gravity_aligned_world_from_camera(
+            np.array([0.0, -1.0, 0.0])
+        )
+        backend.world_from_camera[:3, :3] = (
+            yaw_rotation @ roll_rotation @ level_rotation
+        )
         self._add_stationary_window(backend, end_us=1_000_000, duration_s=1.2)
 
         before_heading = self._heading_degrees(backend.world_from_camera[:3, :3])
@@ -128,7 +137,7 @@ class GravityStabilizationTests(unittest.TestCase):
             timestamp_us = end_us - 1_180_000 + index * 20_000
             backend.add_accelerometer(
                 timestamp_us,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
             backend.add_gyroscope(timestamp_us, np.array([0.0, 0.15, 0.0]))
@@ -172,7 +181,7 @@ class GravityStabilizationTests(unittest.TestCase):
             timestamp_us = end_us - 580_000 + index * 20_000
             backend.add_accelerometer(
                 timestamp_us,
-                np.array([2.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([2.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
             backend.add_gyroscope(timestamp_us, np.array([0.0, 1.0, 0.0]))
@@ -189,13 +198,19 @@ class GravityStabilizationTests(unittest.TestCase):
         backend.configure(np.eye(3), np.eye(4))
         backend.initialized = True
         angle = math.radians(degrees)
-        backend.world_from_camera[:3, :3] = np.array(
+        error_world = np.array(
             [
-                [math.cos(angle), -math.sin(angle), 0.0],
-                [math.sin(angle), math.cos(angle), 0.0],
-                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+                [0.0, math.cos(angle), -math.sin(angle)],
+                [0.0, math.sin(angle), math.cos(angle)],
             ],
             dtype=np.float64,
+        )
+        backend.world_from_camera[:3, :3] = (
+            error_world
+            @ gravity_aligned_world_from_camera(
+                np.array([0.0, -1.0, 0.0])
+            )
         )
         return backend
 
@@ -212,7 +227,7 @@ class GravityStabilizationTests(unittest.TestCase):
             timestamp_us = start_us + index * 20_000
             backend.add_accelerometer(
                 timestamp_us,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
             backend.add_gyroscope(timestamp_us, np.zeros(3))
@@ -229,7 +244,7 @@ class GravityStabilizationTests(unittest.TestCase):
             timestamp_us = start_us + index * 20_000
             backend.add_accelerometer(
                 timestamp_us,
-                np.array([0.0, STANDARD_GRAVITY_MPS2, 0.0]),
+                np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0]),
                 motion_inhibited=False,
             )
             backend.add_gyroscope(
@@ -240,13 +255,62 @@ class GravityStabilizationTests(unittest.TestCase):
     @staticmethod
     def _heading_degrees(rotation: np.ndarray) -> float:
         forward = rotation @ np.array([0.0, 0.0, 1.0])
-        return math.degrees(math.atan2(forward[0], forward[2]))
+        return math.degrees(math.atan2(forward[1], forward[0]))
 
     @staticmethod
     def _tilt_error_degrees(rotation: np.ndarray) -> float:
-        observed_up = rotation @ np.array([0.0, 1.0, 0.0])
-        cosine = float(np.clip(observed_up @ np.array([0.0, 1.0, 0.0]), -1.0, 1.0))
+        observed_up = rotation @ np.array([0.0, -1.0, 0.0])
+        cosine = float(
+            np.clip(
+                observed_up @ np.array([0.0, 0.0, 1.0]),
+                -1.0,
+                1.0,
+            )
+        )
         return math.degrees(math.acos(cosine))
+
+    def test_initial_optical_frame_maps_forward_left_up_to_world_xyz(
+        self,
+    ) -> None:
+        rotation = gravity_aligned_world_from_camera(
+            np.array([0.0, -1.0, 0.0])
+        )
+        np.testing.assert_allclose(
+            rotation @ np.array([0.0, 0.0, 1.0]),
+            [1.0, 0.0, 0.0],
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            rotation @ np.array([-1.0, 0.0, 0.0]),
+            [0.0, 1.0, 0.0],
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            rotation @ np.array([0.0, -1.0, 0.0]),
+            [0.0, 0.0, 1.0],
+            atol=1e-9,
+        )
+
+    def test_camera_level_preserves_origin_and_uses_z_up(self) -> None:
+        world_from_camera = np.eye(4)
+        world_from_camera[:3, :3] = (
+            gravity_aligned_world_from_camera(
+                np.array([0.0, -1.0, 0.0])
+            )
+        )
+        world_from_camera[:3, 3] = [0.4, -0.2, 1.1]
+        world_from_level = gravity_leveled_world_from_camera_level(
+            world_from_camera
+        )
+        np.testing.assert_allclose(
+            world_from_level[:3, 3],
+            [0.4, -0.2, 1.1],
+        )
+        np.testing.assert_allclose(
+            world_from_level[:3, :3],
+            np.eye(3),
+            atol=1e-9,
+        )
 
     @staticmethod
     def _rotation_angle(rotation: np.ndarray) -> float:

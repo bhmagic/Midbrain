@@ -874,6 +874,8 @@ class IntegratedController:
                     "position_residual_m": continuity.final_position_residual_m,
                     "orientation_residual_rad": continuity.final_orientation_residual_rad,
                     "cartesian_continuity": continuity.snapshot(),
+                    "endpoint_joint_delta_rad": endpoint_delta.tolist(),
+                    "endpoint_joint_delta_limit_rad": endpoint_limits.tolist(),
                     "planning_valid": not planning_reasons,
                     "planning_reasons": planning_reasons,
                     "physical_execution_enabled": not physical_reasons,

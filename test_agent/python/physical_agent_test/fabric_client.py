@@ -38,6 +38,11 @@ class FabricClient:
         response.raise_for_status()
         return response.json()
 
+    async def transforms(self) -> list[dict[str, Any]]:
+        response = await self._client.get(f"{self.base_url}/v1/transforms")
+        response.raise_for_status()
+        return response.json()
+
     async def publish(self, observation: dict[str, Any]) -> dict[str, Any]:
         response = await self._client.post(
             f"{self.base_url}/v1/observations",

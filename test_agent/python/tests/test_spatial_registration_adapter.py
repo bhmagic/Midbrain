@@ -81,6 +81,24 @@ def _route(*, generic: bool = True, boot_id: str = BOOT_ID) -> dict:
         },
     }
     if not generic:
+        route["products"] = {
+            "rgb": {
+                "coordinate_frame": "camera_color",
+                "coordinate_convention_id": (
+                    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                ),
+            },
+            "depth": {
+                "coordinate_frame": "camera_depth",
+                "coordinate_convention_id": (
+                    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                ),
+            },
+            "calibration": {
+                "stream": "camera.calibration",
+                "revision": "calibration-1",
+            },
+        }
         return route
 
     registered_region = {
@@ -118,6 +136,9 @@ def _route(*, generic: bool = True, boot_id: str = BOOT_ID) -> dict:
                 ]
             },
             "sample": {"format_name": format_name},
+            "coordinate_convention_id": (
+                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            ),
             "calibration": {
                 "stream": "camera.calibration",
                 "document_path": f"{channel_id}.intrinsic",
@@ -263,7 +284,18 @@ class _Capture:
             world_frame="world-vio",
             calibration_revision="calibration-1",
             observations={
-                "bundle": _identity_observation(),
+                "bundle": _identity_observation(
+                    {
+                        "coordinate_conventions": {
+                            "rgb": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                            "aligned_depth": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                        }
+                    }
+                ),
                 "calibration": {
                     **_identity_observation(),
                     "boot_id": calibration_boot_id,
@@ -278,6 +310,9 @@ class _Capture:
                     "data": {
                         "session_epoch": "vio-epoch-1",
                         "world_frame": "world-vio",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
                     },
                 },
                 "vio_status": {
@@ -287,6 +322,9 @@ class _Capture:
                     "data": {
                         "tracking_state": "TRACKING",
                         "session_epoch": "vio-epoch-1",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
                     },
                 },
                 "capture": {"copy_attempt": 1},

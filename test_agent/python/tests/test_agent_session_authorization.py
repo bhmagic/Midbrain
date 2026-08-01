@@ -1,0 +1,598 @@
+from __future__ import annotations
+
+import json
+import os
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from agents import Agent, RunState
+from agents.items import ToolApprovalItem
+from agents.run_context import RunContextWrapper
+from agents.run_internal.agent_runner_helpers import resolve_resumed_context
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+os.environ.setdefault("OPENAI_API_KEY", "unit-test-placeholder")
+
+from physical_agent_test.app import (
+    DeveloperApprovalDecision,
+    MAX_SESSION_AUTO_SPEED_M_S,
+    PromptRequest,
+    _approval_fingerprint,
+    _record_approval_decisions,
+    _repeated_approval_response,
+    _validate_automatic_agent_approval,
+    run_developer_prompt,
+)
+from physical_agent_test.agent_driver import (
+    AgentSessionAuthorization,
+    PrototypeAgentDriver,
+    _runner_context,
+    provider_activation_needs_approval,
+    relative_motion_needs_approval,
+    stationary_activation_needs_approval,
+    stationary_calibration_needs_approval,
+)
+
+
+def _interruption(tool_name: str, arguments: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        tool_name=tool_name,
+        tool_namespace=None,
+        raw_item={"arguments": arguments},
+    )
+
+
+def _pose_motion_arguments(**overrides) -> dict[str, object]:
+    arguments: dict[str, object] = {
+        "preview_id": "preview-pose",
+        "motion_intent": "NEW_RELATIVE_MOVE",
+        "direction": "ARM_BASE_POSITIVE_X",
+        "distance_m": 0.2,
+        "requested_speed_m_s": 0.2,
+        "planned_nominal_speed_m_s": 0.2,
+        "orientation_policy": "POSITION_ONLY",
+        "controlled_frame_yaw_delta_deg": None,
+    }
+    arguments.update(overrides)
+    return arguments
+
+
+class AgentSessionAuthorizationTests(unittest.TestCase):
+    def test_resumed_run_keeps_sdk_context_and_approval_records(self) -> None:
+        authorization = AgentSessionAuthorization(
+            auto_authorize_provider_activation=True,
+        )
+        agent = Agent(name="resume-test", instructions="test")
+        state = RunState(
+            RunContextWrapper(authorization),
+            "activate camera",
+            agent,
+        )
+        approval = ToolApprovalItem(
+            agent=agent,
+            raw_item={
+                "type": "function_call",
+                "call_id": "camera-hot-call",
+                "name": "set_provider_residency",
+                "arguments": (
+                    '{"provider_id":"camera.femto_bolt","action":"hot"}'
+                ),
+            },
+            tool_name="set_provider_residency",
+        )
+        state.approve(approval)
+
+        selected = _runner_context(
+            state,
+            AgentSessionAuthorization(),
+        )
+        resolved = resolve_resumed_context(
+            run_state=state,
+            context=selected,
+        )
+
+        self.assertIsNone(selected)
+        self.assertIs(resolved.context, authorization)
+        self.assertTrue(
+            resolved.get_approval_status(
+                "set_provider_residency",
+                "camera-hot-call",
+                existing_pending=approval,
+            )
+        )
+
+    def test_fresh_run_receives_explicit_or_default_authorization(self) -> None:
+        explicit = AgentSessionAuthorization(
+            auto_authorize_provider_activation=True,
+        )
+
+        self.assertIs(_runner_context("prompt", explicit), explicit)
+        self.assertEqual(
+            _runner_context("prompt", None),
+            AgentSessionAuthorization(),
+        )
+
+    def test_repeated_exact_approval_is_stopped_without_sdk_call_ids(
+        self,
+    ) -> None:
+        first = _interruption(
+            "set_provider_residency",
+            '{"provider_id":"camera.femto_bolt","action":"hot"}',
+        )
+        first.raw_item["call_id"] = "call-1"
+        second = _interruption(
+            "set_provider_residency",
+            '{"action":"hot","provider_id":"camera.femto_bolt"}',
+        )
+        second.raw_item["call_id"] = "call-2"
+        decisions = _record_approval_decisions(
+            [first],
+            approved=True,
+            existing={},
+        )
+        approval = PrototypeAgentDriver._approval_description(second)
+
+        self.assertIn(_approval_fingerprint(approval), decisions)
+        response = _repeated_approval_response(
+            run_id="run-1",
+            approvals=[approval],
+            decisions=decisions,
+        )
+        self.assertIsNotNone(response)
+        assert response is not None
+        self.assertTrue(response["approval_loop_prevented"])
+        self.assertEqual(response["status"], "completed")
+        self.assertIn("previously approved", response["answer"])
+
+    def test_prompt_authorization_accepts_operator_limit_above_controller_limit(
+        self,
+    ) -> None:
+        request = PromptRequest(
+            prompt="move",
+            max_auto_move_cm=35.0,
+            max_auto_speed_m_s=0.5,
+        )
+
+        self.assertEqual(request.max_auto_move_cm, 35.0)
+        self.assertEqual(request.max_auto_speed_m_s, 0.5)
+        self.assertEqual(MAX_SESSION_AUTO_SPEED_M_S, 0.5)
+        with self.assertRaises(ValidationError):
+            PromptRequest(prompt="move", max_auto_speed_m_s=0.5001)
+
+    def test_provider_auto_authorization_excludes_stop(self) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_PROVIDER_ACTIVATION",
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "set_provider_residency",
+                    '{"provider_id":"camera.femto_bolt","action":"hot"}',
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(HTTPException, "permits only start"):
+            _validate_automatic_agent_approval(
+                [
+                    _interruption(
+                        "set_provider_residency",
+                        (
+                            '{"provider_id":"camera.femto_bolt",'
+                            '"action":"stop"}'
+                        ),
+                    )
+                ],
+                decision,
+            )
+
+    def test_motion_auto_authorization_enforces_exact_tool_and_cm_limit(
+        self,
+    ) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_BOUNDED_RELATIVE_MOTION",
+            max_auto_move_cm=10.0,
+            max_auto_speed_m_s=0.2,
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "execute_integrated_motion_preview",
+                    '{"preview_id":"preview-1","distance_m":0.1,'
+                    '"motion_intent":"NEW_RELATIVE_MOVE",'
+                    '"direction":"POSITIVE_X",'
+                    '"requested_speed_m_s":0.2,'
+                    '"planned_nominal_speed_m_s":0.2,'
+                    '"orientation_policy":"POSITION_ONLY",'
+                    '"controlled_frame_yaw_delta_deg":null}',
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(HTTPException, "10 cm and 0.2 m/s"):
+            _validate_automatic_agent_approval(
+                [
+                    _interruption(
+                        "execute_integrated_motion_preview",
+                        '{"preview_id":"preview-2","distance_m":0.1001,'
+                        '"motion_intent":"NEW_RELATIVE_MOVE",'
+                        '"direction":"POSITIVE_X",'
+                        '"requested_speed_m_s":0.2,'
+                        '"planned_nominal_speed_m_s":0.2,'
+                        '"orientation_policy":"POSITION_ONLY",'
+                        '"controlled_frame_yaw_delta_deg":null}',
+                    )
+                ],
+                decision,
+            )
+        with self.assertRaisesRegex(HTTPException, "nominal-speed limits"):
+            _validate_automatic_agent_approval(
+                [
+                    _interruption(
+                        "execute_integrated_motion_preview",
+                        '{"preview_id":"preview-3","distance_m":0.1,'
+                        '"motion_intent":"NEW_RELATIVE_MOVE",'
+                        '"direction":"POSITIVE_X",'
+                        '"requested_speed_m_s":0.2001,'
+                        '"planned_nominal_speed_m_s":0.2001,'
+                        '"orientation_policy":"POSITION_ONLY",'
+                        '"controlled_frame_yaw_delta_deg":null}',
+                    )
+                ],
+                decision,
+            )
+        with self.assertRaisesRegex(HTTPException, "exact Integrated"):
+            _validate_automatic_agent_approval(
+                [_interruption("execute_basic_safe_home", "{}")],
+                decision,
+            )
+
+    def test_motion_auto_authorization_covers_bounded_pose_yaw_only(
+        self,
+    ) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_BOUNDED_RELATIVE_MOTION",
+            max_auto_move_cm=35.0,
+            max_auto_speed_m_s=0.5,
+        )
+        pure_rotation = _pose_motion_arguments(
+            motion_intent="NEW_RELATIVE_ROTATION",
+            direction="NONE",
+            distance_m=0.0,
+            requested_speed_m_s=None,
+            planned_nominal_speed_m_s=0.0,
+            orientation_policy="APPLY_CONTROLLED_FRAME_YAW_DELTA",
+            controlled_frame_yaw_delta_deg=-30.0,
+        )
+        combined_pose = _pose_motion_arguments(
+            motion_intent="NEW_RELATIVE_POSE_MOVE",
+            orientation_policy="APPLY_CONTROLLED_FRAME_YAW_DELTA",
+            controlled_frame_yaw_delta_deg=-30.0,
+        )
+        for arguments in (pure_rotation, combined_pose):
+            with self.subTest(arguments=arguments):
+                _validate_automatic_agent_approval(
+                    [
+                        _interruption(
+                            "execute_integrated_motion_preview",
+                            json.dumps(arguments),
+                        )
+                    ],
+                    decision,
+                )
+
+        invalid = [
+            {**pure_rotation, "controlled_frame_yaw_delta_deg": -45.001},
+            {**pure_rotation, "motion_intent": "NEW_RELATIVE_MOVE"},
+            {
+                **pure_rotation,
+                "requested_speed_m_s": 0.1,
+                "planned_nominal_speed_m_s": 0.1,
+            },
+            {**pure_rotation, "distance_m": 0.1},
+        ]
+        for arguments in invalid:
+            with self.subTest(invalid=arguments):
+                with self.assertRaises(HTTPException):
+                    _validate_automatic_agent_approval(
+                        [
+                            _interruption(
+                                "execute_integrated_motion_preview",
+                                json.dumps(arguments),
+                            )
+                        ],
+                        decision,
+                    )
+
+    def test_motion_auto_authorization_accepts_separate_session_speed_ceiling(
+        self,
+    ) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_BOUNDED_RELATIVE_MOTION",
+            max_auto_move_cm=35.0,
+            max_auto_speed_m_s=0.5,
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "execute_integrated_motion_preview",
+                    '{"preview_id":"preview-1",'
+                    '"motion_intent":"NEW_RELATIVE_MOVE",'
+                    '"direction":"POSITIVE_X","distance_m":0.2,'
+                    '"requested_speed_m_s":0.5,'
+                    '"planned_nominal_speed_m_s":0.5,'
+                    '"orientation_policy":"POSITION_ONLY",'
+                    '"controlled_frame_yaw_delta_deg":null}',
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(HTTPException, "0.5 m/s"):
+            _validate_automatic_agent_approval(
+                [
+                    _interruption(
+                        "execute_integrated_motion_preview",
+                        '{"preview_id":"preview-2",'
+                        '"motion_intent":"NEW_RELATIVE_MOVE",'
+                        '"direction":"POSITIVE_X","distance_m":0.2,'
+                        '"requested_speed_m_s":0.5001,'
+                        '"planned_nominal_speed_m_s":0.5001,'
+                        '"orientation_policy":"POSITION_ONLY",'
+                        '"controlled_frame_yaw_delta_deg":null}',
+                    )
+                ],
+                decision,
+            )
+
+    def test_calibration_auto_authorization_is_exact_tool_only(self) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_STATIONARY_CALIBRATION",
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "calibrate_stationary_workcell",
+                    '{"request":"establish world and arm-base coordinates"}',
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(
+            HTTPException,
+            "permits only calibrate_stationary_workcell",
+        ):
+            _validate_automatic_agent_approval(
+                [_interruption("execute_basic_safe_home", "{}")],
+                decision,
+            )
+
+    def test_calibration_activation_auto_authorization_is_exact_tool_only(
+        self,
+    ) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_STATIONARY_ACTIVATION",
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "review_and_activate_stationary_calibration",
+                    (
+                        '{"alignment_id":"alignment-1",'
+                        '"candidate_sha256":"'
+                        + "a" * 64
+                        + '"}'
+                    ),
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(
+            HTTPException,
+            "permits only exact stationary candidate",
+        ):
+            _validate_automatic_agent_approval(
+                [_interruption("execute_basic_safe_home", "{}")],
+                decision,
+            )
+
+
+class DynamicAgentApprovalPredicateTests(
+    unittest.IsolatedAsyncioTestCase
+):
+    async def test_eligible_calls_do_not_require_sdk_approval(self) -> None:
+        context = SimpleNamespace(
+            context=AgentSessionAuthorization(
+                auto_authorize_provider_activation=True,
+                auto_authorize_relative_motion=True,
+                max_auto_move_cm=35.0,
+                max_auto_speed_m_s=0.2,
+                auto_authorize_stationary_calibration=True,
+                auto_authorize_stationary_activation=True,
+            )
+        )
+
+        self.assertFalse(
+            await provider_activation_needs_approval(
+                context,
+                {"provider_id": "robot_arm.primary.integrated", "action": "hot"},
+                "provider-call",
+            )
+        )
+        self.assertFalse(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "motion_intent": "NEW_RELATIVE_MOVE",
+                    "direction": "POSITIVE_X",
+                    "distance_m": 0.2,
+                    "requested_speed_m_s": 0.2,
+                    "planned_nominal_speed_m_s": 0.2,
+                    "orientation_policy": "POSITION_ONLY",
+                    "controlled_frame_yaw_delta_deg": None,
+                },
+                "motion-call",
+            )
+        )
+        self.assertFalse(
+            await stationary_calibration_needs_approval(
+                context,
+                {"request": "establish frames"},
+                "calibration-call",
+            )
+        )
+        self.assertFalse(
+            await stationary_activation_needs_approval(
+                context,
+                {
+                    "alignment_id": "alignment-1",
+                    "candidate_sha256": "a" * 64,
+                },
+                "activation-call",
+            )
+        )
+
+    async def test_session_authorization_remains_fail_closed(self) -> None:
+        context = SimpleNamespace(
+            context=AgentSessionAuthorization(
+                auto_authorize_provider_activation=True,
+                auto_authorize_relative_motion=True,
+                max_auto_move_cm=5.0,
+                max_auto_speed_m_s=0.1,
+                auto_authorize_stationary_calibration=False,
+                auto_authorize_stationary_activation=False,
+            )
+        )
+
+        self.assertTrue(
+            await provider_activation_needs_approval(
+                context,
+                {"provider_id": "camera.femto_bolt", "action": "stop"},
+                "stop-call",
+            )
+        )
+        self.assertTrue(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "distance_m": 0.0501,
+                    "planned_nominal_speed_m_s": 0.1,
+                },
+                "motion-call",
+            )
+        )
+        self.assertTrue(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "distance_m": 0.05,
+                    "planned_nominal_speed_m_s": 0.1001,
+                },
+                "fast-motion-call",
+            )
+        )
+        self.assertTrue(
+            await stationary_calibration_needs_approval(
+                context,
+                {},
+                "calibration-call",
+            )
+        )
+        self.assertTrue(
+            await stationary_activation_needs_approval(
+                context,
+                {},
+                "activation-call",
+            )
+        )
+
+    async def test_motion_predicate_uses_session_not_skill_speed_ceiling(
+        self,
+    ) -> None:
+        context = SimpleNamespace(
+            context=AgentSessionAuthorization(
+                auto_authorize_relative_motion=True,
+                max_auto_move_cm=35.0,
+                max_auto_speed_m_s=0.5,
+            )
+        )
+
+        self.assertFalse(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "motion_intent": "NEW_RELATIVE_MOVE",
+                    "direction": "POSITIVE_X",
+                    "distance_m": 0.2,
+                    "requested_speed_m_s": 0.5,
+                    "planned_nominal_speed_m_s": 0.5,
+                    "orientation_policy": "POSITION_ONLY",
+                    "controlled_frame_yaw_delta_deg": None,
+                },
+                "motion-call",
+            )
+        )
+        self.assertTrue(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "motion_intent": "NEW_RELATIVE_MOVE",
+                    "direction": "POSITIVE_X",
+                    "distance_m": 0.2,
+                    "requested_speed_m_s": 0.5001,
+                    "planned_nominal_speed_m_s": 0.5001,
+                    "orientation_policy": "POSITION_ONLY",
+                    "controlled_frame_yaw_delta_deg": None,
+                },
+                "fast-motion-call",
+            )
+        )
+
+
+class DeveloperRouteAuthorizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_developer_route_forwards_session_authorization(self) -> None:
+        request = PromptRequest(
+            prompt="establish the world and arm-base coordinates",
+            auto_authorize_provider_activation=True,
+            auto_authorize_relative_motion=True,
+            max_auto_move_cm=35.0,
+            max_auto_speed_m_s=0.5,
+            auto_authorize_stationary_calibration=True,
+            auto_authorize_stationary_activation=True,
+        )
+        completed = {
+            "status": "completed",
+            "run_id": "test",
+            "answer": "done",
+            "approvals": [],
+        }
+        with patch(
+            "physical_agent_test.app._developer_agent_step",
+            new=AsyncMock(return_value=completed),
+        ) as step:
+            result = await run_developer_prompt(request)
+
+        self.assertEqual(result, completed)
+        authorization = step.await_args.kwargs["authorization"]
+        self.assertTrue(authorization.auto_authorize_provider_activation)
+        self.assertTrue(authorization.auto_authorize_relative_motion)
+        self.assertEqual(authorization.max_auto_move_cm, 35.0)
+        self.assertEqual(authorization.max_auto_speed_m_s, 0.5)
+        self.assertTrue(authorization.auto_authorize_stationary_calibration)
+        self.assertTrue(authorization.auto_authorize_stationary_activation)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,6 +1,6 @@
 {
   "skill_type": "stationary_world_arm_alignment",
-  "version": "0.7.0",
+  "version": "0.8.5",
   "display_name": "Stationary World-Space Arm Finder",
   "ui": {
     "observation": {
@@ -79,7 +79,7 @@
   "mode_contracts": {
     "foundation_base_vlm_gripper": {
       "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
-      "gripper_alignment_source": "VLM_RGBD_BEAK",
+      "gripper_alignment_source": "VLM_GRIPPER_RGBD_BASE_X_RELATION",
       "foundation_pose_models": [
         "base"
       ],
@@ -87,7 +87,7 @@
     },
     "foundation_base_gripper": {
       "base_alignment_source": "FOUNDATIONPOSE_BASE_POSE",
-      "gripper_alignment_source": "FOUNDATIONPOSE_GRIPPER_POSE",
+      "gripper_alignment_source": "FOUNDATIONPOSE_GRIPPER_AUXILIARY_ONLY",
       "foundation_pose_models": [
         "base",
         "gripper"
@@ -102,6 +102,15 @@
     }
   },
   "result_schema_version": 3,
+  "spatial_frame_contract": {
+    "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+    "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+    "base_orientation_hypothesis_resolution": "EXACTLY_ONE_OF_IDENTITY_RX180_RY180_RZ180_AT_CENTERED_CAD_MESH_ORIGIN_FROM_WORLD_UP_AND_GRIPPER_X_SIGN",
+    "base_yaw_ambiguity_resolution": "INCLUDED_IN_SINGLE_MESH_CENTERED_BASE_ORIENTATION_HYPOTHESIS",
+    "base_up_policy": "CANONICALIZE_Z_HEMISPHERE_AT_CENTERED_MESH_ORIGIN_THEN_WARN_ON_RESIDUAL_TILT",
+    "projected_box_size_policy": "MAXIMUM_25_PERCENT_MISMATCH_TWO_ATTEMPTS",
+    "legacy_y_up_candidates_accepted": false
+  },
   "required_capabilities": [
     "camera.rgb",
     "camera.depth_aligned_to_rgb",

@@ -72,8 +72,15 @@ class Settings:
     openai_agent_max_turns: int = int(
         os.getenv("OPENAI_AGENT_MAX_TURNS", "16")
     )
+    openai_agent_session_history_items: int = int(
+        os.getenv("OPENAI_AGENT_SESSION_HISTORY_ITEMS", "32")
+    )
     authorization_signing_secret: str = os.getenv(
         "MIDBRAIN_AUTHORIZATION_SECRET",
+        "",
+    )
+    review_auth_secret: str = os.getenv(
+        "MIDBRAIN_REVIEW_AUTH_SECRET",
         "",
     )
     gemini_model: str = os.getenv("GEMINI_ROBOTICS_MODEL", "gemini-robotics-er-1.6-preview")
@@ -87,6 +94,9 @@ class Settings:
     point_cloud_max_points: int = int(os.getenv("POINT_CLOUD_MAX_POINTS", "180000"))
     phase4_agent_run_timeout_s: float = float(
         os.getenv("PHASE4_AGENT_RUN_TIMEOUT_S", "90")
+    )
+    stationary_calibration_timeout_s: float = float(
+        os.getenv("STATIONARY_CALIBRATION_TIMEOUT_S", "600")
     )
     phase5_spatial_binding_mode: str = os.getenv(
         "PHASE5_SPATIAL_BINDING_MODE",

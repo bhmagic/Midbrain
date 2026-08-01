@@ -44,13 +44,6 @@ class BrowserUiContractTests(unittest.TestCase):
             / "web"
             / "style.css",
             root
-            / "skills"
-            / "vegetable_cutting"
-            / "python"
-            / "vegetable_cutting"
-            / "web"
-            / "style.css",
-            root
             / "test_agent"
             / "python"
             / "physical_agent_test"
@@ -90,13 +83,6 @@ class BrowserUiContractTests(unittest.TestCase):
             / "stationary_world_arm_alignment"
             / "python"
             / "stationary_world_arm_alignment"
-            / "web"
-            / "style.css",
-            root
-            / "skills"
-            / "vegetable_cutting"
-            / "python"
-            / "vegetable_cutting"
             / "web"
             / "style.css",
             root
@@ -226,15 +212,30 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("Approval records this decision only", app)
         self.assertIn("approval_executes_action", app)
 
-    def test_binding_validity_is_visible_in_development_ui(self) -> None:
+    def test_binding_validity_stays_in_status_but_not_prompt_chrome(
+        self,
+    ) -> None:
         root = Path(__file__).resolve().parents[3]
         app = (
             root / "test_agent" / "python" / "physical_agent_test" / "app.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('id="bindingState"', app)
-        self.assertIn("binding.validation_issues", app)
+        self.assertNotIn('id="bindingState"', app)
+        self.assertNotIn("Camera capability binding", app)
+        self.assertNotIn("binding.validation_issues", app)
         self.assertIn('"capability_binding": pointing_skill.last_binding', app)
+
+    def test_developer_prompt_begins_empty(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            '<textarea id="prompt" placeholder="Describe the task for the agent."></textarea>',
+            app,
+        )
+        self.assertNotIn("Take a screenshot and identify the object", app)
 
     def test_manager_observation_surface_has_no_mutating_requests(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -453,6 +454,169 @@ class BrowserUiContractTests(unittest.TestCase):
         )
         self.assertIn("approval.title", regular)
         self.assertIn("/api/runs/", regular)
+
+    def test_regular_agent_has_bounded_session_authorization_controls(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        regular = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "regular_agent.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="autoApproveProviders"', regular)
+        self.assertIn('id="autoApproveMoves"', regular)
+        self.assertIn('id="autoApproveCalibration"', regular)
+        self.assertIn('id="maxAutoMoveCm"', regular)
+        self.assertIn('id="maxAutoSpeedMps"', regular)
+        self.assertIn(
+            'id="autoApproveProviders" type="checkbox" checked',
+            regular,
+        )
+        self.assertIn(
+            'id="autoApproveMoves" type="checkbox" checked',
+            regular,
+        )
+        self.assertIn(
+            'id="autoApproveCalibration" type="checkbox" checked',
+            regular,
+        )
+        self.assertIn(
+            'id="autoApproveCalibrationActivation" '
+            'type="checkbox" checked',
+            regular,
+        )
+        self.assertIn('value="35"', regular)
+        self.assertIn('max="0.5"', regular)
+        self.assertIn('value="0.5"', regular)
+        self.assertIn(
+            'midbrain.regularAgent.sessionAuthorization.v3',
+            regular,
+        )
+        self.assertIn('max="100"', regular)
+        self.assertIn("auto_authorize_provider_activation", regular)
+        self.assertIn("auto_authorize_relative_motion", regular)
+        self.assertIn("max_auto_speed_m_s", regular)
+        self.assertIn("auto_authorize_stationary_calibration", regular)
+        self.assertIn("auto_authorize_stationary_activation", regular)
+        self.assertIn("autoApproveCalibrationActivation", regular)
+        self.assertIn("AUTO_PROVIDER_ACTIVATION", regular)
+        self.assertIn("AUTO_BOUNDED_RELATIVE_MOTION", regular)
+        self.assertIn("AUTO_STATIONARY_CALIBRATION", regular)
+        self.assertIn("NEW_RELATIVE_POSE_MOVE", regular)
+        self.assertIn("NEW_RELATIVE_ROTATION", regular)
+        self.assertIn("APPLY_CONTROLLED_FRAME_YAW_DELTA", regular)
+        self.assertIn("controlled-frame yaw AUTO <= 45°", regular)
+        self.assertIn('["start", "hot", "warm"]', regular)
+        self.assertIn("execute_integrated_motion_preview", regular)
+        self.assertIn("stop, safe-home", regular)
+        self.assertIn("_validate_automatic_agent_approval", app)
+        self.assertIn(
+            '"midbrain-regular-agent-systemic-gui-v4-"',
+            app,
+        )
+        self.assertIn("agent_runtime_session_epoch = uuid.uuid4().hex", app)
+        self.assertIn("SessionSettings(limit=None)", app)
+        self.assertIn("session_history_item_limit=", app)
+
+    def test_developer_agent_has_matching_session_authorization_controls(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'id="autoApproveProviders" type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveMoves" type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveCalibration" type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveCalibrationActivation" '
+            'type="checkbox" checked',
+            app,
+        )
+        self.assertIn('id="maxAutoMoveCm"', app)
+        self.assertIn('value="35"', app)
+        self.assertIn('id="maxAutoSpeedMps"', app)
+        self.assertIn('max="0.5"', app)
+        self.assertIn('value="0.5"', app)
+        self.assertIn(
+            "midbrain.developerAgent.sessionAuthorization.v1",
+            app,
+        )
+        self.assertIn("automaticDeveloperApprovalDecision", app)
+        self.assertIn("AUTO_PROVIDER_ACTIVATION", app)
+        self.assertIn("AUTO_BOUNDED_RELATIVE_MOTION", app)
+        self.assertIn("AUTO_STATIONARY_CALIBRATION", app)
+        self.assertIn("AUTO_STATIONARY_ACTIVATION", app)
+        self.assertIn("NEW_RELATIVE_POSE_MOVE", app)
+        self.assertIn("NEW_RELATIVE_ROTATION", app)
+        self.assertIn("APPLY_CONTROLLED_FRAME_YAW_DELTA", app)
+        self.assertIn("controlled-frame yaw AUTO <= 45°", app)
+        self.assertIn("auto_authorize_provider_activation", app)
+        self.assertIn("auto_authorize_relative_motion", app)
+        self.assertIn("max_auto_move_cm", app)
+        self.assertIn("max_auto_speed_m_s", app)
+        self.assertIn("auto_authorize_stationary_calibration", app)
+        self.assertIn("auto_authorize_stationary_activation", app)
+
+    def test_world_point_cloud_shows_live_local_axes_and_keeps_gravity(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('aria-label="World coordinate legend"', app)
+        self.assertIn('<strong class="world-x">+X</strong>', app)
+        self.assertIn('<strong class="world-y">+Y</strong>', app)
+        self.assertIn('<strong class="world-z">+Z</strong>', app)
+        self.assertIn('id="axisControls"', app)
+        self.assertIn('id="fitAxes"', app)
+        self.assertIn('id="frameLabels"', app)
+        self.assertIn('id="screenAxisOverlay"', app)
+        self.assertIn("refreshSpatialAxes", app)
+        self.assertIn("dynamicAxisFrames", app)
+        self.assertIn("ARM_BASE", app)
+        self.assertIn("GRIPPER_TOOL", app)
+        self.assertIn("ARM_JOINT", app)
+        self.assertIn("OBJECT", app)
+        self.assertIn("SCREEN_2D", app)
+        self.assertIn("Shift-drag", app)
+        self.assertIn("↓ World gravity · -Z", app)
+        self.assertIn("cloudData.world_frame", app)
+        self.assertIn("cloudData.transform_authority", app)
+        self.assertIn("cloudData.calibration_revision", app)
+        self.assertIn("map transform: ", app)
+
+    def test_spatial_axis_inspector_reuses_point_cloud_renderer(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('@app.get("/dev/spatial-axes"', app)
+        self.assertIn("return PAGE", app)
+        self.assertIn("spatial-inspector-mode", app)
+        self.assertIn("Fit visible axes", app)
+        self.assertIn("metadata", app)
 
     def test_ui_shutdown_invokes_workspace_stop_script_directly(self) -> None:
         root = Path(__file__).resolve().parents[3]

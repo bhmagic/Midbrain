@@ -12,7 +12,6 @@ $requiredSetupScripts = @(
     "skills\register_tool_to_control_frame\scripts\setup.ps1",
     "skills\spatial_registration_rgbd\scripts\setup.ps1",
     "skills\stationary_world_arm_alignment\scripts\setup.ps1",
-    "skills\vegetable_cutting\scripts\setup.ps1",
     "test_agent\scripts\setup.ps1"
 )
 

@@ -1,6 +1,6 @@
 {
   "provider_type": "perception.object_pose.foundation_pose",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "display_name": "FoundationPose Compatibility Provider",
   "manager_ids": ["perception.object_pose.foundation_pose"],
   "architectural_role": "LEGACY_COMPATIBILITY_BACKEND",
@@ -58,7 +58,7 @@
     "input_policy": "latest_complete_rgbd_frame; no backlog",
     "initialization_policy": "rgb_depth_intrinsics_and_one_of_local_mask_bounding_box_or_fabric_mask",
     "tracking_policy": "previous_pose_rgbd_tracking_with_explicit_relocalization",
-    "output_policy": "raw_camera_relative_measurement_with_model_role_and_semantic_frame_metadata; fusion_is_external",
+    "output_policy": "raw_camera_system_x_y_z_optical_measurement_with_explicit_frame_and_convention_metadata; fusion_is_external",
     "development_backend": "mock"
   },
   "compatible_core": {
@@ -97,6 +97,7 @@
   "midbrain_contracts": {
     "resource_provider": "contracts/01_resource_provider_contract.md",
     "timestamped_transform_graph": "contracts/06_timestamped_transform_graph.md",
+    "spatial_frame_convention": "contracts/14_spatial_frame_convention_v2.md",
     "fabric_transport": "contracts/03_world_state_fabric_transport_specification.md"
   }
 }

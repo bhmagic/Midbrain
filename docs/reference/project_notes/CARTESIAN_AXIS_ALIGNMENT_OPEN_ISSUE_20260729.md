@@ -1,8 +1,13 @@
 # Cartesian Axis Interpretation and Alignment Open Issue
 
 Date: 2026-07-29
-Status: open; physical motion remains bounded by controller preview and
-operator authorization
+Status: superseded as a software-design issue by spatial convention V2;
+retained as historical evidence. Physical qualification remains open and
+motion remains bounded by controller preview and operator authorization.
+
+> Historical note: the Y-up and arm-base +X observations below describe the
+> former implementation and must not be used as current coordinate semantics.
+> See `contracts/14_spatial_frame_convention_v2.md`.
 
 ## Statement
 

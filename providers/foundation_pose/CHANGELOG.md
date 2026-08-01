@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Require native optical convention metadata on calibration and RGB-D inputs.
+- Publish FoundationPose measurements with explicit
+  `camera_system_x/y/z` optical-axis names and convention identity.
 - Made default-profile seeding reproduce the canonical `config/foundation_pose` layout, including reference atlases and the canonical license/provenance filenames.
 - Preserved existing registries and files; this changes repair completeness only and does not change pose inference.
 

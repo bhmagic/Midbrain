@@ -1,13 +1,13 @@
 {
   "skill_type": "locate_effector_front",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Locate Effector Front",
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "locate_effector_front",
-    "description": "Locate the most distal visible point of the current robot effector, mounted tool, or held tool that still has reliable registered-depth evidence. Returns one registered front point, or two points and their 3D mean for a bare two-jaw gripper. This is general alignment evidence, not a task-specific drill, hammer, blade, or other action point.",
+    "description": "Locate the most distal visible point of the current robot effector, mounted tool, or held tool that still has reliable registered-depth evidence. Native camera geometry is returned only as explicit camera_system_x/y/z optical coordinates; transformed target points carry convention provenance. This is general alignment evidence, not a task-specific action point.",
     "when_to_use": [
       "A stationary alignment or registration task needs the general front reference of the visible effector assembly.",
       "A reflective or thin tool tip has missing depth and the most distal reliable point on the same rigid tool body is needed.",

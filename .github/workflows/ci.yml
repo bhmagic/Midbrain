@@ -18,12 +18,11 @@ jobs:
           python -m pip install pytest numpy httpx Pillow opencv-python-headless fastapi uvicorn python-dotenv jsonschema openai-agents google-genai
       - name: Run Python tests
         env:
-          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:skills/spatial_registration_rgbd/python:skills/vegetable_cutting/python:test_agent/python
+          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:skills/spatial_registration_rgbd/python:test_agent/python
         run: |
           python -m pytest -q --import-mode=importlib \
             providers/orbbec_femto_bolt/python/tests \
             providers/local_vio/python/tests \
-            skills/vegetable_cutting/python/tests \
             test_agent/python/tests
 
   rust-build:

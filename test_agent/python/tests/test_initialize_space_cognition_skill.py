@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from physical_agent_test.initialize_space_cognition_skill import InitializeSpaceCognitionSkill
+from physical_agent_test.spatial_frames import WORLD_CONVENTION_ID
 
 
 class _Manager:
@@ -52,7 +53,143 @@ class _Fabric:
         return {"data": value}
 
 
+class _VerificationManager:
+    def __init__(self, fabric=None):
+        self.fabric = fabric
+        self.hot: list[str] = []
+        self.provider_request_calls = 0
+        self.inhibit_acquire_calls = 0
+        self.inhibit_release_calls = 0
+        self.provider_requests: list[dict] = []
+
+    async def acquire_motion_inhibit(self, **_kwargs):
+        self.inhibit_acquire_calls += 1
+        return {"active": True, "lease_id": "inhibit-1"}
+
+    async def release_motion_inhibit(self, **_kwargs):
+        self.inhibit_release_calls += 1
+        return {"active": False}
+
+    async def set_hot(self, provider_id):
+        self.hot.append(provider_id)
+        return {"status": "hot"}
+
+    async def provider_request(self, provider_id, **kwargs):
+        self.provider_request_calls += 1
+        self.provider_requests.append(
+            {"provider_id": provider_id, **kwargs}
+        )
+        if self.fabric is not None:
+            self.fabric.tracking_state = "TRACKING"
+        return {
+            "status": "fixed_rig_stationary_attested",
+            "epoch_reset": False,
+        }
+
+
+class _VerificationFabric:
+    def __init__(self, *, tracking_state="TRACKING"):
+        self.published: list[dict] = []
+        self.tracking_state = tracking_state
+
+    async def latest_optional(self, stream):
+        if stream == "localization.vio.status":
+            return {
+                "valid": True,
+                "data": {
+                    "motion_inhibited": True,
+                    "tracking_state": self.tracking_state,
+                    "session_epoch": "epoch-current",
+                    "world_frame": "local_vio/epoch-current",
+                    "convention_id": WORLD_CONVENTION_ID,
+                },
+            }
+        return {"valid": True, "data": {}}
+
+    async def publish(self, observation):
+        self.published.append(observation)
+
+
 class InitializeSkillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fixed_rig_tracking_check_does_not_reset_epoch(self) -> None:
+        fabric = _VerificationFabric()
+        manager = _VerificationManager(fabric)
+        skill = InitializeSpaceCognitionSkill(
+            manager,
+            fabric,
+            camera_provider_id="camera",
+            vio_provider_id="vio",
+            timeout_s=1.0,
+        )
+
+        result = await skill.verify_tracking(
+            fixed_rig_confirmed=True
+        )
+
+        self.assertEqual(result["status"], "tracking_ready")
+        self.assertEqual(
+            result["result"]["session_epoch"],
+            "epoch-current",
+        )
+        self.assertFalse(result["result"]["epoch_reset_performed"])
+        self.assertEqual(manager.provider_request_calls, 0)
+        self.assertEqual(manager.hot, ["camera", "vio"])
+        self.assertEqual(manager.inhibit_acquire_calls, 0)
+        self.assertEqual(manager.inhibit_release_calls, 0)
+        self.assertEqual(
+            fabric.published[-1]["data"]["state"],
+            "SUCCEEDED",
+        )
+
+    async def test_initializing_fixed_rig_uses_vio_attestation_not_inhibit(
+        self,
+    ) -> None:
+        fabric = _VerificationFabric(tracking_state="INITIALIZING")
+        manager = _VerificationManager(fabric)
+        skill = InitializeSpaceCognitionSkill(
+            manager,
+            fabric,
+            camera_provider_id="camera",
+            vio_provider_id="vio",
+            timeout_s=1.0,
+        )
+
+        result = await skill.verify_tracking(
+            fixed_rig_confirmed=True
+        )
+
+        self.assertEqual(result["status"], "tracking_ready")
+        self.assertEqual(manager.provider_request_calls, 1)
+        request = manager.provider_requests[0]
+        self.assertEqual(
+            request["action"],
+            "attest_fixed_rig_stationary",
+        )
+        self.assertTrue(
+            request["payload"]["fixed_rig_confirmed"]
+        )
+        self.assertEqual(manager.inhibit_acquire_calls, 0)
+        self.assertEqual(manager.inhibit_release_calls, 0)
+        self.assertFalse(
+            result["result"]["global_motion_inhibit_acquired"]
+        )
+        self.assertEqual(
+            result["result"]["stationary_gate"],
+            "FIXED_RIG_OPERATOR_ATTESTATION",
+        )
+
+    async def test_fixed_rig_confirmation_is_required(self) -> None:
+        skill = InitializeSpaceCognitionSkill(
+            _VerificationManager(),
+            _VerificationFabric(),
+            camera_provider_id="camera",
+            vio_provider_id="vio",
+            timeout_s=1.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            await skill.verify_tracking(fixed_rig_confirmed=False)
+
     async def test_recovers_when_reset_epoch_changed_despite_control_500(self) -> None:
         old = {"session_epoch": "old", "tracking_state": "TRACKING"}
         new = {

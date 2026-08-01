@@ -233,10 +233,10 @@ def build_observation_motion_proposal(
     mode = str(view_mode).upper()
     arm_origin_world = transform[:3, 3]
     if mode == "TOP":
-        direction_from_object = np.asarray([0.0, 1.0, 0.0])
+        direction_from_object = np.asarray([0.0, 0.0, 1.0])
     elif mode == "FRONT":
         direction_from_object = arm_origin_world - object_world
-        direction_from_object[1] = 0.0
+        direction_from_object[2] = 0.0
         norm = float(np.linalg.norm(direction_from_object))
         if norm <= 1e-9:
             raise ValueError(
@@ -253,7 +253,8 @@ def build_observation_motion_proposal(
     target_arm = _transform_point(arm_from_world, target_world)
     proposal = {
         "schema": "physical_agent.observation_motion_proposal",
-        "schema_version": 1,
+        "schema_version": 2,
+        "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
         "status": "AUTHORIZATION_REQUIRED",
         "motion_usable": False,
         "physical_motion_authorized": False,
@@ -263,6 +264,12 @@ def build_observation_motion_proposal(
         "proposed_position_world_m": target_world.tolist(),
         "proposed_position_arm_base_m": target_arm.tolist(),
         "orientation_policy": "PRESERVE_CURRENT_TOOL_ORIENTATION",
+        "semantic_resolution": {
+            "view_mode": mode,
+            "world_up_axis": [0.0, 0.0, 1.0],
+            "resolved_direction_world": direction_from_object.tolist(),
+            "world_from_arm_base": transform.reshape(-1).tolist(),
+        },
         "controller_plan_request": {
             "endpoint": "/v1/motion/path-plan",
             "target": {

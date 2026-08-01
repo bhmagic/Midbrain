@@ -1,6 +1,6 @@
 {
   "provider_type": "localization.local_vio",
-  "version": "0.2.2",
+  "version": "0.4.0",
   "display_name": "Local Inertial-First RGB-D VIO Provider",
   "manager_ids": ["localization.local_vio"],
   "ui": {
@@ -17,7 +17,8 @@
     "localization.vio.velocity",
     "localization.vio.tracking_status",
     "localization.vio.dynamic_transform",
-    "localization.vio.reset"
+    "localization.vio.reset",
+    "localization.vio.fixed_rig_stationary_attestation"
   ],
   "required_capabilities": [
     "camera.rgb",
@@ -34,7 +35,8 @@
     "localization.body.pose",
     "localization.vio.status",
     "localization.vio.bias",
-    "transform.local_vio.body"
+    "transform.local_vio.body",
+    "transform.local_vio.camera_level"
   ],
   "consumed_streams": [
     "camera.rgbd.bundle",
@@ -53,6 +55,28 @@
     "visual_policy": "rgbd_primary_metric_correction; synchronized_ir_depth_optional_fallback",
     "feature_preprocess": "raw_baseline_with_optional_circular_lcn_candidate",
     "gravity_pose_policy": "quiet_imu_roll_pitch_leveling; yaw_and_translation_unchanged"
+  },
+  "stationary_initialization_policy": {
+    "accepted_gates": [
+      "GLOBAL_MOTION_INHIBIT",
+      "FIXED_RIG_OPERATOR_ATTESTATION"
+    ],
+    "fixed_rig_attestation_requires_explicit_confirmation": true,
+    "fixed_rig_attestation_maximum_duration_s": 120,
+    "fixed_rig_attestation_resets_epoch": false,
+    "fixed_rig_attestation_revokes_arm_lease": false
+  },
+  "spatial_frame_contract": {
+    "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+    "world_axes": {
+      "positive_x": "initial leveled forward",
+      "positive_y": "left",
+      "positive_z": "opposite gravity"
+    },
+    "gravity_world_mps2": [0.0, 0.0, -9.80665],
+    "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+    "hardware_accelerometer_calibration_unchanged": true,
+    "legacy_epoch_policy": "LEGACY_Y_UP_V1 data is historical and is never reinterpreted"
   },
   "compatible_core": {
     "resource_provider_manager": ">=0.3.0",

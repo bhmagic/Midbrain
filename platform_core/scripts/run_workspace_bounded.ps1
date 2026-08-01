@@ -254,6 +254,7 @@ foreach ($port in $requiredPorts) {
     }
 }
 
+& (Join-Path $PSScriptRoot "ensure_local_signing_secrets.ps1") | Out-Null
 Import-EnvFile (Join-Path $workspace "config\system.env")
 Import-EnvFile (Join-Path $workspace "config\api_keys.env")
 $env:PHYSICAL_AGENT_ROOT = $workspace
@@ -285,11 +286,19 @@ try {
             "MANAGER_PROVIDER_AUTOSTART_ENABLED" = $providerAutoStartValue
         }
     $started.Add($managerProcess)
-    Wait-BoundedHealth `
+    $managerHealth = Wait-BoundedHealth `
         -Url "http://127.0.0.1:7001/health" `
         -Process $managerProcess `
-        -TimeoutSeconds $StartupTimeoutSeconds |
-        Out-Null
+        -TimeoutSeconds $StartupTimeoutSeconds
+    if (
+        -not [bool]$managerHealth.
+            workcell_calibration_activation_identity_configured
+    ) {
+        throw (
+            "Manager started without the workcell calibration review secret. " +
+            "Check config\api_keys.env and restart the bounded workspace."
+        )
+    }
 
     if ($StartAgentUi) {
         $uiProcess = Start-IndependentProcess `

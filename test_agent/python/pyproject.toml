@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "physical-agent-test-scaffold"
-version = "0.3.0"
+version = "0.4.2"
 description = "Physical agent test UI for inertial-first VIO, startup space cognition, and world RGB-D visualization"
 requires-python = ">=3.11"
 dependencies = [
@@ -18,7 +18,7 @@ dependencies = [
   "Pillow>=10,<13",
   "numpy>=2.0,<3",
   "opencv-python-headless>=4.10,<5",
-  "orbbec-femto-provider>=0.3.0,<0.4"
+  "orbbec-femto-provider>=0.4.0,<0.5"
 ]
 
 [tool.setuptools.packages.find]

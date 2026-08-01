@@ -54,15 +54,22 @@ def load_skill_config(path: Path | None = None) -> dict[str, Any]:
             json.loads(configured.read_text(encoding="utf-8")),
         )
     validation = config["pose_validation"]
-    strict_confidence = float(validation["minimum_confidence"])
-    fallback_confidence = float(
-        validation["best_of_two_fallback_minimum_confidence"]
-    )
-    if not 0.0 < fallback_confidence <= strict_confidence <= 1.0:
+    maximum_attempts = validation.get("maximum_attempts")
+    if isinstance(maximum_attempts, bool) or maximum_attempts != 2:
         raise ValueError(
-            "pose-validation confidence thresholds must satisfy "
-            "0 < fallback <= strict <= 1"
+            "pose-validation maximum_attempts must be exactly 2"
         )
+    maximum_size_mismatch = float(
+        validation.get("maximum_projected_box_size_mismatch_fraction")
+        or 0.0
+    )
+    if not 0.0 < maximum_size_mismatch <= 0.25:
+        raise ValueError(
+            "projected-box size mismatch must be in (0, 0.25]"
+        )
+    axis_length_m = float(validation.get("axis_length_m") or 0.0)
+    if not 0.0 < axis_length_m <= 1.0:
+        raise ValueError("pose-validation axis_length_m must be in (0, 1]")
     from .foundation_engine import normalize_base_pose_engine_route
 
     normalize_base_pose_engine_route(config)
@@ -76,6 +83,22 @@ def load_skill_config(path: Path | None = None) -> dict[str, Any]:
         )
     if float(candidate_review.get("ttl_s") or 0) <= 0:
         raise ValueError("candidate-review TTL must be positive")
+    base_alignment = config.get("base_alignment") or {}
+    base_up_warning_tilt_deg = float(
+        base_alignment.get("base_up_warning_tilt_deg") or 0.0
+    )
+    if not 0.0 < base_up_warning_tilt_deg <= 90.0:
+        raise ValueError("base_up_warning_tilt_deg must be in (0, 90]")
+    maximum_learned_offset_m = float(
+        (config.get("tool_geometry") or {}).get(
+            "maximum_learned_tool_to_beak_norm_m"
+        )
+        or 0.0
+    )
+    if not 0.0 < maximum_learned_offset_m <= 0.5:
+        raise ValueError(
+            "maximum_learned_tool_to_beak_norm_m must be in (0, 0.5]"
+        )
     vlm_translation_bound = float(
         (config.get("vlm_refine") or {}).get(
             "single_observation_translation_error_bound_m",
