@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,8 @@ from agents.run_context import RunContextWrapper
 from agents.run_internal.agent_runner_helpers import resolve_resumed_context
 from fastapi import HTTPException
 from pydantic import ValidationError
+
+os.environ.setdefault("OPENAI_API_KEY", "unit-test-placeholder")
 
 from physical_agent_test.app import (
     DeveloperApprovalDecision,
