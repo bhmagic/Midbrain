@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Republish `camera.calibration` and its static camera transforms every two
+  seconds while HOT so a restarted in-memory Fabric self-heals. Calibration is
+  now marked published only after Fabric acknowledges the observation batch.
+- Added explicit native optical convention and
+  `camera_system_x/y/z` axis-name metadata to calibration, RGB-D bundle,
+  route, observation, and device-information boundaries. Hardware
+  accelerometer calibration and axis metadata remain unchanged.
 - Made `CAMERA_MAPPING_NAME` from the generated workspace configuration drive both the Manager Provider entry and the accelerometer-calibration launcher.
 - Added a headless external-provider launcher that resolves the workspace
   virtual-environment Python explicitly, accepts the configured shared-memory

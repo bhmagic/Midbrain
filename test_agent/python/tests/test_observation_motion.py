@@ -144,7 +144,11 @@ class ObservationMotionTests(unittest.TestCase):
         self.assertFalse(proposal["motion_usable"])
         self.assertFalse(proposal["physical_motion_authorized"])
         self.assertTrue(
-            np.allclose(proposal["proposed_position_world_m"], [0.4, 0.35, 0.1])
+            np.allclose(proposal["proposed_position_world_m"], [0.4, 0.2, 0.25])
+        )
+        self.assertEqual(
+            proposal["convention_id"],
+            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
         )
         self.assertFalse(
             proposal["controller_plan_request"]["physical_motion_authorized"]
@@ -152,7 +156,7 @@ class ObservationMotionTests(unittest.TestCase):
 
     def test_front_view_approaches_from_arm_base_side(self) -> None:
         proposal = build_observation_motion_proposal(
-            object_point_world_m=[0.4, 0.2, 0.0],
+            object_point_world_m=[0.4, 0.0, 0.2],
             world_from_arm_base=np.eye(4),
             view_mode="FRONT",
             standoff_m=0.1,
@@ -161,7 +165,7 @@ class ObservationMotionTests(unittest.TestCase):
         )
 
         self.assertTrue(
-            np.allclose(proposal["proposed_position_world_m"], [0.3, 0.2, 0.0])
+            np.allclose(proposal["proposed_position_world_m"], [0.3, 0.0, 0.2])
         )
 
     def test_authorization_record_never_executes_the_proposal(self) -> None:

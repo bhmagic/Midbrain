@@ -19,6 +19,12 @@ The latest integrated release is **Space Cognition v0.3.10**:
 
 The operator reported v0.3.10 as performing well after the final startup correction. This is the best current practical baseline. It is not yet a production-qualified localization stack because formal trajectory measurements, deterministic replay, camera/IMU time-offset estimation, long-outage drift tests, and comparison with a mature native backend remain outstanding.
 
+Spatial convention V2 defines every new VIO epoch as +X front, +Y left, and +Z
+up opposite gravity. Ordinary 3D language uses that world convention and is
+resolved into the arm base only through current transform evidence. Native
+camera optical geometry remains X-right, Y-down, Z-forward and uses explicit
+`camera_system_x/y/z` component names.
+
 ## What is working
 
 - Manager-hosted Midbrain main GUI as the primary portal for system status,

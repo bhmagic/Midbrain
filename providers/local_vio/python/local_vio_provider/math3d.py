@@ -83,6 +83,11 @@ def rotation_angle(rotation: np.ndarray) -> float:
 
 
 def gravity_aligned_world_from_camera(acceleration_camera: np.ndarray) -> np.ndarray:
+    """Build a Z-up world rotation from a native camera optical frame.
+
+    The camera optical convention is X right, Y down, Z forward. The returned
+    world convention is X initial leveled forward, Y left, Z up.
+    """
     acceleration = np.asarray(acceleration_camera, dtype=np.float64)
     norm = float(np.linalg.norm(acceleration))
     if norm <= 1e-6:
@@ -91,12 +96,48 @@ def gravity_aligned_world_from_camera(acceleration_camera: np.ndarray) -> np.nda
     forward_hint = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     forward_camera = forward_hint - up_camera * float(np.dot(forward_hint, up_camera))
     if float(np.linalg.norm(forward_camera)) < 1e-3:
-        forward_hint = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        forward_camera = forward_hint - up_camera * float(np.dot(forward_hint, up_camera))
+        raise ValueError(
+            "camera optical forward is too close to gravity vertical to define heading"
+        )
     forward_camera /= np.linalg.norm(forward_camera)
-    right_camera = np.cross(up_camera, forward_camera)
-    right_camera /= np.linalg.norm(right_camera)
-    forward_camera = np.cross(right_camera, up_camera)
+    left_camera = np.cross(up_camera, forward_camera)
+    left_camera /= np.linalg.norm(left_camera)
+    forward_camera = np.cross(left_camera, up_camera)
     forward_camera /= np.linalg.norm(forward_camera)
-    camera_from_world = np.column_stack((right_camera, up_camera, forward_camera))
+    camera_from_world = np.column_stack(
+        (forward_camera, left_camera, up_camera)
+    )
     return camera_from_world.T
+
+
+def gravity_leveled_world_from_camera_level(
+    world_from_camera: np.ndarray,
+    *,
+    minimum_horizontal_forward_norm: float = 0.05,
+) -> np.ndarray:
+    """Return a camera-origin frame whose X/Y plane is gravity horizontal."""
+    transform = np.asarray(world_from_camera, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+        raise ValueError("world_from_camera must be a finite 4x4 transform")
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    optical_forward_world = transform[:3, 2]
+    forward_world = (
+        optical_forward_world
+        - world_up * float(np.dot(optical_forward_world, world_up))
+    )
+    horizontal_norm = float(np.linalg.norm(forward_world))
+    if horizontal_norm < float(minimum_horizontal_forward_norm):
+        raise ValueError(
+            "camera optical forward is too close to gravity vertical to define camera_level"
+        )
+    forward_world /= horizontal_norm
+    left_world = np.cross(world_up, forward_world)
+    left_world /= np.linalg.norm(left_world)
+    forward_world = np.cross(left_world, world_up)
+    forward_world /= np.linalg.norm(forward_world)
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = np.column_stack(
+        (forward_world, left_world, world_up)
+    )
+    result[:3, 3] = transform[:3, 3]
+    return result

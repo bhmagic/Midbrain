@@ -8,6 +8,7 @@ from unittest.mock import patch
 from physical_agent_test.phase4_policy import (
     OperationRegistry,
     Phase4Policy,
+    extend_current_operation_hard_timeout,
     install_operation_registry,
     report_operation_progress,
 )
@@ -72,6 +73,36 @@ class Phase4PolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result, "done")
         self.assertEqual(registry.snapshot()["operations"][0]["state"], "SUCCEEDED")
+
+    async def test_finite_operation_can_latch_a_longer_specific_deadline(
+        self,
+    ) -> None:
+        registry = OperationRegistry()
+        install_operation_registry(registry)
+
+        async def calibration() -> str:
+            extend_current_operation_hard_timeout(
+                0.20,
+                stage="FOUNDATION_POSE_CALIBRATION",
+            )
+            for index in range(3):
+                await asyncio.sleep(0.03)
+                report_operation_progress(
+                    f"FOUNDATION_POSE_PROGRESS_{index}"
+                )
+            return "done"
+
+        result = await registry.run(
+            "calibration-test",
+            calibration(),
+            hard_timeout_s=0.05,
+            idle_timeout_s=0.05,
+        )
+
+        self.assertEqual(result, "done")
+        operation = registry.snapshot()["operations"][0]
+        self.assertEqual(operation["state"], "SUCCEEDED")
+        self.assertEqual(operation["hard_timeout_s"], 0.20)
 
 
 if __name__ == "__main__":

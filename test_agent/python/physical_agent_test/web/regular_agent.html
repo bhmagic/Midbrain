@@ -75,6 +75,42 @@
     textarea:focus { border-color: var(--accent); outline: none; }
     .actions { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 13px; }
     .policy { color: var(--muted); font-size: 12px; }
+    .authorization-controls {
+      display: grid;
+      gap: 9px;
+      margin-top: 15px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+    .authorization-toggle {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      color: var(--secondary);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .authorization-toggle input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+    .authorization-toggle input[type="number"] {
+      width: 72px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 7px;
+      background: #0d0d0d;
+      color: var(--text);
+      font: inherit;
+    }
+    .authorization-ticker {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
     button {
       border: 1px solid var(--accent);
       border-radius: 8px;
@@ -108,7 +144,7 @@
     <header>
       <p class="eyebrow">MIDBRAIN · REGULAR AGENT</p>
       <h1>Ask the robot system.</h1>
-      <p class="subtitle">This surface exposes curated finite Skills, approved Provider lifecycle control, preview-then-approve relative arm IK, and controller-owned safe-home. Every stateful or physical action pauses for your approval and retains Provider-side safety checks.</p>
+      <p class="subtitle">This surface exposes curated finite Skills, authorized Provider lifecycle control, preview-then-authorize relative arm IK, and controller-owned safe-home. Eligible operations can use the bounded session authorization below without pausing; all Provider-side safety checks remain active.</p>
     </header>
 
     <section class="status-grid" aria-label="Runtime summary">
@@ -126,8 +162,31 @@
       <label for="prompt">Prompt</label>
       <textarea id="prompt" placeholder="Describe what you want Midbrain to observe or do through its available Skills."></textarea>
       <div class="actions">
-        <span class="policy">Stateful and physical operations retain approval and Provider-side checks.</span>
+        <span class="policy">Stateful and physical operations retain host authorization and Provider-side checks.</span>
         <button id="runButton" type="button">Run prompt</button>
+      </div>
+      <div class="authorization-controls" aria-label="Session authorization">
+        <label class="authorization-toggle">
+          <input id="autoApproveProviders" type="checkbox" checked>
+          Auto-authorize Provider start, HOT, and WARM transitions
+        </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveMoves" type="checkbox" checked>
+          Auto-authorize each exact relative arm pose preview: translation up to
+          <input id="maxAutoMoveCm" type="number" min="0.1" max="100" step="0.1" value="35" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
+          cm at a nominal average speed up to
+          <input id="maxAutoSpeedMps" type="number" min="0.001" max="0.5" step="0.001" value="0.5" inputmode="decimal" aria-label="Maximum automatically authorized nominal speed in meters per second">
+          m/s; controlled-frame yaw up to 45°
+        </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveCalibration" type="checkbox" checked>
+          Auto-authorize stationary world-to-arm calibration
+        </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveCalibrationActivation" type="checkbox" checked>
+          Auto-authorize exact qualified calibration candidate activation
+        </label>
+        <p id="authorizationTicker" class="authorization-ticker"></p>
       </div>
     </section>
 
@@ -140,6 +199,97 @@
   <script>
     "use strict";
     const byId = (id) => document.getElementById(id);
+    const AUTHORIZATION_STORAGE_KEY =
+      "midbrain.regularAgent.sessionAuthorization.v3";
+
+    function loadAuthorizationPreferences() {
+      let saved = {};
+      try {
+        saved = JSON.parse(
+          window.sessionStorage.getItem(AUTHORIZATION_STORAGE_KEY) || "{}"
+        );
+      } catch (_error) {
+        saved = {};
+      }
+      byId("autoApproveProviders").checked =
+        typeof saved.autoApproveProviders === "boolean"
+          ? saved.autoApproveProviders
+          : true;
+      byId("autoApproveMoves").checked =
+        typeof saved.autoApproveMoves === "boolean"
+          ? saved.autoApproveMoves
+          : true;
+      byId("autoApproveCalibration").checked =
+        typeof saved.autoApproveCalibration === "boolean"
+          ? saved.autoApproveCalibration
+          : true;
+      byId("autoApproveCalibrationActivation").checked =
+        typeof saved.autoApproveCalibrationActivation === "boolean"
+          ? saved.autoApproveCalibrationActivation
+          : true;
+      const savedMaximum = Number(saved.maxAutoMoveCm);
+      byId("maxAutoMoveCm").value =
+        Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
+        savedMaximum <= 100 ? String(savedMaximum) : "35";
+      const savedMaximumSpeed = Number(saved.maxAutoSpeedMps);
+      byId("maxAutoSpeedMps").value =
+        Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0 &&
+        savedMaximumSpeed <= 0.5 ? String(savedMaximumSpeed) : "0.5";
+      updateAuthorizationTicker();
+    }
+
+    function authorizationPreferences() {
+      const maximum = Number(byId("maxAutoMoveCm").value);
+      const maximumSpeed = Number(byId("maxAutoSpeedMps").value);
+      return {
+        autoApproveProviders: byId("autoApproveProviders").checked,
+        autoApproveMoves: byId("autoApproveMoves").checked,
+        autoApproveCalibration:
+          byId("autoApproveCalibration").checked,
+        autoApproveCalibrationActivation:
+          byId("autoApproveCalibrationActivation").checked,
+        maxAutoMoveCm:
+          Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
+            ? maximum
+            : 35,
+        maxAutoSpeedMps:
+          Number.isFinite(maximumSpeed) && maximumSpeed > 0 &&
+          maximumSpeed <= 0.5 ? maximumSpeed : 0.5
+      };
+    }
+
+    function updateAuthorizationTicker() {
+      const preferences = authorizationPreferences();
+      byId("maxAutoMoveCm").disabled = !preferences.autoApproveMoves;
+      byId("maxAutoSpeedMps").disabled = !preferences.autoApproveMoves;
+      const providerState = preferences.autoApproveProviders
+        ? "Provider activation AUTO"
+        : "Provider activation asks";
+      const motionState = preferences.autoApproveMoves
+        ? `relative arm pose AUTO <= ${preferences.maxAutoMoveCm} cm, ` +
+          `<= ${preferences.maxAutoSpeedMps} m/s nominal average; ` +
+          "controlled-frame yaw AUTO <= 45°"
+        : "physical motion asks";
+      const calibrationState = preferences.autoApproveCalibration
+        ? "world-arm calibration AUTO"
+        : "world-arm calibration asks";
+      const activationState = preferences.autoApproveCalibrationActivation
+        ? "exact calibration activation AUTO"
+        : "exact calibration activation asks";
+      byId("authorizationTicker").textContent =
+        `${providerState} | ${motionState} | ${calibrationState} | ` +
+        `${activationState}. ` +
+        "Provider and controller safety checks remain active; stop, safe-home, " +
+        "and other protected actions still ask.";
+      try {
+        window.sessionStorage.setItem(
+          AUTHORIZATION_STORAGE_KEY,
+          JSON.stringify(preferences)
+        );
+      } catch (_error) {
+        // The controls remain valid for this page even if storage is disabled.
+      }
+    }
 
     function populateSelect(id, values, selectedValue, labeler) {
       const select = byId(id);
@@ -207,6 +357,137 @@
       ].join("\n");
     }
 
+    function approvalArguments(approval) {
+      const raw = approval.request?.arguments || {};
+      if (typeof raw === "string") {
+        try {
+          const decoded = JSON.parse(raw);
+          return decoded && typeof decoded === "object" ? decoded : {};
+        } catch (_error) {
+          return {};
+        }
+      }
+      return raw && typeof raw === "object" ? raw : {};
+    }
+
+    function automaticApprovalDecision(approvals) {
+      if (!approvals.length) return null;
+      const preferences = authorizationPreferences();
+      const providerEligible =
+        preferences.autoApproveProviders &&
+        approvals.every((approval) => {
+          const action = String(
+            approvalArguments(approval).action || ""
+          ).toLowerCase();
+          return approval.tool_name === "set_provider_residency" &&
+            ["start", "hot", "warm"].includes(action);
+        });
+      if (providerEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_PROVIDER_ACTIVATION",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label: "Session authorization automatically approved Provider activation."
+        };
+      }
+      const motionEligible =
+        preferences.autoApproveMoves &&
+        approvals.every((approval) => {
+          const argumentsValue = approvalArguments(approval);
+          const motionIntent = String(
+            argumentsValue.motion_intent || ""
+          ).toUpperCase();
+          const direction = String(
+            argumentsValue.direction || ""
+          ).toUpperCase();
+          const orientationPolicy = String(
+            argumentsValue.orientation_policy || ""
+          ).toUpperCase();
+          const distanceM = Number(argumentsValue.distance_m);
+          const plannedSpeedMps = Number(
+            argumentsValue.planned_nominal_speed_m_s
+          );
+          const rawYawDegrees =
+            argumentsValue.controlled_frame_yaw_delta_deg;
+          const hasYaw = rawYawDegrees !== null &&
+            rawYawDegrees !== undefined;
+          const yawDegrees = Number(rawYawDegrees);
+          const boundedTranslation =
+            Number.isFinite(distanceM) &&
+            distanceM > 0 &&
+            distanceM * 100 <= preferences.maxAutoMoveCm + 1e-9 &&
+            Number.isFinite(plannedSpeedMps) &&
+            plannedSpeedMps > 0 &&
+            plannedSpeedMps <= preferences.maxAutoSpeedMps + 1e-9;
+          const boundedYaw = hasYaw &&
+            Number.isFinite(yawDegrees) &&
+            Math.abs(yawDegrees) > 1e-9 &&
+            Math.abs(yawDegrees) <= 45 + 1e-9 &&
+            orientationPolicy === "APPLY_CONTROLLED_FRAME_YAW_DELTA";
+          const exactTranslation =
+            motionIntent === "NEW_RELATIVE_MOVE" &&
+            boundedTranslation && !hasYaw;
+          const exactCombinedPose =
+            motionIntent === "NEW_RELATIVE_POSE_MOVE" &&
+            direction !== "NONE" && boundedTranslation && boundedYaw;
+          const exactPureRotation =
+            motionIntent === "NEW_RELATIVE_ROTATION" &&
+            direction === "NONE" &&
+            distanceM === 0 &&
+            plannedSpeedMps === 0 &&
+            argumentsValue.requested_speed_m_s == null &&
+            boundedYaw;
+          return approval.tool_name ===
+              "execute_integrated_motion_preview" &&
+            (exactTranslation || exactCombinedPose || exactPureRotation);
+        });
+      if (motionEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_BOUNDED_RELATIVE_MOTION",
+          max_auto_move_cm: preferences.maxAutoMoveCm,
+          max_auto_speed_m_s: preferences.maxAutoSpeedMps,
+          label:
+            "Session authorization automatically approved the bounded exact motion preview."
+        };
+      }
+      const calibrationEligible =
+        preferences.autoApproveCalibration &&
+        approvals.every(
+          (approval) =>
+            approval.tool_name === "calibrate_stationary_workcell"
+        );
+      if (calibrationEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_STATIONARY_CALIBRATION",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label:
+            "Session authorization automatically approved stationary world-to-arm calibration."
+        };
+      }
+      const activationEligible =
+        preferences.autoApproveCalibrationActivation &&
+        approvals.every(
+          (approval) =>
+            approval.tool_name ===
+            "review_and_activate_stationary_calibration"
+        );
+      if (activationEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_STATIONARY_ACTIVATION",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label:
+            "Session authorization automatically approved exact stationary calibration activation."
+        };
+      }
+      return null;
+    }
+
     async function handleAgentResult(data) {
       if (data.status !== "approval_required") {
         byId("answer").textContent =
@@ -216,7 +497,14 @@
       const approvals = data.approvals || [];
       const readable = approvals.map(approvalMessage).join("\n\n");
       byId("answer").textContent = readable;
-      const approved = window.confirm(readable);
+      const automaticDecision = automaticApprovalDecision(approvals);
+      const approved = automaticDecision
+        ? true
+        : window.confirm(readable);
+      if (automaticDecision) {
+        byId("answer").textContent =
+          `${automaticDecision.label}\nContinuing the same run…`;
+      }
       const decisionResponse = await fetch(
         `/api/runs/${encodeURIComponent(data.run_id)}/decision`,
         {
@@ -224,6 +512,12 @@
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
             approve: approved,
+            approval_mode:
+              automaticDecision?.approval_mode || "MANUAL",
+            max_auto_move_cm:
+              automaticDecision?.max_auto_move_cm || null,
+            max_auto_speed_m_s:
+              automaticDecision?.max_auto_speed_m_s || null,
             rejection_message: approved
               ? null
               : "Rejected in the regular Agent UI"
@@ -244,6 +538,7 @@
       byId("answer").className = "";
       byId("answer").textContent = "Running…";
       try {
+        const authorization = authorizationPreferences();
         const response = await fetch("/api/run", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -251,7 +546,16 @@
             prompt,
             agent_model: byId("agentModel").value,
             reasoning_effort: byId("reasoningEffort").value,
-            vlm_model: byId("vlmModel").value
+            vlm_model: byId("vlmModel").value,
+            auto_authorize_provider_activation:
+              authorization.autoApproveProviders,
+            auto_authorize_relative_motion: authorization.autoApproveMoves,
+            max_auto_move_cm: authorization.maxAutoMoveCm,
+            max_auto_speed_m_s: authorization.maxAutoSpeedMps,
+            auto_authorize_stationary_calibration:
+              authorization.autoApproveCalibration,
+            auto_authorize_stationary_activation:
+              authorization.autoApproveCalibrationActivation
           })
         });
         const data = await response.json();
@@ -266,6 +570,25 @@
       }
     });
 
+    for (const id of [
+      "autoApproveProviders",
+      "autoApproveMoves",
+      "autoApproveCalibration",
+      "autoApproveCalibrationActivation",
+      "maxAutoMoveCm",
+      "maxAutoSpeedMps"
+    ]) {
+      byId(id).addEventListener("change", updateAuthorizationTicker);
+    }
+    byId("maxAutoMoveCm").addEventListener(
+      "input",
+      updateAuthorizationTicker
+    );
+    byId("maxAutoSpeedMps").addEventListener(
+      "input",
+      updateAuthorizationTicker
+    );
+    loadAuthorizationPreferences();
     refreshStatus();
     window.setInterval(refreshStatus, 3000);
   </script>

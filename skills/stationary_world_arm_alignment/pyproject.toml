@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "midbrain-stationary-world-arm-alignment-skill"
-version = "0.6.0"
+version = "0.8.5"
 description = "Finite Midbrain Skill for stationary camera/world/robot-arm alignment"
 requires-python = ">=3.11"
 dependencies = [

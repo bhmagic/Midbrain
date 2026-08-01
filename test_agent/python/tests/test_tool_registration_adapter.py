@@ -100,6 +100,19 @@ class _Capture:
             "observed_at_us": now_us,
             "data": {},
         }
+        bundle = {
+            **identity,
+            "data": {
+                "coordinate_conventions": {
+                    "rgb": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                    "aligned_depth": (
+                        "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                    ),
+                }
+            },
+        }
         return SimpleNamespace(
             rgb=np.full((8, 10, 3), 127, dtype=np.uint8),
             depth_m=np.full((8, 10), 0.5, dtype=np.float32),
@@ -111,7 +124,7 @@ class _Capture:
             world_frame="world",
             calibration_revision="calibration-1",
             observations={
-                "bundle": dict(identity),
+                "bundle": bundle,
                 "calibration": {
                     **identity,
                     "data": {
@@ -124,6 +137,9 @@ class _Capture:
                     "data": {
                         "session_epoch": "vio-epoch",
                         "world_frame": "world",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
                     },
                 },
                 "vio_status": {
@@ -132,6 +148,9 @@ class _Capture:
                     "data": {
                         "tracking_state": "TRACKING",
                         "session_epoch": "vio-epoch",
+                        "convention_id": (
+                            "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                        ),
                     },
                 },
                 "capture": {"copy_attempt": 1},
@@ -177,6 +196,9 @@ class _Fabric:
                     ]
                 },
                 "sample": {"format_name": format_name},
+                "coordinate_convention_id": (
+                    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                ),
                 "calibration": {
                     "stream": "camera.calibration",
                     "document_path": f"{channel_id}.intrinsic",

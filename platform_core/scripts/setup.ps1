@@ -4,6 +4,7 @@ $core = Get-CoreRoot
 Set-Location $workspace
 
 & (Join-Path $PSScriptRoot "initialize_config.ps1")
+& (Join-Path $PSScriptRoot "ensure_local_signing_secrets.ps1") | Out-Null
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "Rust is not installed. Install rustup and use the x86_64-pc-windows-msvc toolchain."

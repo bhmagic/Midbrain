@@ -58,6 +58,14 @@ class DirectRgbdRouteTests(unittest.TestCase):
             route["transport"]["kind"],
             "WINDOWS_NAMED_SHARED_MEMORY",
         )
+        self.assertEqual(
+            route["products"]["rgb"]["coordinate_axis_names"],
+            {
+                "x": "camera_system_x",
+                "y": "camera_system_y",
+                "z": "camera_system_z",
+            },
+        )
 
     def test_route_is_advertised_but_unavailable_without_both_frames(self) -> None:
         route = build_direct_rgbd_route(
@@ -118,6 +126,14 @@ class DirectRgbdRouteTests(unittest.TestCase):
         self.assertFalse(route["hardware_specific"])
         self.assertEqual(route["selection"]["role"], "PRIMARY")
         channels = route["products"]["channels"]
+        self.assertEqual(
+            channels["rgb"]["coordinate_axis_names"],
+            {
+                "x": "camera_system_x",
+                "y": "camera_system_y",
+                "z": "camera_system_z",
+            },
+        )
         self.assertEqual(channels["rgb"]["native_grid"]["width"], 1920)
         self.assertEqual(channels["depth"]["native_grid"]["width"], 640)
         self.assertEqual(channels["infrared"]["native_grid"]["height"], 1024)

@@ -72,6 +72,14 @@ class SpatialRegistrationTests(unittest.TestCase):
         self.assertEqual(result["observed_at_us"], 123)
         self.assertEqual(result["calibration_revision"], "cal-1")
         self.assertEqual(result["data_route"]["boot_id"], "boot-1")
+        self.assertEqual(
+            result["camera_system_point_m"],
+            {
+                "camera_system_x": -0.375,
+                "camera_system_y": -0.375,
+                "camera_system_z": 1.0,
+            },
+        )
         self.assertTrue(
             np.allclose(result["target_point_m"], [0.625, 1.625, 4.0])
         )

@@ -1,6 +1,7 @@
 {
   "schema": "physical_agent.arm_integrated_mit_bringup_config",
   "schema_version": 3,
+  "managed_policy_revision": 1,
   "provider_id": "robot_arm.primary.integrated",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "arm_id": "primary",
@@ -103,7 +104,7 @@
     "maximum_cartesian_waypoints_per_leg": 80,
     "minimum_jacobian_sigma": 0.01,
     "maximum_waypoint_joint_step_rad": 0.20,
-    "maximum_endpoint_joint_delta_rad": [0.80, 0.80, 0.80, 1.00, 1.00, 1.00],
+    "maximum_endpoint_joint_delta_rad": [0.80, 0.80, 0.85, 1.00, 1.00, 1.00],
     "maximum_total_joint_travel_rad": 3.0,
     "maximum_transit_endpoint_joint_delta_rad": [2.60, 2.60, 2.60, 2.80, 2.80, 2.80],
     "maximum_transit_total_joint_travel_rad": 8.0,

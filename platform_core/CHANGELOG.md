@@ -1,11 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Require reviewed workcell candidates to prove one mesh-centered base
+  orientation selection: raw/corrected world-up agreement, the exact
+  identity/X-180/Y-180/Z-180 choice, correction count at most one, unchanged
+  observed CAD mesh center, and the documented
+  `parent_from_mesh @ correction @ mesh_from_semantic` order. Candidates from
+  the superseded post-semantic-root correction path cannot be activated.
+- Let a fresh, fully reviewed workcell calibration supersede the current
+  active calibration. The prior record remains auditable as `SUPERSEDED`, but
+  is immediately non-motion-usable after the newer transform is published.
+
 ## 0.3.1 - 2026-07-29
 
+- Validate reviewed workcell activation against current camera and VIO
+  Provider heartbeats, including exact boot, instance, health, readiness,
+  calibration revision, VIO epoch, convention, and tracking state. Activation
+  no longer depends on redundant one-shot `camera.calibration` or
+  `localization.vio.status` Fabric lookups after calibration has completed.
 - Added an idempotent local signing-secret bootstrap for reviewed workcell
   activation and decision-specific physical execution assertions. Example
   environment files document the required variables without containing local
   secret values.
+- Invoke that signing-secret bootstrap during both setup and bounded startup,
+  then verify through Manager health that reviewed workcell activation identity
+  is configured before reporting startup success.
 - Added a bounded workspace launcher preflight that rejects Manager or Fabric
   release executables older than their applicable Rust source, crate
   manifests, root Cargo files, toolchain file, or build scripts.

@@ -1,4 +1,4 @@
-# Orbbec Femto Bolt Resource Provider 0.3.1
+# Orbbec Femto Bolt Resource Provider 0.4.0
 
 This replaceable package exposes the camera's complete practical sensory data plane through the Resource Provider Manager and World State Fabric while preserving explicit operator start and stop control.
 
@@ -20,6 +20,13 @@ This replaceable package exposes the camera's complete practical sensory data pl
 
 Large payloads remain in Windows named shared memory. The Fabric carries generation-validated `BufferRef` metadata only.
 
+Native RGB, depth, and infrared geometry remains in the camera optical
+convention: X image-right, Y image-down, and Z optical-forward. Cross-component
+metadata names those components `camera_system_x`, `camera_system_y`, and
+`camera_system_z` and carries
+`CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1`. This does not change the
+device-bound accelerometer calibration or its hardware-axis metadata.
+
 The provider publishes one atomic `camera.rgbd.data_routes` route-set
 observation. It contains both the generic flexible-grid shared-memory
 descriptor and the Orbbec-specific named-memory reader. The generic route is
@@ -35,7 +42,12 @@ remain in shared memory.
 
 ## Release status
 
-Version 0.2.0 is a source-level release candidate. Version 0.1.6 remains the last hardware-confirmed rollback baseline. The new native C++ paths, shared-memory layout v2, IR, aligned-depth, point-cloud, metadata, and calibration extensions must be built and verified on the target Windows/Femto Bolt machine before they are used as a safety-relevant perception source.
+Version 0.4.0 is a source-level spatial-convention migration. Version 0.1.6
+remains the last hardware-confirmed rollback baseline recorded by this
+document. The current native paths, shared-memory layout, optical metadata,
+IR, aligned depth, point cloud, and calibration extensions must be built and
+verified on the target Windows/Femto Bolt machine before they are used as a
+safety-relevant perception source.
 
 ## Install or replace
 

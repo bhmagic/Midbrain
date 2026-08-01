@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -154,6 +156,22 @@ class EffectorFrontAdapterTests(unittest.IsolatedAsyncioTestCase):
             result["vlm_route"]["backend_id"],
             "vlm.test",
         )
+
+    async def test_visual_evidence_image_can_be_persisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = EffectorFrontSkillAdapter(
+                _Spatial(),  # type: ignore[arg-type]
+                _Router(),  # type: ignore[arg-type]
+                evidence_dir=Path(directory),
+            )
+
+            result = await adapter.run(target_frame="stationary_world")
+
+            evidence = result["evidence_image"]
+            path = Path(evidence["path"])
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.read_bytes().startswith(b"\x89PNG"))
+            self.assertEqual(evidence["mime_type"], "image/png")
 
     async def test_camera_binding_is_revalidated_after_vlm(self):
         adapter = EffectorFrontSkillAdapter(

@@ -6,7 +6,7 @@ The target is the architecture used by stable low-latency VR/XR tracking: the IM
 
 ## Current filter state
 
-Local VIO v0.2.2 uses a 15-state error-state filter with nominal state:
+Local VIO v0.3.0 uses a 15-state error-state filter with nominal state:
 
 - Orientation `R` or quaternion equivalent.
 - Position `p`.
@@ -15,6 +15,16 @@ Local VIO v0.2.2 uses a 15-state error-state filter with nominal state:
 - Accelerometer bias `b_a`.
 
 The covariance tracks three errors for each of orientation, position, velocity, gyro bias, and accelerometer bias.
+
+Every new epoch uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`: positive X is the
+initial camera/body forward direction projected onto the gravity-horizontal
+plane, positive Y is left, and positive Z is opposite gravity. The world
+gravity vector is `[0, 0, -g]`.
+
+Raw camera optical coordinates are not converted by renaming axes. They remain
+positive X image-right, positive Y image-down, and positive Z optical-forward.
+Calibrated transforms connect that sensor-native frame to VIO and other
+three-dimensional frames.
 
 ## Inertial propagation
 
@@ -76,6 +86,10 @@ The gravity behavior was tuned during the visual-first development and intention
 - Yaw and translation are preserved.
 - Correction is bounded; normal tracking uses a smaller correction than degraded recovery.
 - GUI states are `OFF`, `READY`, and `ACTIVE`.
+
+The V2 world-basis migration changes only estimator/world interpretation.
+Hardware accelerometer calibration, axis metadata, bias/scale values,
+calibration revision, and camera/IMU extrinsics remain intact.
 
 ## Status interpretation
 

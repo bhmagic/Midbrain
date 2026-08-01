@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "physical-ai-foundation-pose-provider"
-version = "0.3.0"
+version = "0.4.0"
 description = "CAD-conditioned RGB-D object-pose Resource Provider for Midbrain"
 requires-python = ">=3.11"
 license = "MIT"
@@ -13,7 +13,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "numpy>=2.0,<3",
   "opencv-python-headless>=4.10,<5",
-  "orbbec-femto-provider>=0.3.0,<0.4"
+  "orbbec-femto-provider>=0.4.0,<0.5"
 ]
 
 [tool.setuptools.packages.find]

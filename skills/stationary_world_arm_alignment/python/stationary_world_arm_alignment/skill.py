@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 import uuid
 from pathlib import Path
@@ -19,6 +20,7 @@ from .camera import (
     make_initial_mask,
     render_overlay,
     save_frame_artifacts,
+    segmented_surface_depth,
     tip_depth_from_near_cluster,
 )
 from .clients import FabricClient, FoundationPoseHealthClient, ManagerClient
@@ -34,11 +36,13 @@ from .foundation_engine import (
 )
 from .lease import MotionInhibitKeeper
 from .math3d import (
+    apply_base_mesh_hypothesis_correction,
     apply_transform,
-    base_upright_correction,
-    choose_base_symmetry,
     closest_pair_consensus,
+    inspect_base_up_alignment,
     robust_average_transforms,
+    select_base_orientation_correction,
+    select_base_orientation_from_gripper_point,
     transform_from_payload,
     transform_payload,
 )
@@ -51,8 +55,7 @@ from .models import (
 from .persistence import CalibrationStore
 from .pose_validation import (
     load_model_geometry,
-    pose_verdict_best_of_two_acceptable,
-    pose_verdict_accepted,
+    projected_visual_scale_review,
     render_pose_overlay,
     select_best_pose_validation,
 )
@@ -244,25 +247,27 @@ class AlignmentSkill:
                         workcell_calibrations,
                     )
                 )
-                prior_is_upright = False
-                if prior_is_current:
-                    try:
-                        prior_base = transform_from_payload(prior["world_from_base"])
-                        prior_is_upright = float(
-                            np.dot(prior_base[:3, 2], [0.0, 1.0, 0.0])
-                        ) > 0.5
-                    except Exception:
-                        prior_is_upright = False
+                prior_tool_beak = (
+                    prior.get("learned_tool_to_beak_translation_m")
+                    if isinstance(prior, dict)
+                    else None
+                )
+                prior_is_refinable = bool(
+                    prior_is_current
+                    and isinstance(prior_tool_beak, list)
+                    and len(prior_tool_beak) == 3
+                )
                 selected_mode = (
                     RunMode.VLM_GRIPPER_ONLY
-                    if prior_is_current and prior_is_upright
+                    if prior_is_refinable
                     else RunMode.FOUNDATION_BASE_VLM_GRIPPER
                 )
                 await self.progress.update(
                     mode=str(selected_mode),
                     message=(
                         f"Auto selected {selected_mode}; prior VIO epoch current="
-                        f"{prior_is_current}, prior base upright={prior_is_upright}."
+                        f"{prior_is_current}, prior tool geometry usable="
+                        f"{prior_is_refinable}."
                     ),
                 )
             save_frame_artifacts(run_dir, frame)
@@ -308,7 +313,13 @@ class AlignmentSkill:
                 require_base=selected_mode != RunMode.VLM_GRIPPER_ONLY,
             )
             (run_dir / "vlm.json").write_text(json.dumps(vlm, indent=2) + "\n", encoding="utf-8")
-            camera_beak, tip_depths = self._camera_beak(frame, vlm)
+            camera_system_beak: np.ndarray | None = None
+            tip_depths: dict[str, Any] = {}
+            if selected_mode == RunMode.VLM_GRIPPER_ONLY:
+                camera_system_beak, tip_depths = self._camera_system_beak(
+                    frame,
+                    vlm,
+                )
             visible_detections = {
                 name: value
                 for name, value in {"base": vlm["base"], "gripper": vlm["gripper"]}.items()
@@ -326,6 +337,30 @@ class AlignmentSkill:
             }
             for name, mask in masks.items():
                 cv2.imwrite(str(run_dir / f"{name}_mask.png"), mask)
+            gripper_axis_reference: dict[str, Any] = {
+                "available": False,
+                "source": "VLM_GRIPPER_SEGMENTATION_WITH_ALIGNED_DEPTH",
+            }
+            gripper_mask = masks.get("gripper")
+            if gripper_mask is not None:
+                try:
+                    gripper_surface = segmented_surface_depth(
+                        frame,
+                        gripper_mask,
+                        self.config["depth"],
+                    )
+                    gripper_axis_reference = {
+                        "available": True,
+                        "source": (
+                            "VLM_GRIPPER_SEGMENTATION_WITH_ALIGNED_DEPTH"
+                        ),
+                        **gripper_surface,
+                    }
+                except Exception as error:
+                    gripper_axis_reference["warning"] = (
+                        "Aligned gripper depth was unavailable; the bounded "
+                        f"RGB axis review will be used instead: {error}"
+                    )
             overlay = render_overlay(frame.rgb, visible_detections, masks, tip_depths)
             (run_dir / "overlay.jpg").write_bytes(overlay)
             await self.artifacts.set_overlay(overlay)
@@ -339,17 +374,22 @@ class AlignmentSkill:
                     session_epoch=frame.session_epoch,
                 )
             )
-            vio_beak = apply_transform(vio_from_camera, camera_beak)
-            base_from_tool = await self._base_from_tool(frame.timestamp_us)
             if selected_mode == RunMode.VLM_GRIPPER_ONLY:
                 if not prior:
                     raise RuntimeError(
                         "VLM gripper-only alignment requires a prior alignment"
                     )
+                if camera_system_beak is None:
+                    raise RuntimeError(
+                        "VLM gripper-only alignment requires beak depth"
+                    )
+                base_from_tool = await self._base_from_tool(
+                    frame.timestamp_us
+                )
                 result = await self._vlm_gripper_only(
                     prior=prior,
                     frame=frame,
-                    camera_beak=camera_beak,
+                    camera_system_beak=camera_system_beak,
                     base_from_tool=base_from_tool,
                     alignment_id=alignment_id,
                     skill_id=skill_id,
@@ -373,11 +413,13 @@ class AlignmentSkill:
                     alignment_id=alignment_id,
                     run_dir=run_dir,
                     frame=frame,
-                    vio_beak=vio_beak,
                     keeper=keeper,
                     vision=vision,
                     own_sessions=own_sessions,
                     include_gripper=use_foundation_gripper,
+                    base_visual_box_2d=vlm["base"]["box_2d"],
+                    vio_from_camera=vio_from_camera,
+                    gripper_axis_reference=gripper_axis_reference,
                 )
                 finish = (
                     self._finish_foundation_dual
@@ -385,18 +427,16 @@ class AlignmentSkill:
                     else self._finish_base_vlm
                 )
                 result = await finish(
-                        samples=samples,
-                        validations=validations,
-                        frame=frame,
-                        vio_beak=vio_beak,
-                        base_from_tool=base_from_tool,
-                        alignment_id=alignment_id,
-                        skill_id=skill_id,
-                        vlm=vlm,
-                        arm_is_home=arm_is_home,
-                        keeper=keeper,
-                        vio_from_camera=vio_from_camera,
-                    )
+                    samples=samples,
+                    validations=validations,
+                    frame=frame,
+                    alignment_id=alignment_id,
+                    skill_id=skill_id,
+                    vlm=vlm,
+                    arm_is_home=arm_is_home,
+                    keeper=keeper,
+                    vio_from_camera=vio_from_camera,
+                )
             path = self.store.save(result)
             await self._publish_result(result)
             await self.artifacts.set_geometry(result["monitor_geometry"])
@@ -450,12 +490,27 @@ class AlignmentSkill:
             raise
         except Exception as error:
             state = SkillState.CANCELLED if self.cancel_event.is_set() else SkillState.FAILED
+            error_diagnostics = getattr(error, "diagnostics", None)
+            failure = {
+                "error_type": type(error).__name__,
+                "message": str(error),
+                "diagnostics": (
+                    error_diagnostics
+                    if isinstance(error_diagnostics, dict)
+                    else None
+                ),
+            }
+            (run_dir / "failure.json").write_text(
+                json.dumps(failure, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
             await self.progress.update(
                 state=state,
                 phase=str(state),
                 message=str(error),
                 details={
                     "error_type": type(error).__name__,
+                    "error_diagnostics": failure["diagnostics"],
                     "motion_inhibit": keeper.status() if keeper else None,
                 },
             )
@@ -795,7 +850,11 @@ class AlignmentSkill:
         )
         return transform_from_payload(payload)
 
-    def _camera_beak(self, frame: Any, vlm: dict[str, Any]) -> tuple[np.ndarray, list[Any]]:
+    def _camera_system_beak(
+        self,
+        frame: Any,
+        vlm: dict[str, Any],
+    ) -> tuple[np.ndarray, list[Any]]:
         tip_depths = [
             tip_depth_from_near_cluster(
                 frame,
@@ -811,7 +870,12 @@ class AlignmentSkill:
         ]
         return (
             np.mean(
-                np.stack([value.camera_xyz_m for value in tip_depths]),
+                np.stack(
+                    [
+                        value.camera_system_xyz_m
+                        for value in tip_depths
+                    ]
+                ),
                 axis=0,
             ),
             tip_depths,
@@ -1102,7 +1166,6 @@ class AlignmentSkill:
         session_ids: dict[str, str],
         attempt: int,
         frame: Any,
-        vio_beak: np.ndarray,
         keeper: MotionInhibitKeeper,
     ) -> dict[str, dict[str, list[np.ndarray]]]:
         base_config = self.config["base_alignment"]
@@ -1229,13 +1292,7 @@ class AlignmentSkill:
                 {
                     "coordinate_frame": frame.world_frame,
                     "frames": frames,
-                    "points": [
-                        {
-                            "name": "VLM beak",
-                            "position_m": vio_beak.tolist(),
-                            "color": "#ff9f43",
-                        }
-                    ],
+                    "points": [],
                 }
             )
             if all(counts[role] >= needed for role, needed in required_counts.items()):
@@ -1266,24 +1323,41 @@ class AlignmentSkill:
         alignment_id: str,
         run_dir: Path,
         frame: Any,
-        vio_beak: np.ndarray,
         keeper: MotionInhibitKeeper,
-        vision: GripperVision,
+        vision: GripperVision | ReviewedFileVision,
         own_sessions: list[str],
         include_gripper: bool,
+        base_visual_box_2d: list[int],
+        vio_from_camera: np.ndarray,
+        gripper_axis_reference: dict[str, Any] | None = None,
     ) -> tuple[
         dict[str, dict[str, list[np.ndarray]]],
         list[dict[str, Any]],
     ]:
         validation_config = self.config["pose_validation"]
-        maximum_attempts = 2
-        minimum_confidence = float(validation_config["minimum_confidence"])
-        fallback_minimum_confidence = float(
-            validation_config["best_of_two_fallback_minimum_confidence"]
+        base_config = self.config["base_alignment"]
+        maximum_attempts = int(validation_config["maximum_attempts"])
+        maximum_scale_mismatch = float(
+            validation_config["maximum_projected_box_size_mismatch_fraction"]
         )
+        foundation_skill_config = (
+            (self.config.get("base_pose_engine") or {}).get(
+                "foundation_pose_skill"
+            )
+            or {}
+        )
+        configured_model_registry = str(
+            foundation_skill_config.get("model_registry")
+            or "config/foundation_pose/models.json"
+        ).strip()
+        model_registry_path = Path(configured_model_registry)
+        if not model_registry_path.is_absolute():
+            model_registry_path = WORKSPACE_ROOT / model_registry_path
+        model_registry_path = model_registry_path.resolve()
         mesh_minimum, mesh_maximum, mesh_from_semantic = load_model_geometry(
             str(WORKSPACE_ROOT),
             self.config["foundation_base_model_id"],
+            str(model_registry_path),
         )
         validations: list[dict[str, Any]] = []
         attempt_samples: list[
@@ -1314,22 +1388,30 @@ class AlignmentSkill:
                     session_ids=session_ids,
                     attempt=attempt,
                     frame=frame,
-                    vio_beak=vio_beak,
                     keeper=keeper,
                 )
-            raw_vio_from_base, _ = robust_average_transforms(
-                samples["base"]["vio"]
-            )
-            upright_correction, upright_diagnostics = base_upright_correction(
-                raw_vio_from_base
-            )
-            for basis in ("vio", "camera"):
-                samples["base"][basis] = [
-                    transform @ upright_correction
-                    for transform in samples["base"][basis]
-                ]
             camera_from_base, camera_diagnostics = robust_average_transforms(
                 samples["base"]["camera"]
+            )
+            try:
+                camera_system_up = (
+                    vio_from_camera[:3, :3].T
+                    @ np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+                )
+            except Exception:
+                camera_system_up = None
+            mount_diagnostics = inspect_base_up_alignment(
+                camera_from_base,
+                camera_system_up=camera_system_up,
+                warning_tilt_deg=float(
+                    base_config["base_up_warning_tilt_deg"]
+                ),
+            )
+            mount_diagnostics["up_axis_frame"] = frame.camera_frame
+            mount_diagnostics["up_axis_source"] = (
+                "TIMESTAMPED_VIO_GRAVITY_EXPRESSED_IN_CAMERA_SYSTEM"
+                if camera_system_up is not None
+                else "UNAVAILABLE"
             )
             overlay, projection = render_pose_overlay(
                 frame.rgb,
@@ -1345,6 +1427,12 @@ class AlignmentSkill:
             overlay_path = run_dir / overlay_name
             overlay_path.write_bytes(overlay)
             await self.artifacts.set_overlay(overlay)
+            scale_review = projected_visual_scale_review(
+                projection,
+                base_visual_box_2d,
+                frame.rgb.shape,
+                maximum_mismatch_fraction=maximum_scale_mismatch,
+            )
             artifact = await self._publish_pose_overlay(
                 skill_id=skill_id,
                 alignment_id=alignment_id,
@@ -1356,8 +1444,9 @@ class AlignmentSkill:
             await self.progress.update(
                 phase="POSE_VALIDATION",
                 message=(
-                    f"VLM is checking base pose attempt {attempt} against the "
-                    "eight-angle CAD atlas."
+                    f"Base pose attempt {attempt} projected/visual linear "
+                    f"scale ratio is "
+                    f"{scale_review.get('equivalent_linear_scale_ratio')}."
                 ),
                 completed_units=5,
                 progress_kind="indeterminate",
@@ -1369,32 +1458,32 @@ class AlignmentSkill:
                     "pose_validation": {
                         "attempt": attempt,
                         "maximum_attempts": maximum_attempts,
-                        "state": "VLM_CHECKING",
+                        "state": (
+                            "VLM_AXIS_REVIEW"
+                            if scale_review["within_tolerance"]
+                            else "SIZE_RETRY_REQUIRED"
+                        ),
                         "overlay": artifact,
                     },
                     "motion_inhibit": keeper.status(),
                 },
             )
-            verdict = await vision.validate_base_pose(overlay, attempt=attempt)
-            accepted = pose_verdict_accepted(verdict, minimum_confidence)
-            artifact = await self._publish_pose_overlay(
-                skill_id=skill_id,
-                alignment_id=alignment_id,
-                frame=frame,
-                overlay_path=overlay_path,
-                attempt=attempt,
-                projection=projection,
-                verdict=verdict,
-                accepted=accepted,
-            )
             record = {
                 "attempt": attempt,
-                "accepted": accepted,
-                "minimum_confidence": minimum_confidence,
-                "verdict": verdict,
+                "accepted": False,
+                "acceptance_mode": None,
+                "scale_review": scale_review,
+                "axis_review": None,
+                "orientation_resolution": None,
                 "projection": projection,
                 "camera_pose_samples": camera_diagnostics,
-                "upright_normalization": upright_diagnostics,
+                "base_up_alignment": mount_diagnostics,
+                "raw_base_up_alignment": mount_diagnostics,
+                "warnings": [
+                    warning
+                    for warning in (scale_review.get("warning"),)
+                    if warning
+                ],
                 "foundation_pose_sessions": session_ids,
                 "base_pose_engine_route": self.base_pose_engine_route,
                 "fresh_registration_from_mask": True,
@@ -1402,11 +1491,65 @@ class AlignmentSkill:
             }
             validations.append(record)
             attempt_samples.append(samples)
+            if scale_review["within_tolerance"]:
+                selected_overlay, selected_projection = (
+                    await self._select_and_apply_base_orientation(
+                        samples=samples,
+                        vision=vision,
+                        frame=frame,
+                        attempt=attempt,
+                        overlay=overlay,
+                        mesh_minimum=mesh_minimum,
+                        mesh_maximum=mesh_maximum,
+                        mesh_from_semantic=mesh_from_semantic,
+                        axis_length_m=float(
+                            validation_config["axis_length_m"]
+                        ),
+                        gripper_axis_reference=gripper_axis_reference,
+                        camera_system_up=camera_system_up,
+                        model_registry_path=str(model_registry_path),
+                    )
+                )
+                selected_path = run_dir / (
+                    f"foundation_pose_attempt_{attempt}_selected_overlay.jpg"
+                )
+                selected_path.write_bytes(selected_overlay)
+                await self.artifacts.set_overlay(selected_overlay)
+                record["accepted"] = True
+                record["acceptance_mode"] = "SIZE_WITHIN_25_PERCENT"
+                record["axis_review"] = selected_projection["axis_review"]
+                record["orientation_resolution"] = selected_projection[
+                    "orientation_resolution"
+                ]
+                record["base_up_alignment"] = selected_projection[
+                    "base_up_alignment"
+                ]
+                if selected_projection["orientation_resolution"].get("warning"):
+                    record["warnings"].append(
+                        selected_projection["orientation_resolution"]["warning"]
+                    )
+                if selected_projection["base_up_alignment"].get("warning"):
+                    record["warnings"].append(
+                        selected_projection["base_up_alignment"]["warning"]
+                    )
+                record["selected_projection"] = selected_projection[
+                    "projection"
+                ]
+                record["overlay"] = await self._publish_pose_overlay(
+                    skill_id=skill_id,
+                    alignment_id=alignment_id,
+                    frame=frame,
+                    overlay_path=selected_path,
+                    attempt=attempt,
+                    projection=selected_projection["projection"],
+                    verdict=selected_projection["axis_review"],
+                    accepted=True,
+                )
             (run_dir / f"foundation_pose_attempt_{attempt}_validation.json").write_text(
                 json.dumps(record, indent=2) + "\n",
                 encoding="utf-8",
             )
-            if accepted:
+            if record["accepted"]:
                 return samples, validations
             if self.foundation_pose_execution_host == PROVIDER_EXECUTION_HOST:
                 for session_id in session_ids.values():
@@ -1416,8 +1559,9 @@ class AlignmentSkill:
                         payload={
                             "session_id": session_id,
                             "reason": (
-                                "VLM rejected projected base pose; reset estimator "
-                                "before fresh registration"
+                                "Projected CAD size differed from the visual "
+                                "base by more than 25 percent; reset estimator "
+                                "for the one bounded retry"
                             ),
                         },
                         related_skill_id=skill_id,
@@ -1426,9 +1570,9 @@ class AlignmentSkill:
                 await self.progress.update(
                     phase="POSE_RETRY",
                     message=(
-                        "VLM rejected the first projected base box/axes. The "
-                        "The base-pose estimator was reset; starting a new "
-                        "finite session and a fresh register-from-mask attempt."
+                        "The first projected CAD size differed from the visual "
+                        "base by more than 25 percent. Starting the second and "
+                        "final fresh FoundationPose attempt."
                     ),
                     details={
                         "pose_validation": {
@@ -1437,7 +1581,7 @@ class AlignmentSkill:
                             "state": "REJECTED_RETRYING",
                             "reset_sessions": list(session_ids.values()),
                             "next_attempt_fresh_registration": True,
-                            "verdict": verdict,
+                            "scale_review": scale_review,
                             "overlay": artifact,
                         }
                     },
@@ -1445,49 +1589,74 @@ class AlignmentSkill:
         best_index = select_best_pose_validation(validations)
         best_record = validations[best_index]
         best_record["selected_as_best_attempt"] = True
-        best_record["strict_acceptance"] = False
-        best_verdict = best_record["verdict"]
-        best_overlay_path = Path(
-            best_record["overlay"]["local_path"]
+        best_record["accepted"] = True
+        best_record["acceptance_mode"] = (
+            "BEST_OF_TWO_SIZE_WARNING"
         )
-        if best_overlay_path.is_file():
-            await self.artifacts.set_overlay(best_overlay_path.read_bytes())
-        if pose_verdict_best_of_two_acceptable(
-            best_verdict,
-            fallback_minimum_confidence,
-        ):
-            best_record["accepted"] = True
-            best_record["acceptance_mode"] = "BEST_OF_TWO_FALLBACK"
-            best_record["fallback_minimum_confidence"] = (
-                fallback_minimum_confidence
+        best_record["warnings"].append(
+            "Both FoundationPose attempts differed from the tight visual "
+            "base box by more than 25 percent; the closer attempt was "
+            "retained as a warning, not an error."
+        )
+        best_attempt = int(best_record["attempt"])
+        best_overlay_path = run_dir / (
+            f"foundation_pose_attempt_{best_attempt}_overlay.jpg"
+        )
+        best_overlay = best_overlay_path.read_bytes()
+        selected_overlay, selected_review = (
+            await self._select_and_apply_base_orientation(
+                samples=attempt_samples[best_index],
+                vision=vision,
+                frame=frame,
+                attempt=best_attempt,
+                overlay=best_overlay,
+                mesh_minimum=mesh_minimum,
+                mesh_maximum=mesh_maximum,
+                mesh_from_semantic=mesh_from_semantic,
+                axis_length_m=float(validation_config["axis_length_m"]),
+                gripper_axis_reference=gripper_axis_reference,
+                camera_system_up=camera_system_up,
+                model_registry_path=str(model_registry_path),
             )
-            (run_dir / "foundation_pose_best_of_two.json").write_text(
-                json.dumps(best_record, indent=2) + "\n",
-                encoding="utf-8",
+        )
+        selected_path = run_dir / (
+            f"foundation_pose_attempt_{best_attempt}_selected_overlay.jpg"
+        )
+        selected_path.write_bytes(selected_overlay)
+        await self.artifacts.set_overlay(selected_overlay)
+        best_record["axis_review"] = selected_review["axis_review"]
+        best_record["orientation_resolution"] = selected_review[
+            "orientation_resolution"
+        ]
+        best_record["base_up_alignment"] = selected_review[
+            "base_up_alignment"
+        ]
+        if selected_review["orientation_resolution"].get("warning"):
+            best_record["warnings"].append(
+                selected_review["orientation_resolution"]["warning"]
             )
-            await self.progress.update(
-                phase="POSE_VALIDATION",
-                message=(
-                    f"Neither attempt met the strict threshold; attempt "
-                    f"{best_record['attempt']} was retained as the bounded "
-                    "best-of-two acceptable result."
-                ),
-                details={
-                    "pose_validation": {
-                        "attempt": best_record["attempt"],
-                        "maximum_attempts": maximum_attempts,
-                        "state": "BEST_OF_TWO_FALLBACK_ACCEPTED",
-                        "strict_minimum_confidence": minimum_confidence,
-                        "fallback_minimum_confidence": (
-                            fallback_minimum_confidence
-                        ),
-                        "verdict": best_verdict,
-                        "overlay": best_record["overlay"],
-                    }
-                },
+        if selected_review["base_up_alignment"].get("warning"):
+            best_record["warnings"].append(
+                selected_review["base_up_alignment"]["warning"]
             )
-            return attempt_samples[best_index], validations
-        best_record["acceptance_mode"] = "BEST_OF_TWO_REJECTED"
+        best_record["selected_projection"] = selected_review["projection"]
+        best_record["overlay"] = await self._publish_pose_overlay(
+            skill_id=skill_id,
+            alignment_id=alignment_id,
+            frame=frame,
+            overlay_path=selected_path,
+            attempt=best_attempt,
+            projection=selected_review["projection"],
+            verdict=selected_review["axis_review"],
+            accepted=True,
+        )
+        (
+            run_dir
+            / f"foundation_pose_attempt_{best_attempt}_validation.json"
+        ).write_text(
+            json.dumps(best_record, indent=2) + "\n",
+            encoding="utf-8",
+        )
         (run_dir / "foundation_pose_best_of_two.json").write_text(
             json.dumps(best_record, indent=2) + "\n",
             encoding="utf-8",
@@ -1495,27 +1664,165 @@ class AlignmentSkill:
         await self.progress.update(
             phase="POSE_VALIDATION",
             message=(
-                f"Both pose attempts were rejected. Attempt "
-                f"{best_record['attempt']} is retained as the better diagnostic "
-                "result, but it is not safe to publish as a valid alignment."
+                f"Both size comparisons exceeded 25 percent. Attempt "
+                f"{best_attempt} was closer and was retained with a warning."
             ),
             details={
                 "pose_validation": {
-                    "attempt": best_record["attempt"],
+                    "attempt": best_attempt,
                     "maximum_attempts": maximum_attempts,
-                    "state": "BEST_OF_TWO_REJECTED",
-                    "verdict": best_verdict,
+                    "state": "BEST_OF_TWO_SIZE_WARNING_ACCEPTED",
+                    "scale_review": best_record["scale_review"],
+                    "axis_review": best_record["axis_review"],
                     "overlay": best_record["overlay"],
                 }
             },
         )
-        reasons = best_verdict.get("reasons", [])
-        raise RuntimeError(
-            "VLM rejected both projected FoundationPose base attempts; "
-            f"attempt {best_record['attempt']} was better but still failed "
-            "the absolute geometry gate: "
-            + ("; ".join(reasons) if reasons else "pose or 3D box was unreasonable")
+        return attempt_samples[best_index], validations
+
+    async def _select_and_apply_base_orientation(
+        self,
+        *,
+        samples: dict[str, dict[str, list[np.ndarray]]],
+        vision: GripperVision | ReviewedFileVision,
+        frame: Any,
+        attempt: int,
+        overlay: bytes,
+        mesh_minimum: np.ndarray,
+        mesh_maximum: np.ndarray,
+        mesh_from_semantic: np.ndarray,
+        axis_length_m: float,
+        gripper_axis_reference: dict[str, Any] | None = None,
+        camera_system_up: np.ndarray | None = None,
+        model_registry_path: str | None = None,
+    ) -> tuple[bytes, dict[str, Any]]:
+        camera_from_base, _ = robust_average_transforms(
+            samples["base"]["camera"]
         )
+        reference_point = (
+            gripper_axis_reference.get("camera_system_xyz_m")
+            if isinstance(gripper_axis_reference, dict)
+            and gripper_axis_reference.get("available") is True
+            else None
+        )
+        if reference_point is not None:
+            correction, axis_review, orientation_resolution = (
+                select_base_orientation_from_gripper_point(
+                    camera_from_base,
+                    camera_system_up,
+                    reference_point,
+                )
+            )
+        else:
+            axis_review = await vision.validate_base_pose(
+                overlay,
+                attempt=attempt,
+            )
+            correction, orientation_resolution = select_base_orientation_correction(
+                camera_from_base,
+                camera_system_up,
+                axis_review["base_x_relation_to_gripper"]
+            )
+            orientation_resolution["reference_source"] = (
+                "VLM_RGB_OVERLAY_FALLBACK"
+            )
+            if (
+                isinstance(gripper_axis_reference, dict)
+                and gripper_axis_reference.get("warning")
+            ):
+                orientation_resolution["warning"] = str(
+                    gripper_axis_reference["warning"]
+                )
+        if orientation_resolution.get("orientation_correction_count") not in {
+            0,
+            1,
+        }:
+            raise AssertionError(
+                "base orientation must use at most one discrete correction"
+            )
+        _, application_diagnostics = (
+            apply_base_mesh_hypothesis_correction(
+                camera_from_base,
+                mesh_from_semantic,
+                correction,
+            )
+        )
+        orientation_resolution.update(application_diagnostics)
+        orientation_resolution["model_registry_path"] = model_registry_path
+        for basis in ("camera", "vio"):
+            corrected_samples: list[np.ndarray] = []
+            for value in samples["base"][basis]:
+                corrected, per_sample_diagnostics = (
+                    apply_base_mesh_hypothesis_correction(
+                        value,
+                        mesh_from_semantic,
+                        correction,
+                    )
+                )
+                if not per_sample_diagnostics[
+                    "mesh_center_translation_preserved"
+                ]:
+                    raise AssertionError(
+                        "base hypothesis selection moved the CAD mesh center"
+                    )
+                corrected_samples.append(corrected)
+            samples["base"][basis] = corrected_samples
+        corrected_camera_from_base, _ = robust_average_transforms(
+            samples["base"]["camera"]
+        )
+        selected_overlay, projection = render_pose_overlay(
+            frame.rgb,
+            corrected_camera_from_base,
+            frame.intrinsics,
+            mesh_minimum,
+            mesh_maximum,
+            mesh_from_semantic,
+            axis_length_m=axis_length_m,
+            attempt=attempt,
+        )
+        corrected_up_alignment = inspect_base_up_alignment(
+            corrected_camera_from_base,
+            camera_system_up=camera_system_up,
+            warning_tilt_deg=float(
+                self.config["base_alignment"]["base_up_warning_tilt_deg"]
+            ),
+        )
+        corrected_up_alignment["up_axis_frame"] = frame.camera_frame
+        corrected_up_alignment["up_axis_source"] = (
+            "TIMESTAMPED_VIO_GRAVITY_EXPRESSED_IN_CAMERA_SYSTEM"
+            if camera_system_up is not None
+            else "UNAVAILABLE"
+        )
+        corrected_up_alignment["orientation_correction_axis"] = (
+            orientation_resolution["selected_orientation_correction_axis"]
+        )
+        corrected_up_alignment["orientation_correction_count"] = (
+            orientation_resolution["orientation_correction_count"]
+        )
+        return selected_overlay, {
+            "axis_review": axis_review,
+            "orientation_resolution": orientation_resolution,
+            "base_up_alignment": corrected_up_alignment,
+            "projection": projection,
+        }
+
+    @staticmethod
+    def _selected_orientation_resolution(
+        validations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        selected = next(
+            (
+                value.get("orientation_resolution")
+                for value in reversed(validations)
+                if isinstance(value, dict) and value.get("accepted") is True
+            ),
+            None,
+        )
+        if not isinstance(selected, dict):
+            raise RuntimeError(
+                "accepted FoundationPose result is missing its exact base-orientation review"
+            )
+        return selected
 
     async def _finish_base_vlm(
         self,
@@ -1523,8 +1830,6 @@ class AlignmentSkill:
         samples: dict[str, dict[str, list[np.ndarray]]],
         validations: list[dict[str, Any]],
         frame: Any,
-        vio_beak: np.ndarray,
-        base_from_tool: np.ndarray,
         alignment_id: str,
         skill_id: str,
         vlm: dict[str, Any],
@@ -1535,48 +1840,29 @@ class AlignmentSkill:
         await keeper.ensure_valid()
         await self.progress.update(
             phase="SOLVING",
-            message="Resolving the base's 0/180-degree symmetry and fusing stationary measurements.",
+            message=(
+                "Publishing the FoundationPose base fit with one reviewed "
+                "mesh-centered 0/180-degree orientation hypothesis."
+            ),
             completed_units=6,
             progress_kind="milestone",
         )
-        vio_from_base, diagnostics = robust_average_transforms(samples["base"]["vio"])
-        if base_from_tool is None and not arm_is_home:
-            raise RuntimeError("base symmetry is ambiguous without an arm tool pose or home assertion")
-        oriented, symmetry = choose_base_symmetry(
-            vio_from_base,
-            vio_beak,
-            base_tool_point=base_from_tool[:3, 3] if base_from_tool is not None else None,
+        camera_from_base, camera_diagnostics = robust_average_transforms(
+            samples["base"]["camera"]
         )
-        rotation = oriented[:3, :3]
-        weights = self.config["base_alignment"]["translation_fusion_weights"]
-        translation_candidates = [
-            (
-                "foundation_base",
-                oriented[:3, 3],
-                float(weights["foundation_base"]),
-            )
-        ]
-        configured_offset = self.config["tool_geometry"]["tool_to_beak_center_translation_m"]
-        tool_beak = (
-            np.asarray(configured_offset, np.float64)
-            if configured_offset is not None
-            else np.zeros(3, np.float64)
+        vio_from_base, vio_diagnostics = robust_average_transforms(
+            samples["base"]["vio"]
         )
-        base_beak = apply_transform(base_from_tool, tool_beak)
-        translation_candidates.append(
-            (
-                "vlm_beak_plus_arm",
-                vio_beak - rotation @ base_beak,
-                float(weights["vlm_beak_plus_arm"]),
-            )
-        )
-        total_weight = sum(value[2] for value in translation_candidates)
-        oriented[:3, 3] = sum(point * weight for _, point, weight in translation_candidates) / total_weight
-        learned_tool_beak = apply_transform(np.linalg.inv(base_from_tool), apply_transform(np.linalg.inv(oriented), vio_beak))
+        orientation_fit = self._selected_orientation_resolution(validations)
         world_from_vio = np.eye(4, dtype=np.float64)
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
-        world_from_base = world_from_vio @ oriented
-        world_from_beak = apply_transform(world_from_vio, vio_beak)
+        world_from_camera = world_from_vio @ vio_from_camera
+        world_from_base = world_from_camera @ camera_from_base
+        vio_drift = self._stationary_camera_vio_drift(
+            camera_from_base=camera_from_base,
+            vio_from_base=vio_from_base,
+            vio_from_camera_reference=vio_from_camera,
+        )
         return self._result(
             mode=str(RunMode.FOUNDATION_BASE_VLM_GRIPPER),
             alignment_id=alignment_id,
@@ -1585,30 +1871,22 @@ class AlignmentSkill:
             world_from_vio=world_from_vio,
             world_from_base=world_from_base,
             vio_from_camera_reference=vio_from_camera,
-            learned_tool_beak=learned_tool_beak,
-            gripper_measurements=[
-                {
-                    "source_type": "VLM_RGBD_BEAK",
-                    "semantic_point": "FOREMOST_BEAK_MEAN",
-                    "position_world_m": world_from_beak.tolist(),
-                    "role": "PRIMARY_ALIGNMENT_INPUT",
-                    "used_in_alignment": True,
-                }
-            ],
+            learned_tool_beak=None,
+            gripper_measurements=[],
             diagnostics={
-                "base_samples": diagnostics,
-                "gripper_source": "VLM_RGBD_BEAK",
+                "base_samples": camera_diagnostics,
+                "base_samples_camera": camera_diagnostics,
+                "base_samples_vio": vio_diagnostics,
+                "stationary_camera_vio_drift": vio_drift,
+                "gripper_source": orientation_fit.get(
+                    "reference_source",
+                    "VLM_RGB_OVERLAY_FALLBACK",
+                ),
                 "foundation_pose_models": [self.config["foundation_base_model_id"]],
                 "foundation_pose_validation": validations,
-                "symmetry": symmetry,
-                "translation_fusion": [
-                    {"source": name, "translation_m": point.tolist(), "weight": weight}
-                    for name, point, weight in translation_candidates
-                ],
-                "tool_beak_geometry": (
-                    "configured"
-                    if configured_offset is not None
-                    else "learned_from_this_alignment; inherits base/VLM bias"
+                "orientation_fit": orientation_fit,
+                "base_translation_authority": (
+                    "FOUNDATIONPOSE_CENTERED_MESH_THEN_MESH_FROM_SEMANTIC_ROOT"
                 ),
                 "vlm": vlm,
                 "motion_inhibit": keeper.status(),
@@ -1621,8 +1899,6 @@ class AlignmentSkill:
         samples: dict[str, dict[str, list[np.ndarray]]],
         validations: list[dict[str, Any]],
         frame: Any,
-        vio_beak: np.ndarray,
-        base_from_tool: np.ndarray,
         alignment_id: str,
         skill_id: str,
         vlm: dict[str, Any],
@@ -1634,127 +1910,144 @@ class AlignmentSkill:
         await self.progress.update(
             phase="SOLVING",
             message=(
-                "Resolving base symmetry from the FoundationPose gripper and "
-                "fusing the slower dim-scene measurements."
+                "Publishing the FoundationPose base fit with one reviewed "
+                "mesh-centered 0/180-degree orientation hypothesis."
             ),
             completed_units=6,
             progress_kind="milestone",
         )
-        vio_from_base, base_diagnostics = robust_average_transforms(
+        camera_from_base, base_camera_diagnostics = robust_average_transforms(
+            samples["base"]["camera"]
+        )
+        vio_from_base, base_vio_diagnostics = robust_average_transforms(
             samples["base"]["vio"]
         )
-        vio_from_gripper, gripper_diagnostics = robust_average_transforms(
+        camera_from_gripper, gripper_camera_diagnostics = (
+            robust_average_transforms(samples["gripper"]["camera"])
+        )
+        vio_from_gripper, gripper_vio_diagnostics = robust_average_transforms(
             samples["gripper"]["vio"]
         )
-        if base_from_tool is None and not arm_is_home:
-            raise RuntimeError(
-                "base symmetry is ambiguous without an arm tool pose or home assertion"
-            )
-        oriented, symmetry = choose_base_symmetry(
-            vio_from_base,
-            vio_from_gripper[:3, 3],
-            base_tool_point=base_from_tool[:3, 3],
-        )
-        symmetry["method"] = "FOUNDATION_GRIPPER_PLUS_ARM_KINEMATICS"
-        rotation = oriented[:3, :3]
-        weights = self.config["base_alignment"][
-            "dual_translation_fusion_weights"
-        ]
-        translation_candidates = [
-            (
-                "foundation_base",
-                oriented[:3, 3],
-                float(weights["foundation_base"]),
-            ),
-            (
-                "foundation_gripper_plus_arm",
-                vio_from_gripper[:3, 3] - rotation @ base_from_tool[:3, 3],
-                float(weights["foundation_gripper_plus_arm"]),
-            ),
-        ]
-        configured_offset = self.config["tool_geometry"][
-            "tool_to_beak_center_translation_m"
-        ]
-        tool_beak = (
-            np.asarray(configured_offset, np.float64)
-            if configured_offset is not None
-            else np.zeros(3, np.float64)
-        )
-        base_beak = apply_transform(base_from_tool, tool_beak)
-        translation_candidates.append(
-            (
-                "vlm_beak_plus_arm",
-                vio_beak - rotation @ base_beak,
-                float(weights["vlm_beak_plus_arm"]),
-            )
-        )
-        total_weight = sum(value[2] for value in translation_candidates)
-        oriented[:3, 3] = (
-            sum(point * weight for _, point, weight in translation_candidates)
-            / total_weight
-        )
-        learned_tool_beak = apply_transform(
-            np.linalg.inv(base_from_tool),
-            apply_transform(np.linalg.inv(oriented), vio_beak),
-        )
+        orientation_fit = self._selected_orientation_resolution(validations)
         world_from_vio = np.eye(4, dtype=np.float64)
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
+        world_from_camera = world_from_vio @ vio_from_camera
         world_foundation_gripper = apply_transform(
-            world_from_vio,
-            vio_from_gripper[:3, 3],
+            world_from_camera,
+            camera_from_gripper[:3, 3],
         )
-        world_vlm_beak = apply_transform(world_from_vio, vio_beak)
+        vio_drift = self._stationary_camera_vio_drift(
+            camera_from_base=camera_from_base,
+            vio_from_base=vio_from_base,
+            vio_from_camera_reference=vio_from_camera,
+        )
         return self._result(
             mode=str(RunMode.FOUNDATION_BASE_GRIPPER),
             alignment_id=alignment_id,
             skill_id=skill_id,
             frame=frame,
             world_from_vio=world_from_vio,
-            world_from_base=world_from_vio @ oriented,
+            world_from_base=world_from_camera @ camera_from_base,
             vio_from_camera_reference=vio_from_camera,
-            learned_tool_beak=learned_tool_beak,
+            learned_tool_beak=None,
             gripper_measurements=[
                 {
                     "source_type": "FOUNDATIONPOSE_GRIPPER_POSE",
                     "semantic_point": "GRIPPER_MODEL_ORIGIN",
                     "position_world_m": world_foundation_gripper.tolist(),
-                    "role": "PRIMARY_ALIGNMENT_INPUT",
-                    "used_in_alignment": True,
-                },
-                {
-                    "source_type": "VLM_RGBD_BEAK",
-                    "semantic_point": "FOREMOST_BEAK_MEAN",
-                    "position_world_m": world_vlm_beak.tolist(),
-                    "role": "AUXILIARY_TRANSLATION_INPUT",
-                    "used_in_alignment": True,
+                    "role": "AUXILIARY_OBSERVATION",
+                    "used_in_alignment": False,
                 },
             ],
             diagnostics={
-                "base_samples": base_diagnostics,
-                "gripper_samples": gripper_diagnostics,
-                "gripper_source": "FOUNDATIONPOSE_GRIPPER_POSE",
-                "gripper_auxiliary_source": "VLM_RGBD_BEAK",
+                "base_samples": base_camera_diagnostics,
+                "base_samples_camera": base_camera_diagnostics,
+                "base_samples_vio": base_vio_diagnostics,
+                "gripper_samples": gripper_camera_diagnostics,
+                "gripper_samples_camera": gripper_camera_diagnostics,
+                "gripper_samples_vio": gripper_vio_diagnostics,
+                "stationary_camera_vio_drift": vio_drift,
+                "gripper_source": "FOUNDATIONPOSE_GRIPPER_AUXILIARY_ONLY",
+                "gripper_point_observation_sources": [
+                    "FOUNDATIONPOSE_GRIPPER_POSE",
+                ],
                 "foundation_pose_models": [
                     self.config["foundation_base_model_id"],
                     self.config["foundation_gripper_model_id"],
                 ],
                 "foundation_pose_validation": validations,
-                "symmetry": symmetry,
-                "translation_fusion": [
-                    {
-                        "source": name,
-                        "translation_m": point.tolist(),
-                        "weight": weight,
-                    }
-                    for name, point, weight in translation_candidates
-                ],
-                "tool_beak_geometry": (
-                    "configured"
-                    if configured_offset is not None
-                    else "learned_from_this_alignment; inherits VLM bias"
+                "orientation_fit": orientation_fit,
+                "base_translation_authority": (
+                    "FOUNDATIONPOSE_CENTERED_MESH_THEN_MESH_FROM_SEMANTIC_ROOT"
                 ),
                 "vlm": vlm,
                 "motion_inhibit": keeper.status(),
+            },
+        )
+
+    @staticmethod
+    def _stationary_camera_vio_drift(
+        *,
+        camera_from_base: np.ndarray,
+        vio_from_base: np.ndarray,
+        vio_from_camera_reference: np.ndarray,
+    ) -> dict[str, Any]:
+        """Report VIO drift without allowing it to move a stationary fit."""
+        expected_vio_from_base = (
+            vio_from_camera_reference @ camera_from_base
+        )
+        translation_delta = (
+            vio_from_base[:3, 3] - expected_vio_from_base[:3, 3]
+        )
+        rotation_delta = (
+            expected_vio_from_base[:3, :3].T
+            @ vio_from_base[:3, :3]
+        )
+        cosine = float(
+            np.clip((np.trace(rotation_delta) - 1.0) * 0.5, -1.0, 1.0)
+        )
+        return {
+            "method": "REFERENCE_CAMERA_POSE_VERSUS_ROBUST_VIO_SAMPLES",
+            "used_in_alignment": False,
+            "alignment_authority": "STATIONARY_REFERENCE_CAMERA",
+            "translation_delta_vio_m": translation_delta.tolist(),
+            "translation_delta_norm_m": float(
+                np.linalg.norm(translation_delta)
+            ),
+            "rotation_delta_rad": float(np.arccos(cosine)),
+            "expected_vio_from_base": transform_payload(
+                expected_vio_from_base
+            ),
+            "measured_vio_from_base": transform_payload(vio_from_base),
+        }
+
+    def _bounded_tool_beak_estimate(
+        self,
+        *,
+        oriented: np.ndarray,
+        base_from_tool: np.ndarray,
+        vio_beak: np.ndarray,
+    ) -> tuple[np.ndarray | None, dict[str, Any]]:
+        estimate = apply_transform(
+            np.linalg.inv(base_from_tool),
+            apply_transform(np.linalg.inv(oriented), vio_beak),
+        )
+        norm_m = float(np.linalg.norm(estimate))
+        maximum_norm_m = float(
+            self.config["tool_geometry"][
+                "maximum_learned_tool_to_beak_norm_m"
+            ]
+        )
+        accepted = norm_m <= maximum_norm_m
+        return (
+            estimate if accepted else None,
+            {
+                "translation_m": estimate.tolist(),
+                "norm_m": norm_m,
+                "maximum_norm_m": maximum_norm_m,
+                "accepted_for_later_refinement": accepted,
+                "used_in_current_base_transform": False,
+                "basis": "POST_HOC_FROM_INDEPENDENT_BASE_POSE",
             },
         )
 
@@ -1763,13 +2056,13 @@ class AlignmentSkill:
         *,
         prior: dict[str, Any],
         frame: Any,
-        camera_beak: np.ndarray,
+        camera_system_beak: np.ndarray,
         base_from_tool: np.ndarray,
         alignment_id: str,
         skill_id: str,
         vlm: dict[str, Any],
         keeper: MotionInhibitKeeper,
-        vision: GripperVision,
+        vision: GripperVision | ReviewedFileVision,
         run_dir: Path,
         vio_from_camera: np.ndarray,
     ) -> dict[str, Any]:
@@ -1805,7 +2098,7 @@ class AlignmentSkill:
         rotation_offset = prior_world_from_base[:3, :3] @ base_beak
         world_beak = apply_transform(
             prior_world_from_camera,
-            camera_beak,
+            camera_system_beak,
         )
         translation_candidates = [world_beak - rotation_offset]
         beak_candidates = [world_beak]
@@ -1836,10 +2129,12 @@ class AlignmentSkill:
                     json.dumps(candidate_vlm, indent=2) + "\n",
                     encoding="utf-8",
                 )
-                candidate_camera_beak, _ = self._camera_beak(frame, candidate_vlm)
+                candidate_camera_system_beak, _ = (
+                    self._camera_system_beak(frame, candidate_vlm)
+                )
                 candidate_world_beak = apply_transform(
                     prior_world_from_camera,
-                    candidate_camera_beak,
+                    candidate_camera_system_beak,
                 )
                 vlm_candidates.append(candidate_vlm)
                 beak_candidates.append(candidate_world_beak)
@@ -1970,7 +2265,7 @@ class AlignmentSkill:
         world_from_vio: np.ndarray,
         world_from_base: np.ndarray,
         vio_from_camera_reference: np.ndarray,
-        learned_tool_beak: np.ndarray,
+        learned_tool_beak: np.ndarray | None,
         gripper_measurements: list[dict[str, Any]],
         diagnostics: dict[str, Any],
     ) -> dict[str, Any]:
@@ -2089,7 +2384,11 @@ class AlignmentSkill:
             ),
             "world_from_vio": transform_payload(world_from_vio),
             "world_from_base": transform_payload(world_from_base),
-            "learned_tool_to_beak_translation_m": learned_tool_beak.tolist(),
+            "learned_tool_to_beak_translation_m": (
+                learned_tool_beak.tolist()
+                if learned_tool_beak is not None
+                else None
+            ),
             "mode_contract": mode_contract(mode),
             "gripper_measurements": normalized_measurements,
             "gripper_cross_source_comparison": cross_source_comparison,
@@ -2162,6 +2461,7 @@ class AlignmentSkill:
             ),
         )
         bundle_observation = observations.get("bundle")
+        vio_status_observation = observations.get("vio_status")
         bundle = (
             bundle_observation.get("data")
             if isinstance(bundle_observation, dict)
@@ -2200,6 +2500,7 @@ class AlignmentSkill:
         quality_provenance: dict[str, Any] = {
             "source": "CURRENT_FOUNDATIONPOSE_SAMPLES",
         }
+        ancestor_quality: dict[str, Any] | None = None
         if mode == str(RunMode.VLM_GRIPPER_ONLY):
             ancestor_quality = self._ancestor_candidate_quality(
                 diagnostics.get("parent_alignment_id")
@@ -2270,12 +2571,34 @@ class AlignmentSkill:
                         else None
                     ),
                 }
+        semantic_alignment = self._semantic_alignment_quality(diagnostics)
+        if semantic_alignment is None and ancestor_quality is not None:
+            inherited = ancestor_quality.get("semantic_alignment")
+            if isinstance(inherited, dict):
+                semantic_alignment = {
+                    **inherited,
+                    "source": "ANCESTOR_REVIEWED_ALIGNMENT",
+                    "ancestor_alignment_id": ancestor_quality[
+                        "alignment_id"
+                    ],
+                }
+        quality_provenance["semantic_alignment"] = (
+            semantic_alignment
+            if semantic_alignment is not None
+            else {
+                "status": "MISSING",
+                "reason": (
+                    "No current FoundationPose size review and exact "
+                    "mesh-centered base-orientation decision is attached to this candidate."
+                ),
+            }
+        )
         return {
             "schema": (
                 "midbrain.skill.stationary_world_arm_alignment."
                 "calibration_candidate"
             ),
-            "schema_version": 2,
+            "schema_version": 3,
             "candidate_id": alignment_id,
             "workcell_calibration_revision": alignment_id,
             "created_at_us": created_at_us,
@@ -2284,7 +2607,7 @@ class AlignmentSkill:
             "review_mode": review_mode,
             "motion_usable": False,
             "method": {
-                "skill_version": "0.7.0",
+                "skill_version": "0.8.5",
                 "base_pose_engine_route": self.base_pose_engine_route,
                 "run_mode": mode,
             },
@@ -2293,7 +2616,14 @@ class AlignmentSkill:
                 "vio_world_frame": frame.world_frame,
                 "camera_frame": frame.camera_frame,
                 "arm_base_frame": self.config["arm_base_frame"],
+                "convention_id": (
+                    "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                ),
+                "camera_optical_convention_id": (
+                    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                ),
                 "transform_semantics": "PARENT_FROM_CHILD",
+                "legacy_candidate_compatibility": "REJECT",
             },
             "confidence": (
                 min(confidence_values) if confidence_values else None
@@ -2339,8 +2669,28 @@ class AlignmentSkill:
                 "source_buffer_refs": source_buffer_refs,
             },
             "vio_provenance": {
+                "provider_id": (
+                    vio_status_observation.get("provider_id")
+                    if isinstance(vio_status_observation, dict)
+                    else None
+                ),
+                "provider_instance_id": (
+                    vio_status_observation.get("provider_instance_id")
+                    if isinstance(vio_status_observation, dict)
+                    else None
+                ),
+                "boot_id": (
+                    vio_status_observation.get("boot_id")
+                    if isinstance(vio_status_observation, dict)
+                    else None
+                ),
                 "world_frame": frame.world_frame,
                 "session_epoch": frame.session_epoch,
+                "reference_timestamp_us": (
+                    vio_status_observation.get("observed_at_us")
+                    if isinstance(vio_status_observation, dict)
+                    else None
+                ),
             },
             "transforms": {
                 "world_from_camera": transform_payload(
@@ -2350,6 +2700,212 @@ class AlignmentSkill:
                 "world_from_base": transform_payload(world_from_base),
             },
         }
+
+    def _semantic_alignment_quality(
+        self,
+        diagnostics: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        validations = diagnostics.get("foundation_pose_validation") or []
+        accepted = next(
+            (
+                value
+                for value in reversed(validations)
+                if isinstance(value, dict)
+                and value.get("accepted") is True
+            ),
+            None,
+        )
+        orientation_fit = diagnostics.get("orientation_fit")
+        if not isinstance(accepted, dict) or not isinstance(orientation_fit, dict):
+            return None
+        axis_review = accepted.get("axis_review")
+        scale_review = accepted.get("scale_review")
+        base_up_alignment = accepted.get("base_up_alignment")
+        relation = (
+            axis_review.get("base_x_relation_to_gripper")
+            if isinstance(axis_review, dict)
+            else None
+        )
+        selected_flip = orientation_fit.get("selected_flip_deg")
+        fitted_yaw = orientation_fit.get("fitted_yaw_deg")
+        correction_translation = orientation_fit.get(
+            "yaw_correction_translation_norm_m"
+        )
+        correction_axis = orientation_fit.get(
+            "selected_orientation_correction_axis"
+        )
+        correction_deg = orientation_fit.get(
+            "selected_orientation_correction_deg"
+        )
+        correction_count = orientation_fit.get("orientation_correction_count")
+        orientation_translation = orientation_fit.get(
+            "orientation_correction_translation_norm_m"
+        )
+        application_origin = orientation_fit.get("application_origin")
+        application_order = orientation_fit.get("application_order")
+        mesh_correction_translation = orientation_fit.get(
+            "mesh_hypothesis_correction_translation_norm_m"
+        )
+        mesh_center_preserved = orientation_fit.get(
+            "mesh_center_translation_preserved"
+        )
+        root_adjustment = orientation_fit.get(
+            "semantic_root_translation_adjustment_norm_m"
+        )
+        world_up_available = orientation_fit.get("world_up_available")
+        raw_z_dot_up = orientation_fit.get("raw_base_z_dot_world_up")
+        corrected_z_dot_up = orientation_fit.get(
+            "corrected_base_z_dot_world_up"
+        )
+        inspected_corrected_z_dot_up = (
+            base_up_alignment.get("base_z_dot_world_up")
+            if isinstance(base_up_alignment, dict)
+            else None
+        )
+        needs_upright_flip = (
+            isinstance(raw_z_dot_up, (int, float))
+            and math.isfinite(float(raw_z_dot_up))
+            and float(raw_z_dot_up) < 0.0
+        )
+        needs_x_flip = relation == "AWAY_FROM_GRIPPER"
+        expected_correction_axis = {
+            (False, False): "NONE",
+            (False, True): "Z",
+            (True, False): "X",
+            (True, True): "Y",
+        }[(needs_upright_flip, needs_x_flip)]
+        expected_correction_count = (
+            0 if expected_correction_axis == "NONE" else 1
+        )
+        expected_correction_deg = 0 if expected_correction_count == 0 else 180
+        if (
+            relation
+            not in {"TOWARD_GRIPPER", "AWAY_FROM_GRIPPER", "UNCLEAR"}
+            or selected_flip not in {0, 180}
+            or not isinstance(fitted_yaw, (int, float))
+            or abs(float(fitted_yaw) - float(selected_flip)) > 1e-9
+            or not isinstance(correction_translation, (int, float))
+            or abs(float(correction_translation)) > 1e-9
+            or world_up_available is not True
+            or not isinstance(raw_z_dot_up, (int, float))
+            or not math.isfinite(float(raw_z_dot_up))
+            or not isinstance(corrected_z_dot_up, (int, float))
+            or not math.isfinite(float(corrected_z_dot_up))
+            or float(corrected_z_dot_up) < -1e-9
+            or not isinstance(inspected_corrected_z_dot_up, (int, float))
+            or not math.isfinite(float(inspected_corrected_z_dot_up))
+            or abs(
+                float(inspected_corrected_z_dot_up)
+                - float(corrected_z_dot_up)
+            )
+            > 1e-6
+            or correction_axis != expected_correction_axis
+            or correction_deg != expected_correction_deg
+            or correction_count != expected_correction_count
+            or not isinstance(orientation_translation, (int, float))
+            or not math.isfinite(float(orientation_translation))
+            or abs(float(orientation_translation)) > 1e-9
+            or application_origin
+            != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
+            or application_order
+            != (
+                "parent_from_mesh @ mesh_hypothesis_correction @ "
+                "mesh_from_semantic"
+            )
+            or not isinstance(mesh_correction_translation, (int, float))
+            or not math.isfinite(float(mesh_correction_translation))
+            or abs(float(mesh_correction_translation)) > 1e-9
+            or mesh_center_preserved is not True
+            or not isinstance(root_adjustment, (int, float))
+            or not math.isfinite(float(root_adjustment))
+            or float(root_adjustment) < 0.0
+        ):
+            return None
+        warnings = list(accepted.get("warnings") or [])
+        if (
+            orientation_fit.get("warning")
+            and orientation_fit["warning"] not in warnings
+        ):
+            warnings.append(str(orientation_fit["warning"]))
+        yaw_source = str(
+            orientation_fit.get("reference_source")
+            or "VLM_RGB_OVERLAY_FALLBACK"
+        )
+        result: dict[str, Any] = {
+            "status": "PASSED_WITH_WARNINGS" if warnings else "PASSED",
+            "source": (
+                "CURRENT_FOUNDATIONPOSE_PROJECTED_SCALE_AND_"
+                f"{yaw_source}_SINGLE_DISCRETE_BASE_ORIENTATION"
+            ),
+            "base_x_relation_to_gripper": relation,
+            "selected_base_yaw_flip_deg": int(selected_flip),
+            "fitted_base_yaw_deg": float(fitted_yaw),
+            "yaw_correction_translation_norm_m": float(
+                correction_translation
+            ),
+            "world_up_available": True,
+            "raw_base_z_dot_world_up": float(raw_z_dot_up),
+            "corrected_base_z_dot_world_up": float(corrected_z_dot_up),
+            "upright_hemisphere_flip_required": needs_upright_flip,
+            "selected_orientation_correction_axis": correction_axis,
+            "selected_orientation_correction_deg": int(correction_deg),
+            "orientation_correction_count": int(correction_count),
+            "orientation_correction_translation_norm_m": float(
+                orientation_translation
+            ),
+            "orientation_application_origin": application_origin,
+            "orientation_application_order": application_order,
+            "mesh_hypothesis_correction_translation_norm_m": float(
+                mesh_correction_translation
+            ),
+            "mesh_center_translation_preserved": True,
+            "semantic_root_translation_adjustment_norm_m": float(
+                root_adjustment
+            ),
+            "foundation_pose_attempt_count": len(validations),
+            "acceptance_mode": accepted.get("acceptance_mode"),
+            "size_warning_accepted": (
+                accepted.get("acceptance_mode")
+                == "BEST_OF_TWO_SIZE_WARNING"
+            ),
+            "warnings": warnings,
+        }
+        if isinstance(scale_review, dict):
+            result.update(
+                {
+                    "projected_visual_linear_scale_ratio": scale_review.get(
+                        "equivalent_linear_scale_ratio"
+                    ),
+                    "projected_visual_scale_mismatch_fraction": scale_review.get(
+                        "mismatch_fraction"
+                    ),
+                    "maximum_projected_box_size_mismatch_fraction": (
+                        scale_review.get("maximum_mismatch_fraction")
+                    ),
+                    "projected_visual_scale_within_tolerance": (
+                        scale_review.get("within_tolerance")
+                    ),
+                }
+            )
+        if isinstance(base_up_alignment, dict):
+            result.update(
+                {
+                    "base_up_status": base_up_alignment.get("status"),
+                    "world_up_available": base_up_alignment.get(
+                        "world_up_available"
+                    ),
+                    "base_z_dot_world_up": base_up_alignment.get(
+                        "base_z_dot_world_up"
+                    ),
+                    "base_z_tilt_from_world_up_deg": base_up_alignment.get(
+                        "base_z_tilt_from_world_up_deg"
+                    ),
+                    "base_up_warning_tilt_deg": base_up_alignment.get(
+                        "warning_tilt_deg"
+                    ),
+                }
+            )
+        return result
 
     def _ancestor_candidate_quality(
         self,
@@ -2401,6 +2957,13 @@ class AlignmentSkill:
                     "confidence": float(confidence),
                     "translation_m": float(translation),
                     "rotation_rad": float(rotation),
+                    "semantic_alignment": (
+                        (
+                            candidate.get("quality_provenance") or {}
+                        ).get("semantic_alignment")
+                        if isinstance(candidate, dict)
+                        else None
+                    ),
                 }
             diagnostics = result.get("diagnostics")
             current_id = str(
@@ -2418,6 +2981,31 @@ class AlignmentSkill:
         prior: dict[str, Any],
         workcell_calibrations: dict[str, Any],
     ) -> bool:
+        candidate = prior.get("candidate")
+        frame_contract = (
+            candidate.get("frame_contract")
+            if isinstance(candidate, dict)
+            else None
+        )
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("schema_version") != 3
+            or not isinstance(frame_contract, dict)
+            or frame_contract.get("convention_id")
+            != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+            or frame_contract.get("camera_optical_convention_id")
+            != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            or frame_contract.get("legacy_candidate_compatibility")
+            != "REJECT"
+            or (
+                (candidate.get("quality_provenance") or {}).get(
+                    "semantic_alignment",
+                    {},
+                ).get("status")
+                not in {"PASSED", "PASSED_WITH_WARNINGS"}
+            )
+        ):
+            return False
         review_mode = str(
             (self.config.get("candidate_review") or {}).get("mode")
             or "SHADOW"
@@ -2484,6 +3072,18 @@ class AlignmentSkill:
                 continue
             candidate = prior.get("candidate")
             if not isinstance(candidate, dict):
+                continue
+            frame_contract = candidate.get("frame_contract")
+            if (
+                candidate.get("schema_version") != 3
+                or not isinstance(frame_contract, dict)
+                or frame_contract.get("convention_id")
+                != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                or frame_contract.get("camera_optical_convention_id")
+                != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                or frame_contract.get("legacy_candidate_compatibility")
+                != "REJECT"
+            ):
                 continue
             if str(candidate.get("candidate_id") or "") != candidate_id:
                 continue

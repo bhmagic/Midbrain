@@ -21,7 +21,7 @@ from .prototype_backend import (
     _rotation_axis_angle,
 )
 
-GRAVITY_WORLD = np.array([0.0, -STANDARD_GRAVITY_MPS2, 0.0], dtype=np.float64)
+GRAVITY_WORLD = np.array([0.0, 0.0, -STANDARD_GRAVITY_MPS2], dtype=np.float64)
 
 
 @dataclass

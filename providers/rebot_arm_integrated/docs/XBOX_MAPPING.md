@@ -1,4 +1,4 @@
-# Xbox mapping — Integrated 0.8.0
+# Xbox mapping — Integrated 0.8.1
 
 - Left stick left/right: base X target edit.
 - Left stick up/down: base Y target edit.

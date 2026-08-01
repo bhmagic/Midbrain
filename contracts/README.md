@@ -1,6 +1,6 @@
 # Physical AI Contracts
 
-Version: 0.3.11 working draft.
+Version: 0.4 working draft.
 
 This contract set defines Resource Providers, World State Fabric transport,
 safety/authority policy, native timestamped transforms, finite Skills, device
@@ -22,6 +22,10 @@ Documents 00-05 retain the v0.2 foundations and incorporate the v0.3.11
 safety-critical process-escalation and layered-authority-lineage rules.
 Documents 06-10 add the interfaces required for camera/IMU pose tracking and
 world-frame spatial visualization.
+
+Document 14 defines the canonical `+X` forward, `+Y` left, `+Z` up spatial
+language, keeps raw camera optical axes explicit, and requires deterministic
+semantic-direction resolution before motion planning.
 
 The finite-Skill contract also defines the depth-backed general effector-front
 landmark boundary and separates it from task-specific action geometry.

@@ -56,9 +56,7 @@ Invoke-ComponentSetup 6 "Setting up Effector-Front Skill" `
     "skills\locate-effector-front\scripts\setup.ps1"
 Invoke-ComponentSetup 7 "Setting up Stationary Alignment Skill" `
     "skills\stationary_world_arm_alignment\scripts\setup.ps1"
-Invoke-ComponentSetup 8 "Setting up Vegetable Cutting Skill" `
-    "skills\vegetable_cutting\scripts\setup.ps1"
-Invoke-ComponentSetup 9 "Setting up Test Agent/OpenAI Agents SDK" `
+Invoke-ComponentSetup 8 "Setting up Test Agent/OpenAI Agents SDK" `
     "test_agent\scripts\setup.ps1"
 
 Write-Host "Workspace setup complete with component-local Python environments. Existing config files were preserved."

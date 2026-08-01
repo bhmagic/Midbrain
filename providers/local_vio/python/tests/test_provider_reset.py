@@ -127,6 +127,64 @@ class ProviderResetTests(unittest.TestCase):
         self.assertEqual(result["status"], "already_hot")
         self.assertEqual(provider.session_epoch, old_epoch)
 
+    def test_fixed_rig_attestation_is_bounded_and_does_not_reset(self) -> None:
+        provider = self.make_provider()
+        old_epoch = provider.session_epoch
+
+        result = provider.handle_request(
+            {
+                "action": "attest_fixed_rig_stationary",
+                "related_skill_id": "skill-1",
+                "payload": {
+                    "fixed_rig_confirmed": True,
+                    "duration_s": 10.0,
+                },
+            }
+        )
+
+        self.assertEqual(
+            result["status"],
+            "fixed_rig_stationary_attested",
+        )
+        self.assertFalse(result["epoch_reset"])
+        self.assertEqual(provider.session_epoch, old_epoch)
+        self.assertTrue(provider._fixed_rig_attestation_active())
+        self.assertEqual(
+            provider.fixed_rig_attestation_skill_id,
+            "skill-1",
+        )
+
+    def test_fixed_rig_attestation_requires_explicit_confirmation(self) -> None:
+        provider = self.make_provider()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "fixed_rig_confirmed=true",
+        ):
+            provider.handle_request(
+                {
+                    "action": "attest_fixed_rig_stationary",
+                    "payload": {"duration_s": 10.0},
+                }
+            )
+
+    def test_session_reset_clears_fixed_rig_attestation(self) -> None:
+        provider = self.make_provider()
+        provider.handle_request(
+            {
+                "action": "attest_fixed_rig_stationary",
+                "payload": {
+                    "fixed_rig_confirmed": True,
+                    "duration_s": 10.0,
+                },
+            }
+        )
+
+        provider._reset_session("test")
+
+        self.assertFalse(provider._fixed_rig_attestation_active())
+        self.assertIsNone(provider.fixed_rig_attestation_skill_id)
+
     def test_rgbd_copy_uses_provider_latest_refs_not_fabric_refs(self) -> None:
         provider = object.__new__(LocalVioProvider)
         requested_streams = []

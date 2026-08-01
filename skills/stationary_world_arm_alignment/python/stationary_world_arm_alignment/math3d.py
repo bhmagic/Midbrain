@@ -6,6 +6,25 @@ from typing import Any, Iterable
 import numpy as np
 
 
+class YawUnobservableError(RuntimeError):
+    """Report why a position-only base-yaw fit has insufficient leverage."""
+
+    def __init__(self, diagnostics: dict[str, Any]):
+        self.diagnostics = diagnostics
+        predicted = float(diagnostics["predicted_horizontal_lever_arm_m"])
+        observed = float(diagnostics["observed_horizontal_lever_arm_m"])
+        minimum = float(diagnostics["minimum_horizontal_lever_arm_m"])
+        super().__init__(
+            "base yaw is unobservable from the current stationary pose: "
+            f"controller TCP horizontal lever={predicted:.4f} m, "
+            f"segmented gripper horizontal lever={observed:.4f} m, "
+            f"required minimum={minimum:.4f} m. Move the end effector "
+            "sideways away from the base Z axis while keeping the camera, "
+            "base, and rig fixed, then retry calibration. No calibration "
+            "candidate was created."
+        )
+
+
 def normalize_quaternion_xyzw(value: Any) -> np.ndarray:
     quaternion = np.asarray(value, dtype=np.float64)
     if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
@@ -95,41 +114,360 @@ def apply_transform(matrix: Any, point_xyz: Any) -> np.ndarray:
     return transform[:3, :3] @ point + transform[:3, 3]
 
 
-def base_yaw_flip() -> np.ndarray:
-    result = np.eye(4, dtype=np.float64)
-    result[:3, :3] = np.diag([-1.0, -1.0, 1.0])
-    return result
-
-
-def base_upright_correction(
-    world_from_base: np.ndarray,
+def inspect_base_up_alignment(
+    camera_from_base: np.ndarray,
     *,
-    world_up: np.ndarray | None = None,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    transform = np.asarray(world_from_base, dtype=np.float64)
+    camera_system_up: np.ndarray | None,
+    warning_tilt_deg: float = 10.0,
+) -> dict[str, Any]:
+    """Report base-up alignment without changing or rejecting the pose."""
+    transform = np.asarray(camera_from_base, dtype=np.float64)
     if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
-        raise ValueError("world_from_base must be a finite 4x4 transform")
-    up = np.asarray(
-        [0.0, 1.0, 0.0] if world_up is None else world_up,
+        raise ValueError("camera_from_base must be a finite 4x4 transform")
+    threshold = float(warning_tilt_deg)
+    if not 0.0 < threshold <= 90.0:
+        raise ValueError("warning_tilt_deg must be in (0, 90]")
+    if camera_system_up is None:
+        return {
+            "status": "WORLD_UP_UNAVAILABLE",
+            "world_up_available": False,
+            "within_warning_tolerance": None,
+            "warning_tilt_deg": threshold,
+            "warning": (
+                "World/gravity up is unavailable; the FoundationPose base "
+                "orientation was retained without modification."
+            ),
+            "transform_modified": False,
+        }
+    up = np.asarray(camera_system_up, dtype=np.float64)
+    norm = float(np.linalg.norm(up))
+    if up.shape != (3,) or not np.all(np.isfinite(up)) or norm <= 1e-12:
+        return {
+            "status": "WORLD_UP_UNAVAILABLE",
+            "world_up_available": False,
+            "within_warning_tolerance": None,
+            "warning_tilt_deg": threshold,
+            "warning": (
+                "World/gravity up is invalid; the FoundationPose base "
+                "orientation was retained without modification."
+            ),
+            "transform_modified": False,
+        }
+    up = up / norm
+    dot = float(np.clip(np.dot(transform[:3, 2], up), -1.0, 1.0))
+    tilt_deg = math.degrees(math.acos(dot))
+    within = tilt_deg <= threshold
+    return {
+        "status": "ALIGNED" if within else "TILT_WARNING",
+        "world_up_available": True,
+        "world_up_axis_camera_system": up.tolist(),
+        "base_z_dot_world_up": dot,
+        "base_z_tilt_from_world_up_deg": tilt_deg,
+        "within_warning_tolerance": within,
+        "warning_tilt_deg": threshold,
+        "warning": (
+            None
+            if within
+            else (
+                f"Base +Z is {tilt_deg:.2f} degrees from world/gravity up; "
+                "the FoundationPose orientation was retained without "
+                "modification."
+            )
+        ),
+        "transform_modified": False,
+    }
+
+
+def select_base_orientation_correction(
+    camera_from_base: Any,
+    camera_system_up: Any | None,
+    base_x_relation_to_gripper: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Select one principal-axis 180-degree hypothesis, applied at most once."""
+    transform = np.asarray(camera_from_base, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+        raise ValueError("camera_from_base must be a finite 4x4 transform")
+    relation = str(base_x_relation_to_gripper or "").strip().upper()
+    if relation not in {
+        "TOWARD_GRIPPER",
+        "AWAY_FROM_GRIPPER",
+        "UNCLEAR",
+    }:
+        raise ValueError("base_x_relation_to_gripper is invalid")
+
+    up: np.ndarray | None = None
+    if camera_system_up is not None:
+        candidate_up = np.asarray(camera_system_up, dtype=np.float64)
+        if candidate_up.shape == (3,) and np.all(np.isfinite(candidate_up)):
+            up_norm = float(np.linalg.norm(candidate_up))
+            if up_norm > 1e-12:
+                up = candidate_up / up_norm
+    raw_z_dot_up = (
+        float(np.clip(np.dot(transform[:3, 2], up), -1.0, 1.0))
+        if up is not None
+        else None
+    )
+    needs_upright_flip = bool(
+        raw_z_dot_up is not None and raw_z_dot_up < 0.0
+    )
+    needs_x_flip = relation == "AWAY_FROM_GRIPPER"
+    selected_axis = {
+        (False, False): "NONE",
+        (False, True): "Z",
+        (True, False): "X",
+        (True, True): "Y",
+    }[(needs_upright_flip, needs_x_flip)]
+    rotations = {
+        "NONE": np.eye(3, dtype=np.float64),
+        "X": np.diag([1.0, -1.0, -1.0]),
+        "Y": np.diag([-1.0, 1.0, -1.0]),
+        "Z": np.diag([-1.0, -1.0, 1.0]),
+    }
+    correction = np.eye(4, dtype=np.float64)
+    correction[:3, :3] = rotations[selected_axis]
+    corrected = transform @ correction
+    corrected_z_dot_up = (
+        float(np.clip(np.dot(corrected[:3, 2], up), -1.0, 1.0))
+        if up is not None
+        else None
+    )
+    warnings: list[str] = []
+    if up is None:
+        warnings.append(
+            "World/gravity up was unavailable, so the base +Z hemisphere "
+            "could not be canonicalized."
+        )
+    if relation == "UNCLEAR":
+        warnings.append(
+            "The gripper relation was unclear, so raw base +X was retained."
+        )
+    if corrected_z_dot_up is not None and corrected_z_dot_up < -1e-9:
+        raise AssertionError("base orientation selection left +Z below gravity-up")
+    yaw_flip_deg = 180 if needs_x_flip else 0
+    yaw_component = np.eye(4, dtype=np.float64)
+    if needs_x_flip:
+        yaw_component[:3, :3] = rotations["Z"]
+    return correction, {
+        "method": "SINGLE_DISCRETE_BASE_ORIENTATION_SELECTION",
+        "selection_policy": (
+            "UP_OK+X_TOWARD=NONE; UP_OK+X_AWAY=Z_180; "
+            "UP_DOWN+X_TOWARD=X_180; UP_DOWN+X_AWAY=Y_180"
+        ),
+        "base_x_relation_to_gripper": relation,
+        "selected_flip_deg": yaw_flip_deg,
+        "fitted_yaw_rad": math.radians(yaw_flip_deg),
+        "fitted_yaw_deg": float(yaw_flip_deg),
+        "semantic_yaw_correction": yaw_component.tolist(),
+        "yaw_correction_translation_norm_m": float(
+            np.linalg.norm(yaw_component[:3, 3])
+        ),
+        "world_up_available": up is not None,
+        "world_up_axis_camera_system": up.tolist() if up is not None else None,
+        "raw_base_z_dot_world_up": raw_z_dot_up,
+        "corrected_base_z_dot_world_up": corrected_z_dot_up,
+        "upright_hemisphere_flip_required": needs_upright_flip,
+        "selected_orientation_correction_axis": selected_axis,
+        "selected_orientation_correction_deg": 0 if selected_axis == "NONE" else 180,
+        "orientation_correction_count": 0 if selected_axis == "NONE" else 1,
+        "semantic_orientation_correction": correction.tolist(),
+        "orientation_correction_translation_norm_m": float(
+            np.linalg.norm(correction[:3, 3])
+        ),
+        "warning": " ".join(warnings) if warnings else None,
+        "consistency_passed": True,
+    }
+
+
+def select_base_orientation_from_gripper_point(
+    camera_from_base: Any,
+    camera_system_up: Any | None,
+    camera_system_gripper_point_m: Any,
+    *,
+    weak_planar_baseline_m: float = 0.015,
+    weak_forward_fraction: float = 0.2,
+) -> tuple[np.ndarray, dict[str, Any], dict[str, Any]]:
+    """Resolve the single discrete base orientation from up and gripper depth."""
+    transform = np.asarray(camera_from_base, dtype=np.float64)
+    point = np.asarray(camera_system_gripper_point_m, dtype=np.float64)
+    if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+        raise ValueError("camera_from_base must be a finite 4x4 transform")
+    if point.shape != (3,) or not np.all(np.isfinite(point)):
+        raise ValueError(
+            "camera_system_gripper_point_m must contain three finite values"
+        )
+    if weak_planar_baseline_m < 0.0:
+        raise ValueError("weak_planar_baseline_m must be non-negative")
+    if not 0.0 <= weak_forward_fraction <= 1.0:
+        raise ValueError("weak_forward_fraction must be in [0, 1]")
+
+    base_from_camera = np.linalg.inv(transform)
+    base_point = (
+        base_from_camera
+        @ np.asarray([point[0], point[1], point[2], 1.0], dtype=np.float64)
+    )[:3]
+    planar_norm_m = float(np.linalg.norm(base_point[:2]))
+    forward_component_m = float(base_point[0])
+    forward_fraction = (
+        abs(forward_component_m) / planar_norm_m
+        if planar_norm_m > 1e-12
+        else 0.0
+    )
+    relation = (
+        "TOWARD_GRIPPER"
+        if forward_component_m >= 0.0
+        else "AWAY_FROM_GRIPPER"
+    )
+    correction, resolution = select_base_orientation_correction(
+        transform,
+        camera_system_up,
+        relation,
+    )
+    weak_geometry = (
+        planar_norm_m < weak_planar_baseline_m
+        or forward_fraction < weak_forward_fraction
+    )
+    warnings = [str(resolution["warning"])] if resolution.get("warning") else []
+    if weak_geometry:
+        warnings.append(
+            "The RGB-D gripper reference has weak horizontal yaw leverage; "
+            "the exact 0/180-degree sign was retained as a warning."
+        )
+    resolution.update(
+        {
+            "method": "VLM_GRIPPER_RGBD_SINGLE_BASE_ORIENTATION_SELECTION",
+            "selection_policy": (
+                "RAW_BASE_X_DOT_GRIPPER_POSITIVE=0_DEG; "
+                "NEGATIVE=180_DEG"
+            ),
+            "reference_source": (
+                "VLM_GRIPPER_SEGMENTATION_WITH_ALIGNED_DEPTH"
+            ),
+            "gripper_point_in_raw_base_m": base_point.tolist(),
+            "planar_baseline_m": planar_norm_m,
+            "raw_base_x_component_m": forward_component_m,
+            "raw_base_x_fraction_of_planar_baseline": forward_fraction,
+            "weak_geometry": weak_geometry,
+            "warning": " ".join(warnings) if warnings else None,
+        }
+    )
+    axis_review = {
+        "base_x_relation_to_gripper": relation,
+        "notes": (
+            "Aligned RGB-D places the gripper in the raw base +X half-space."
+            if relation == "TOWARD_GRIPPER"
+            else "Aligned RGB-D places the gripper in the raw base -X half-space."
+        ),
+    }
+    return correction, axis_review, resolution
+
+
+def apply_base_mesh_hypothesis_correction(
+    parent_from_semantic: Any,
+    mesh_from_semantic: Any,
+    semantic_axis_correction: Any,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Apply one semantic-axis hypothesis at the centered CAD mesh origin.
+
+    FoundationPose observes the centered mesh, while the published arm-base
+    origin is related by ``mesh_from_semantic``. A discrete pose-hypothesis
+    choice therefore has to be applied before that transform. Applying the
+    same rotation after it would keep a potentially incorrect semantic origin
+    fixed on the wrong side of the centered CAD geometry.
+    """
+    parent_from_base = np.asarray(parent_from_semantic, dtype=np.float64)
+    mesh_from_base = np.asarray(mesh_from_semantic, dtype=np.float64)
+    semantic_correction = np.asarray(
+        semantic_axis_correction,
         dtype=np.float64,
     )
-    up /= np.linalg.norm(up)
-    raw_alignment = float(np.dot(transform[:3, 2], up))
-    correction = np.eye(4, dtype=np.float64)
-    correction_name = "NONE"
-    if raw_alignment < 0:
-        # A 180-degree semantic X rotation makes base +Z upright while leaving
-        # the later 0/180-degree yaw decision free to choose positive base X.
-        correction[:3, :3] = np.diag([1.0, -1.0, -1.0])
-        correction_name = "SEMANTIC_X_180"
-    corrected = transform @ correction
-    corrected_alignment = float(np.dot(corrected[:3, 2], up))
-    return correction, {
-        "world_up_axis": up.tolist(),
-        "raw_base_z_dot_world_up": raw_alignment,
-        "corrected_base_z_dot_world_up": corrected_alignment,
-        "correction": correction_name,
-        "correction_applied": correction_name != "NONE",
+    for value, name in (
+        (parent_from_base, "parent_from_semantic"),
+        (mesh_from_base, "mesh_from_semantic"),
+        (semantic_correction, "semantic_axis_correction"),
+    ):
+        if value.shape != (4, 4) or not np.all(np.isfinite(value)):
+            raise ValueError(f"{name} must be a finite 4x4 transform")
+        rotation = value[:3, :3]
+        if not np.allclose(
+            rotation.T @ rotation,
+            np.eye(3),
+            rtol=0.0,
+            atol=1e-9,
+        ) or not np.isclose(
+            np.linalg.det(rotation),
+            1.0,
+            rtol=0.0,
+            atol=1e-9,
+        ):
+            raise ValueError(f"{name} must contain a proper rotation")
+        if not np.allclose(
+            value[3],
+            [0.0, 0.0, 0.0, 1.0],
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise ValueError(f"{name} must be homogeneous")
+    if not np.allclose(
+        semantic_correction[:3, 3],
+        0.0,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError("semantic_axis_correction must be rotation-only")
+
+    semantic_from_mesh = np.linalg.inv(mesh_from_base)
+    parent_from_mesh = parent_from_base @ semantic_from_mesh
+    mesh_rotation = mesh_from_base[:3, :3]
+    mesh_correction = np.eye(4, dtype=np.float64)
+    mesh_correction[:3, :3] = (
+        mesh_rotation
+        @ semantic_correction[:3, :3]
+        @ mesh_rotation.T
+    )
+    corrected = parent_from_mesh @ mesh_correction @ mesh_from_base
+    corrected_parent_from_mesh = corrected @ semantic_from_mesh
+    if not np.allclose(
+        corrected_parent_from_mesh[:3, 3],
+        parent_from_mesh[:3, 3],
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise AssertionError(
+            "base hypothesis selection moved the observed CAD mesh center"
+        )
+    expected_rotation = (
+        parent_from_base[:3, :3]
+        @ semantic_correction[:3, :3]
+    )
+    if not np.allclose(
+        corrected[:3, :3],
+        expected_rotation,
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise AssertionError(
+            "mesh-frame hypothesis selection produced incorrect semantic axes"
+        )
+    root_adjustment = corrected[:3, 3] - parent_from_base[:3, 3]
+    semantic_application = (
+        semantic_from_mesh @ mesh_correction @ mesh_from_base
+    )
+    return corrected, {
+        "application_order": (
+            "parent_from_mesh @ mesh_hypothesis_correction @ "
+            "mesh_from_semantic"
+        ),
+        "application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
+        "mesh_hypothesis_correction": mesh_correction.tolist(),
+        "mesh_hypothesis_correction_translation_norm_m": float(
+            np.linalg.norm(mesh_correction[:3, 3])
+        ),
+        "semantic_application_transform": semantic_application.tolist(),
+        "semantic_root_translation_adjustment_m": root_adjustment.tolist(),
+        "semantic_root_translation_adjustment_norm_m": float(
+            np.linalg.norm(root_adjustment)
+        ),
+        "mesh_center_translation_preserved": True,
     }
 
 
@@ -160,7 +498,7 @@ def world_up_yaw(delta_rad: float) -> np.ndarray:
     cosine, sine = math.cos(delta_rad), math.sin(delta_rad)
     result = np.eye(4, dtype=np.float64)
     result[:3, :3] = np.array(
-        [[cosine, 0.0, sine], [0.0, 1.0, 0.0], [-sine, 0.0, cosine]],
+        [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
         dtype=np.float64,
     )
     return result
@@ -224,40 +562,6 @@ def robust_average_transforms(values: Iterable[Any]) -> tuple[np.ndarray, dict[s
         "rotation_max_residual_rad": float(max(rotation_errors)),
     }
     return output, diagnostics
-
-
-def choose_base_symmetry(
-    world_from_base: np.ndarray,
-    world_beak: np.ndarray,
-    *,
-    base_tool_point: np.ndarray | None,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    candidates = [world_from_base, world_from_base @ base_yaw_flip()]
-    if base_tool_point is not None:
-        predicted = [apply_transform(candidate, base_tool_point) for candidate in candidates]
-        scores = [float(np.linalg.norm(point - world_beak)) for point in predicted]
-        selected = int(np.argmin(scores))
-        margin = abs(scores[1] - scores[0])
-        method = "KINEMATIC_TOOL_TO_VLM_BEAK"
-    else:
-        vector = world_beak - world_from_base[:3, 3]
-        scores = [
-            -float(np.dot(candidate[:3, 0], vector))
-            for candidate in candidates
-        ]
-        selected = int(np.argmin(scores))
-        margin = abs(scores[1] - scores[0])
-        predicted = [None, None]
-        method = "POSITIVE_BASE_X_TO_VLM_BEAK"
-    return candidates[selected], {
-        "selected_flip_deg": 180 if selected else 0,
-        "candidate_scores": scores,
-        "score_margin": margin,
-        "method": method,
-        "predicted_tool_points_world": [
-            None if point is None else point.tolist() for point in predicted
-        ],
-    }
 
 
 def deproject_pixel(pixel_yx: Any, depth_m: float, intrinsics: dict[str, Any]) -> np.ndarray:

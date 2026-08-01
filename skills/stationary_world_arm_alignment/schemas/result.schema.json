@@ -152,7 +152,10 @@
         "gripper_alignment_source": {
           "enum": [
             "FOUNDATIONPOSE_GRIPPER_POSE",
-            "VLM_RGBD_BEAK"
+            "FOUNDATIONPOSE_GRIPPER_AUXILIARY_ONLY",
+            "VLM_RGBD_BEAK",
+            "VLM_BASE_X_RELATION_ONLY",
+            "VLM_GRIPPER_RGBD_BASE_X_RELATION"
           ]
         },
         "foundation_pose_models": {
@@ -208,7 +211,9 @@
         "role": {
           "enum": [
             "PRIMARY_ALIGNMENT_INPUT",
-            "AUXILIARY_TRANSLATION_INPUT"
+            "AUXILIARY_TRANSLATION_INPUT",
+            "AUXILIARY_OBSERVATION",
+            "CONFIGURED_EXTRINSIC_TRANSLATION_INPUT"
           ]
         },
         "used_in_alignment": {

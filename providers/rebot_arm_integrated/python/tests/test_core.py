@@ -225,6 +225,58 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(result.config["basic_controller_url"], "http://x")
             self.assertEqual(result.config["schema_version"], 3)
 
+    def test_config_repair_migrates_only_legacy_default_endpoint_limits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config_templates").mkdir()
+            defaults = load_config()
+            (root / "config_templates" / "controller.default.json").write_text(
+                json.dumps(defaults)
+            )
+            active = copy.deepcopy(defaults)
+            active.pop("managed_policy_revision")
+            active["planning"]["maximum_endpoint_joint_delta_rad"] = [
+                0.80,
+                0.80,
+                0.80,
+                1.00,
+                1.00,
+                1.00,
+            ]
+            active_path = root / "config" / "controller.json"
+            active_path.parent.mkdir()
+            active_path.write_text(json.dumps(active))
+
+            result = ensure_controller_config(root, active_path)
+
+            self.assertTrue(result.repaired)
+            self.assertEqual(result.config["managed_policy_revision"], 1)
+            self.assertEqual(
+                result.config["planning"][
+                    "maximum_endpoint_joint_delta_rad"
+                ],
+                [0.80, 0.80, 0.85, 1.00, 1.00, 1.00],
+            )
+
+            custom = copy.deepcopy(active)
+            custom["planning"]["maximum_endpoint_joint_delta_rad"] = [
+                0.75,
+                0.75,
+                0.82,
+                0.95,
+                0.95,
+                0.95,
+            ]
+            active_path.write_text(json.dumps(custom))
+            custom_result = ensure_controller_config(root, active_path)
+
+            self.assertEqual(
+                custom_result.config["planning"][
+                    "maximum_endpoint_joint_delta_rad"
+                ],
+                [0.75, 0.75, 0.82, 0.95, 0.95, 0.95],
+            )
+
 
 class SafeTerminationTests(unittest.TestCase):
     def test_windows_detached_shutdown_requires_launch_id_acknowledgement(self):
@@ -592,6 +644,30 @@ class ControllerTests(unittest.TestCase):
         controller.staged_target[0, 3] += 0.002
         result = controller.preview_staged_target()
         self.assertFalse(result["physical_motion_authorized"])
+        self.assertEqual(basic.commands, [])
+
+    def test_twenty_cm_up_preserving_safe_home_orientation_is_previewable(self):
+        controller, basic = prepared_controller()
+        basic._state["positions_rad"][:6] = [0.0] * 6
+        controller.set_runtime_settings({"ik_mode": IK_POSE_6DOF})
+        with controller.lock:
+            controller.basic_state = basic.state()
+            origin = controller.kinematics.controlled_frame(
+                np.zeros(6),
+                controller._tool_to_control_locked(),
+            )
+            controller.staged_target = origin.copy()
+            controller.staged_target[2, 3] += 0.20
+
+        preview = controller.preview_staged_target()
+
+        self.assertTrue(preview["planning_valid"])
+        self.assertEqual(preview["ik_mode"], IK_POSE_6DOF)
+        self.assertGreater(preview["endpoint_joint_delta_rad"][2], 0.80)
+        self.assertLessEqual(
+            preview["endpoint_joint_delta_rad"][2],
+            preview["endpoint_joint_delta_limit_rad"][2],
+        )
         self.assertEqual(basic.commands, [])
 
     def test_zero_length_preview_does_not_report_a_singularity(self):

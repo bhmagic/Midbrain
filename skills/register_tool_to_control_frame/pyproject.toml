@@ -9,7 +9,7 @@ description = "Review-only VLM and RGB-D tool-to-control-frame registration for 
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0,<3",
-  "midbrain-spatial-registration-rgbd>=0.1,<0.2"
+  "midbrain-spatial-registration-rgbd>=0.2,<0.3"
 ]
 
 [tool.setuptools.packages.find]

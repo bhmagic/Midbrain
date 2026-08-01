@@ -1354,11 +1354,24 @@ class Phase5ReplayCaptureService:
                 ),
             )
 
+        camera_axis_names = (
+            "camera_system_x",
+            "camera_system_y",
+            "camera_system_z",
+        )
         generic_point = np.asarray(
-            results["generic"]["camera_point_m"], dtype=np.float64
+            [
+                results["generic"]["camera_system_point_m"][axis]
+                for axis in camera_axis_names
+            ],
+            dtype=np.float64,
         )
         direct_point = np.asarray(
-            results["direct"]["camera_point_m"], dtype=np.float64
+            [
+                results["direct"]["camera_system_point_m"][axis]
+                for axis in camera_axis_names
+            ],
+            dtype=np.float64,
         )
         maximum_absolute_delta_m = float(
             np.max(np.abs(generic_point - direct_point))

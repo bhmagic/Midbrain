@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.1 - 2026-07-31
+
+- Raised only joint 3's single-commit endpoint travel guard from 0.80 to
+  0.85 rad. The calibrated safe-home model requires approximately 0.81805 rad
+  on joint 3 for a 20 cm +Z translation while preserving the controlled-frame
+  +X-forward/+Z-up orientation; all other joint, aggregate-travel,
+  singularity, residual, workspace, collision, lease, and authorization gates
+  are unchanged.
+- Added a managed policy revision that upgrades the exact legacy default
+  endpoint-limit vector in existing machine-local configurations while
+  preserving customized planning limits.
+- Added per-joint endpoint travel and configured endpoint-limit arrays to
+  preview diagnostics so upstream Agents can distinguish a joint-envelope
+  rejection from a coordinate-frame error.
+
 ## 0.8.0 - 2026-07-29
 
 - Added a versioned shadow evaluator that separates Manager task authority,

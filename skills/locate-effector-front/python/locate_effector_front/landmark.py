@@ -334,8 +334,12 @@ def resolve_effector_front_reference(
             )
         )
         support = patch[valid]
-        camera_point = deproject_pixel((y, x), depth_m, intrinsics)
-        target_point = transform_point(transform, camera_point)
+        camera_system_xyz_m = deproject_pixel(
+            (y, x),
+            depth_m,
+            intrinsics,
+        )
+        target_point = transform_point(transform, camera_system_xyz_m)
         if point["confidence"] < float(minimum_confidence):
             quality_reasons.append(
                 f"{point['point_id']} VLM confidence is below the minimum"
@@ -344,7 +348,11 @@ def resolve_effector_front_reference(
             {
                 **point,
                 "depth_m": depth_m,
-                "camera_point_m": camera_point.tolist(),
+                "camera_system_point_m": {
+                    "camera_system_x": float(camera_system_xyz_m[0]),
+                    "camera_system_y": float(camera_system_xyz_m[1]),
+                    "camera_system_z": float(camera_system_xyz_m[2]),
+                },
                 "target_point_m": target_point.tolist(),
                 "depth_evidence": {
                     "selection": "EXACT_REGISTERED_DEPTH_PIXEL",

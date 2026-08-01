@@ -61,6 +61,10 @@ COLOR_FRAME = "femto_bolt_color_optical_frame"
 DEPTH_FRAME = "femto_bolt_depth_optical_frame"
 IR_FRAME = "femto_bolt_ir_optical_frame"
 IMU_FRAME = "femto_bolt_imu_frame"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
+CALIBRATION_REPUBLISH_INTERVAL_S = 2.0
 
 
 class FemtoBoltProvider:
@@ -82,6 +86,7 @@ class FemtoBoltProvider:
         self.http = httpx.Client(timeout=3.0)
         self.last_sequences: dict[str, int] = {}
         self.last_calibration: Optional[str] = None
+        self.last_calibration_publish_monotonic: Optional[float] = None
         self.last_status: Optional[str] = None
         self.last_device_info_signature: Optional[str] = None
         self.last_accel_calibration_signature: Optional[str] = None
@@ -158,6 +163,7 @@ class FemtoBoltProvider:
             self.calibration_revision = None
             self.last_sequences.clear()
             self.last_calibration = None
+            self.last_calibration_publish_monotonic = None
             self.last_status = None
             self.last_device_info_signature = None
             self.last_accel_calibration_signature = None
@@ -679,6 +685,7 @@ class FemtoBoltProvider:
         self._refresh_readiness()
         self._publish_rgbd_routes_best_effort()
         observations: list[dict[str, Any]] = []
+        calibration_publication: Optional[tuple[str, float]] = None
 
         stream_specs = [
             (STREAM_COLOR, "rgb", "camera.rgb.frame_ref", COLOR_FRAME),
@@ -777,8 +784,11 @@ class FemtoBoltProvider:
             )
 
         calibration = self._safe_read_text(STREAM_CALIBRATION)
-        if calibration and calibration != self.last_calibration:
-            self.last_calibration = calibration
+        calibration_publish_monotonic = time.monotonic()
+        if self._calibration_publish_due(
+            calibration,
+            now_monotonic=calibration_publish_monotonic,
+        ):
             try:
                 calibration_data: Any = json.loads(calibration)
             except json.JSONDecodeError:
@@ -788,6 +798,29 @@ class FemtoBoltProvider:
                 "depth": DEPTH_FRAME,
                 "infrared": IR_FRAME,
                 "imu": IMU_FRAME,
+            }
+            calibration_data["coordinate_conventions"] = {
+                "color": CAMERA_OPTICAL_CONVENTION_ID,
+                "depth": CAMERA_OPTICAL_CONVENTION_ID,
+                "infrared": CAMERA_OPTICAL_CONVENTION_ID,
+                "imu": "HARDWARE_CALIBRATED_LOCAL_FRAME",
+            }
+            calibration_data["coordinate_axis_names"] = {
+                "color": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+                "depth": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+                "infrared": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
             }
             calibration_data["extrinsic_semantics"] = {
                 "source_frame": DEPTH_FRAME,
@@ -812,6 +845,10 @@ class FemtoBoltProvider:
                     calibration_data,
                     observed_at_us=now_us,
                 )
+            )
+            calibration_publication = (
+                calibration,
+                calibration_publish_monotonic,
             )
 
         accel_calibration = self.accelerometer_calibration
@@ -928,13 +965,47 @@ class FemtoBoltProvider:
                     )
                 )
 
-        if observations:
-            response = self.http.post(
-                f"{self.args.fabric_url}/v1/observations/batch",
-                json={"observations": observations},
-            )
-            response.raise_for_status()
+        self._publish_observation_batch(
+            observations,
+            calibration_publication=calibration_publication,
+        )
         time.sleep(self.args.poll_interval)
+
+    def _calibration_publish_due(
+        self,
+        calibration: Optional[str],
+        *,
+        now_monotonic: float,
+    ) -> bool:
+        if not calibration:
+            return False
+        if calibration != self.last_calibration:
+            return True
+        published_at = self.last_calibration_publish_monotonic
+        return (
+            published_at is None
+            or now_monotonic - published_at
+            >= CALIBRATION_REPUBLISH_INTERVAL_S
+        )
+
+    def _publish_observation_batch(
+        self,
+        observations: list[dict[str, Any]],
+        *,
+        calibration_publication: Optional[tuple[str, float]] = None,
+    ) -> None:
+        if not observations:
+            return
+        response = self.http.post(
+            f"{self.args.fabric_url}/v1/observations/batch",
+            json={"observations": observations},
+        )
+        response.raise_for_status()
+        if calibration_publication is not None:
+            (
+                self.last_calibration,
+                self.last_calibration_publish_monotonic,
+            ) = calibration_publication
 
     def _rgbd_bundle(
         self,
@@ -958,6 +1029,28 @@ class FemtoBoltProvider:
                 "depth": DEPTH_FRAME,
                 "aligned_depth": COLOR_FRAME,
             },
+            "coordinate_conventions": {
+                "rgb": CAMERA_OPTICAL_CONVENTION_ID,
+                "depth": CAMERA_OPTICAL_CONVENTION_ID,
+                "aligned_depth": CAMERA_OPTICAL_CONVENTION_ID,
+            },
+            "coordinate_axis_names": {
+                "rgb": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+                "depth": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+                "aligned_depth": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+            },
         }
         if aligned_depth is not None:
             result["depth_aligned_to_rgb"] = aligned_depth.to_dict()
@@ -971,7 +1064,7 @@ class FemtoBoltProvider:
             except RuntimeError:
                 header = self.reader.header
         return {
-            "provider_version": "0.3.0",
+            "provider_version": "0.4.0",
             "device_name": header.device_name if header else None,
             "serial_number": header.device_serial if header else None,
             "sdk_version": header.sdk_version if header else None,
@@ -1028,6 +1121,19 @@ class FemtoBoltProvider:
                 "infrared": IR_FRAME,
                 "imu": IMU_FRAME,
             },
+            "coordinate_conventions": {
+                "color": CAMERA_OPTICAL_CONVENTION_ID,
+                "depth": CAMERA_OPTICAL_CONVENTION_ID,
+                "infrared": CAMERA_OPTICAL_CONVENTION_ID,
+                "imu": "HARDWARE_CALIBRATED_LOCAL_FRAME",
+            },
+            "coordinate_axis_names": {
+                "optical": [
+                    "camera_system_x",
+                    "camera_system_y",
+                    "camera_system_z",
+                ],
+            },
         }
 
     def _observation(
@@ -1045,6 +1151,25 @@ class FemtoBoltProvider:
         clock_domain: Optional[str] = None,
         related_skill_id: Optional[str] = None,
     ) -> dict[str, Any]:
+        coordinate_convention_id = (
+            CAMERA_OPTICAL_CONVENTION_ID
+            if coordinate_frame in {COLOR_FRAME, DEPTH_FRAME, IR_FRAME}
+            else (
+                "HARDWARE_CALIBRATED_LOCAL_FRAME"
+                if coordinate_frame == IMU_FRAME
+                else None
+            )
+        )
+        coordinate_axis_names = (
+            {
+                "x": "camera_system_x",
+                "y": "camera_system_y",
+                "z": "camera_system_z",
+            }
+            if coordinate_convention_id
+            == CAMERA_OPTICAL_CONVENTION_ID
+            else None
+        )
         return {
             "schema": schema,
             "schema_version": 1,
@@ -1057,6 +1182,8 @@ class FemtoBoltProvider:
             "freshness_ms": freshness_ms,
             "frame_id": frame_id,
             "coordinate_frame": coordinate_frame,
+            "coordinate_convention_id": coordinate_convention_id,
+            "coordinate_axis_names": coordinate_axis_names,
             "calibration_revision": calibration_revision,
             "clock_domain": clock_domain,
             "related_skill_id": related_skill_id,
@@ -1239,7 +1366,7 @@ class FemtoBoltProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.3.0",
+                "provider_version": "0.4.0",
                 "native_pid": native_pid,
                 "mapping_name": self.args.mapping_name,
                 "last_error": self.last_error,

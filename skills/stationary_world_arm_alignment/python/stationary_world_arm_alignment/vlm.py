@@ -95,31 +95,23 @@ def _schema() -> dict[str, Any]:
     }
 
 
-def _pose_validation_schema() -> dict[str, Any]:
+def _base_axis_review_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "pose_reasonable": {"type": "boolean"},
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            "box_fit": {"type": "string", "enum": ["GOOD", "ACCEPTABLE", "BAD"]},
-            "orientation_fit": {
+            "base_x_relation_to_gripper": {
                 "type": "string",
-                "enum": ["GOOD", "ACCEPTABLE", "BAD"],
+                "enum": [
+                    "TOWARD_GRIPPER",
+                    "AWAY_FROM_GRIPPER",
+                    "UNCLEAR",
+                ],
             },
-            "matched_reference_view": {"type": "string"},
-            "reasons": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 4,
-            },
+            "notes": {"type": "string"},
         },
         "required": [
-            "pose_reasonable",
-            "confidence",
-            "box_fit",
-            "orientation_fit",
-            "matched_reference_view",
-            "reasons",
+            "base_x_relation_to_gripper",
+            "notes",
         ],
         "additionalProperties": False,
     }
@@ -219,33 +211,21 @@ def validate_localization_result(
     return value
 
 
-def validate_pose_result(value: Any) -> dict[str, Any]:
+def validate_base_axis_review_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(
-        _pose_validation_schema()["required"]
+        _base_axis_review_schema()["required"]
     ):
-        raise RuntimeError("reviewed pose-validation fields do not match the required schema")
-    if not isinstance(value["pose_reasonable"], bool):
-        raise RuntimeError("pose_reasonable must be boolean")
-    confidence = value["confidence"]
-    if (
-        isinstance(confidence, bool)
-        or not isinstance(confidence, (int, float))
-        or not 0.0 <= float(confidence) <= 1.0
-    ):
-        raise RuntimeError("pose-validation confidence must be between 0 and 1")
-    if value["box_fit"] not in {"GOOD", "ACCEPTABLE", "BAD"}:
-        raise RuntimeError("box_fit is invalid")
-    if value["orientation_fit"] not in {"GOOD", "ACCEPTABLE", "BAD"}:
-        raise RuntimeError("orientation_fit is invalid")
-    if not isinstance(value["matched_reference_view"], str):
-        raise RuntimeError("matched_reference_view must be a string")
-    reasons = value["reasons"]
-    if (
-        not isinstance(reasons, list)
-        or len(reasons) > 4
-        or any(not isinstance(item, str) for item in reasons)
-    ):
-        raise RuntimeError("reasons must contain at most four strings")
+        raise RuntimeError(
+            "reviewed base-axis fields do not match the required schema"
+        )
+    if value["base_x_relation_to_gripper"] not in {
+        "TOWARD_GRIPPER",
+        "AWAY_FROM_GRIPPER",
+        "UNCLEAR",
+    }:
+        raise RuntimeError("base_x_relation_to_gripper is invalid")
+    if not isinstance(value["notes"], str):
+        raise RuntimeError("base-axis review notes must be a string")
     return value
 
 
@@ -426,10 +406,11 @@ class ReviewedFileVision:
             stem=f"pose_validation_attempt_{attempt}",
             review_kind="FOUNDATIONPOSE_BASE_VALIDATION",
             instructions=(
-                "Compare the projected 3D base box and XYZ axes in the exact live "
-                "overlay against the base CAD atlas. Judge object identity, scale, "
-                "translation, perspective, and orientation. Reject a wrong object, "
-                "gross offset, implausible scale, mirrored or upside-down pose."
+                "Look only at the red base +X arrow and the visible robot arm/gripper "
+                "in this exact live overlay. Report whether +X points generally "
+                "toward the gripper, away from the gripper, or is unclear. Ignore "
+                "box size, translation, perspective, tilt, gravity, table position, "
+                "object identity, and every numerical or geometric calculation."
             ),
             artifacts=[
                 {
@@ -439,11 +420,10 @@ class ReviewedFileVision:
                     "sha256": _sha256(overlay_jpeg),
                     "bytes": len(overlay_jpeg),
                 },
-                self._reference_artifact("base"),
             ],
-            output_schema=_pose_validation_schema(),
+            output_schema=_base_axis_review_schema(),
         )
-        validated = validate_pose_result(result)
+        validated = validate_base_axis_review_result(result)
         return {**validated, "review_provenance": provenance}
 
     async def close(self) -> None:
@@ -558,20 +538,14 @@ class GripperVision:
         *,
         attempt: int,
     ) -> dict[str, Any]:
-        references = dict(self._reference_images())
-        base_reference = references.get("base")
-        if base_reference is None:
-            raise RuntimeError("the eight-angle FoundationPose base reference atlas is missing")
         prompt = (
-            "Validate a FoundationPose estimate for the stationary reBot B601-DM base. "
-            "The first image is the LIVE RGB image with the estimated base's projected 3D "
-            "bounding box and XYZ arrows. The second image is an eight-angle CAD reference "
-            "atlas of that base. Judge the 3D box and axes, not a segmentation mask. The box "
-            "should enclose the visible physical base with plausible size, translation, "
-            "perspective, and orientation matching one atlas view. Reject the estimate when "
-            "the box is on the wrong object, floating or grossly offset, severely wrong in "
-            "scale, mirrored, upside down, or has implausible axes. Minor occlusion and small "
-            "projection error may be ACCEPTABLE. This is bounded attempt "
+            "Look only at the red +X arrow starting at the robot base root and the "
+            "visible physical arm/gripper in this LIVE overlay. Return "
+            "TOWARD_GRIPPER when +X points generally toward the gripper or arm "
+            "extension, AWAY_FROM_GRIPPER when it points to the opposite side, or "
+            "UNCLEAR when the relation cannot be seen. Ignore projected box size, "
+            "translation, perspective, tilt, gravity, table position, CAD identity, "
+            "confidence, and all numerical geometry. This is bounded attempt "
             f"{attempt} of 2."
         )
         content: list[dict[str, Any]] = [
@@ -580,12 +554,6 @@ class GripperVision:
             {
                 "type": "input_image",
                 "image_url": _data_url(overlay_jpeg, "image/jpeg"),
-                "detail": "original",
-            },
-            {"type": "input_text", "text": "EIGHT-ANGLE BASE CAD REFERENCE ATLAS:"},
-            {
-                "type": "input_image",
-                "image_url": _data_url(base_reference, "image/png"),
                 "detail": "original",
             },
         ]
@@ -600,9 +568,9 @@ class GripperVision:
                     "text": {
                         "format": {
                             "type": "json_schema",
-                            "name": "foundation_pose_base_validation",
+                            "name": "foundation_pose_base_axis_review",
                             "strict": True,
-                            "schema": _pose_validation_schema(),
+                            "schema": _base_axis_review_schema(),
                         }
                     },
                     "max_output_tokens": 1024,
@@ -622,7 +590,9 @@ class GripperVision:
                 f"OpenAI base pose validation failed ({response.status_code}): "
                 f"{detail or response.reason_phrase}"
             )
-        return json.loads(extract_output_text(response.json()))
+        return validate_base_axis_review_result(
+            json.loads(extract_output_text(response.json()))
+        )
 
     async def close(self) -> None:
         await self.http.aclose()

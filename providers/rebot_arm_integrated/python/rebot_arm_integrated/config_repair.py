@@ -9,6 +9,10 @@ import json
 from .modes import SUPPORTED_EXECUTION_MODES, normalize_execution_mode
 
 
+MANAGED_POLICY_REVISION = 1
+LEGACY_ENDPOINT_JOINT_DELTA_RAD = (0.80, 0.80, 0.80, 1.00, 1.00, 1.00)
+
+
 @dataclass(frozen=True)
 class ConfigRepairResult:
     config: dict[str, Any]
@@ -35,6 +39,8 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("unsupported Integrated Controller configuration schema")
     if int(config.get("schema_version", 0)) != 3:
         raise ValueError("unsupported Integrated Controller configuration version")
+    if int(config.get("managed_policy_revision", 0)) != MANAGED_POLICY_REVISION:
+        raise ValueError("unsupported Integrated Controller managed policy revision")
     runtime = config["runtime"]
     limits = config["runtime_limits"]
     normalize_execution_mode(runtime["execution_mode"])
@@ -332,6 +338,22 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
         }
 
     merged = _merge(defaults, preserved)
+    active_policy_revision = int(active.get("managed_policy_revision", 0))
+    default_policy_revision = int(defaults.get("managed_policy_revision", 0))
+    active_planning = active.get("planning")
+    active_planning = active_planning if isinstance(active_planning, dict) else {}
+    active_endpoint_delta = active_planning.get(
+        "maximum_endpoint_joint_delta_rad"
+    )
+    if (
+        active_policy_revision < default_policy_revision
+        and isinstance(active_endpoint_delta, list)
+        and tuple(float(value) for value in active_endpoint_delta)
+        == LEGACY_ENDPOINT_JOINT_DELTA_RAD
+    ):
+        merged["planning"]["maximum_endpoint_joint_delta_rad"] = copy.deepcopy(
+            defaults["planning"]["maximum_endpoint_joint_delta_rad"]
+        )
     validate_controller_config(merged)
     canonical = json.dumps(merged, indent=2) + "\n"
     existing = active_path.read_text(encoding="utf-8-sig") if active_path.exists() else ""

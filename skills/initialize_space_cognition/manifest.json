@@ -1,6 +1,6 @@
 {
   "skill_type": "initialize_space_cognition",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Initialize / Re-establish Space Cognition",
   "ui": {
     "observation": {
@@ -72,6 +72,16 @@
     "camera.imu.gyro",
     "localization.vio.local_pose"
   ],
+  "runtime_readiness_check": {
+    "operation": "VERIFY_EXISTING_EPOCH",
+    "requires_fixed_stationary_rig_confirmation": true,
+    "may_start_camera_and_vio_providers": true,
+    "may_reset_vio_epoch": false,
+    "may_revoke_workcell_calibrations": false,
+    "holds_motion_inhibit_until_tracking": false,
+    "uses_local_vio_fixed_rig_attestation": true,
+    "may_revoke_arm_controller_lease": false
+  },
   "published_streams": [
     "skills.initialize_space_cognition.status"
   ],

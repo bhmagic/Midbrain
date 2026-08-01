@@ -1,13 +1,13 @@
 {
   "skill_type": "spatial_registration_rgbd",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "RGB-D Spatial Registration",
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "register_rgbd_pixel_to_world",
-    "description": "Register a selected RGB image point into a requested 3D frame using provider-aligned depth, independent channel grids, calibration, and a timestamped transform. Use this read-only Skill after a visual Skill identifies a pixel or small region.",
+    "description": "Register a selected RGB image point into a requested 3D frame using explicitly identified camera_system_x/y/z optical coordinates, provider-aligned depth, independent channel grids, calibration, and a timestamped transform. Use this read-only Skill after a visual Skill identifies a pixel or small region.",
     "when_to_use": [
       "A visual result must be converted from an RGB pixel into a metric 3D point.",
       "A reflective target needs a nearby valid depth policy with explicit provenance.",

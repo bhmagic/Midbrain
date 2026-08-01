@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
 import uvicorn
-from agents import RunState, SQLiteSession
+from agents import RunState, SessionSettings, SQLiteSession
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from .agent_driver import PrototypeAgentDriver
+from .agent_driver import (
+    AgentSessionAuthorization,
+    PrototypeAgentDriver,
+    relative_motion_within_authorization,
+)
 from .authorization import AuthorizationStore
 from .basic_client import BasicControllerClient
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
@@ -52,11 +58,18 @@ from .reviewed_observation_execution import (
 )
 from .skill_catalog import discover_agent_skills
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
+from .spatial_frames import SpatialFrameResolver, rotation_matrix
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
+from .stationary_calibration_activation import (
+    StationaryCalibrationActivationService,
+)
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
 from .world_point_cloud import WorldPointCloudAccumulator
 from .vlm_router import build_default_vlm_router
 from stationary_world_arm_alignment.camera import RgbdCapture
+from stationary_world_arm_alignment.config import (
+    Settings as StationaryAlignmentSettings,
+)
 from stationary_world_arm_alignment.skill import AlignmentSkill
 
 settings = Settings()
@@ -69,7 +82,10 @@ integrated = IntegratedControllerClient(
     settings.integrated_controller_url,
     timeout_s=settings.integrated_preview_timeout_s,
 )
-integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(integrated)
+spatial_frame_resolver = SpatialFrameResolver(
+    fabric,
+    arm_base_frame=settings.arm_base_frame,
+)
 basic = BasicControllerClient(
     settings.basic_controller_url,
     timeout_s=settings.basic_operation_timeout_s,
@@ -121,6 +137,7 @@ spatial_registration_skill = SpatialRegistrationSkillAdapter(
 effector_front_skill = EffectorFrontSkillAdapter(
     spatial_registration_skill,
     agent_vlm_router,
+    evidence_dir=settings.screenshot_dir,
 )
 tool_registration_skill = ToolControlFrameSkillAdapter(
     spatial_registration_skill,
@@ -131,8 +148,17 @@ tool_registration_skill = ToolControlFrameSkillAdapter(
     arm_tool_frame=settings.arm_tool_frame,
     binding_mode=settings.phase5_spatial_binding_mode,
 )
+stationary_alignment_settings = StationaryAlignmentSettings()
+stationary_calibration_activation = StationaryCalibrationActivationService(
+    manager,
+    review_auth_secret=settings.review_auth_secret,
+    calibration_root=stationary_alignment_settings.calibration_root,
+    review_root=stationary_alignment_settings.review_root,
+)
 stationary_calibration_agent_adapter = StationaryCalibrationSkillAdapter(
     AlignmentSkill,
+    operation_hard_timeout_s=settings.stationary_calibration_timeout_s,
+    activation_service=stationary_calibration_activation,
 )
 reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
     authorization_store,
@@ -194,6 +220,34 @@ async def _reinitialize_space_cognition(reason: str) -> dict[str, Any]:
         raise
 
 
+async def _verify_fixed_vio_rig(reason: str) -> dict[str, Any]:
+    result = await space_cognition_skill.verify_tracking(
+        fixed_rig_confirmed=True
+    )
+    result["requested_reason"] = reason
+    return result
+
+
+async def _capture_effector_visual_evidence(
+    world_frame: str,
+) -> dict[str, Any]:
+    return await effector_front_skill.run(target_frame=world_frame)
+
+
+integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
+    integrated,
+    spatial_frame_resolver,
+    vio_readiness_checker=_verify_fixed_vio_rig,
+    visual_evidence_capture=_capture_effector_visual_evidence,
+    require_visual_verification=False,
+    attempt_visual_verification=True,
+    require_upright_mount_confirmation=True,
+    calibration_activation_continuation=(
+        stationary_calibration_agent_adapter.latest_activation_continuation
+    ),
+)
+
+
 discoverable_agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
 )
@@ -208,6 +262,7 @@ agent_session_database = (
     / "agent_sessions.sqlite3"
 )
 agent_session_database.parent.mkdir(parents=True, exist_ok=True)
+agent_runtime_session_epoch = uuid.uuid4().hex
 driver = PrototypeAgentDriver(
     pointing_skill,
     settings.openai_model,
@@ -225,12 +280,22 @@ driver = PrototypeAgentDriver(
     basic_safe_home_skill=basic_safe_home_agent_adapter,
     space_cognition_reinitializer=_reinitialize_space_cognition,
     session=SQLiteSession(
-        "midbrain-regular-agent-systemic-gui-v2",
+        (
+            "midbrain-regular-agent-systemic-gui-v4-"
+            f"{agent_runtime_session_epoch}"
+        ),
         agent_session_database,
+        session_settings=SessionSettings(limit=None),
     ),
     defer_loading=settings.agent_skill_defer_loading,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    stationary_calibration_timeout_s=(
+        settings.stationary_calibration_timeout_s
+    ),
     max_turns=settings.openai_agent_max_turns,
+    session_history_item_limit=(
+        settings.openai_agent_session_history_items
+    ),
 )
 developer_driver = PrototypeAgentDriver(
     pointing_skill,
@@ -253,12 +318,22 @@ developer_driver = PrototypeAgentDriver(
     basic_safe_home_skill=basic_safe_home_agent_adapter,
     space_cognition_reinitializer=_reinitialize_space_cognition,
     session=SQLiteSession(
-        "midbrain-developer-agent-systemic-gui-v2",
+        (
+            "midbrain-developer-agent-systemic-gui-v4-"
+            f"{agent_runtime_session_epoch}"
+        ),
         agent_session_database,
+        session_settings=SessionSettings(limit=None),
     ),
     defer_loading=settings.agent_skill_defer_loading,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    stationary_calibration_timeout_s=(
+        settings.stationary_calibration_timeout_s
+    ),
     max_turns=settings.openai_agent_max_turns,
+    session_history_item_limit=(
+        settings.openai_agent_session_history_items
+    ),
 )
 reviewed_observation_agent_driver = PrototypeAgentDriver(
     pointing_skill,
@@ -285,6 +360,8 @@ class PendingAgentRun:
     agent_model: str
     reasoning_effort: str
     vlm_model: str | None
+    authorization: AgentSessionAuthorization = AgentSessionAuthorization()
+    approval_decisions: dict[str, bool] = field(default_factory=dict)
 
 
 agent_model_options = tuple(
@@ -348,7 +425,13 @@ async def lifespan(_app: FastAPI):
     await manager.close()
 
 
-app = FastAPI(title="Physical Agent Test Scaffold", version="0.3.0", lifespan=lifespan)
+app = FastAPI(
+    title="Physical Agent Test Scaffold",
+    version="0.4.2",
+    lifespan=lifespan,
+)
+
+MAX_SESSION_AUTO_SPEED_M_S = 0.5
 
 
 class PromptRequest(BaseModel):
@@ -364,6 +447,16 @@ class PromptRequest(BaseModel):
         max_length=20,
     )
     vlm_model: str = Field(default="auto", min_length=1, max_length=100)
+    auto_authorize_provider_activation: bool = False
+    auto_authorize_relative_motion: bool = False
+    max_auto_move_cm: float = Field(default=35.0, ge=0.1, le=100.0)
+    max_auto_speed_m_s: float = Field(
+        default=MAX_SESSION_AUTO_SPEED_M_S,
+        gt=0.0,
+        le=MAX_SESSION_AUTO_SPEED_M_S,
+    )
+    auto_authorize_stationary_calibration: bool = False
+    auto_authorize_stationary_activation: bool = False
 
 
 class RgbdAlignmentRequest(BaseModel):
@@ -448,6 +541,209 @@ class ReviewedObservationAgentExecutionRequest(BaseModel):
 class DeveloperApprovalDecision(BaseModel):
     approve: bool
     rejection_message: str | None = Field(default=None, max_length=500)
+    approval_mode: str = Field(
+        default="MANUAL",
+        pattern=(
+            r"^(MANUAL|AUTO_PROVIDER_ACTIVATION|"
+            r"AUTO_BOUNDED_RELATIVE_MOTION|"
+            r"AUTO_STATIONARY_CALIBRATION|"
+            r"AUTO_STATIONARY_ACTIVATION)$"
+        ),
+    )
+    max_auto_move_cm: float | None = Field(
+        default=None,
+        ge=0.1,
+        le=100.0,
+    )
+    max_auto_speed_m_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=MAX_SESSION_AUTO_SPEED_M_S,
+    )
+
+
+def _approval_arguments(approval: dict[str, Any]) -> dict[str, Any]:
+    request = approval.get("request")
+    request = request if isinstance(request, dict) else {}
+    raw_arguments = request.get("arguments", {})
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+    if isinstance(raw_arguments, str):
+        try:
+            decoded = json.loads(raw_arguments)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _approval_fingerprint(approval: dict[str, Any]) -> str:
+    """Identify an exact protected operation without SDK call identifiers."""
+    return json.dumps(
+        {
+            "tool_name": str(approval.get("tool_name") or ""),
+            "arguments": _approval_arguments(approval),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _record_approval_decisions(
+    interruptions: list[Any],
+    *,
+    approved: bool,
+    existing: dict[str, bool],
+) -> dict[str, bool]:
+    decisions = dict(existing)
+    for interruption in interruptions:
+        approval = PrototypeAgentDriver._approval_description(interruption)
+        decisions[_approval_fingerprint(approval)] = bool(approved)
+    return decisions
+
+
+def _repeated_approval_response(
+    *,
+    run_id: str,
+    approvals: list[dict[str, Any]],
+    decisions: dict[str, bool],
+) -> dict[str, Any] | None:
+    repeated = [
+        (approval, decisions[_approval_fingerprint(approval)])
+        for approval in approvals
+        if _approval_fingerprint(approval) in decisions
+    ]
+    if not repeated:
+        return None
+    descriptions = ", ".join(
+        f"{approval.get('title') or approval.get('tool_name')} "
+        f"({'previously approved' if approved else 'previously rejected'})"
+        for approval, approved in repeated
+    )
+    return {
+        "status": "completed",
+        "run_id": run_id,
+        "answer": (
+            "Midbrain stopped a repeated approval loop. The agent requested "
+            "the identical protected operation again after the current run "
+            f"had already resolved it: {descriptions}. The duplicate "
+            "operation was not authorized or executed. Inspect the current "
+            "Provider state and start a new prompt if another transition is "
+            "actually required."
+        ),
+        "approvals": [],
+        "approval_loop_prevented": True,
+    }
+
+
+def _validate_automatic_agent_approval(
+    interruptions: list[Any],
+    decision: DeveloperApprovalDecision,
+) -> None:
+    if not decision.approve or decision.approval_mode == "MANUAL":
+        return
+    approvals = [
+        PrototypeAgentDriver._approval_description(interruption)
+        for interruption in interruptions
+    ]
+    if decision.approval_mode == "AUTO_PROVIDER_ACTIVATION":
+        eligible = all(
+            approval.get("tool_name") == "set_provider_residency"
+            and str(
+                _approval_arguments(approval).get("action") or ""
+            ).lower()
+            in {"start", "hot", "warm"}
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The session Provider authorization permits only start, "
+                    "HOT, and WARM transitions; stop and other protected "
+                    "operations still require an explicit decision."
+                ),
+            )
+        return
+    if decision.approval_mode == "AUTO_BOUNDED_RELATIVE_MOTION":
+        maximum_cm = decision.max_auto_move_cm
+        maximum_speed_m_s = decision.max_auto_speed_m_s
+        if maximum_cm is None or not math.isfinite(maximum_cm):
+            raise HTTPException(
+                status_code=422,
+                detail="bounded motion authorization requires a finite cm limit",
+            )
+        if (
+            maximum_speed_m_s is None
+            or not math.isfinite(maximum_speed_m_s)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "bounded motion authorization requires a finite nominal "
+                    "speed limit"
+                ),
+            )
+        eligible = all(
+            approval.get("tool_name")
+            == "execute_integrated_motion_preview"
+            and relative_motion_within_authorization(
+                _approval_arguments(approval),
+                max_auto_move_cm=maximum_cm,
+                max_auto_speed_m_s=maximum_speed_m_s,
+            )
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The requested operation is not an exact Integrated "
+                    "relative-pose preview within the browser-authorized "
+                    f"{maximum_cm:g} cm and {maximum_speed_m_s:g} m/s "
+                    "nominal-speed limits and the fixed 45-degree "
+                    "controlled-frame-yaw limit."
+                ),
+            )
+        return
+    if decision.approval_mode == "AUTO_STATIONARY_CALIBRATION":
+        eligible = all(
+            approval.get("tool_name") == "calibrate_stationary_workcell"
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The session calibration authorization permits only "
+                    "calibrate_stationary_workcell; physical motion and other "
+                    "protected operations still require their own decision."
+                ),
+            )
+        return
+    if decision.approval_mode == "AUTO_STATIONARY_ACTIVATION":
+        eligible = all(
+            approval.get("tool_name")
+            == "review_and_activate_stationary_calibration"
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The session calibration-activation authorization "
+                    "permits only exact stationary candidate review and "
+                    "bounded activation; physical motion and other protected "
+                    "operations still require their own decision."
+                ),
+            )
+        return
+    raise HTTPException(
+        status_code=422,
+        detail="unknown automatic approval mode",
+    )
 
 
 REGULAR_PAGE = (
@@ -461,8 +757,6 @@ INTEGRATED_RELATIVE_MOTION_PAGE = (
     / "web"
     / "integrated_relative_motion.html"
 ).read_text(encoding="utf-8")
-
-
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     return REGULAR_PAGE
@@ -495,6 +789,11 @@ async def rgbd_alignment_developer_index() -> str:
 )
 async def integrated_relative_motion_developer_index() -> str:
     return INTEGRATED_RELATIVE_MOTION_PAGE
+
+
+@app.get("/dev/spatial-axes", response_class=HTMLResponse)
+async def spatial_axes_developer_index() -> str:
+    return PAGE
 
 
 @app.get("/health")
@@ -551,6 +850,12 @@ async def status() -> dict[str, Any]:
         "agent_reasoning_effort": settings.openai_agent_reasoning_effort,
         "agent_reasoning_options": list(agent_reasoning_options),
         "openai_agent_tool_choice": settings.openai_agent_tool_choice,
+        "agent_session_history_item_limit": (
+            settings.openai_agent_session_history_items
+        ),
+        "stationary_calibration_timeout_s": (
+            settings.stationary_calibration_timeout_s
+        ),
         "gemini_model": settings.gemini_model,
         "vlm_model_options": ["auto", *vlm_model_options],
         "capability_binding": pointing_skill.last_binding,
@@ -583,6 +888,274 @@ async def status() -> dict[str, Any]:
 @app.get("/api/skills/integrated-relative-effector-motion/status")
 async def integrated_relative_motion_status() -> dict[str, Any]:
     return await integrated_motion_agent_adapter.observation()
+
+
+@app.get("/api/spatial/axes")
+async def spatial_axes() -> dict[str, Any]:
+    vio_observation, transform_edges = await asyncio.gather(
+        fabric.latest_optional("localization.vio.status"),
+        fabric.transforms(),
+    )
+    vio_data = (
+        vio_observation.get("data")
+        if isinstance(vio_observation, dict)
+        else None
+    )
+    if not isinstance(vio_data, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="Local VIO has not published a current spatial epoch",
+        )
+    convention_id = str(vio_data.get("convention_id") or "")
+    if convention_id != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The active VIO epoch uses a legacy or unknown convention; "
+                "reset VIO before inspecting convention-V2 axes"
+            ),
+        )
+    world_frame = str(vio_data.get("world_frame") or "")
+    session_epoch = str(vio_data.get("session_epoch") or "")
+    observed_at_us = int(
+        vio_observation.get("observed_at_us")
+        or time.time_ns() // 1000
+    )
+    if not world_frame or not session_epoch:
+        raise HTTPException(
+            status_code=409,
+            detail="VIO frame/epoch identity is incomplete",
+        )
+    names = {
+        world_frame,
+        "body_base",
+        settings.head_camera_frame,
+        settings.arm_base_frame,
+        settings.arm_tool_frame,
+        *(f"link{index}" for index in range(1, 7)),
+    }
+    camera_level_frame = str(
+        vio_data.get("camera_level_frame") or ""
+    )
+    if camera_level_frame:
+        names.add(camera_level_frame)
+    for edge in transform_edges:
+        parent = str(edge.get("parent_frame") or "")
+        child = str(edge.get("child_frame") or "")
+        if parent:
+            names.add(parent)
+        if child:
+            names.add(child)
+
+    async def resolve_frame(frame_id: str) -> dict[str, Any]:
+        frame_key = frame_id.lower()
+        if frame_id == world_frame:
+            frame_role = "WORLD"
+        elif frame_id == settings.arm_base_frame:
+            frame_role = "ARM_BASE"
+        elif frame_id == settings.arm_tool_frame or any(
+            token in frame_key for token in ("gripper", "tool", "effector")
+        ):
+            frame_role = "GRIPPER_TOOL"
+        elif frame_id in {f"link{index}" for index in range(1, 7)} or (
+            "joint" in frame_key and "frame" in frame_key
+        ):
+            frame_role = "ARM_JOINT"
+        elif frame_id == camera_level_frame:
+            frame_role = "CAMERA_LEVEL"
+        elif "optical_frame" in frame_key or frame_key.startswith(
+            "camera_optical/"
+        ):
+            frame_role = "CAMERA_OPTICAL"
+        elif frame_key.startswith("observed_object/") or "object" in frame_key:
+            frame_role = "OBJECT"
+        elif frame_id == "body_base":
+            frame_role = "BODY"
+        elif frame_key.endswith("_imu_frame"):
+            frame_role = "SENSOR"
+        else:
+            frame_role = "OTHER"
+        convention = (
+            "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            if "optical_frame" in frame_id
+            or frame_id.startswith("camera_optical/")
+            else "HARDWARE_CALIBRATED_LOCAL_FRAME"
+            if frame_id.endswith("_imu_frame")
+            else "ROBOT_KINEMATIC_LOCAL_FRAME"
+            if frame_role in {"ARM_JOINT", "GRIPPER_TOOL"}
+            else "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+            if frame_id
+            in {
+                world_frame,
+                "body_base",
+                settings.arm_base_frame,
+                camera_level_frame,
+            }
+            else "UNDECLARED_FRAME_LOCAL_AXES"
+        )
+        label = (
+            "world"
+            if frame_id == world_frame
+            else "camera-level"
+            if frame_id == camera_level_frame
+            else "camera-optical"
+            if convention
+            == "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            else "arm-base"
+            if frame_id == settings.arm_base_frame
+            else "gripper / tool"
+            if frame_role == "GRIPPER_TOOL"
+            else frame_id
+            if frame_role == "ARM_JOINT"
+            else "body"
+            if frame_id == "body_base"
+            else frame_id.rsplit("/", 1)[-1][:18]
+        )
+        if frame_id == world_frame:
+            return {
+                "frame_id": frame_id,
+                "short_label": label,
+                "frame_role": frame_role,
+                "default_visible": True,
+                "axis_length_m": 0.65,
+                "convention_id": convention,
+                "available": True,
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "at_us": observed_at_us,
+                "path": [],
+            }
+        try:
+            transform = await fabric.transform(
+                from_frame=frame_id,
+                to_frame=world_frame,
+                at_us=observed_at_us,
+                max_extrapolation_us=500_000,
+                session_epoch=session_epoch,
+            )
+            return {
+                "frame_id": frame_id,
+                "short_label": label,
+                "frame_role": frame_role,
+                "default_visible": frame_role
+                in {
+                    "ARM_BASE",
+                    "GRIPPER_TOOL",
+                    "CAMERA_OPTICAL",
+                    "CAMERA_LEVEL",
+                },
+                "axis_length_m": (
+                    0.32
+                    if frame_role == "ARM_BASE"
+                    else 0.24
+                    if frame_role == "GRIPPER_TOOL"
+                    else 0.16
+                    if frame_role == "ARM_JOINT"
+                    else 0.22
+                ),
+                "convention_id": convention,
+                "available": True,
+                "translation_m": transform["translation_m"],
+                "rotation_xyzw": transform["rotation_xyzw"],
+                "at_us": transform["at_us"],
+                "path": transform.get("path") or [],
+            }
+        except Exception as error:
+            return {
+                "frame_id": frame_id,
+                "short_label": label,
+                "frame_role": frame_role,
+                "default_visible": False,
+                "axis_length_m": 0.16,
+                "convention_id": convention,
+                "available": False,
+                "error": str(error),
+            }
+
+    frames = await asyncio.gather(
+        *(resolve_frame(frame_id) for frame_id in sorted(names))
+    )
+    arm_frame = next(
+        (
+            frame
+            for frame in frames
+            if frame["frame_id"] == settings.arm_base_frame
+        ),
+        None,
+    )
+    world_semantics = {
+        "FRONT": [1.0, 0.0, 0.0],
+        "BACK": [-1.0, 0.0, 0.0],
+        "LEFT": [0.0, 1.0, 0.0],
+        "RIGHT": [0.0, -1.0, 0.0],
+        "UP": [0.0, 0.0, 1.0],
+        "DOWN": [0.0, 0.0, -1.0],
+    }
+    semantic_resolution: dict[str, Any] = {}
+    if isinstance(arm_frame, dict) and arm_frame.get("available"):
+        world_from_arm = rotation_matrix(arm_frame["rotation_xyzw"])
+        for direction, vector_world in world_semantics.items():
+            vector_arm = [
+                sum(
+                    world_from_arm[row][column] * vector_world[row]
+                    for row in range(3)
+                )
+                for column in range(3)
+            ]
+            semantic_resolution[direction] = {
+                "vector_world": vector_world,
+                "vector_arm_base": vector_arm,
+                "status": "RESOLVED",
+            }
+    else:
+        semantic_resolution = {
+            direction: {
+                "vector_world": vector_world,
+                "vector_arm_base": None,
+                "status": "ARM_ALIGNMENT_UNAVAILABLE",
+            }
+            for direction, vector_world in world_semantics.items()
+        }
+    return {
+        "schema": "physical_agent.spatial_axis_snapshot",
+        "schema_version": 2,
+        "convention_id": convention_id,
+        "camera_optical_convention_id": (
+            "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+        ),
+        "observed_at_us": observed_at_us,
+        "session_epoch": session_epoch,
+        "world": {
+            "frame_id": world_frame,
+            "tracking_state": vio_data.get("tracking_state"),
+            "positive_x": "forward",
+            "positive_y": "left",
+            "positive_z": "opposite gravity",
+            "gravity_direction": [0.0, 0.0, -1.0],
+        },
+        "frames": list(frames),
+        "edges": transform_edges,
+        "semantic_resolution": semantic_resolution,
+        "language_policy": {
+            "ordinary_3d_frame": "WORLD",
+            "plain_up": "OPPOSITE_GRAVITY",
+            "plain_front": "WORLD_POSITIVE_X",
+            "plain_left": "WORLD_POSITIVE_Y",
+            "optical_axes_require_explicit_names": True,
+            "image_language_requires_explicit_2d_request": True,
+        },
+        "screen_space": {
+            "frame_id": "image_screen",
+            "short_label": "2D screen space",
+            "frame_role": "SCREEN_2D",
+            "available": True,
+            "default_visible": False,
+            "positive_x": "right",
+            "positive_y": "down",
+            "origin": "top-left image pixel",
+            "applies_only_when_explicit": True,
+        },
+    }
 
 
 @app.get("/api/phase4/policy")
@@ -989,10 +1562,30 @@ def _model_selection(
     return agent_model, reasoning_effort, vlm_model
 
 
+def _session_authorization(
+    request: PromptRequest,
+) -> AgentSessionAuthorization:
+    return AgentSessionAuthorization(
+        auto_authorize_provider_activation=(
+            request.auto_authorize_provider_activation
+        ),
+        auto_authorize_relative_motion=request.auto_authorize_relative_motion,
+        max_auto_move_cm=request.max_auto_move_cm,
+        max_auto_speed_m_s=request.max_auto_speed_m_s,
+        auto_authorize_stationary_calibration=(
+            request.auto_authorize_stationary_calibration
+        ),
+        auto_authorize_stationary_activation=(
+            request.auto_authorize_stationary_activation
+        ),
+    )
+
+
 @app.post("/api/run")
 async def run_prompt(request: PromptRequest) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
     agent_model, reasoning_effort, vlm_model = _model_selection(request)
+    authorization = _session_authorization(request)
     try:
         return await _regular_agent_step(
             request.prompt,
@@ -1000,6 +1593,7 @@ async def run_prompt(request: PromptRequest) -> dict[str, Any]:
             agent_model=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model=vlm_model,
+            authorization=authorization,
         )
     except httpx.HTTPStatusError as error:
         detail = error.response.text or str(error)
@@ -1015,6 +1609,8 @@ async def _regular_agent_step(
     agent_model: str,
     reasoning_effort: str,
     vlm_model: str | None,
+    authorization: AgentSessionAuthorization,
+    approval_decisions: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     result = await operation_registry.run(
         f"openai_regular_agent_run:{run_id}",
@@ -1023,6 +1619,7 @@ async def _regular_agent_step(
             model_override=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model_override=vlm_model,
+            authorization=authorization,
         ),
         hard_timeout_s=min(
             settings.phase4_agent_run_timeout_s,
@@ -1037,6 +1634,14 @@ async def _regular_agent_step(
             "answer": result.answer,
             "approvals": [],
         }
+    decisions = dict(approval_decisions or {})
+    repeated = _repeated_approval_response(
+        run_id=run_id,
+        approvals=result.approvals,
+        decisions=decisions,
+    )
+    if repeated is not None:
+        return repeated
     async with pending_regular_runs_lock:
         pending_regular_runs[run_id] = PendingAgentRun(
             state=result.state,
@@ -1044,6 +1649,8 @@ async def _regular_agent_step(
             agent_model=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model=vlm_model,
+            authorization=authorization,
+            approval_decisions=decisions,
         )
     return {
         "status": "approval_required",
@@ -1083,6 +1690,17 @@ async def decide_regular_run(
             status_code=409,
             detail="regular agent run has no pending approvals",
         )
+    try:
+        _validate_automatic_agent_approval(interruptions, decision)
+    except HTTPException:
+        async with pending_regular_runs_lock:
+            pending_regular_runs[run_id] = entry
+        raise
+    approval_decisions = _record_approval_decisions(
+        interruptions,
+        approved=decision.approve,
+        existing=entry.approval_decisions,
+    )
     for interruption in interruptions:
         if decision.approve:
             entry.state.approve(interruption)
@@ -1098,6 +1716,8 @@ async def decide_regular_run(
             agent_model=entry.agent_model,
             reasoning_effort=entry.reasoning_effort,
             vlm_model=entry.vlm_model,
+            authorization=entry.authorization,
+            approval_decisions=approval_decisions,
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
@@ -1110,6 +1730,8 @@ async def _developer_agent_step(
     agent_model: str,
     reasoning_effort: str,
     vlm_model: str | None,
+    authorization: AgentSessionAuthorization,
+    approval_decisions: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     result = await operation_registry.run(
         f"openai_developer_agent_run:{run_id}",
@@ -1118,6 +1740,7 @@ async def _developer_agent_step(
             model_override=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model_override=vlm_model,
+            authorization=authorization,
         ),
         hard_timeout_s=min(
             settings.phase4_agent_run_timeout_s,
@@ -1132,6 +1755,14 @@ async def _developer_agent_step(
             "answer": result.answer,
             "approvals": [],
         }
+    decisions = dict(approval_decisions or {})
+    repeated = _repeated_approval_response(
+        run_id=run_id,
+        approvals=result.approvals,
+        decisions=decisions,
+    )
+    if repeated is not None:
+        return repeated
     async with pending_developer_runs_lock:
         pending_developer_runs[run_id] = PendingAgentRun(
             state=result.state,
@@ -1139,6 +1770,8 @@ async def _developer_agent_step(
             agent_model=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model=vlm_model,
+            authorization=authorization,
+            approval_decisions=decisions,
         )
     return {
         "status": "approval_required",
@@ -1152,6 +1785,7 @@ async def _developer_agent_step(
 async def run_developer_prompt(request: PromptRequest) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
     agent_model, reasoning_effort, vlm_model = _model_selection(request)
+    authorization = _session_authorization(request)
     try:
         return await _developer_agent_step(
             request.prompt,
@@ -1159,6 +1793,7 @@ async def run_developer_prompt(request: PromptRequest) -> dict[str, Any]:
             agent_model=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model=vlm_model,
+            authorization=authorization,
         )
     except httpx.HTTPStatusError as error:
         detail = error.response.text or str(error)
@@ -1197,6 +1832,17 @@ async def decide_developer_run(
             status_code=409,
             detail="developer agent run has no pending approvals",
         )
+    try:
+        _validate_automatic_agent_approval(interruptions, decision)
+    except HTTPException:
+        async with pending_developer_runs_lock:
+            pending_developer_runs[run_id] = entry
+        raise
+    approval_decisions = _record_approval_decisions(
+        interruptions,
+        approved=decision.approve,
+        existing=entry.approval_decisions,
+    )
     for interruption in interruptions:
         if decision.approve:
             entry.state.approve(interruption)
@@ -1212,6 +1858,8 @@ async def decide_developer_run(
             agent_model=entry.agent_model,
             reasoning_effort=entry.reasoning_effort,
             vlm_model=entry.vlm_model,
+            authorization=entry.authorization,
+            approval_decisions=approval_decisions,
         )
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
@@ -1356,6 +2004,11 @@ PAGE = r"""
     .card { background: rgba(19,19,19,.96); border: 1px solid var(--mb-border); border-radius: 14px; padding: 16px; margin-bottom: 18px; }
     .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 12px; }
     .model-controls label { color: var(--mb-muted); font-size: 11px; }
+    .authorization-controls { display: grid; gap: 9px; margin-top: 14px; border-top: 1px solid var(--mb-border); padding-top: 13px; }
+    .authorization-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; color: var(--mb-secondary); font-size: 12px; font-weight: 500; }
+    .authorization-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--mb-accent); }
+    .authorization-toggle input[type="number"] { width: 72px; border: 1px solid var(--mb-border); border-radius: 6px; padding: 6px 7px; background: var(--mb-bg); color: var(--mb-text); font: inherit; }
+    .authorization-ticker { margin: 2px 0 0; color: var(--mb-muted); font-size: 11px; line-height: 1.5; }
     select { width: 100%; margin-top: 5px; padding: 8px; border: 1px solid var(--mb-border); border-radius: 7px; background: var(--mb-bg); color: var(--mb-text); }
     textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border-radius: 8px; border: 1px solid var(--mb-border); background: var(--mb-bg); color: var(--mb-text); }
     button { margin-top: 10px; padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
@@ -1379,6 +2032,34 @@ PAGE = r"""
     #cloud:active { cursor: grabbing; }
     .viewer-overlay { position: absolute; left: 10px; top: 10px; background: rgba(5,5,5,.78); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; }
     .gravity-overlay { position: absolute; right: 10px; top: 10px; background: rgba(5,5,5,.82); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; text-align: right; white-space: pre-line; }
+    .axis-overlay { position: absolute; left: 10px; bottom: 10px; display: grid; grid-template-columns: auto auto; gap: 3px 9px; background: rgba(5,5,5,.82); padding: 8px 10px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+    .axis-overlay strong { font-variant-numeric: tabular-nums; }
+    .world-x { color: #ff5a5f; }
+    .world-y { color: #58d68d; }
+    .world-z { color: #4da3ff; }
+    .world-down { color: #ff7a45; }
+    .axis-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .axis-toolbar button { margin: 0; }
+    .axis-toolbar .controls { margin: 0 0 0 auto; }
+    .axis-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 7px; margin: 0 0 10px; }
+    .axis-item { border: 1px solid var(--mb-border); border-radius: 8px; background: #101010; padding: 7px 9px; min-width: 0; }
+    .axis-item.unavailable { opacity: .58; }
+    .axis-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .axis-row input { margin: 0; flex: 0 0 auto; }
+    .axis-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+    .axis-role { margin-left: auto; color: var(--mb-muted); font-size: 9px; letter-spacing: .05em; white-space: nowrap; }
+    .axis-item details { margin: 5px 0 0 23px; font-size: 11px; }
+    .axis-item details pre { margin: 5px 0 0; min-height: 0; max-height: 160px; padding: 8px; font-size: 10px; }
+    .frame-label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .frame-label { position: absolute; transform: translate(6px, -50%); padding: 2px 5px; border-radius: 4px; background: rgba(5,5,5,.84); color: #f2f2f2; font-size: 10px; white-space: nowrap; border: 1px solid rgba(255,255,255,.18); }
+    .screen-axis-overlay { position: absolute; right: 10px; bottom: 10px; width: 184px; height: 116px; border-radius: 8px; background: rgba(5,5,5,.88); border: 1px solid rgba(255,255,255,.18); pointer-events: none; }
+    .screen-axis-overlay svg { width: 100%; height: 100%; }
+    .screen-axis-overlay text { fill: #d7d7d7; font: 10px system-ui, sans-serif; }
+    body.spatial-inspector-mode main { max-width: 1900px; }
+    body.spatial-inspector-mode .grid { grid-template-columns: 1fr; }
+    body.spatial-inspector-mode .grid > div:first-child,
+    body.spatial-inspector-mode #spaceCognitionLinkPanel { display: none; }
+    body.spatial-inspector-mode .viewer-wrap { height: min(76vh, 960px); min-height: 560px; }
     .init-summary { margin-top: 10px; padding: 9px 10px; background: #181818; border-radius: 8px; color: #d1d1d1; font-size: 13px; }
     .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
     .state-card { border: 1px solid #444; border-radius: 8px; background: #181818; padding: 9px 10px; min-height: 58px; }
@@ -1445,15 +2126,37 @@ PAGE = r"""
       <section class="card" id="agentPromptPanel">
         <div class="role-kicker">Agent observation</div>
         <h2>Prompt</h2>
-        <div class="state-card" id="bindingState"><div class="state-label">Camera capability binding</div><div class="state-value"><span class="state-lamp"></span><span class="state-text">NOT REQUESTED</span></div><div class="state-detail">Manager binding has not been requested</div></div>
         <div class="model-controls">
           <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
           <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
           <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
         </div>
-        <textarea id="prompt">Take a screenshot and identify the object I am pointing at. Use only the RGB image.</textarea>
+        <textarea id="prompt" placeholder="Describe the task for the agent."></textarea>
         <div>
           <button class="primary" id="run">Run prompt</button>
+        </div>
+        <div class="authorization-controls" aria-label="Session authorization">
+          <label class="authorization-toggle">
+            <input id="autoApproveProviders" type="checkbox" checked>
+            Auto-authorize Provider start, HOT, and WARM transitions
+          </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveMoves" type="checkbox" checked>
+            Auto-authorize each exact relative arm pose preview: translation up to
+            <input id="maxAutoMoveCm" type="number" min="0.1" max="100" step="0.1" value="35" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
+            cm at a nominal average speed up to
+            <input id="maxAutoSpeedMps" type="number" min="0.001" max="0.5" step="0.001" value="0.5" inputmode="decimal" aria-label="Maximum automatically authorized nominal speed in meters per second">
+            m/s; controlled-frame yaw up to 45°
+          </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveCalibration" type="checkbox" checked>
+            Auto-authorize stationary world-to-arm calibration
+          </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveCalibrationActivation" type="checkbox" checked>
+            Auto-authorize exact qualified calibration candidate activation
+          </label>
+          <p id="authorizationTicker" class="authorization-ticker"></p>
         </div>
         <h2>Answer</h2>
         <pre id="answer">Ready.</pre>
@@ -1489,19 +2192,47 @@ PAGE = r"""
       <section class="card" id="worldPointCloudPanel">
         <div class="role-kicker">Observation</div>
         <h2>World RGB point cloud</h2>
-        <button class="secondary" id="resetView">Reset isometric view</button>
+        <div class="axis-toolbar">
+          <button class="secondary" id="resetView">Reset isometric view</button>
+          <button class="secondary" id="fitAxes">Fit visible axes</button>
+          <span class="controls" id="axisStatus">Loading local coordinate frames…</span>
+        </div>
+        <div class="axis-controls" id="axisControls" aria-label="Spatial frame visibility"></div>
         <div class="viewer-wrap">
           <canvas id="cloud"></canvas>
           <div class="viewer-overlay" id="cloudStats">Waiting for pose and RGB-D…</div>
-          <div class="gravity-overlay" id="gravityStatus">↓ World gravity · -Y</div>
+          <div class="gravity-overlay" id="gravityStatus">↓ World gravity · -Z</div>
+          <div class="frame-label-layer" id="frameLabels" aria-hidden="true"></div>
+          <div class="screen-axis-overlay" id="screenAxisOverlay" hidden aria-label="2D screen-space axes">
+            <svg viewBox="0 0 184 116" aria-hidden="true">
+              <defs>
+                <marker id="screenArrowX" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff5a5f"/></marker>
+                <marker id="screenArrowY" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#58d68d"/></marker>
+              </defs>
+              <circle cx="30" cy="30" r="3" fill="#f2f2f2"/>
+              <line x1="30" y1="30" x2="150" y2="30" stroke="#ff5a5f" stroke-width="2" marker-end="url(#screenArrowX)"/>
+              <line x1="30" y1="30" x2="30" y2="88" stroke="#58d68d" stroke-width="2" marker-end="url(#screenArrowY)"/>
+              <text x="74" y="21">image +X · right</text>
+              <text x="39" y="77">image +Y · down</text>
+              <text x="8" y="108">2D screen only · top-left origin</text>
+            </svg>
+          </div>
+          <div class="axis-overlay" aria-label="World coordinate legend">
+            <strong class="world-x">+X</strong><span>front</span>
+            <strong class="world-y">+Y</strong><span>left</span>
+            <strong class="world-z">+Z</strong><span>up</span>
+            <strong class="world-down">-Z</strong><span>gravity / down</span>
+          </div>
         </div>
-        <p class="controls">Orthographic isometric view. Drag to orbit, mouse wheel to change parallel scale. Orange is world-down; cyan is the current camera pose. Points use world coordinates and fade linearly over 10 seconds.</p>
+        <p class="controls">Orthographic world view. Drag to orbit; Shift-drag, middle-drag, or right-drag to pan; use the wheel to zoom. Frame checkboxes control live local XYZ triads: red +X, green +Y, blue +Z. Orange remains gravity/down (-Z), cyan is the camera frustum, and point-cloud samples fade over 10 seconds.</p>
       </section>
       <section class="card" id="spaceCognitionLinkPanel">
         <div class="role-kicker">Point-cloud recovery</div>
         <h2>Space cognition</h2>
         <p class="sub">If the world point cloud stops updating or the local frame has drifted, inspect Space Cognition before deliberately resetting its origin.</p>
         <a href="/dev/skills/initialize-space-cognition" style="color:var(--mb-warning)">Open Space Cognition development UI →</a>
+        <br>
+        <a href="/dev/spatial-axes" style="color:var(--mb-warning)">Open Spatial Axis Inspector →</a>
       </section>
     </div>
   </div>
@@ -1525,6 +2256,8 @@ PAGE = r"""
 const dedicatedSpaceCognition = location.pathname.endsWith(
   '/dev/skills/initialize-space-cognition'
 );
+const dedicatedSpatialAxes = location.pathname.endsWith('/dev/spatial-axes');
+const focusedUtilityPage = dedicatedSpaceCognition || dedicatedSpatialAxes;
 const pageTitle = document.getElementById('pageTitle');
 const pageSubtitle = document.getElementById('pageSubtitle');
 const secondaryNav = document.getElementById('secondaryNav');
@@ -1544,6 +2277,14 @@ if (dedicatedSpaceCognition) {
   agentPromptPanel.hidden = true;
   replayPanel.hidden = true;
   platformCatalogPanel.hidden = true;
+} else if (dedicatedSpatialAxes) {
+  document.body.classList.add('spatial-inspector-mode');
+  document.title = 'Spatial Axis Inspector | Midbrain';
+  pageTitle.textContent = 'Spatial Axis Inspector';
+  pageSubtitle.textContent =
+    'Inspect the live point cloud together with world, robot, camera, joint, object, and explicit 2D screen coordinate frames.';
+  secondaryNav.href = '/dev';
+  secondaryNav.textContent = 'Developer agent';
 } else {
   document.title = 'Developer Agent | Midbrain';
   spaceCognitionPanel.hidden = true;
@@ -1554,6 +2295,11 @@ const initializeButton = document.getElementById('initialize');
 const resetButton = document.getElementById('reset');
 const clearCloudButton = document.getElementById('clearCloud');
 const resetViewButton = document.getElementById('resetView');
+const fitAxesButton = document.getElementById('fitAxes');
+const axisControls = document.getElementById('axisControls');
+const axisStatus = document.getElementById('axisStatus');
+const frameLabels = document.getElementById('frameLabels');
+const screenAxisOverlay = document.getElementById('screenAxisOverlay');
 const authorizationDialog = document.getElementById('authorizationDialog');
 const authorizationTitle = document.getElementById('authorizationTitle');
 const authorizationSummary = document.getElementById('authorizationSummary');
@@ -1565,6 +2311,13 @@ const answer = document.getElementById('answer');
 const agentModel = document.getElementById('agentModel');
 const reasoningEffort = document.getElementById('reasoningEffort');
 const vlmModel = document.getElementById('vlmModel');
+const autoApproveProviders = document.getElementById('autoApproveProviders');
+const autoApproveMoves = document.getElementById('autoApproveMoves');
+const autoApproveCalibration = document.getElementById('autoApproveCalibration');
+const autoApproveCalibrationActivation = document.getElementById('autoApproveCalibrationActivation');
+const maxAutoMoveCm = document.getElementById('maxAutoMoveCm');
+const maxAutoSpeedMps = document.getElementById('maxAutoSpeedMps');
+const authorizationTicker = document.getElementById('authorizationTicker');
 const replayProvenance = document.getElementById('replayProvenance');
 const statusBox = document.getElementById('status');
 const spaceStatus = document.getElementById('spaceStatus');
@@ -1575,7 +2328,6 @@ const visualState = document.getElementById('visualState');
 const poseState = document.getElementById('poseState');
 const rotationState = document.getElementById('rotationState');
 const gravityState = document.getElementById('gravityState');
-const bindingState = document.getElementById('bindingState');
 const featureState = document.getElementById('featureState');
 const mapState = document.getElementById('mapState');
 const initState = document.getElementById('initState');
@@ -1583,9 +2335,211 @@ const actionStatus = document.getElementById('actionStatus');
 let cloudCaptureState = 'unknown';
 let latestCameraPose = null;
 let activeAuthorizationId = null;
+const AGENT_AUTHORIZATION_STORAGE_KEY =
+  'midbrain.developerAgent.sessionAuthorization.v1';
+
+function loadAgentAuthorizationPreferences() {
+  let saved = {};
+  try {
+    saved = JSON.parse(
+      window.sessionStorage.getItem(AGENT_AUTHORIZATION_STORAGE_KEY) || '{}'
+    );
+  } catch (_error) {
+    saved = {};
+  }
+  autoApproveProviders.checked =
+    typeof saved.autoApproveProviders === 'boolean'
+      ? saved.autoApproveProviders
+      : true;
+  autoApproveMoves.checked =
+    typeof saved.autoApproveMoves === 'boolean'
+      ? saved.autoApproveMoves
+      : true;
+  autoApproveCalibration.checked =
+    typeof saved.autoApproveCalibration === 'boolean'
+      ? saved.autoApproveCalibration
+      : true;
+  autoApproveCalibrationActivation.checked =
+    typeof saved.autoApproveCalibrationActivation === 'boolean'
+      ? saved.autoApproveCalibrationActivation
+      : true;
+  const savedMaximum = Number(saved.maxAutoMoveCm);
+  maxAutoMoveCm.value =
+    Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
+    savedMaximum <= 100 ? String(savedMaximum) : '35';
+  const savedMaximumSpeed = Number(saved.maxAutoSpeedMps);
+  maxAutoSpeedMps.value =
+    Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0 &&
+    savedMaximumSpeed <= 0.5 ? String(savedMaximumSpeed) : '0.5';
+  updateAgentAuthorizationTicker();
+}
+
+function agentAuthorizationPreferences() {
+  const maximum = Number(maxAutoMoveCm.value);
+  const maximumSpeed = Number(maxAutoSpeedMps.value);
+  return {
+    autoApproveProviders: autoApproveProviders.checked,
+    autoApproveMoves: autoApproveMoves.checked,
+    autoApproveCalibration: autoApproveCalibration.checked,
+    autoApproveCalibrationActivation:
+      autoApproveCalibrationActivation.checked,
+    maxAutoMoveCm:
+      Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
+        ? maximum
+        : 35,
+    maxAutoSpeedMps:
+      Number.isFinite(maximumSpeed) && maximumSpeed > 0 &&
+      maximumSpeed <= 0.5 ? maximumSpeed : 0.5
+  };
+}
+
+function updateAgentAuthorizationTicker() {
+  const preferences = agentAuthorizationPreferences();
+  maxAutoMoveCm.disabled = !preferences.autoApproveMoves;
+  maxAutoSpeedMps.disabled = !preferences.autoApproveMoves;
+  const providerState = preferences.autoApproveProviders
+    ? 'Provider activation AUTO'
+    : 'Provider activation asks';
+  const motionState = preferences.autoApproveMoves
+    ? 'relative arm pose AUTO <= ' + preferences.maxAutoMoveCm + ' cm, <= ' +
+      preferences.maxAutoSpeedMps + ' m/s nominal average; ' +
+      'controlled-frame yaw AUTO <= 45°'
+    : 'physical motion asks';
+  const calibrationState = preferences.autoApproveCalibration
+    ? 'world-arm calibration AUTO'
+    : 'world-arm calibration asks';
+  const activationState = preferences.autoApproveCalibrationActivation
+    ? 'exact calibration activation AUTO'
+    : 'exact calibration activation asks';
+  authorizationTicker.textContent =
+    providerState + ' | ' + motionState + ' | ' + calibrationState + ' | ' +
+    activationState + '. Provider and controller safety checks remain active; ' +
+    'stop, safe-home, and other protected actions still ask.';
+  try {
+    window.sessionStorage.setItem(
+      AGENT_AUTHORIZATION_STORAGE_KEY,
+      JSON.stringify(preferences)
+    );
+  } catch (_error) {
+    // The controls remain valid for this page even if storage is disabled.
+  }
+}
+
+function agentApprovalArguments(approval) {
+  const raw = (approval.request && approval.request.arguments) || {};
+  if (typeof raw === 'string') {
+    try {
+      const decoded = JSON.parse(raw);
+      return decoded && typeof decoded === 'object' ? decoded : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+  return raw && typeof raw === 'object' ? raw : {};
+}
+
+function automaticDeveloperApprovalDecision(approvals) {
+  if (!approvals.length) return null;
+  const preferences = agentAuthorizationPreferences();
+  const providerEligible =
+    preferences.autoApproveProviders &&
+    approvals.every((approval) => {
+      const action = String(agentApprovalArguments(approval).action || '')
+        .toLowerCase();
+      return approval.tool_name === 'set_provider_residency' &&
+        ['start', 'hot', 'warm'].includes(action);
+    });
+  if (providerEligible) {
+    return {
+      approval_mode: 'AUTO_PROVIDER_ACTIVATION',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label: 'Session authorization automatically approved Provider activation.'
+    };
+  }
+  const motionEligible =
+    preferences.autoApproveMoves &&
+    approvals.every((approval) => {
+      const argumentsValue = agentApprovalArguments(approval);
+      const motionIntent = String(argumentsValue.motion_intent || '')
+        .toUpperCase();
+      const direction = String(argumentsValue.direction || '')
+        .toUpperCase();
+      const orientationPolicy = String(
+        argumentsValue.orientation_policy || ''
+      ).toUpperCase();
+      const distanceM = Number(argumentsValue.distance_m);
+      const plannedSpeedMps = Number(
+        argumentsValue.planned_nominal_speed_m_s
+      );
+      const rawYawDegrees = argumentsValue.controlled_frame_yaw_delta_deg;
+      const hasYaw = rawYawDegrees !== null && rawYawDegrees !== undefined;
+      const yawDegrees = Number(rawYawDegrees);
+      const boundedTranslation =
+        Number.isFinite(distanceM) && distanceM > 0 &&
+        distanceM * 100 <= preferences.maxAutoMoveCm + 1e-9 &&
+        Number.isFinite(plannedSpeedMps) && plannedSpeedMps > 0 &&
+        plannedSpeedMps <= preferences.maxAutoSpeedMps + 1e-9;
+      const boundedYaw = hasYaw && Number.isFinite(yawDegrees) &&
+        Math.abs(yawDegrees) > 1e-9 &&
+        Math.abs(yawDegrees) <= 45 + 1e-9 &&
+        orientationPolicy === 'APPLY_CONTROLLED_FRAME_YAW_DELTA';
+      const exactTranslation = motionIntent === 'NEW_RELATIVE_MOVE' &&
+        boundedTranslation && !hasYaw;
+      const exactCombinedPose =
+        motionIntent === 'NEW_RELATIVE_POSE_MOVE' &&
+        direction !== 'NONE' && boundedTranslation && boundedYaw;
+      const exactPureRotation =
+        motionIntent === 'NEW_RELATIVE_ROTATION' &&
+        direction === 'NONE' && distanceM === 0 &&
+        plannedSpeedMps === 0 &&
+        argumentsValue.requested_speed_m_s == null && boundedYaw;
+      return approval.tool_name === 'execute_integrated_motion_preview' &&
+        (exactTranslation || exactCombinedPose || exactPureRotation);
+    });
+  if (motionEligible) {
+    return {
+      approval_mode: 'AUTO_BOUNDED_RELATIVE_MOTION',
+      max_auto_move_cm: preferences.maxAutoMoveCm,
+      max_auto_speed_m_s: preferences.maxAutoSpeedMps,
+      label:
+        'Session authorization automatically approved the bounded exact motion preview.'
+    };
+  }
+  const calibrationEligible =
+    preferences.autoApproveCalibration &&
+    approvals.every(
+      (approval) => approval.tool_name === 'calibrate_stationary_workcell'
+    );
+  if (calibrationEligible) {
+    return {
+      approval_mode: 'AUTO_STATIONARY_CALIBRATION',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label:
+        'Session authorization automatically approved stationary world-to-arm calibration.'
+    };
+  }
+  const activationEligible =
+    preferences.autoApproveCalibrationActivation &&
+    approvals.every(
+      (approval) =>
+        approval.tool_name === 'review_and_activate_stationary_calibration'
+    );
+  if (activationEligible) {
+    return {
+      approval_mode: 'AUTO_STATIONARY_ACTIVATION',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label:
+        'Session authorization automatically approved exact stationary calibration activation.'
+    };
+  }
+  return null;
+}
 
 async function refreshAuthorization() {
-  if (dedicatedSpaceCognition) return;
+  if (focusedUtilityPage) return;
   try {
     const response = await fetch('/api/authorizations?status=PENDING', {cache: 'no-store'});
     if (!response.ok) return;
@@ -1616,7 +2570,7 @@ async function refreshAuthorization() {
 }
 
 async function refreshReplayProvenance() {
-  if (dedicatedSpaceCognition) return;
+  if (focusedUtilityPage) return;
   refreshReplayButton.disabled = true;
   try {
     const response = await fetch('/api/phase5/replay/bundles', {cache: 'no-store'});
@@ -1753,22 +2707,6 @@ async function refreshStatus() {
       '(' + catalogProviders.length + ')';
     document.getElementById('skillCount').textContent =
       '(' + catalogSkills.length + ')';
-    const binding = data.capability_binding || {};
-    const bindingValidity = binding.validity || binding.status || 'NOT_REQUESTED';
-    const bindingIssues = Array.isArray(binding.validation_issues)
-      ? binding.validation_issues.join('; ')
-      : (binding.reason || 'no validation issue');
-    const bindingKind = bindingValidity === 'CURRENT'
-      ? 'ok'
-      : (bindingValidity.includes('FALLBACK') ? 'warn' :
-        (bindingValidity.includes('STALE') || bindingValidity === 'UNRESOLVED' ? 'bad' : ''));
-    setStateCard(
-      bindingState,
-      bindingValidity,
-      (binding.binding_id ? 'binding ' + String(binding.binding_id).slice(0, 8) + ' · ' : '') +
-        bindingIssues,
-      bindingKind
-    );
     cloudCaptureState = cloudData.capture_state || 'unknown';
     latestCameraPose = poseData.world_from_camera || null;
     updateCameraMarker(latestCameraPose);
@@ -1828,6 +2766,10 @@ async function refreshStatus() {
     const secondsSinceChunk = typeof cloudData.seconds_since_last_chunk === 'number'
       ? cloudData.seconds_since_last_chunk.toFixed(1) + ' s since last chunk'
       : 'no map chunk yet';
+    const cloudTransformAuthority = cloudData.transform_authority || 'UNRESOLVED';
+    const cloudCalibrationRevision = cloudData.calibration_revision
+      ? ' · calibration ' + String(cloudData.calibration_revision).slice(0, 12)
+      : '';
     const visualValue = visualAccepted ? visualSensor + ' UPDATE' : (visualTracking === 'TRACKING' ? 'RECENT VISUAL' : 'VISUAL STALE');
     const visualDetail = inliers + '/' + matches + ' inliers/matches' +
       (visualStale === null ? '' : ' · ' + visualStale.toFixed(2) + ' s stale');
@@ -1887,6 +2829,7 @@ async function refreshStatus() {
       mapState,
       cloudCaptureState,
       Number(cloudData.point_count || 0).toLocaleString() + ' points · ' + secondsSinceChunk +
+        ' · transform ' + cloudTransformAuthority + cloudCalibrationRevision +
         ' · ' + (cloudData.capture_reason || 'no capture reason'),
       stateKind(cloudCaptureState)
     );
@@ -1897,7 +2840,13 @@ async function refreshStatus() {
         ' · ' + initializationBlocker,
       stateKind(initValue)
     );
-    gravityStatus.textContent = '↓ World gravity · -Y\n' +
+    const activeWorldFrame = cloudData.world_frame ||
+      vioData.world_frame || 'world frame unavailable';
+    gravityStatus.textContent =
+      'World XYZ · +X front · +Y left · +Z up\n' +
+      'frame: ' + activeWorldFrame + '\n' +
+      'map transform: ' + cloudTransformAuthority + cloudCalibrationRevision + '\n' +
+      '↓ World gravity · -Z\n' +
       'adjustment: ' + gravityAdjustment + ' · ' + gravityMode + '\n' +
       'tilt: ' + tiltDegrees + '° · gyro p95/gate ' + gyroP95.toFixed(4) + '/' + gyroGate.toFixed(4) + '\n' +
       'gyro rms/noise ' + gyroRms.toFixed(4) + '/' + gyroNoise.toFixed(4) + ' rad/s\n' +
@@ -1991,7 +2940,11 @@ async function handleDeveloperAgentResult(data) {
     ].join('\n');
   }).join('\n\n');
   answer.textContent = summary;
-  const approved = window.confirm(summary);
+  const automaticDecision = automaticDeveloperApprovalDecision(approvals);
+  const approved = automaticDecision ? true : window.confirm(summary);
+  if (automaticDecision) {
+    answer.textContent = automaticDecision.label + '\nContinuing the same run...';
+  }
   const decisionResponse = await fetch(
     '/api/dev/runs/' + encodeURIComponent(data.run_id) + '/decision',
     {
@@ -1999,6 +2952,12 @@ async function handleDeveloperAgentResult(data) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         approve: approved,
+        approval_mode:
+          (automaticDecision && automaticDecision.approval_mode) || 'MANUAL',
+        max_auto_move_cm:
+          (automaticDecision && automaticDecision.max_auto_move_cm) || null,
+        max_auto_speed_m_s:
+          (automaticDecision && automaticDecision.max_auto_speed_m_s) || null,
         rejection_message: approved ? null : 'Rejected in the developer UI'
       })
     }
@@ -2014,6 +2973,7 @@ runButton.addEventListener('click', async () => {
   runButton.disabled = true;
   answer.textContent = 'Running…';
   try {
+    const authorization = agentAuthorizationPreferences();
     const response = await fetch('/api/dev/run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2021,7 +2981,16 @@ runButton.addEventListener('click', async () => {
         prompt: promptBox.value,
         agent_model: agentModel.value,
         reasoning_effort: reasoningEffort.value,
-        vlm_model: vlmModel.value
+        vlm_model: vlmModel.value,
+        auto_authorize_provider_activation:
+          authorization.autoApproveProviders,
+        auto_authorize_relative_motion: authorization.autoApproveMoves,
+        max_auto_move_cm: authorization.maxAutoMoveCm,
+        max_auto_speed_m_s: authorization.maxAutoSpeedMps,
+        auto_authorize_stationary_calibration:
+          authorization.autoApproveCalibration,
+        auto_authorize_stationary_activation:
+          authorization.autoApproveCalibrationActivation
       })
     });
     const data = await response.json();
@@ -2036,6 +3005,20 @@ runButton.addEventListener('click', async () => {
 });
 refreshReplayButton.addEventListener('click', refreshReplayProvenance);
 
+for (const control of [
+  autoApproveProviders,
+  autoApproveMoves,
+  autoApproveCalibration,
+  autoApproveCalibrationActivation,
+  maxAutoMoveCm,
+  maxAutoSpeedMps
+]) {
+  control.addEventListener('change', updateAgentAuthorizationTicker);
+}
+maxAutoMoveCm.addEventListener('input', updateAgentAuthorizationTicker);
+maxAutoSpeedMps.addEventListener('input', updateAgentAuthorizationTicker);
+loadAgentAuthorizationPreferences();
+
 const canvas = document.getElementById('cloud');
 const gl = canvas.getContext('webgl', {alpha: false, antialias: true});
 let pointCount = 0;
@@ -2048,8 +3031,22 @@ let viewDistance = 12.0;
 let orthoScale = 3.5;
 let target = [0, 0, 1.5];
 let dragging = false;
+let dragMode = 'orbit';
 let dragX = 0;
 let dragY = 0;
+let spatialAxisSnapshot = null;
+let dynamicAxisFrames = [];
+let axisUiSignature = '';
+const AXIS_VISIBILITY_KEY = 'midbrain.spatial-axis-visibility.v2';
+const axisVisibility = new Map();
+try {
+  const storedVisibility = JSON.parse(localStorage.getItem(AXIS_VISIBILITY_KEY) || '{}');
+  for (const [frameId, visible] of Object.entries(storedVisibility)) {
+    axisVisibility.set(frameId, Boolean(visible));
+  }
+} catch (_error) {
+  localStorage.removeItem(AXIS_VISIBILITY_KEY);
+}
 
 function shader(type, source) {
   const result = gl.createShader(type);
@@ -2094,12 +3091,17 @@ precision mediump float;
 uniform vec4 uColor;
 void main() { gl_FragColor = uColor; }`;
 const gravityArrowVertices = new Float32Array([
-  0.0, 0.0, 0.0,   0.0, -1.2, 0.0,
-  0.0, -1.2, 0.0, -0.15, -0.95, 0.0,
-  0.0, -1.2, 0.0,  0.15, -0.95, 0.0,
-  0.0, -1.2, 0.0,  0.0, -0.95, -0.15,
-  0.0, -1.2, 0.0,  0.0, -0.95, 0.15
+  0.0, 0.0, 0.0,   0.0, 0.0, -1.2,
+  0.0, 0.0, -1.2, -0.15, 0.0, -0.95,
+  0.0, 0.0, -1.2,  0.15, 0.0, -0.95,
+  0.0, 0.0, -1.2,  0.0, -0.15, -0.95,
+  0.0, 0.0, -1.2,  0.0, 0.15, -0.95
 ]);
+const localAxisColors = [
+  [1.0, 0.35, 0.37, 1.0],
+  [0.35, 0.84, 0.55, 1.0],
+  [0.30, 0.64, 1.0, 1.0]
+];
 const cameraMarkerLocal = [
   [0, 0, 0], [-0.18, -0.12, 0.35],
   [0, 0, 0], [ 0.18, -0.12, 0.35],
@@ -2148,6 +3150,187 @@ function quaternionMatrix(q) {
     [2*(x*y + z*w), 1 - 2*(x*x + z*z), 2*(y*z - x*w)],
     [2*(x*z - y*w), 2*(y*z + x*w), 1 - 2*(x*x + y*y)]
   ];
+}
+
+function axisIsVisible(frame) {
+  return axisVisibility.has(frame.frame_id)
+    ? axisVisibility.get(frame.frame_id)
+    : Boolean(frame.default_visible);
+}
+
+function saveAxisVisibility() {
+  try {
+    localStorage.setItem(
+      AXIS_VISIBILITY_KEY,
+      JSON.stringify(Object.fromEntries(axisVisibility.entries()))
+    );
+  } catch (_error) {
+    return;
+  }
+}
+
+function rotateDirection(rotation, vector) {
+  return [
+    rotation[0][0] * vector[0] + rotation[0][1] * vector[1] + rotation[0][2] * vector[2],
+    rotation[1][0] * vector[0] + rotation[1][1] * vector[1] + rotation[1][2] * vector[2],
+    rotation[2][0] * vector[0] + rotation[2][1] * vector[1] + rotation[2][2] * vector[2]
+  ];
+}
+
+function axisArrowVertices(origin, direction, length) {
+  const unit = normalize(direction);
+  const endpoint = origin.map((value, index) => value + unit[index] * length);
+  const reference = Math.abs(unit[2]) < 0.82 ? [0, 0, 1] : [0, 1, 0];
+  const sideA = normalize(cross(unit, reference));
+  const sideB = normalize(cross(unit, sideA));
+  const arrowBack = endpoint.map((value, index) => value - unit[index] * length * 0.18);
+  const wing = length * 0.065;
+  const wingPoints = [sideA, sideA.map(value => -value), sideB, sideB.map(value => -value)].map(
+    side => arrowBack.map((value, index) => value + side[index] * wing)
+  );
+  const values = [...origin, ...endpoint];
+  for (const point of wingPoints) values.push(...endpoint, ...point);
+  return {vertices: new Float32Array(values), endpoint};
+}
+
+const frameLabelNodes = new Map();
+function syncFrameLabels(frames) {
+  const activeIds = new Set(frames.map(frame => frame.frame_id));
+  for (const [frameId, node] of frameLabelNodes.entries()) {
+    if (!activeIds.has(frameId)) {
+      node.remove();
+      frameLabelNodes.delete(frameId);
+    }
+  }
+  for (const frame of frames) {
+    let node = frameLabelNodes.get(frame.frame_id);
+    if (!node) {
+      node = document.createElement('span');
+      node.className = 'frame-label';
+      frameLabels.append(node);
+      frameLabelNodes.set(frame.frame_id, node);
+    }
+    node.textContent = frame.short_label || frame.frame_id;
+  }
+}
+
+function rebuildDynamicAxisBuffers(frames) {
+  if (!gl) return;
+  for (const frame of dynamicAxisFrames) {
+    for (const axis of frame.axes) gl.deleteBuffer(axis.buffer);
+  }
+  dynamicAxisFrames = [];
+  for (const frame of frames) {
+    if (!frame.available) continue;
+    const origin = Array.isArray(frame.translation_m) ? frame.translation_m.map(Number) : null;
+    const rotation = quaternionMatrix(frame.rotation_xyzw);
+    if (!origin || origin.length !== 3 || !rotation || origin.some(value => !Number.isFinite(value))) continue;
+    const length = Math.max(0.04, Number(frame.axis_length_m) || 0.16);
+    const localDirections = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const axes = localDirections.map(localDirection => {
+      const arrow = axisArrowVertices(origin, rotateDirection(rotation, localDirection), length);
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, arrow.vertices, gl.DYNAMIC_DRAW);
+      return {buffer, vertexCount: arrow.vertices.length / 3, endpoint: arrow.endpoint};
+    });
+    dynamicAxisFrames.push({...frame, origin, axes});
+  }
+  syncFrameLabels(dynamicAxisFrames);
+}
+
+const axisMetadataNodes = new Map();
+function frameMetadata(frame) {
+  if (frame.frame_role === 'SCREEN_2D') return frame;
+  return {
+    frame_id: frame.frame_id,
+    frame_role: frame.frame_role,
+    convention_id: frame.convention_id,
+    available: frame.available,
+    world_translation_m: frame.translation_m || null,
+    world_rotation_xyzw: frame.rotation_xyzw || null,
+    transform_at_us: frame.at_us || null,
+    transform_path: frame.path || [],
+    error: frame.error || null
+  };
+}
+
+function updateAxisMetadata(frames) {
+  for (const frame of frames) {
+    const node = axisMetadataNodes.get(frame.frame_id);
+    if (node) node.textContent = JSON.stringify(frameMetadata(frame), null, 2);
+  }
+}
+
+function renderAxisControls(snapshot) {
+  const frames = [...(snapshot.frames || [])];
+  if (snapshot.screen_space) frames.push(snapshot.screen_space);
+  const roleOrder = {
+    WORLD: 0, ARM_BASE: 1, GRIPPER_TOOL: 2, CAMERA_LEVEL: 3,
+    CAMERA_OPTICAL: 4, ARM_JOINT: 5, OBJECT: 6, BODY: 7,
+    SENSOR: 8, SCREEN_2D: 9, OTHER: 10
+  };
+  frames.sort((left, right) =>
+    (roleOrder[left.frame_role] ?? 99) - (roleOrder[right.frame_role] ?? 99) ||
+    String(left.short_label || left.frame_id).localeCompare(String(right.short_label || right.frame_id))
+  );
+  const signature = frames.map(
+    frame => [frame.frame_id, frame.frame_role, Boolean(frame.available)].join(':')
+  ).join('|');
+  if (signature !== axisUiSignature) {
+    axisUiSignature = signature;
+    axisMetadataNodes.clear();
+    axisControls.replaceChildren();
+    for (const frame of frames) {
+      const item = document.createElement('div');
+      item.className = 'axis-item' + (frame.available ? '' : ' unavailable');
+      const row = document.createElement('label');
+      row.className = 'axis-row';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = axisIsVisible(frame);
+      checkbox.disabled = !frame.available;
+      checkbox.dataset.frameId = frame.frame_id;
+      checkbox.addEventListener('change', () => {
+        axisVisibility.set(frame.frame_id, checkbox.checked);
+        saveAxisVisibility();
+        screenAxisOverlay.hidden = !axisIsVisible(snapshot.screen_space || {});
+      });
+      const name = document.createElement('span');
+      name.className = 'axis-name';
+      name.textContent = frame.short_label || frame.frame_id;
+      name.title = frame.frame_id;
+      const role = document.createElement('span');
+      role.className = 'axis-role';
+      role.textContent = frame.available ? frame.frame_role : frame.frame_role + ' · unavailable';
+      row.append(checkbox, name, role);
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'metadata';
+      const metadata = document.createElement('pre');
+      axisMetadataNodes.set(frame.frame_id, metadata);
+      details.append(summary, metadata);
+      item.append(row, details);
+      axisControls.append(item);
+    }
+  }
+  updateAxisMetadata(frames);
+  screenAxisOverlay.hidden = !snapshot.screen_space || !axisIsVisible(snapshot.screen_space);
+  const liveCount = frames.filter(frame => frame.available && frame.frame_role !== 'SCREEN_2D').length;
+  axisStatus.textContent = liveCount + ' live 3D frames · epoch ' + String(snapshot.session_epoch || 'unknown').slice(0, 12);
+}
+
+async function refreshSpatialAxes() {
+  try {
+    const response = await fetch('/api/spatial/axes?t=' + Date.now(), {cache: 'no-store'});
+    if (!response.ok) throw new Error(await response.text());
+    spatialAxisSnapshot = await response.json();
+    const frames = Array.isArray(spatialAxisSnapshot.frames) ? spatialAxisSnapshot.frames : [];
+    rebuildDynamicAxisBuffers(frames);
+    renderAxisControls(spatialAxisSnapshot);
+  } catch (error) {
+    axisStatus.textContent = 'Spatial axes unavailable: ' + error;
+  }
 }
 
 function updateCameraMarker(pose) {
@@ -2206,6 +3389,35 @@ function lookAt(eye, center, up) {
   ]);
 }
 
+function transformMat4(matrix, vector) {
+  return [
+    matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2] + matrix[12] * vector[3],
+    matrix[1] * vector[0] + matrix[5] * vector[1] + matrix[9] * vector[2] + matrix[13] * vector[3],
+    matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2] + matrix[14] * vector[3],
+    matrix[3] * vector[0] + matrix[7] * vector[1] + matrix[11] * vector[2] + matrix[15] * vector[3]
+  ];
+}
+
+function updateFrameLabelPositions(projection, view) {
+  for (const frame of dynamicAxisFrames) {
+    const node = frameLabelNodes.get(frame.frame_id);
+    if (!node) continue;
+    if (!axisIsVisible(frame)) {
+      node.hidden = true;
+      continue;
+    }
+    const cameraPoint = transformMat4(view, [...frame.origin, 1]);
+    const clip = transformMat4(projection, cameraPoint);
+    const w = clip[3] || 1;
+    const ndc = [clip[0] / w, clip[1] / w, clip[2] / w];
+    const outside = ndc[0] < -1.05 || ndc[0] > 1.05 || ndc[1] < -1.05 || ndc[1] > 1.05 || ndc[2] < -1 || ndc[2] > 1;
+    node.hidden = outside;
+    if (outside) continue;
+    node.style.left = ((ndc[0] * 0.5 + 0.5) * canvas.clientWidth).toFixed(1) + 'px';
+    node.style.top = ((1 - (ndc[1] * 0.5 + 0.5)) * canvas.clientHeight).toFixed(1) + 'px';
+  }
+}
+
 function resizeCanvas() {
   if (!gl) return;
   const ratio = window.devicePixelRatio || 1;
@@ -2225,15 +3437,15 @@ function renderCloud() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   const cp = Math.cos(orbitPitch);
   const eye = [
-    target[0] + viewDistance * cp * Math.sin(orbitYaw),
-    target[1] + viewDistance * Math.sin(orbitPitch),
-    target[2] + viewDistance * cp * Math.cos(orbitYaw)
+    target[0] + viewDistance * cp * Math.cos(orbitYaw),
+    target[1] + viewDistance * cp * Math.sin(orbitYaw),
+    target[2] + viewDistance * Math.sin(orbitPitch)
   ];
   const aspect = canvas.width / Math.max(1, canvas.height);
   const halfHeight = orthoScale;
   const halfWidth = halfHeight * aspect;
   const projection = orthographic(-halfWidth, halfWidth, -halfHeight, halfHeight, 0.03, 100.0);
-  const view = lookAt(eye, target, [0, 1, 0]);
+  const view = lookAt(eye, target, [0, 0, 1]);
   if (pointCount > 0) {
     gl.useProgram(program);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'uProjection'), false, projection);
@@ -2260,10 +3472,22 @@ function renderCloud() {
   gl.useProgram(lineProgram);
   gl.uniformMatrix4fv(gl.getUniformLocation(lineProgram, 'uProjection'), false, projection);
   gl.uniformMatrix4fv(gl.getUniformLocation(lineProgram, 'uView'), false, view);
-  gl.uniform4f(gl.getUniformLocation(lineProgram, 'uColor'), 1.0, 0.38, 0.18, 1.0);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gravityArrowBuffer);
   const linePosition = gl.getAttribLocation(lineProgram, 'aPosition');
   gl.enableVertexAttribArray(linePosition);
+  for (const frame of dynamicAxisFrames) {
+    if (!axisIsVisible(frame)) continue;
+    for (let index = 0; index < frame.axes.length; index += 1) {
+      gl.uniform4fv(
+        gl.getUniformLocation(lineProgram, 'uColor'),
+        localAxisColors[index]
+      );
+      gl.bindBuffer(gl.ARRAY_BUFFER, frame.axes[index].buffer);
+      gl.vertexAttribPointer(linePosition, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, frame.axes[index].vertexCount);
+    }
+  }
+  gl.uniform4f(gl.getUniformLocation(lineProgram, 'uColor'), 1.0, 0.38, 0.18, 1.0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gravityArrowBuffer);
   gl.vertexAttribPointer(linePosition, 3, gl.FLOAT, false, 0, 0);
   gl.drawArrays(gl.LINES, 0, gravityArrowVertices.length / 3);
   if (cameraMarkerVertexCount > 0) {
@@ -2273,6 +3497,7 @@ function renderCloud() {
     gl.drawArrays(gl.LINES, 0, cameraMarkerVertexCount);
   }
   gl.enable(gl.DEPTH_TEST);
+  updateFrameLabelPositions(projection, view);
   requestAnimationFrame(renderCloud);
 }
 
@@ -2298,16 +3523,60 @@ async function refreshCloud() {
   }
 }
 
+function fitVisibleAxes() {
+  const points = [];
+  for (const frame of dynamicAxisFrames) {
+    if (!axisIsVisible(frame)) continue;
+    points.push(frame.origin, ...frame.axes.map(axis => axis.endpoint));
+  }
+  if (!points.length) return;
+  const minimum = [...points[0]];
+  const maximum = [...points[0]];
+  for (const point of points.slice(1)) {
+    for (let index = 0; index < 3; index += 1) {
+      minimum[index] = Math.min(minimum[index], point[index]);
+      maximum[index] = Math.max(maximum[index], point[index]);
+    }
+  }
+  target = minimum.map((value, index) => (value + maximum[index]) * 0.5);
+  const span = Math.max(...maximum.map((value, index) => value - minimum[index]));
+  orthoScale = Math.max(0.25, Math.min(30, span * 0.72 + 0.16));
+}
+
+canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('pointerdown', event => {
-  dragging = true; dragX = event.clientX; dragY = event.clientY; canvas.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  dragging = true;
+  dragMode = event.shiftKey || event.button === 1 || event.button === 2 ? 'pan' : 'orbit';
+  dragX = event.clientX;
+  dragY = event.clientY;
+  canvas.setPointerCapture(event.pointerId);
 });
 canvas.addEventListener('pointermove', event => {
   if (!dragging) return;
-  orbitYaw -= (event.clientX - dragX) * 0.006;
-  orbitPitch = Math.max(-1.45, Math.min(1.45, orbitPitch + (event.clientY - dragY) * 0.006));
+  const deltaX = event.clientX - dragX;
+  const deltaY = event.clientY - dragY;
+  if (dragMode === 'pan') {
+    const cp = Math.cos(orbitPitch);
+    const viewDirection = [cp * Math.cos(orbitYaw), cp * Math.sin(orbitYaw), Math.sin(orbitPitch)];
+    const viewRight = normalize([-Math.sin(orbitYaw), Math.cos(orbitYaw), 0]);
+    const viewUp = normalize(cross(viewDirection, viewRight));
+    const worldPerPixel = 2 * orthoScale / Math.max(1, canvas.clientHeight);
+    target = target.map(
+      (value, index) => value - deltaX * viewRight[index] * worldPerPixel + deltaY * viewUp[index] * worldPerPixel
+    );
+  } else {
+    orbitYaw -= deltaX * 0.006;
+    orbitPitch = Math.max(-1.45, Math.min(1.45, orbitPitch + deltaY * 0.006));
+  }
   dragX = event.clientX; dragY = event.clientY;
 });
-canvas.addEventListener('pointerup', event => { dragging = false; canvas.releasePointerCapture(event.pointerId); });
+function stopCanvasDrag(event) {
+  dragging = false;
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+}
+canvas.addEventListener('pointerup', stopCanvasDrag);
+canvas.addEventListener('pointercancel', stopCanvasDrag);
 canvas.addEventListener('wheel', event => {
   event.preventDefault();
   orthoScale = Math.max(0.25, Math.min(30, orthoScale * Math.exp(event.deltaY * 0.001)));
@@ -2318,18 +3587,21 @@ resetViewButton.addEventListener('click', () => {
   orthoScale = 3.5;
   target = [0, 0, 1.5];
 });
+fitAxesButton.addEventListener('click', fitVisibleAxes);
 
 refreshStatus();
-if (!dedicatedSpaceCognition) refreshReplayProvenance();
+if (!focusedUtilityPage) refreshReplayProvenance();
 renderCloud();
 refreshCloud();
+refreshSpatialAxes();
 setInterval(refreshStatus, 2500);
-if (!dedicatedSpaceCognition) {
+if (!focusedUtilityPage) {
   setInterval(refreshReplayProvenance, 10000);
   setInterval(refreshAuthorization, 1000);
   refreshAuthorization();
 }
 setInterval(refreshCloud, 300);
+setInterval(refreshSpatialAxes, 1500);
 </script>
 </body>
 </html>

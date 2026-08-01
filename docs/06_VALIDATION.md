@@ -10,7 +10,13 @@ The current checkpoint includes offline tests plus operator-observed physical va
 - A subsequent vertical-lift test rejected unsafe or invalid 20, 19, 15, and 14 cm candidates before actuation. The accepted 13 cm plan produced approximately 12.67 cm measured displacement.
 - Safe-home completed, gravity float was confirmed, and all Midbrain/Test Agent processes and HTTP listeners were shut down.
 
-This does not validate general natural-language Cartesian directions. In this installation, physical vertical mapped primarily to arm-base `+X`. Camera, world, base, controlled-frame, tool, and object axes must be resolved explicitly for each command. See [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+These July 2026 trials predate spatial convention V2. Their reported
+arm-base-axis behavior is legacy installation evidence, not a semantic
+definition. The current software defines world +X front, +Y left, and +Z up
+opposite gravity, then resolves that vector into arm-base coordinates through
+a timestamped transform. The new contract and regression tests do not replace
+physical cross-axis qualification. See
+[Spatial Frame Convention](../contracts/14_spatial_frame_convention_v2.md).
 
 The exact stopped publication regression passed `469/469`: 439 Python tests across all 62 published Python test files plus 30 Rust tests. The wider local tree passed another 109 vegetable-cutting tests, for a local-only total of `578/578`; that prototype is not part of the publication. Python compilation, JSON parsing, PowerShell parsing, clean-configuration checks, Rust formatting, and the Rust release build also passed.
 
@@ -116,7 +122,9 @@ The current validation is not formal localization certification. Still required:
 - POS_VEL one-shot acceptance only within the declared ≤20 cm/no-load envelope
 - resolution of continuous POS_VEL instability before capability publication
 - resolution of arm POS_TOR baseline/force instability before capability publication
-- explicit semantic-direction resolution across camera, world, arm-base, controlled-frame, tool, and object frames
+- physical cross-axis qualification of the implemented semantic-direction
+  resolver across camera, world, arm-base, controlled-frame, tool, and object
+  frames
 - transform age, revision, provenance, and uncertainty enforcement at the consuming Skill's decision boundary
 - fault-injection validation for every authority handover and loss-of-upstream path
 - structured effector-front and task-specific action-point VLM qualification across RGB/depth resolution and alignment mismatches

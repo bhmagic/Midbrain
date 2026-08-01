@@ -49,8 +49,11 @@ from foundation_pose_provider.model_registry import (  # noqa: E402
 )
 
 PROVIDER_ID = "perception.object_pose.foundation_pose"
-PROVIDER_VERSION = "0.3.0"
+PROVIDER_VERSION = "0.4.0"
 DEFAULT_CAMERA_FRAME = "femto_bolt_color_optical_frame"
+CAMERA_OPTICAL_CONVENTION_ID = (
+    "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+)
 ACTIVE_STATES = {"WAITING_FOR_INPUTS", "INITIALIZING", "TRACKING", "DEGRADED"}
 TERMINAL_STATES = {"COMPLETED", "STOPPED", "FAILED", "EXPIRED"}
 
@@ -406,6 +409,19 @@ class FoundationPoseProvider:
             return
         self._configure_calibration(calibration)
         bundle = bundle_observation.get("data") or {}
+        conventions = bundle.get("coordinate_conventions") or {}
+        if (
+            conventions.get("rgb") != CAMERA_OPTICAL_CONVENTION_ID
+            or conventions.get("aligned_depth")
+            != CAMERA_OPTICAL_CONVENTION_ID
+        ):
+            self._mark_waiting(
+                sessions,
+                "RGB-D bundle does not declare the native camera optical "
+                "coordinate convention",
+            )
+            time.sleep(self.args.poll_interval)
+            return
         rgb_reference = bundle.get("rgb")
         depth_reference = bundle.get("depth_aligned_to_rgb")
         if not isinstance(rgb_reference, dict) or not isinstance(depth_reference, dict):
@@ -560,6 +576,12 @@ class FoundationPoseProvider:
     def _configure_calibration(self, observation: dict[str, Any]) -> None:
         data = observation.get("data") or {}
         rgb = data.get("rgb_intrinsic") or {}
+        conventions = data.get("coordinate_conventions") or {}
+        if conventions.get("color") != CAMERA_OPTICAL_CONVENTION_ID:
+            raise RuntimeError(
+                "camera calibration does not declare the native color "
+                "optical coordinate convention"
+            )
         matrix = np.array(
             [
                 [float(rgb.get("fx", 0.0)), 0.0, float(rgb.get("cx", 0.0))],
@@ -763,6 +785,12 @@ class FoundationPoseProvider:
             "source_frame_number": frame_number,
             "source_observed_at_us": observed_at_us,
             "parent_frame": session.parent_frame,
+            "parent_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+            "parent_axis_names": [
+                "camera_system_x",
+                "camera_system_y",
+                "camera_system_z",
+            ],
             "child_frame": session.child_frame,
             "mode": mode,
             "tracking_state": session.state,
@@ -797,6 +825,12 @@ class FoundationPoseProvider:
                 data={
                     "parent_frame": session.parent_frame,
                     "child_frame": session.child_frame,
+                    "parent_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
+                    "parent_axis_names": [
+                        "camera_system_x",
+                        "camera_system_y",
+                        "camera_system_z",
+                    ],
                     "translation_m": transform["translation_m"],
                     "rotation_xyzw": transform["quaternion_xyzw"],
                     "is_static": False,
@@ -868,6 +902,10 @@ class FoundationPoseProvider:
         data: Any,
         freshness_ms: Optional[int],
     ) -> dict[str, Any]:
+        coordinate_is_optical = (
+            coordinate_frame == self.camera_frame
+            or coordinate_frame == DEFAULT_CAMERA_FRAME
+        )
         return {
             "schema": schema,
             "schema_version": 1,
@@ -879,6 +917,20 @@ class FoundationPoseProvider:
             "observed_at_us": max(0, int(observed_at_us)),
             "freshness_ms": freshness_ms,
             "coordinate_frame": coordinate_frame,
+            "coordinate_convention_id": (
+                CAMERA_OPTICAL_CONVENTION_ID
+                if coordinate_is_optical
+                else None
+            ),
+            "coordinate_axis_names": (
+                {
+                    "x": "camera_system_x",
+                    "y": "camera_system_y",
+                    "z": "camera_system_z",
+                }
+                if coordinate_is_optical
+                else None
+            ),
             "calibration_revision": self.camera_calibration_revision,
             "clock_domain": "camera_system_timestamp_preferred",
             "valid": True,

@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -89,6 +90,78 @@ class AlignedDepthValidityTests(unittest.TestCase):
         self.assertEqual(result["validity_status"], "NO_VALID_DEPTH")
         self.assertNotIn("valid_boundary", result)
         self.assertEqual(result["valid_fraction"], 0.0)
+
+
+class CalibrationPublicationTests(unittest.TestCase):
+    def _provider(self):
+        provider_path = Path(__file__).resolve().parents[2] / "provider.py"
+        spec = importlib.util.spec_from_file_location(
+            "orbbec_femto_bolt_provider_calibration_test",
+            provider_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load Orbbec Provider from {provider_path}")
+        provider_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(provider_module)
+
+        provider = object.__new__(provider_module.FemtoBoltProvider)
+        provider.args = SimpleNamespace(fabric_url="http://fabric.test")
+        provider.http = Mock()
+        provider.last_calibration = None
+        provider.last_calibration_publish_monotonic = None
+        return provider, provider_module
+
+    def test_calibration_is_periodically_republished(self) -> None:
+        provider, provider_module = self._provider()
+        provider.last_calibration = "calibration-a"
+        provider.last_calibration_publish_monotonic = 10.0
+
+        self.assertFalse(
+            provider._calibration_publish_due(
+                "calibration-a",
+                now_monotonic=10.5,
+            )
+        )
+        self.assertTrue(
+            provider._calibration_publish_due(
+                "calibration-a",
+                now_monotonic=(
+                    10.0 + provider_module.CALIBRATION_REPUBLISH_INTERVAL_S
+                ),
+            )
+        )
+        self.assertTrue(
+            provider._calibration_publish_due(
+                "calibration-b",
+                now_monotonic=10.5,
+            )
+        )
+
+    def test_failed_fabric_batch_does_not_mark_calibration_published(self) -> None:
+        provider, _ = self._provider()
+        provider.http.post.return_value.raise_for_status.side_effect = RuntimeError(
+            "Fabric unavailable"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Fabric unavailable"):
+            provider._publish_observation_batch(
+                [{"stream": "camera.calibration"}],
+                calibration_publication=("calibration-a", 12.0),
+            )
+
+        self.assertIsNone(provider.last_calibration)
+        self.assertIsNone(provider.last_calibration_publish_monotonic)
+
+    def test_successful_fabric_batch_commits_calibration_publication(self) -> None:
+        provider, _ = self._provider()
+
+        provider._publish_observation_batch(
+            [{"stream": "camera.calibration"}],
+            calibration_publication=("calibration-a", 12.0),
+        )
+
+        self.assertEqual(provider.last_calibration, "calibration-a")
+        self.assertEqual(provider.last_calibration_publish_monotonic, 12.0)
 
 
 if __name__ == "__main__":

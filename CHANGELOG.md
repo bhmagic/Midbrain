@@ -2,9 +2,72 @@
 
 ## Unreleased — Canonical monorepo Git workflow
 
+- Allow a newly reviewed stationary workcell calibration to atomically
+  supersede the current active calibration instead of requiring expiry or a
+  separate revocation. Base-yaw ambiguity now uses the VLM gripper mask plus
+  aligned depth to choose the exact 0/180-degree root-Z correction in 3D;
+  perspective RGB-arrow review remains a warning fallback only.
+- Bound Agent model sessions to the current Test Agent process boot while
+  retaining prior SQLite records for audit. A Midbrain restart can no longer
+  replay an expired stationary-calibration activation from hidden model
+  history; expired and superseded candidates require a fresh calibration
+  before Manager is called.
+- Made Orbbec camera calibration publication resilient to a restarted World
+  State Fabric: the Provider republishes the small static calibration and
+  camera transforms every two seconds and only updates its publication cache
+  after Fabric acknowledges the observation batch. Reviewed calibration
+  activation now verifies exact camera and VIO identity, epoch, convention,
+  tracking, readiness, and calibration revision from their recurring Manager
+  heartbeats instead of depending on second one-shot Fabric lookups.
+- Added spatial convention V2: world/robot +X front, +Y left, and +Z up
+  opposite gravity, with legacy Y-up epochs and alignments rejected.
+- Changed Local VIO initialization and inertial propagation to Z-up, preserved
+  native optical geometry behind explicit `camera_system_x/y/z` names, and
+  added a gravity-leveled camera heading frame.
+- Added deterministic semantic-direction resolution through timestamped
+  world-to-arm transforms or an explicit preview-scoped upright-arm
+  confirmation. The arm-mount fallback is independent of VIO.
+- Added a separate fixed-rig confirmation, non-resetting VIO readiness check,
+  and persisted gravity-aligned before/after effector images. Controller
+  completion and visual displacement confirmation are reported independently.
+- Replaced global motion inhibit in the fixed-rig check with a bounded
+  VIO-local stationary attestation, preventing visual readiness checks from
+  fencing Integrated's Basic lease. Added explicit approved `HOT` recovery for
+  an Integrated controller already in `RECOVERY_REQUIRED`.
+- Made fixed-rig visual depth verification best-effort when an upright-mount
+  confirmation already defines the requested direction. Missing exact
+  effector depth no longer vetoes IK preview creation.
+- Added Agent-facing `POSE_6DOF` translation that preserves the measured
+  controlled-frame orientation when requested.
+- Exposed the maintained stationary VIO-world-to-arm-base calibration Skill on
+  the regular Agent and made post-calibration/post-safe-home Integrated HOT
+  recovery explicit.
+- Retained rejection of missing, stale, degraded, or
+  convention-mismatched evidence outside the explicit arm-mount fallback.
+- Simplified stationary base validation to a host-calculated 25-percent
+  projected-box size comparison with at most two FoundationPose attempts and a
+  categorical VLM front/back decision. Base yaw can change only by an exact
+  180-degree rotation about the semantic arm-root +Z axis; base-up and missing
+  world-up conditions are warnings rather than transform mutations or vetoes.
+- Made the validated stationary-camera pose authoritative for world-to-base
+  registration, with live VIO retained only as drift evidence. Removed the
+  post-fit support-plane, depth-shift, mount, lever-arm, residual, and VLM
+  confidence/orientation gates; if both size attempts miss, the closer result
+  is returned with an explicit warning.
+- Anchored the developer RGB-D point cloud to that same reviewed stationary
+  camera transform while active, preventing live VIO drift from visually
+  moving a fixed base relative to its cloud.
+- Added the `/dev/spatial-axes` frame inspector and converted world
+  point-cloud visualization to Z-up.
+- Archived the legacy vegetable-cutting prototype outside active Skills,
+  setup, discovery, build, and validation.
 - Made workspace startup observation-first: the default now launches only
   Manager and Fabric, opens Midbrain, and ignores Provider
   auto-start entries unless explicitly enabled.
+- Wired local signing-secret bootstrap into both setup and bounded startup,
+  and made bounded startup reject a Manager that did not receive the reviewed
+  workcell activation secret. Agent activation errors now preserve Manager's
+  exact secret/camera/VIO diagnostic instead of collapsing to a generic 503.
 - Added root-level Windows double-click entrypoints for starting Manager,
   Fabric, and the idle Agent UI service without Providers, and for stopping the
   recorded workspace processes.
@@ -21,6 +84,20 @@
 - Raised the configurable Agent SDK turn ceiling from seven to sixteen so a
   bounded inspect, two-Provider activation, preview, and approval workflow can
   reach its final response.
+- Added browser-session auto-authorization for exact stationary world-to-arm
+  calibration and required necessary Provider/calibration operations to enter
+  their real tool approval boundaries instead of ending with conversational
+  permission requests.
+- Evaluated bounded browser-session authorization in dynamic tool approval
+  predicates before invocation, eliminating the approval interruption and
+  resume request for eligible Provider activation, exact relative motion, and
+  stationary calibration calls.
+- Prevented explicit signed world axes from falling back to arm-base mount
+  assumptions, and added a labeled world XYZ origin triad plus active VIO frame
+  identity to the point-cloud view while retaining gravity/down.
+- Made bounded Agent session replay expand to a complete user-turn boundary,
+  preventing raw item limits from separating a Responses reasoning item from
+  its required function call.
 - Changed the regular Agent tool-choice default to `auto`, rotated the GUI Agent
   session keys, and converted an unreachable Integrated Controller preview into
   a structured Basic-then-Integrated recovery route instead of a repeated raw

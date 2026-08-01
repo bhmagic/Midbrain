@@ -1,6 +1,6 @@
 {
   "provider_type": "camera.femto_bolt",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera Provider",
   "manager_ids": ["camera.femto_bolt"],
   "ui": {
@@ -166,5 +166,16 @@
       "femto_bolt_color_optical_frame<-femto_bolt_depth_optical_frame",
       "femto_bolt_color_optical_frame<-femto_bolt_imu_frame when available"
     ]
+  },
+  "spatial_frame_contract": {
+    "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+    "coordinate_axis_names": {
+      "x": "camera_system_x",
+      "y": "camera_system_y",
+      "z": "camera_system_z"
+    },
+    "world_semantics_owned_by_provider": false,
+    "hardware_accelerometer_calibration_unchanged": true,
+    "contract": "contracts/14_spatial_frame_convention_v2.md"
   }
 }

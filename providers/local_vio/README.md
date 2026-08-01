@@ -1,4 +1,4 @@
-# Local VIO Resource Provider v0.2.2
+# Local VIO Resource Provider v0.3.0
 
 The default backend is an inertial-first RGB-D visual-inertial estimator. Every ordered accelerometer and gyroscope sample propagates a 15-state error-state filter containing orientation, position, velocity, gyroscope bias, accelerometer bias, and covariance. Camera observations are correction measurements rather than the primary motion clock.
 
@@ -27,6 +27,18 @@ The established quiet-IMU gravity behavior is retained:
 - Tracking correction is small and bounded; degraded recovery is stronger but remains bounded.
 - Gravity status is independently reported as `OFF`, `READY`, or `ACTIVE`.
 
+The world basis is
+`MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`: positive X is initial leveled
+camera/body forward, positive Y is left, positive Z is opposite gravity, and
+the world gravity vector is `[0, 0, -9.80665]` m/s2. Raw optical sensing
+remains X image-right, Y image-down, Z optical-forward. The Provider publishes
+a derived gravity-leveled camera frame without changing the optical axes.
+Calibration and RGB-D inputs without the explicit native optical convention
+identifier are rejected rather than interpreted as anonymous XYZ data.
+
+This change does not modify accelerometer bias, scale, hardware axis metadata,
+device identity, calibration revision, or camera/IMU extrinsics.
+
 ## Visual correction sources
 
 ### RGB-D
@@ -50,6 +62,7 @@ If native depth and IR resolutions differ, depth is resized with nearest-neighbo
 - `localization.body.pose`
 - `localization.vio.bias`
 - `transform.local_vio.body`
+- `transform.local_vio.camera_level`
 
 ## Important limitations
 
@@ -63,6 +76,12 @@ If native depth and IR resolutions differ, depth is resized with nearest-neighbo
 ### v0.2.2 sample-rate-independent startup
 
 Startup no longer assumes that 80 IMU samples fit inside 1.5 seconds. The initializer selects the newest 80 accelerometer and 80 gyroscope samples before the common IMU timestamp and accepts them when their span is no more than five seconds. This supports the Femto Bolt at 50 Hz, where 80 samples require about 1.58 seconds. Status includes the selected window counts and inferred sample rates.
+
+Stationary initialization can use either the global motion-inhibit gate or a
+short-lived `attest_fixed_rig_stationary` Provider request. The latter is
+accepted only after explicit operator confirmation that the camera and IMU are
+rigidly fixed and stationary. It is bounded to 120 seconds, does not reset the
+VIO epoch, and does not revoke or interfere with an arm-controller lease.
 
 ### v0.2.1 startup timestamp fix
 

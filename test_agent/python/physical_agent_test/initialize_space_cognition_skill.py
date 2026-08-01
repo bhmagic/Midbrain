@@ -8,6 +8,7 @@ from typing import Any
 
 from .fabric_client import FabricClient
 from .manager_client import ManagerClient
+from .spatial_frames import WORLD_CONVENTION_ID
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,151 @@ class InitializeSpaceCognitionSkill:
         self.vio_provider_id = vio_provider_id
         self.timeout_s = timeout_s
         self._lock = asyncio.Lock()
+
+    async def verify_tracking(
+        self,
+        *,
+        fixed_rig_confirmed: bool,
+    ) -> dict[str, Any]:
+        """Verify or recover tracking without resetting the VIO epoch."""
+
+        if fixed_rig_confirmed is not True:
+            raise ValueError(
+                "fixed VIO rig confirmation is required before tracking check"
+            )
+        async with self._lock:
+            skill_id = str(uuid.uuid4())
+            selected = {
+                "head_camera": self.camera_provider_id,
+                "head_depth": self.camera_provider_id,
+                "head_imu": self.camera_provider_id,
+                "local_vio": self.vio_provider_id,
+            }
+            started_at_us = int(time.time() * 1_000_000)
+            await self._publish_status(
+                skill_id,
+                "RUNNING",
+                "verify_fixed_vio_rig",
+                selected,
+                started_at_us=started_at_us,
+                details={
+                    "operation": "VERIFY_EXISTING_EPOCH",
+                    "fixed_rig_confirmed": True,
+                    "epoch_reset_allowed": False,
+                    "global_motion_inhibit_allowed": False,
+                },
+            )
+            try:
+                await self.manager.set_hot(self.camera_provider_id)
+                await self._wait_for_streams(
+                    [
+                        "camera.rgb.frame_ref",
+                        "camera.depth_aligned_to_rgb.frame_ref",
+                        "camera.imu.accel",
+                        "camera.imu.gyro",
+                        "camera.calibration",
+                        "camera.device_info",
+                    ]
+                )
+                await self.manager.set_hot(self.vio_provider_id)
+                current = await self.fabric.latest_optional(
+                    "localization.vio.status"
+                )
+                current_data = (current or {}).get("data") or {}
+                attestation_result: dict[str, Any] | None = None
+                if not (
+                    current_data.get("tracking_state") == "TRACKING"
+                    and current_data.get("convention_id")
+                    == WORLD_CONVENTION_ID
+                    and current_data.get("session_epoch")
+                    and current_data.get("world_frame")
+                ):
+                    attestation_result = await self.manager.provider_request(
+                        self.vio_provider_id,
+                        action="attest_fixed_rig_stationary",
+                        payload={
+                            "fixed_rig_confirmed": True,
+                            "duration_s": min(
+                                120.0,
+                                max(5.0, self.timeout_s + 5.0),
+                            ),
+                        },
+                        request_id=str(uuid.uuid4()),
+                        related_skill_id=skill_id,
+                    )
+                vio_status = await self._wait_for_vio_tracking(
+                    expected_epoch=None
+                )
+                if (
+                    vio_status.get("convention_id")
+                    != WORLD_CONVENTION_ID
+                ):
+                    raise RuntimeError(
+                        "VIO reached TRACKING with a legacy or unknown "
+                        "coordinate convention"
+                    )
+                session_epoch = str(
+                    vio_status.get("session_epoch") or ""
+                )
+                world_frame = str(vio_status.get("world_frame") or "")
+                if not session_epoch or not world_frame:
+                    raise RuntimeError(
+                        "VIO reached TRACKING without complete epoch identity"
+                    )
+                result = {
+                    "skill_id": skill_id,
+                    "operation": "VERIFY_EXISTING_EPOCH",
+                    "session_epoch": session_epoch,
+                    "world_frame": world_frame,
+                    "tracking_state": "TRACKING",
+                    "convention_id": WORLD_CONVENTION_ID,
+                    "epoch_reset_performed": False,
+                    "workcell_calibrations_revoked": False,
+                    "selected_providers": selected,
+                    "global_motion_inhibit_acquired": False,
+                    "stationary_gate": (
+                        "EXISTING_TRACKING_EPOCH"
+                        if attestation_result is None
+                        else "FIXED_RIG_OPERATOR_ATTESTATION"
+                    ),
+                    "vio_attestation_result": attestation_result,
+                    "fixed_rig_attestation": {
+                        "confirmed": True,
+                        "statement": (
+                            "camera and IMU are rigidly fixed together and "
+                            "the rig remained stationary during verification"
+                        ),
+                    },
+                }
+                await self._publish_status(
+                    skill_id,
+                    "SUCCEEDED",
+                    "verify_fixed_vio_rig",
+                    selected,
+                    started_at_us=started_at_us,
+                    details=result,
+                    result=result,
+                )
+                return {
+                    "status": "tracking_ready",
+                    "result": result,
+                }
+            except Exception as error:
+                await self._publish_status(
+                    skill_id,
+                    "FAILED",
+                    "verify_fixed_vio_rig",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={
+                        "operation": "VERIFY_EXISTING_EPOCH",
+                        "fixed_rig_confirmed": True,
+                        "epoch_reset_performed": False,
+                        "global_motion_inhibit_acquired": False,
+                        "error": str(error),
+                    },
+                )
+                raise
 
     async def run(self, *, force_reset: bool = False) -> dict[str, Any]:
         async with self._lock:

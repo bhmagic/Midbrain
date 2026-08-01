@@ -1,6 +1,13 @@
 # FoundationPose Compatibility Provider
 
-Version: **0.3.0**
+Version: **0.4.0**
+
+FoundationPose consumes and publishes camera-relative transforms only when the
+camera inputs explicitly identify
+`CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1`. Native point components use the
+`camera_system_x/y/z` vocabulary. These measurements are not world-frame
+authority; stationary alignment owns reviewed conversion into convention-V2
+world coordinates.
 
 This is the compatibility Provider for the finite
 `foundation_pose_object_localization` Skill. Existing Provider capabilities,

@@ -30,6 +30,13 @@ def build_agent_tools(
     eligible_tool_names: set[str],
     defer_loading: bool = False,
     adapter_timeout_s: float = 60.0,
+    adapter_timeout_overrides_s: dict[str, float] | None = None,
+    approval_overrides: dict[
+        str,
+        bool
+        | Callable[[Any, dict[str, Any], str], Awaitable[bool]],
+    ]
+    | None = None,
 ) -> list[FunctionTool]:
     """Build only explicitly eligible tools after adapter registration checks."""
 
@@ -39,6 +46,28 @@ def build_agent_tools(
         raise ValueError(
             "eligible tools are missing discoverable manifests: "
             + ", ".join(missing_descriptors)
+        )
+
+    timeout_overrides = dict(adapter_timeout_overrides_s or {})
+    approval_overrides = dict(approval_overrides or {})
+    invalid_timeout_tools = sorted(
+        tool_name
+        for tool_name, timeout_s in timeout_overrides.items()
+        if tool_name not in eligible_tool_names or float(timeout_s) <= 0.0
+    )
+    if invalid_timeout_tools:
+        raise ValueError(
+            "adapter timeout overrides must be positive and target eligible "
+            "tools: "
+            + ", ".join(invalid_timeout_tools)
+        )
+    invalid_approval_tools = sorted(
+        set(approval_overrides) - eligible_tool_names
+    )
+    if invalid_approval_tools:
+        raise ValueError(
+            "approval overrides must target eligible tools: "
+            + ", ".join(invalid_approval_tools)
         )
 
     tools: list[FunctionTool] = []
@@ -71,8 +100,16 @@ def build_agent_tools(
                 params_json_schema=descriptor.input_schema,
                 on_invoke_tool=invoke_tool,
                 strict_json_schema=True,
-                needs_approval=descriptor.invocation_requires_approval,
-                timeout_seconds=float(adapter_timeout_s),
+                needs_approval=approval_overrides.get(
+                    descriptor.tool_name,
+                    descriptor.invocation_requires_approval,
+                ),
+                timeout_seconds=float(
+                    timeout_overrides.get(
+                        descriptor.tool_name,
+                        adapter_timeout_s,
+                    )
+                ),
                 timeout_behavior="raise_exception",
                 defer_loading=bool(defer_loading),
             )

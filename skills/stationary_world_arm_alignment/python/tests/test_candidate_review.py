@@ -59,7 +59,7 @@ def candidate_result(*, expires_at_us: int = NOW_US + 60_000_000) -> dict:
             "midbrain.skill.stationary_world_arm_alignment."
             "calibration_candidate"
         ),
-        "schema_version": 2,
+        "schema_version": 3,
         "candidate_id": "alignment-1",
         "workcell_calibration_revision": "alignment-1",
         "created_at_us": NOW_US - 1_000_000,
@@ -67,12 +67,17 @@ def candidate_result(*, expires_at_us: int = NOW_US + 60_000_000) -> dict:
         "review_state": "CANDIDATE_REVIEW_REQUIRED",
         "review_mode": "ENFORCED",
         "motion_usable": False,
-        "method": {"skill_version": "0.7.0"},
+        "method": {"skill_version": "0.8.1"},
         "frame_contract": {
             "world_frame": "world/stationary_camera/alignment-1",
             "vio_world_frame": "local_vio/epoch-1",
             "camera_frame": "femto_bolt_color_optical_frame",
             "arm_base_frame": "rebot_arm_base",
+            "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+            "camera_optical_convention_id": (
+                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+            ),
+            "legacy_candidate_compatibility": "REJECT",
             "transform_semantics": "PARENT_FROM_CHILD",
         },
         "confidence": 0.9,
@@ -87,8 +92,12 @@ def candidate_result(*, expires_at_us: int = NOW_US + 60_000_000) -> dict:
             "source_buffer_refs": {},
         },
         "vio_provenance": {
+            "provider_id": "localization.local_vio",
+            "provider_instance_id": "vio-instance",
+            "boot_id": "vio-boot",
             "world_frame": "local_vio/epoch-1",
             "session_epoch": "epoch-1",
+            "reference_timestamp_us": NOW_US - 100_000,
         },
         "transforms": {
             "world_from_camera": {

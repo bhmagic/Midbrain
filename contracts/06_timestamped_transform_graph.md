@@ -58,7 +58,15 @@ A single authority owns a directed edge within one session epoch unless an expli
 - `femto_bolt_color_optical_frame`
 - `femto_bolt_depth_optical_frame`
 - `femto_bolt_imu_frame`
+- `camera_level/femto_bolt_color/<session-epoch>`
 - `body_base`
 - `local_vio/<session-epoch>`
 
 The current rigid head/body prototype publishes an identity body-to-IMU mounting edge. A future neck/kinematics Provider replaces that assumption with timestamped body-to-head transforms.
+
+Every frame has an explicit convention. Camera optical frames use
+`CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1`. Leveled camera, VIO, workcell,
+robot body, and semantic world frames use
+`MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. A transform may connect different
+conventions; a point or vector may not be relabeled from one convention to
+another without applying that transform.

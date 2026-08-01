@@ -39,6 +39,14 @@ task posture.
 
 IK can be `POSITION_3DOF` or `POSE_6DOF`. The controlled frame can be offset from the tool frame, so upstream targets may represent a tool tip or other acting point. Cartesian targets are poses of that controlled frame; upstream callers must not pre-apply the configured tool-to-controlled offset. The GUI displays measured and staged frame axes plus separate position/orientation residuals.
 
+At calibrated safe-home the default controlled frame is approximately aligned
+with the arm base: controlled +X is arm-base/front and controlled +Z is
+arm-base/up. Preserving that orientation during a full 20 cm +Z translation
+requires approximately 0.81805 rad of joint-3 travel in the factory model.
+The single-commit joint-3 endpoint guard is therefore 0.85 rad; the other
+endpoint limits and all aggregate-travel, residual, singularity, workspace,
+collision, authority, and physical-authorization gates remain unchanged.
+
 Preview, fresh physical commit, and HOLD_LB replan reject position residuals
 above the configured tolerance. `POSE_6DOF` also rejects excessive orientation
 residual. Completion telemetry distinguishes a fixed deadline that floated

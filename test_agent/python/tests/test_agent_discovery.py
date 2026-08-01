@@ -126,6 +126,19 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "robot_arm.primary.integrated",
             ],
         )
+        self.assertNotIn(
+            "localization.vio.local_pose",
+            relative_motion.required_capabilities,
+        )
+        self.assertIn(
+            "localization.vio.local_pose",
+            relative_motion.optional_capabilities,
+        )
+        self.assertFalse(
+            relative_motion.route_policy[
+                "missing_visual_depth_may_veto_ik_preview"
+            ]
+        )
         self.assertEqual(
             descriptors[1].required_capabilities[0],
             "camera.rgb",
@@ -153,17 +166,13 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    def test_catalog_keeps_disabled_local_skill_visible_for_debugging(self) -> None:
+    def test_catalog_excludes_archived_vegetable_cutting_skill(self) -> None:
         workspace = Path(__file__).resolve().parents[3]
 
         descriptors = discover_agent_skills(workspace, include_disabled=True)
         by_name = {descriptor.tool_name: descriptor for descriptor in descriptors}
 
-        cutting = by_name.get("vegetable_cutting_legacy_local")
-        if cutting is not None:
-            self.assertFalse(cutting.discoverable)
-            self.assertEqual(cutting.safety_class, "MANUAL_ONLY")
-            self.assertTrue(cutting.disabled_reason)
+        self.assertNotIn("vegetable_cutting_legacy_local", by_name)
         observation = by_name["observe_pointed_object_from_pose"]
         self.assertFalse(observation.discoverable)
         self.assertIn("structured pointing-pixel", observation.disabled_reason)

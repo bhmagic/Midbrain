@@ -1,4 +1,4 @@
-# Safety — MIT bring-up 0.8.0
+# Safety — MIT bring-up 0.8.1
 
 - Arm motion requires GUI Engage and Xbox LB. A new gripper endpoint requires GUI Engage and RB/RT; releasing RB/RT latches the endpoint.
 - Agentic transit never uses the GUI/Xbox gate. It requires a separate exact

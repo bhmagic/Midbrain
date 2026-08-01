@@ -142,7 +142,7 @@ conformance-tested.
 
 ### Enforced stationary-workcell calibration
 
-`POST /v1/workcell-calibrations/activate` accepts the immutable version-2
+`POST /v1/workcell-calibrations/activate` accepts the immutable version-3
 stationary-alignment candidate, its exact append-only approval record, a
 signed reviewer-identity assertion, `request_id`, `activated_by`, and a
 bounded `duration_ms` from 1000 through 300000. Manager requires
@@ -153,15 +153,22 @@ bounded `duration_ms` from 1000 through 300000. Manager requires
 - current camera provider/instance/boot/calibration identity and health;
 - current tracking VIO epoch/frame and observation freshness;
 - parent-from-child world/VIO/arm-base frame semantics;
-- confidence of at least 0.70, translation error no greater than 0.01 m, and
-  rotation error no greater than 0.05 rad; and
+- the exact single centered-mesh base-orientation proof: current world up,
+  matching identity/X-180/Y-180/Z-180 choice, correction count zero or one,
+  zero mesh-correction translation, and preserved CAD mesh center;
+- a serialized `world_from_base` quaternion whose +Z is upward and matches the
+  reviewed corrected up dot product; and
 - candidate and requested activation lifetimes.
 
-Only one unexpired activation may be `ACTIVE`. Reusing a `request_id` is
-idempotent only for byte-equivalent canonical content. A successful activation
-publishes the motion-usable static transforms and an activation record to
-Fabric. `GET /v1/workcell-calibrations` marks elapsed records expired before
-returning them.
+Projected-size, confidence, bounded-error, support-plane, and residual-tilt
+values remain review evidence but are not independent Manager geometry gates.
+
+Only one activation remains `ACTIVE`. A successful newer activation publishes
+its motion-usable static transforms and then marks the prior active record
+`SUPERSEDED` and non-motion-usable without publishing a transient empty
+calibration. Reusing a `request_id` is idempotent only for byte-equivalent
+canonical content. `GET /v1/workcell-calibrations` marks elapsed records
+expired before returning them.
 
 `POST /v1/workcell-calibrations/{activation_id}/revoke` requires
 `request_id`, `revoked_by`, and `reason`. It publishes a newer authoritative

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +27,11 @@ from .gemini_pointing_skill import (
     PointingIdentificationSkill,
     VisualSceneAnalysisSkill,
 )
-from .integrated_motion_adapter import IntegratedRelativeMotionAdapter
+from .integrated_motion_adapter import (
+    MAX_CONTROLLED_FRAME_YAW_DELTA_DEG,
+    MAX_RELATIVE_NOMINAL_SPEED_M_S,
+    IntegratedRelativeMotionAdapter,
+)
 from .manager_client import ManagerClient
 from .phase4_policy import (
     await_with_progress_heartbeat,
@@ -51,6 +57,254 @@ class InteractiveAgentResult:
     answer: str | None
     state: RunState[Any] | None
     approvals: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class AgentSessionAuthorization:
+    auto_authorize_provider_activation: bool = False
+    auto_authorize_relative_motion: bool = False
+    max_auto_move_cm: float = 5.0
+    max_auto_speed_m_s: float = MAX_RELATIVE_NOMINAL_SPEED_M_S
+    auto_authorize_stationary_calibration: bool = False
+    auto_authorize_stationary_activation: bool = False
+
+
+def _session_authorization(context_wrapper: Any) -> AgentSessionAuthorization:
+    authorization = getattr(context_wrapper, "context", None)
+    if isinstance(authorization, AgentSessionAuthorization):
+        return authorization
+    return AgentSessionAuthorization()
+
+
+def _runner_context(
+    input_value: str | RunState[Any],
+    authorization: AgentSessionAuthorization | None,
+) -> AgentSessionAuthorization | None:
+    """Keep the SDK-owned context when resuming an interrupted run."""
+
+    if isinstance(input_value, RunState):
+        return None
+    return authorization or AgentSessionAuthorization()
+
+
+async def provider_activation_needs_approval(
+    context_wrapper: Any,
+    arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    action = str(arguments.get("action") or "").strip().lower()
+    return not (
+        authorization.auto_authorize_provider_activation
+        and action in {"start", "hot", "warm"}
+    )
+
+
+async def relative_motion_needs_approval(
+    context_wrapper: Any,
+    arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    return not (
+        authorization.auto_authorize_relative_motion
+        and relative_motion_within_authorization(
+            arguments,
+            max_auto_move_cm=authorization.max_auto_move_cm,
+            max_auto_speed_m_s=authorization.max_auto_speed_m_s,
+        )
+    )
+
+
+def relative_motion_within_authorization(
+    arguments: dict[str, Any],
+    *,
+    max_auto_move_cm: float,
+    max_auto_speed_m_s: float,
+) -> bool:
+    """Validate one exact translation, rotation, or combined pose preview."""
+
+    try:
+        maximum_cm = float(max_auto_move_cm)
+        maximum_speed = float(max_auto_speed_m_s)
+        distance_m = float(arguments.get("distance_m"))
+        planned_speed_m_s = float(
+            arguments.get("planned_nominal_speed_m_s")
+        )
+    except (TypeError, ValueError):
+        return False
+    if (
+        not math.isfinite(maximum_cm)
+        or maximum_cm <= 0.0
+        or not math.isfinite(maximum_speed)
+        or maximum_speed <= 0.0
+        or not math.isfinite(distance_m)
+        or distance_m < 0.0
+        or distance_m * 100.0 > maximum_cm + 1e-9
+        or not math.isfinite(planned_speed_m_s)
+        or planned_speed_m_s < 0.0
+    ):
+        return False
+
+    raw_yaw_delta = arguments.get("controlled_frame_yaw_delta_deg")
+    if raw_yaw_delta is None:
+        yaw_delta_deg = None
+    else:
+        try:
+            yaw_delta_deg = float(raw_yaw_delta)
+        except (TypeError, ValueError):
+            return False
+        if (
+            not math.isfinite(yaw_delta_deg)
+            or abs(yaw_delta_deg) < 1e-9
+            or abs(yaw_delta_deg)
+            > MAX_CONTROLLED_FRAME_YAW_DELTA_DEG + 1e-9
+        ):
+            return False
+
+    motion_intent = str(
+        arguments.get("motion_intent") or ""
+    ).strip().upper()
+    direction = str(arguments.get("direction") or "").strip().upper()
+    orientation_policy = str(
+        arguments.get("orientation_policy") or ""
+    ).strip().upper()
+    has_translation = distance_m > 1e-9
+    has_rotation = yaw_delta_deg is not None
+
+    if has_translation:
+        if (
+            direction == "NONE"
+            or planned_speed_m_s <= 0.0
+            or planned_speed_m_s > maximum_speed + 1e-9
+        ):
+            return False
+    elif (
+        direction != "NONE"
+        or planned_speed_m_s > 1e-9
+        or arguments.get("requested_speed_m_s") is not None
+    ):
+        return False
+
+    if motion_intent == "NEW_RELATIVE_MOVE":
+        return (
+            has_translation
+            and not has_rotation
+            and orientation_policy
+            in {
+                "POSITION_ONLY",
+                "PRESERVE_MEASURED_CONTROLLED_FRAME",
+            }
+        )
+    if motion_intent == "NEW_RELATIVE_POSE_MOVE":
+        return (
+            has_translation
+            and has_rotation
+            and orientation_policy
+            == "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+        )
+    if motion_intent == "NEW_RELATIVE_ROTATION":
+        return (
+            not has_translation
+            and has_rotation
+            and orientation_policy
+            == "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+        )
+    return False
+
+
+async def stationary_calibration_needs_approval(
+    context_wrapper: Any,
+    _arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    return not authorization.auto_authorize_stationary_calibration
+
+
+async def stationary_activation_needs_approval(
+    context_wrapper: Any,
+    _arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    return not authorization.auto_authorize_stationary_activation
+
+
+def build_turn_safe_session_input(
+    history: list[Any],
+    new_input: list[Any],
+    *,
+    limit: int,
+) -> list[Any]:
+    """Keep recent history without splitting a model/tool reasoning turn."""
+
+    bounded_limit = max(1, int(limit))
+    if len(history) <= bounded_limit:
+        return [*history, *new_input]
+
+    initial_index = len(history) - bounded_limit
+    turn_start_index = 0
+    for index in range(initial_index, -1, -1):
+        item = history[index]
+        if isinstance(item, dict) and item.get("role") == "user":
+            turn_start_index = index
+            break
+    return [*history[turn_start_index:], *new_input]
+
+
+def build_midbrain_runtime_snapshot(
+    providers: list[dict[str, Any]],
+    capabilities: list[dict[str, Any]],
+    *,
+    eligible_skill_tools: list[str],
+) -> dict[str, Any]:
+    """Preserve complete current Manager evidence and redact credentials."""
+
+    compact_providers: list[dict[str, Any]] = []
+    for provider in providers:
+        config = provider.get("config")
+        config = config if isinstance(config, dict) else {}
+        environment = config.get("env")
+        environment = environment if isinstance(environment, dict) else {}
+        safe_environment = {
+            key: (
+                "[REDACTED]"
+                if any(
+                    marker in str(key).strip().upper()
+                    for marker in (
+                        "API_KEY",
+                        "TOKEN",
+                        "SECRET",
+                        "PASSWORD",
+                        "PASSWD",
+                        "CREDENTIAL",
+                        "COOKIE",
+                        "PRIVATE_KEY",
+                    )
+                )
+                else value
+            )
+            for key, value in environment.items()
+        }
+        safe_config = {**config, "env": safe_environment}
+        compact_providers.append(
+            {
+                **provider,
+                "config": safe_config,
+            }
+        )
+    return {
+        "schema": "midbrain.agent_runtime_summary.v1",
+        "providers": compact_providers,
+        "capabilities": capabilities,
+        "eligible_skill_tools": sorted(set(eligible_skill_tools)),
+        "omitted": (
+            "Only duplicate Skill schemas are omitted. Credential-like "
+            "environment values are retained by name but replaced with "
+            "[REDACTED]; other environment values remain present."
+        ),
+    }
 
 
 class PrototypeAgentDriver:
@@ -84,7 +338,9 @@ class PrototypeAgentDriver:
         session: Any | None = None,
         defer_loading: bool = False,
         adapter_timeout_s: float = 60.0,
+        stationary_calibration_timeout_s: float = 600.0,
         max_turns: int = 16,
+        session_history_item_limit: int | None = None,
     ):
         self.skill = skill
         self.max_turns = int(max_turns)
@@ -197,6 +453,7 @@ class PrototypeAgentDriver:
             adapters[
                 "skill.stationary_world_arm_alignment.cli.v1"
             ] = BoundMethodSkillAdapter(stationary_calibration_adapter)
+            eligible.add("calibrate_stationary_workcell")
         if reviewed_observation_execution_skill is not None:
             async def reviewed_observation_execution_adapter(
                 arguments: dict[str, Any],
@@ -221,6 +478,27 @@ class PrototypeAgentDriver:
                 result = await integrated_motion_skill.preview(
                     direction=arguments.get("direction"),
                     distance_m=arguments.get("distance_m"),
+                    requested_speed_m_s=arguments.get(
+                        "requested_speed_m_s"
+                    ),
+                    reference_frame=arguments.get(
+                        "reference_frame", "WORLD"
+                    ),
+                    arm_mount_assumption=arguments.get(
+                        "arm_mount_assumption", "UNKNOWN"
+                    ),
+                    camera_level_assumption=arguments.get(
+                        "camera_level_assumption", "UNKNOWN"
+                    ),
+                    fixed_vio_rig_assumption=arguments.get(
+                        "fixed_vio_rig_assumption", "UNKNOWN"
+                    ),
+                    orientation_policy=arguments.get(
+                        "orientation_policy", "POSITION_ONLY"
+                    ),
+                    controlled_frame_yaw_delta_deg=arguments.get(
+                        "controlled_frame_yaw_delta_deg"
+                    ),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -237,6 +515,24 @@ class PrototypeAgentDriver:
             eligible_tool_names=eligible,
             defer_loading=defer_loading,
             adapter_timeout_s=adapter_timeout_s,
+            adapter_timeout_overrides_s=(
+                {
+                    "calibrate_stationary_workcell": float(
+                        stationary_calibration_timeout_s
+                    )
+                }
+                if stationary_calibration_skill is not None
+                else None
+            ),
+            approval_overrides=(
+                {
+                    "calibrate_stationary_workcell": (
+                        stationary_calibration_needs_approval
+                    )
+                }
+                if stationary_calibration_skill is not None
+                else None
+            ),
         )
         self.offered_skill_descriptors = [
             descriptor
@@ -247,6 +543,58 @@ class PrototypeAgentDriver:
         offered_tools = list(tools)
         if defer_loading:
             offered_tools.append(ToolSearchTool())
+        if stationary_calibration_skill is not None:
+            async def review_and_activate_stationary_calibration(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                result = await stationary_calibration_skill.review_and_activate(
+                    alignment_id=arguments.get("alignment_id"),
+                    candidate_sha256=arguments.get("candidate_sha256"),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            offered_tools.append(
+                FunctionTool(
+                    name="review_and_activate_stationary_calibration",
+                    description=(
+                        "Review and activate one exact persisted stationary "
+                        "world-to-arm calibration candidate. Copy alignment_id "
+                        "and candidate_sha256 unchanged only from the current "
+                        "run's calibration tool required_next_tool; never "
+                        "replay activation arguments from an earlier user turn "
+                        "or service boot. This submits no arm motion. "
+                        "Manager independently revalidates candidate quality, "
+                        "provenance, current VIO tracking, and expiration, then "
+                        "publishes a motion-usable transform for at most five "
+                        "minutes."
+                    ),
+                    params_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "alignment_id": {
+                                "type": "string",
+                                "pattern": "^[0-9A-Za-z-]+$",
+                            },
+                            "candidate_sha256": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                        },
+                        "required": [
+                            "alignment_id",
+                            "candidate_sha256",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    on_invoke_tool=(
+                        review_and_activate_stationary_calibration
+                    ),
+                    strict_json_schema=True,
+                    needs_approval=stationary_activation_needs_approval,
+                )
+            )
         lifecycle_control = developer_mode or provider_lifecycle_control
         if lifecycle_control:
             if manager is None:
@@ -265,14 +613,14 @@ class PrototypeAgentDriver:
                     manager.capabilities(),
                 )
                 return json.dumps(
-                    {
-                        "providers": providers,
-                        "capabilities": capabilities,
-                        "skills": [
-                            descriptor.as_dict()
+                    build_midbrain_runtime_snapshot(
+                        providers,
+                        capabilities,
+                        eligible_skill_tools=[
+                            descriptor.tool_name
                             for descriptor in self.offered_skill_descriptors
                         ],
-                    },
+                    ),
                     ensure_ascii=False,
                     default=str,
                 )
@@ -299,17 +647,36 @@ class PrototypeAgentDriver:
                         f"{provider_id} is not a configured Provider"
                     )
                 result = await manager.set_residency(provider_id, action)
-                return json.dumps(result, ensure_ascii=False, default=str)
+                return json.dumps(
+                    {
+                        "lifecycle_request_complete": True,
+                        "provider_id": provider_id,
+                        "requested_action": action.upper(),
+                        "manager_result": result,
+                        "agent_instruction": (
+                            "Do not request this identical lifecycle "
+                            "transition again in the current run. Continue "
+                            "the original finite task; its adapter performs "
+                            "its own bounded readiness checks."
+                        ),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
 
             offered_tools.extend(
                 [
                     FunctionTool(
                         name="inspect_midbrain_runtime",
                         description=(
-                            "Inspect configured Midbrain Providers, current "
-                            "capability availability, and the finite Skills "
-                            "offered to this developer agent. This operation "
-                            "is read-only."
+                            "Inspect the complete current Manager evidence for "
+                            "configured Midbrain Providers, including Provider "
+                            "reports, controller telemetry, command and target "
+                            "state, launch configuration, identities, "
+                            "timestamps, capability availability, and eligible "
+                            "finite Skill names. Only duplicate Skill schemas "
+                            "are omitted; credential-like environment values "
+                            "are redacted. This operation is read-only."
                         ),
                         params_json_schema={
                             "type": "object",
@@ -327,9 +694,11 @@ class PrototypeAgentDriver:
                             "transition through Manager. Use when the "
                             "user explicitly requests a lifecycle change "
                             "or when a Provider is a necessary cold dependency "
-                            "of the requested task. Explain what hardware or "
-                            "service may be initialized and use the exact "
-                            "Provider ID. Every call requires human approval."
+                            "of the requested task. Call this tool directly "
+                            "instead of asking for conversational permission; "
+                            "the host approval boundary handles the decision "
+                            "and may apply active browser-session "
+                            "authorization. Use the exact Provider ID."
                         ),
                         params_json_schema={
                             "type": "object",
@@ -351,7 +720,7 @@ class PrototypeAgentDriver:
                         },
                         on_invoke_tool=set_provider_residency,
                         strict_json_schema=True,
-                        needs_approval=True,
+                        needs_approval=provider_activation_needs_approval,
                     ),
                 ]
             )
@@ -365,11 +734,39 @@ class PrototypeAgentDriver:
                     preview_id=arguments.get("preview_id"),
                     motion_intent=arguments.get("motion_intent"),
                     direction=arguments.get("direction"),
+                    reference_frame=arguments.get("reference_frame"),
+                    resolved_direction_arm_base=arguments.get(
+                        "resolved_direction_arm_base"
+                    ),
                     distance_m=arguments.get("distance_m"),
                     original_request_distance_m=arguments.get(
                         "original_request_distance_m"
                     ),
+                    requested_speed_m_s=arguments.get(
+                        "requested_speed_m_s"
+                    ),
+                    requested_duration_s=arguments.get(
+                        "requested_duration_s"
+                    ),
+                    planned_duration_s=arguments.get(
+                        "planned_duration_s"
+                    ),
+                    planned_nominal_speed_m_s=arguments.get(
+                        "planned_nominal_speed_m_s"
+                    ),
+                    timing_safety_limited=arguments.get(
+                        "timing_safety_limited"
+                    ),
                     target_position_m=arguments.get("target_position_m"),
+                    orientation_policy=arguments.get(
+                        "orientation_policy", "POSITION_ONLY"
+                    ),
+                    target_orientation_rpy_rad=arguments.get(
+                        "target_orientation_rpy_rad"
+                    ),
+                    controlled_frame_yaw_delta_deg=arguments.get(
+                        "controlled_frame_yaw_delta_deg"
+                    ),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -379,12 +776,14 @@ class PrototypeAgentDriver:
                         name="execute_integrated_motion_preview",
                         description=(
                             "Execute one exact, fresh Integrated Controller "
-                            "relative-motion preview. Copy all arguments "
+                            "relative translation, controlled-frame yaw, or "
+                            "combined pose preview. Copy all arguments "
                             "exactly from preview_relative_effector_motion. "
-                            "Human approval immediately sends the existing "
-                            "one-shot commit trigger, requests physical arm "
-                            "motion, and waits for the controller's bounded "
-                            "completion result."
+                            "Host authorization, whether manual or an active "
+                            "bounded session policy, immediately sends the "
+                            "existing one-shot commit trigger, requests "
+                            "physical arm motion, and waits for the "
+                            "controller's bounded completion result."
                         ),
                         params_json_schema={
                             "type": "object",
@@ -392,18 +791,54 @@ class PrototypeAgentDriver:
                                 "preview_id": {"type": "string"},
                                 "motion_intent": {
                                     "type": "string",
-                                    "enum": ["NEW_RELATIVE_MOVE"],
+                                    "enum": [
+                                        "NEW_RELATIVE_MOVE",
+                                        "NEW_RELATIVE_POSE_MOVE",
+                                        "NEW_RELATIVE_ROTATION",
+                                    ],
                                 },
                                 "direction": {
                                     "type": "string",
                                     "enum": [
+                                        "NONE",
                                         "UP",
                                         "DOWN",
+                                        "FRONT",
+                                        "BACK",
+                                        "LEFT",
+                                        "RIGHT",
+                                        "NORTH",
+                                        "SOUTH",
+                                        "EAST",
+                                        "WEST",
                                         "POSITIVE_X",
                                         "NEGATIVE_X",
+                                        "POSITIVE_Y",
+                                        "NEGATIVE_Y",
                                         "POSITIVE_Z",
                                         "NEGATIVE_Z",
+                                        "ARM_BASE_POSITIVE_X",
+                                        "ARM_BASE_NEGATIVE_X",
+                                        "ARM_BASE_POSITIVE_Y",
+                                        "ARM_BASE_NEGATIVE_Y",
+                                        "ARM_BASE_POSITIVE_Z",
+                                        "ARM_BASE_NEGATIVE_Z",
                                     ],
+                                },
+                                "reference_frame": {
+                                    "type": "string",
+                                    "enum": [
+                                        "WORLD",
+                                        "CAMERA_LEVEL",
+                                        "ARM_BASE",
+                                        "CONTROLLED_FRAME",
+                                    ],
+                                },
+                                "resolved_direction_arm_base": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "minItems": 3,
+                                    "maxItems": 3,
                                 },
                                 "distance_m": {
                                     "type": "number",
@@ -412,8 +847,40 @@ class PrototypeAgentDriver:
                                 },
                                 "original_request_distance_m": {
                                     "type": "number",
-                                    "minimum": 0.001,
+                                    "minimum": 0.0,
                                     "maximum": 0.2,
+                                },
+                                "requested_speed_m_s": {
+                                    "anyOf": [
+                                        {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0.0,
+                                            "maximum": (
+                                                MAX_RELATIVE_NOMINAL_SPEED_M_S
+                                            ),
+                                        },
+                                        {"type": "null"},
+                                    ],
+                                },
+                                "requested_duration_s": {
+                                    "type": "number",
+                                    "minimum": 0.25,
+                                    "maximum": 8.0,
+                                },
+                                "planned_duration_s": {
+                                    "type": "number",
+                                    "minimum": 0.25,
+                                    "maximum": 8.0,
+                                },
+                                "planned_nominal_speed_m_s": {
+                                    "type": "number",
+                                    "minimum": 0.0,
+                                    "maximum": (
+                                        MAX_RELATIVE_NOMINAL_SPEED_M_S
+                                    ),
+                                },
+                                "timing_safety_limited": {
+                                    "type": "boolean",
                                 },
                                 "target_position_m": {
                                     "type": "array",
@@ -421,20 +888,69 @@ class PrototypeAgentDriver:
                                     "minItems": 3,
                                     "maxItems": 3,
                                 },
+                                "orientation_policy": {
+                                    "type": "string",
+                                    "enum": [
+                                        "POSITION_ONLY",
+                                        (
+                                            "PRESERVE_MEASURED_"
+                                            "CONTROLLED_FRAME"
+                                        ),
+                                        (
+                                            "APPLY_CONTROLLED_FRAME_"
+                                            "YAW_DELTA"
+                                        ),
+                                    ],
+                                },
+                                "controlled_frame_yaw_delta_deg": {
+                                    "anyOf": [
+                                        {
+                                            "type": "number",
+                                            "minimum": (
+                                                -MAX_CONTROLLED_FRAME_YAW_DELTA_DEG
+                                            ),
+                                            "maximum": (
+                                                MAX_CONTROLLED_FRAME_YAW_DELTA_DEG
+                                            ),
+                                        },
+                                        {"type": "null"},
+                                    ],
+                                },
+                                "target_orientation_rpy_rad": {
+                                    "anyOf": [
+                                        {
+                                            "type": "array",
+                                            "items": {"type": "number"},
+                                            "minItems": 3,
+                                            "maxItems": 3,
+                                        },
+                                        {"type": "null"},
+                                    ],
+                                },
                             },
                             "required": [
                                 "preview_id",
                                 "motion_intent",
                                 "direction",
+                                "reference_frame",
+                                "resolved_direction_arm_base",
                                 "distance_m",
                                 "original_request_distance_m",
+                                "requested_speed_m_s",
+                                "requested_duration_s",
+                                "planned_duration_s",
+                                "planned_nominal_speed_m_s",
+                                "timing_safety_limited",
                                 "target_position_m",
+                                "orientation_policy",
+                                "controlled_frame_yaw_delta_deg",
+                                "target_orientation_rpy_rad",
                             ],
                             "additionalProperties": False,
                         },
                         on_invoke_tool=execute_integrated_motion_preview,
                         strict_json_schema=True,
-                        needs_approval=True,
+                        needs_approval=relative_motion_needs_approval,
                     ),
                 ]
             )
@@ -478,10 +994,22 @@ class PrototypeAgentDriver:
                 "configured Provider and Skill catalog and invoke only the "
                 "typed tools offered by this host. Use "
                 "inspect_midbrain_runtime before choosing a Provider ID. "
-                "You may propose HOT activation for a cold Provider when it "
-                "is necessary to fulfill the developer's current task; the "
-                "tool call will pause for human approval. Provider lifecycle "
-                "changes require human approval. For a requested relative "
+                "Its snapshot includes complete current Provider reports, "
+                "controller telemetry, command and target state, launch "
+                "configuration, identities, capabilities, and timestamps; "
+                "only duplicate Skill schemas are omitted, while "
+                "credential-like environment values are redacted. "
+                "When a Provider lifecycle transition is necessary, call "
+                "set_provider_residency immediately. Never answer by asking "
+                "for conversational permission: the tool interruption is the "
+                "approval request, and the host may resolve it from active "
+                "browser-session authorization. A rejected lifecycle "
+                "interruption is final for the current run: do not request "
+                "the identical transition again. After an approved lifecycle "
+                "call, do not request that identical transition again in the "
+                "same run; inspect once and report nonconvergence if the "
+                "runtime still does not satisfy the dependency. For a "
+                "requested relative "
                 "effector motion, inspect the current runtime even if earlier "
                 "conversation says the Providers were running, then activate "
                 "robot_arm.rebot_dm to HOT first, then activate "
@@ -504,6 +1032,22 @@ class PrototypeAgentDriver:
                 "unsuccessful or unconfirmed completion outcome. "
                 "Treat every relative motion request as a new displacement "
                 "from the current measured pose, including repeated requests. "
+                "This relative-pose Skill always uses the Integrated "
+                "Controller's PRESS_MIT one-shot path, so an explicit MIT-mode "
+                "request is already satisfied and needs no additional mode "
+                "field. For a controlled-frame head turn, use "
+                "orientation_policy=APPLY_CONTROLLED_FRAME_YAW_DELTA and "
+                "controlled_frame_yaw_delta_deg. The controlled frame is +X "
+                "forward, +Y left, +Z up: positive yaw turns left and negative "
+                "yaw turns right. Pure rotation uses direction=NONE, "
+                "distance_m=0, and requested_speed_m_s=null; a simultaneous "
+                "translation keeps its actual direction and distance. The "
+                "phrase arm forward explicitly maps to "
+                "direction=ARM_BASE_POSITIVE_X with reference_frame=ARM_BASE. "
+                "Never "
+                "reject a combined translation and bounded head turn merely "
+                "because the older preservation-only policy could not express "
+                "it. "
                 "Skill "
                 "adapters retain their deterministic policy and authority "
                 "gates. Never translate a prompt into an arbitrary "
@@ -545,12 +1089,24 @@ class PrototypeAgentDriver:
                 instructions += (
                     " For an explicit Provider lifecycle request, or when a "
                     "cold Provider is required for the requested Skill, "
-                    "inspect the runtime and propose the necessary lifecycle "
-                    "transition instead of calling an unrelated Skill. Every "
-                    "lifecycle call pauses for human approval. Explain the "
-                    "dependency and do not claim activation until the Manager "
-                    "tool returns success. After an approved activation, "
-                    "continue the original task within the same run."
+                    "inspect the runtime and call set_provider_residency for "
+                    "the necessary transition instead of answering with a "
+                    "permission request or calling an unrelated Skill. The "
+                    "runtime snapshot includes complete current Provider "
+                    "reports, controller telemetry, command and target state, "
+                    "launch configuration, identities, capabilities, and "
+                    "timestamps. Only duplicate Skill schemas are omitted, "
+                    "while credential-like environment values are redacted. "
+                    "Every lifecycle call remains authorization-gated by its "
+                    "tool policy; an eligible active session policy can "
+                    "authorize it without an SDK interruption. Never ask for "
+                    "a separate conversational approval. A rejected "
+                    "lifecycle interruption is final for the current run, "
+                    "and an identical approved transition must not be "
+                    "requested a second time in that run. Do not "
+                    "claim activation until the Manager tool returns success. "
+                    "After an approved activation, continue the original task "
+                    "within the same run."
                 )
             if integrated_motion_skill is not None:
                 instructions += (
@@ -561,21 +1117,134 @@ class PrototypeAgentDriver:
                     "activate robot_arm.primary.integrated to HOT. Only after "
                     "both are ready, create the nonphysical Integrated IK "
                     "preview and then request "
-                    "execution of that exact preview. Tell the operator that "
-                    "approval immediately sends its one-shot commit trigger. "
+                    "execution of that exact preview. "
+                    "If either Provider is stopped, cold, or requires HOT "
+                    "recovery, do not report that approval is needed and end "
+                    "the run: call set_provider_residency immediately so its "
+                    "actual approval interruption can be resolved. "
+                    "If manual authorization is required, tell the operator "
+                    "that approval immediately sends its one-shot commit "
+                    "trigger. "
                     "A PREVIEW_READY result is incomplete: call its "
                     "required_next_tool immediately with unchanged arguments "
                     "instead of answering the user. "
                     "If preview reports DEPENDENCY_UNAVAILABLE, follow its "
                     "required_next_tool and activation sequence; do not repeat "
                     "the same preview call while the controller is unreachable. "
+                    "If preview reports INTEGRATED_RECOVERY_REQUIRED, call "
+                    "its required_next_tool unchanged and request the explicit "
+                    "approved HOT transition. Do this even when Manager says "
+                    "the provider process is already running: HOT is the "
+                    "controller recovery boundary that reacquires its Basic "
+                    "lease. After approval, create a fresh preview. "
+                    "If preview asks ARM_MOUNT_CONFIRMATION_REQUIRED, ask its "
+                    "exact y/n question. On yes retry the same request with "
+                    "arm_mount_assumption=CONFIRMED_X_FORWARD_Z_UP; on no "
+                    "retry with arm_mount_assumption=REJECTED_OR_UNKNOWN. "
+                    "A current reviewed world-to-arm transform has priority "
+                    "for every WORLD direction, including ordinary up/down/"
+                    "front/back/left/right. The upright-mount assumption is "
+                    "only a fallback when measured resolution is unavailable. "
+                    "Do not ask the mount question after a reviewed active "
+                    "transform resolves the requested direction. An "
+                    "explicit world +X/-X/+Y/-Y/+Z/-Z request must use the "
+                    "matching POSITIVE_*/NEGATIVE_* direction and a reviewed "
+                    "motion-usable world-to-arm transform; never ask for or "
+                    "apply the upright-mount fallback to that request. If a "
+                    "preview reports WORLD_TO_ARM_ALIGNMENT_REQUIRED, call "
+                    "its required_next_tool unchanged. After exact candidate "
+                    "activation returns motion_usable=true, retry the original "
+                    "world-axis preview; do not ask about the upright mount. "
+                    "If the "
+                    "operator asks to keep the effector head, "
+                    "pointing direction, attitude, or 3D orientation during "
+                    "translation, set orientation_policy="
+                    "PRESERVE_MEASURED_CONTROLLED_FRAME. This uses the "
+                    "Integrated Controller's measured controlled-frame "
+                    "orientation with POSE_6DOF; do not describe it as "
+                    "position-only IK. If the operator asks to rotate the "
+                    "effector/hand/head direction to its own right or left, "
+                    "set orientation_policy="
+                    "APPLY_CONTROLLED_FRAME_YAW_DELTA and pass the signed "
+                    "controlled_frame_yaw_delta_deg. Controlled-frame +X is "
+                    "forward, +Y is left, and +Z is up, so left is positive "
+                    "yaw and right is negative yaw. For rotation without "
+                    "translation, use direction=NONE, distance_m=0, and no "
+                    "requested speed. For a combined translation and turn, "
+                    "keep the requested translation fields and add the yaw "
+                    "delta. Explicit arm forward maps to "
+                    "direction=ARM_BASE_POSITIVE_X and "
+                    "reference_frame=ARM_BASE. This Skill always stages "
+                    "PRESS_MIT ONE_SHOT, so "
+                    "an explicit MIT-mode request is supported without a "
+                    "separate mode argument. When the operator specifies a motion "
+                    "speed, pass it as requested_speed_m_s. The adapter "
+                    "converts distance/speed into a requested trajectory "
+                    "duration. Describe it as nominal average endpoint speed, "
+                    "not constant Cartesian velocity, and report any longer "
+                    "Provider-planned duration as safety limiting. Do not "
+                    "claim the requested speed was achieved unless the result "
+                    "supports that statement. If preview asks "
+                    "FIXED_VIO_RIG_CONFIRMATION_REQUIRED, ask its exact y/n "
+                    "question. On yes retry with "
+                    "fixed_vio_rig_assumption="
+                    "CONFIRMED_FIXED_STATIONARY_RIG so the non-destructive "
+                    "tracking check can run when measured world alignment is "
+                    "needed; on no retry with REJECTED_OR_UNKNOWN and do not "
+                    "imply that visual verification is available. When the "
+                    "measured transform or upright fallback already defines "
+                    "the requested direction, optional image or exact-depth "
+                    "evidence "
+                    "must not prevent creation of the IK preview. Report "
+                    "BEFORE_EVIDENCE_UNAVAILABLE or skipped visual evidence "
+                    "separately. Never use the "
+                    "destructive reinitialize tool as a readiness probe. "
                     "Do not claim motion from the target-edit engagement "
                     "response; report success only when the execution tool "
                     "returns physical_motion_completed=true. Otherwise report "
                     "the controller's completion outcome as an unsuccessful "
                     "or unconfirmed move. Treat every relative motion request "
                     "as a new displacement from the current measured pose, "
-                    "including repeated requests."
+                    "including repeated requests. For an available visual "
+                    "check, distinguish controller completion from the "
+                    "gravity-aligned before/after visual verdict. Missing "
+                    "exact depth makes optional visual verification "
+                    "unavailable; it does not make controller completion "
+                    "unsuccessful. If a preview returns "
+                    "IK_PREVIEW_REJECTED, report the resolved arm-base "
+                    "direction, start/target pose, per-joint endpoint travel, "
+                    "and configured endpoint limits. Do not infer an axis "
+                    "mistake from joint travel alone."
+                )
+            if stationary_calibration_skill is not None:
+                instructions += (
+                    " When the operator asks to establish, calibrate, or "
+                    "validate the world-to-arm-base relationship, use "
+                    "calibrate_stationary_workcell immediately. Do not ask for "
+                    "conversational permission first; the tool authorization "
+                    "boundary may be satisfied before execution by active "
+                    "browser-session calibration authorization, otherwise it "
+                    "creates an SDK interruption. VIO "
+                    "establishes its local "
+                    "world epoch, while this Skill observes the stationary "
+                    "robot base and publishes the world-to-arm-base transform; "
+                    "do not claim that VIO alone measures the arm-base "
+                    "extrinsic. A calibration candidate is incomplete: call "
+                    "its required_next_tool immediately with unchanged exact "
+                    "alignment ID and digest. Report the relationship as "
+                    "established only after that tool returns "
+                    "motion_usable=true. Candidate review and bounded "
+                    "activation have their own authorization policy and "
+                    "Manager revalidates all safety gates. "
+                    "If activation returns FRESH_CALIBRATION_REQUIRED, never "
+                    "retry that alignment. When the current user request is "
+                    "to establish the relationship, call "
+                    "calibrate_stationary_workcell again with the current "
+                    "request and activate only its new candidate. "
+                    "The Skill acquires "
+                    "global motion inhibit, so "
+                    "a later Integrated motion requires a fresh explicit "
+                    "approved HOT transition before preview."
                 )
         if basic_safe_home_skill is not None:
             instructions += (
@@ -584,7 +1253,12 @@ class PrototypeAgentDriver:
                 "is running. Safe-home preempts active arm control and always "
                 "requires approval. Do not substitute gravity float, Provider "
                 "stop, or healthy status for homing. Report completion only "
-                "when physical_motion_completed=true."
+                "when physical_motion_completed=true. Safe-home preempts "
+                "Integrated's Basic lease, so RECOVERY_REQUIRED afterward is "
+                "expected. On the next Integrated motion request, perform the "
+                "explicit approved Integrated HOT recovery and continue with "
+                "a fresh preview instead of treating recovery as a terminal "
+                "failure."
             )
         if space_cognition_reinitializer is not None:
             instructions += (
@@ -608,6 +1282,14 @@ class PrototypeAgentDriver:
         )
         self.run_config = RunConfig(
             workflow_name="Midbrain Phase 4 finite Skill selection",
+            session_input_callback=(
+                partial(
+                    build_turn_safe_session_input,
+                    limit=session_history_item_limit,
+                )
+                if session_history_item_limit is not None
+                else None
+            ),
             tool_execution=ToolExecutionConfig(
                 max_function_tool_concurrency=1,
                 pre_approval_tool_input_guardrails=True,
@@ -631,12 +1313,14 @@ class PrototypeAgentDriver:
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         vlm_model_override: str | None = None,
+        authorization: AgentSessionAuthorization | None = None,
     ) -> InteractiveAgentResult:
         result = await self._run(
             input_value,
             model_override=model_override,
             reasoning_effort=reasoning_effort,
             vlm_model_override=vlm_model_override,
+            authorization=authorization,
         )
         if result.interruptions:
             return InteractiveAgentResult(
@@ -660,6 +1344,7 @@ class PrototypeAgentDriver:
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         vlm_model_override: str | None = None,
+        authorization: AgentSessionAuthorization | None = None,
     ):
         if not os.getenv("OPENAI_API_KEY", "").strip():
             raise RuntimeError("OPENAI_API_KEY is empty in config/api_keys.env")
@@ -683,6 +1368,7 @@ class PrototypeAgentDriver:
                 Runner.run(
                     self.agent,
                     input_value,
+                    context=_runner_context(input_value, authorization),
                     max_turns=self.max_turns,
                     run_config=run_config,
                     session=self.session,
@@ -773,7 +1459,50 @@ class PrototypeAgentDriver:
                 if isinstance(target, list) and len(target) == 3
                 else "unknown"
             )
-            title = f"Move the arm {direction} by {distance_text}?"
+            orientation_policy = str(
+                arguments.get("orientation_policy") or "POSITION_ONLY"
+            ).upper()
+            raw_yaw_delta = arguments.get(
+                "controlled_frame_yaw_delta_deg"
+            )
+            try:
+                yaw_delta_deg = (
+                    None
+                    if raw_yaw_delta is None
+                    else float(raw_yaw_delta)
+                )
+            except (TypeError, ValueError):
+                yaw_delta_deg = None
+            yaw_text = "none"
+            if yaw_delta_deg is not None and math.isfinite(yaw_delta_deg):
+                turn = "left" if yaw_delta_deg > 0.0 else "right"
+                yaw_text = (
+                    f"{abs(yaw_delta_deg):g} degrees {turn} "
+                    f"(signed yaw {yaw_delta_deg:g} degrees)"
+                )
+            requested_speed = arguments.get("requested_speed_m_s")
+            requested_speed_text = (
+                "not applicable to rotation-only motion"
+                if motion_intent == "NEW_RELATIVE_ROTATION"
+                else "default 3-second trajectory"
+                if requested_speed is None
+                else f"{float(requested_speed):g} m/s nominal average"
+            )
+            try:
+                planned_duration_text = (
+                    f"{float(arguments.get('planned_duration_s')):g} s"
+                )
+            except (TypeError, ValueError):
+                planned_duration_text = "unknown"
+            if motion_intent == "NEW_RELATIVE_ROTATION":
+                title = f"Rotate the effector head {yaw_text}?"
+            elif motion_intent == "NEW_RELATIVE_POSE_MOVE":
+                title = (
+                    f"Move the arm {direction} by {distance_text} and "
+                    f"rotate the head {yaw_text}?"
+                )
+            else:
+                title = f"Move the arm {direction} by {distance_text}?"
             summary = (
                 "The Integrated Controller has already produced a valid "
                 "nonphysical IK preview. Approval requests execution of "
@@ -782,23 +1511,68 @@ class PrototypeAgentDriver:
             warning = (
                 "This is physical arm motion. Keep clear of the arm and be "
                 "ready to use the emergency stop. Approval immediately sends "
-                "the one-shot commit; no separate controller-button press is "
-                "required."
+                "the MIT one-shot commit; no separate controller-button press "
+                "is required. Optional visual verification may be skipped, "
+                "unavailable, or inconclusive; it does not verify the "
+                "commanded yaw angle."
             )
             confirm_label = "Approve arm motion"
             details = [
                 {"label": "Direction", "value": direction},
                 {"label": "Distance", "value": distance_text},
+                {
+                    "label": "Requested speed",
+                    "value": requested_speed_text,
+                },
+                {
+                    "label": "Planned duration",
+                    "value": planned_duration_text,
+                },
                 {"label": "Intent", "value": motion_intent},
                 {"label": "Target XYZ", "value": target_text},
+                {"label": "Controlled-frame yaw", "value": yaw_text},
+                {
+                    "label": "Orientation",
+                    "value": (
+                        "Preserve measured controlled-frame 3D orientation"
+                        if orientation_policy
+                        == "PRESERVE_MEASURED_CONTROLLED_FRAME"
+                        else "Apply bounded controlled-frame yaw with POSE_6DOF"
+                        if orientation_policy
+                        == "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+                        else "Position-only IK"
+                    ),
+                },
                 {
                     "label": "Trigger",
-                    "value": "Immediate approved one-shot commit",
+                    "value": "Immediate approved MIT one-shot commit",
                 },
                 {
                     "label": "Preview",
                     "value": str(arguments.get("preview_id") or "unknown"),
                 },
+            ]
+        elif tool_name == "review_and_activate_stationary_calibration":
+            alignment_id = str(arguments.get("alignment_id") or "unknown")
+            candidate_sha256 = str(
+                arguments.get("candidate_sha256") or "unknown"
+            )
+            title = "Activate this exact world-to-arm calibration?"
+            summary = (
+                "The stationary calibration candidate will be recorded as "
+                "reviewed and submitted to Manager for a bounded activation."
+            )
+            warning = (
+                "No arm motion is submitted. If Manager accepts the current "
+                "quality, provenance, VIO state, and age checks, this exact "
+                "transform becomes motion-usable for at most five minutes."
+            )
+            confirm_label = "Approve exact calibration"
+            details = [
+                {"label": "Alignment", "value": alignment_id},
+                {"label": "Candidate SHA-256", "value": candidate_sha256},
+                {"label": "Activation", "value": "At most 5 minutes"},
+                {"label": "Physical motion", "value": "None"},
             ]
         elif tool_name == "reinitialize_space_cognition":
             reason = str(arguments.get("reason") or "not provided")

@@ -25,22 +25,34 @@ BOX_EDGES = (
 
 
 @lru_cache(maxsize=4)
-def load_model_geometry(
+def load_model_vertices(
     workspace_root: str,
     model_id: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    profile_root = (
-        Path(workspace_root)
-        / "providers"
-        / "foundation_pose"
-        / "defaults"
-        / "rebot_b601_dm"
-    )
+    model_registry: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    root = Path(workspace_root).resolve()
+    if model_registry:
+        registry_path = Path(model_registry)
+        if not registry_path.is_absolute():
+            registry_path = root / registry_path
+        registry_path = registry_path.resolve()
+    else:
+        registry_path = (
+            root
+            / "providers"
+            / "foundation_pose"
+            / "defaults"
+            / "rebot_b601_dm"
+            / "models.json"
+        )
+    profile_root = registry_path.parent
     import json
 
-    registry = json.loads((profile_root / "models.json").read_text(encoding="utf-8"))
+    registry = json.loads(registry_path.read_text(encoding="utf-8-sig"))
     entry = next(model for model in registry["models"] if model["model_id"] == model_id)
-    mesh_path = profile_root / entry["mesh_path"]
+    mesh_path = Path(entry["mesh_path"])
+    if not mesh_path.is_absolute():
+        mesh_path = profile_root / mesh_path
     scale = float(entry.get("scale_to_m", 1.0))
     vertices: list[list[float]] = []
     with mesh_path.open("r", encoding="utf-8", errors="ignore") as handle:
@@ -55,6 +67,20 @@ def load_model_geometry(
         entry.get("mesh_from_semantic") or np.eye(4),
         dtype=np.float64,
     ).reshape(4, 4)
+    return points, mesh_from_semantic
+
+
+@lru_cache(maxsize=4)
+def load_model_geometry(
+    workspace_root: str,
+    model_id: str,
+    model_registry: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    points, mesh_from_semantic = load_model_vertices(
+        workspace_root,
+        model_id,
+        model_registry,
+    )
     return points.min(axis=0), points.max(axis=0), mesh_from_semantic
 
 
@@ -166,6 +192,17 @@ def render_pose_overlay(
         cv2.LINE_AA,
     )
     height, width = rgb.shape[:2]
+    projected_box_xyxy_px: list[float] | None = None
+    positive_pixels = box_pixels[box_valid]
+    if len(positive_pixels):
+        clipped_x = np.clip(positive_pixels[:, 0], 0.0, max(0, width - 1))
+        clipped_y = np.clip(positive_pixels[:, 1], 0.0, max(0, height - 1))
+        projected_box_xyxy_px = [
+            float(np.min(clipped_x)),
+            float(np.min(clipped_y)),
+            float(np.max(clipped_x)),
+            float(np.max(clipped_y)),
+        ]
     visible = [
         bool(
             box_valid[index]
@@ -186,29 +223,92 @@ def render_pose_overlay(
             and 0 <= axis_pixels[0, 0] < width
             and 0 <= axis_pixels[0, 1] < height
         ),
+        "projected_box_xyxy_px": projected_box_xyxy_px,
+        "image_size_px": [width, height],
     }
 
 
-def pose_verdict_accepted(verdict: dict[str, Any], minimum_confidence: float) -> bool:
-    return bool(
-        verdict.get("pose_reasonable")
-        and float(verdict.get("confidence", 0.0)) >= minimum_confidence
-        and verdict.get("box_fit") != "BAD"
-        and verdict.get("orientation_fit") != "BAD"
+def projected_visual_scale_review(
+    projection: dict[str, Any],
+    visual_box_yxyx_1000: list[int],
+    image_shape: tuple[int, ...],
+    *,
+    maximum_mismatch_fraction: float = 0.25,
+) -> dict[str, Any]:
+    """Compare projected CAD and visual boxes without asking a VLM to measure."""
+    limit = float(maximum_mismatch_fraction)
+    if not 0.0 < limit < 1.0:
+        raise ValueError("maximum_mismatch_fraction must be in (0, 1)")
+    if len(image_shape) < 2:
+        raise ValueError("image_shape must contain height and width")
+    height, width = int(image_shape[0]), int(image_shape[1])
+    if height <= 0 or width <= 0:
+        raise ValueError("image dimensions must be positive")
+    if (
+        not isinstance(visual_box_yxyx_1000, list)
+        or len(visual_box_yxyx_1000) != 4
+        or any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in visual_box_yxyx_1000
+        )
+    ):
+        raise ValueError("visual box must be integer [y0,x0,y1,x1] in 0..1000")
+    y0, x0, y1, x1 = visual_box_yxyx_1000
+    visual_width = (x1 - x0) * width / 1000.0
+    visual_height = (y1 - y0) * height / 1000.0
+    projected = projection.get("projected_box_xyxy_px")
+    projected_width = 0.0
+    projected_height = 0.0
+    if isinstance(projected, list) and len(projected) == 4:
+        px0, py0, px1, py1 = (float(item) for item in projected)
+        projected_width = px1 - px0
+        projected_height = py1 - py0
+    visual_area = visual_width * visual_height
+    projected_area = projected_width * projected_height
+    available = bool(visual_area > 0.0 and projected_area > 0.0)
+    scale_ratio = (
+        float(np.sqrt(projected_area / visual_area))
+        if available
+        else None
     )
-
-
-def pose_verdict_best_of_two_acceptable(
-    verdict: dict[str, Any],
-    fallback_minimum_confidence: float,
-) -> bool:
-    return bool(
-        verdict.get("pose_reasonable")
-        and float(verdict.get("confidence", 0.0))
-        >= fallback_minimum_confidence
-        and verdict.get("box_fit") in {"GOOD", "ACCEPTABLE"}
-        and verdict.get("orientation_fit") in {"GOOD", "ACCEPTABLE"}
+    mismatch = (
+        abs(scale_ratio - 1.0) if scale_ratio is not None else None
     )
+    within = bool(mismatch is not None and mismatch <= limit + 1e-12)
+    if not available:
+        warning = (
+            "Projected or visual base box is degenerate; size could not be "
+            "compared."
+        )
+    elif within:
+        warning = None
+    else:
+        warning = (
+            f"Projected CAD linear scale ratio {scale_ratio:.3f} is outside "
+            f"the inclusive {1.0 - limit:.2f}..{1.0 + limit:.2f} band."
+        )
+    return {
+        "method": "PROJECTED_CAD_VERSUS_TIGHT_VISUAL_BOX_LINEAR_SCALE",
+        "available": available,
+        "visual_box_yxyx_1000": list(visual_box_yxyx_1000),
+        "projected_box_xyxy_px": projected,
+        "visual_size_px": [visual_width, visual_height],
+        "projected_size_px": [projected_width, projected_height],
+        "width_ratio": (
+            projected_width / visual_width if visual_width > 0.0 else None
+        ),
+        "height_ratio": (
+            projected_height / visual_height if visual_height > 0.0 else None
+        ),
+        "area_ratio": (
+            projected_area / visual_area if visual_area > 0.0 else None
+        ),
+        "equivalent_linear_scale_ratio": scale_ratio,
+        "mismatch_fraction": mismatch,
+        "maximum_mismatch_fraction": limit,
+        "within_tolerance": within,
+        "warning": warning,
+    }
 
 
 def select_best_pose_validation(
@@ -216,20 +316,17 @@ def select_best_pose_validation(
 ) -> int:
     if not validations:
         raise ValueError("at least one pose validation is required")
-    fit_rank = {"BAD": 0, "ACCEPTABLE": 1, "GOOD": 2}
-
-    def quality(record: dict[str, Any]) -> tuple[int, int, int, float, int]:
-        verdict = record.get("verdict") or {}
+    def quality(record: dict[str, Any]) -> tuple[int, float, int]:
+        scale = record.get("scale_review") or {}
         projection = record.get("projection") or {}
+        mismatch = scale.get("mismatch_fraction")
         return (
-            int(bool(verdict.get("pose_reasonable"))),
-            int(fit_rank.get(str(verdict.get("box_fit")), -1)),
-            int(fit_rank.get(str(verdict.get("orientation_fit")), -1)),
-            float(verdict.get("confidence") or 0.0),
-            int(projection.get("visible_corner_count") or 0),
+            0 if isinstance(mismatch, (int, float)) else 1,
+            float(mismatch) if isinstance(mismatch, (int, float)) else float("inf"),
+            -int(projection.get("visible_corner_count") or 0),
         )
 
-    return max(
+    return min(
         range(len(validations)),
         key=lambda index: quality(validations[index]),
     )
