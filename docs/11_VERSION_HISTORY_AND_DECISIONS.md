@@ -1,5 +1,52 @@
 # Version History and Engineering Decisions
 
+## Test Agent v0.4.2 — Streaming Agent workspace checkpoint
+
+- Replaced separate regular/developer execution behavior with one autonomous
+  Agent driver and the canonical `/api/streaming-runs` execution family.
+- Added backend-owned SDK-neutral SSE events, public in-progress reasoning
+  summaries, approval pause/resume, camera warm-up recovery, and bounded
+  camera/VLM retry behavior.
+- Added user image input and retained robot-camera evidence with interactive
+  SVG annotations, selectable colors, and flattened copy/download output.
+- Added Manager-boot-scoped durable chat history and a bounded SQLite run
+  journal. Both Agent pages share the same conversation, while the journal GUI
+  groups runs by the physical Midbrain session and exposes two levels of event
+  detail.
+- Modernized both Agent surfaces around bottom-following chat, stable streamed
+  updates, expandable execution detail, tiered model controls, and independently
+  scrolling developer diagnostics.
+- Changed the default Gemini Robotics-ER model from 1.6 to
+  `gemini-robotics-er-2-preview` while retaining an explicit configuration
+  override.
+- Corrected Provider readiness recovery so an invented, non-advertised model
+  capability cannot hold a healthy `HOT` Provider in an impossible wait. Exact
+  Basic and Integrated capability names are supplied for normal arm recovery.
+
+The next objective is faster bounded command completion. Common commands,
+beginning with relative arm motion, should use measured deterministic
+orchestration after intent resolution instead of spending additional model
+turns rediscovering the same inspect, activate, plan, preview, execute, and
+interpret chain. The optimized path must retain finite-Skill compatibility,
+SDK-neutral events, Manager lifecycle policy, controller checks, authority
+leases, preview evidence, and authorization policy.
+
+The remaining objective backlog is:
+
+- low-interaction autonomous field missions;
+- safe autonomous physical retry and uncertain-outcome recovery;
+- fast camera-pose and VLM arm-mount attestation;
+- contextual in-chat development approval cards **(near future)**;
+- authenticated active-run steering **(optional)**;
+- gesture control with dead-man behavior;
+- secure remote Agent operation **(future)**;
+- durable evidence and journal policy **(future)**; and
+- externally hosted Skill docking through MCP or an equivalent boundary
+  **(optional/parked)**.
+
+The detailed acceptance boundaries and status are maintained in
+[Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md).
+
 ## v0.3.16 — Phase 5 guarded-agent checkpoint
 
 - Added descriptive Agent Skill discovery with explicit provider IDs retained as fallback.

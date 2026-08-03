@@ -83,6 +83,34 @@ The adapter invokes the finite Skill, which requests a capability binding from
 Manager. A configured explicit provider ID remains a compatibility fallback
 and must be retained in the Skill result and audit provenance.
 
-Stateful or physical adapters must use SDK approval hooks as an early user
-interaction layer, but provider-side authorization and safety checks remain
-authoritative. A model-selected tool call never grants physical authority.
+Stateful or physical adapters must pass through an explicit host authorization
+policy. SDK approval hooks may project an unresolved policy decision into an
+early development interaction, but a bounded autonomous policy may resolve an
+exact eligible operation before an SDK interruption is created. Provider-side
+authorization and deterministic safety checks remain authoritative. A
+model-selected tool call never grants physical authority, and the absence of a
+human dialog never implies that safety checks were bypassed.
+
+## Provider activation readiness
+
+Lifecycle command acceptance and dependency readiness are distinct states. An
+Agent host that activates a cold finite-Skill dependency must not describe a
+`HOT` request as complete until current Manager evidence shows that the exact
+Provider is `HOT`, ready, and unexpired. When the Skill result names a
+`required_capability`, the host also waits for Manager to advertise that exact
+capability as available from the selected Provider.
+
+Hosts should define dependency `HOT` to include process startup when needed.
+If a model nevertheless selects process-only `START` while supplying a
+non-null required capability, the host must not immediately return the model to
+the finite Skill. It either waits for the Provider to naturally reach `HOT` and
+publish that capability, or returns a typed `HOT` continuation. Plain `START`
+without a capability may remain a process-only development operation.
+
+The wait is bounded and reports either `READY` or `TIMED_OUT` with the latest
+sanitized readiness evidence. `READY` instructs the model to invoke the
+original finite Skill immediately in the same run, without another runtime
+inspection or duplicate lifecycle call. A timeout never grants authority and
+must not be reported as successful activation. Skill adapters may retain a
+separate bounded data-plane check for a frame or observation that races the
+control-plane heartbeat.

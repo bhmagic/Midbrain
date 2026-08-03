@@ -51,6 +51,10 @@ _AGGREGATE_JOINT_TRAVEL_REASON = (
 )
 _POLICY_CLASSIFICATION_POSITION_RESIDUAL_CEILING_M = 0.0015
 _POLICY_CLASSIFICATION_ORIENTATION_RESIDUAL_CEILING_RAD = 0.035
+_BASIC_MOTION_CAPABILITY = "robot.motion.arm.basic"
+_INTEGRATED_ONE_SHOT_CAPABILITY = (
+    "robot.motion.arm.integrated.mit.one_shot"
+)
 
 
 class IntegratedPreviewRejected(RuntimeError):
@@ -1209,6 +1213,9 @@ class IntegratedRelativeMotionAdapter:
                     "arguments": {
                         "provider_id": "robot_arm.primary.integrated",
                         "action": "hot",
+                        "required_capability": (
+                            _INTEGRATED_ONE_SHOT_CAPABILITY
+                        ),
                     },
                 },
                 "message": (
@@ -1230,10 +1237,14 @@ class IntegratedRelativeMotionAdapter:
                 {
                     "provider_id": "robot_arm.rebot_dm",
                     "required_residency": "HOT",
+                    "required_capability": _BASIC_MOTION_CAPABILITY,
                 },
                 {
                     "provider_id": "robot_arm.primary.integrated",
                     "required_residency": "HOT",
+                    "required_capability": (
+                        _INTEGRATED_ONE_SHOT_CAPABILITY
+                    ),
                 },
             ],
             "required_next_tool": {

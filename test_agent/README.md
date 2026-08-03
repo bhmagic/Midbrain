@@ -1,30 +1,61 @@
 # Physical Agent Test Scaffold 0.4.2
 
-The browser service has two intentionally separate OpenAI Agents SDK surfaces:
+The browser service exposes two views of one autonomous OpenAI Agents SDK
+runtime:
 
 - `http://127.0.0.1:8000/` is the regular Agent UI. It can prompt the
-  regular allowlisted Agent and may call `start`, `hot`, `warm`, or `stop`
-  for a required configured Provider. By default every lifecycle change pauses
-  for operator approval. The browser-session control below the prompt can
-  authorize start/HOT/WARM transitions without repeated questions; stop still
-  asks. It also exposes the narrow relative-IK workflow, but not the complete
-  developer tool catalog.
-- `http://127.0.0.1:8000/dev` is the developer Agent UI. It may inspect every
-  adapter-bound discoverable Skill and Provider status, and may propose
-  `start`, `hot`, `warm`, or `stop` for an exact configured Provider. Every
-  lifecycle tool invocation uses the Agents SDK approval interruption and must
-  be explicitly approved before the saved run resumes.
+  configured autonomous Agent and may call `start`, `hot`, `warm`, or `stop`
+  for a required configured Provider. The browser-session policy can authorize
+  exact lifecycle transitions without repeated questions. It also exposes the
+  configured relative-IK workflow.
+  The regular UI starts a backend-owned streamed run and observes it through a
+  replayable SSE connection; closing that connection does not cancel or restart
+  the run. The canonical `/api/streaming-runs` family is the only Agent
+  execution contract.
+- `http://127.0.0.1:8000/dev` is a developer view of that same Agent. It adds
+  Provider, Skill, replay, point-cloud, and exact normalized-event diagnostics,
+  but its prompt uses the same driver, model session, tool policy, Provider
+  lifecycle behavior, authorization policy, retry behavior, and backend-owned
+  streaming path as the regular page. It submits directly to the canonical
+  `/api/streaming-runs` family and has no developer-specific execution API.
+- `http://127.0.0.1:8000/dev/run-journal` is the read-only durable run viewer.
+  Its left pane groups familiar run cards under expandable Manager-boot
+  sessions; its right pane presents the selected outcome and two-level
+  expandable normalized event detail. It cannot
+  resume a run, decide an approval, delete a record, or invoke a robot command.
 
 When `HOT` is necessary for the requested task, the Agent calls the lifecycle
 tool directly instead of answering with a conversational permission request.
 The tool's dynamic approval predicate is the authorization boundary. An
-eligible regular-UI session policy is evaluated before execution and therefore
+eligible browser-session policy is evaluated before execution and therefore
 does not create an SDK interruption or a separate resume request. Otherwise,
 approval prompts show a
 human-readable action, Provider, requested state, and hardware warning rather
 than raw SDK JSON. When a visual Skill has no current camera frame, it returns
 `PROVIDER_ACTIVATION_REQUIRED` with the relevant Midbrain developer-boundary
 URL instead of leaking a raw Fabric HTTP 404.
+
+For a finite-Skill dependency, `HOT` is used even when the Provider process is
+stopped because Manager includes startup in that transition. Accepting the
+control request is not treated as completion. The lifecycle tool polls fresh
+Manager evidence for up to
+`PROVIDER_HOT_READINESS_TIMEOUT_S` (20 seconds by default) and completes only
+after the Provider is `HOT` and ready. A Skill-provided `required_capability`
+such as `camera.rgb` is also checked when present. After readiness, the Agent
+must immediately invoke the original finite Skill in the same run. The visual
+adapter retains a separate `CAMERA_FIRST_FRAME_TIMEOUT_S` data-plane check so a
+late or recycled first frame does not reopen the lifecycle transition. A
+transient timeout retries only that capture boundary, twice total by default,
+using `CAMERA_SKILL_CAPTURE_ATTEMPTS` and
+`CAMERA_SKILL_RETRY_BACKOFF_S`. The binding is retained, inference runs only
+after capture succeeds, and the result explicitly records fresh-evidence and
+no-physical-action retry provenance.
+
+If the model chooses `START` with a non-null required capability, the same
+readiness gate applies; it does not return immediately at process creation. A
+plain `START` with a null capability remains process-only. A timed-out
+capability-bearing `START` returns the exact `HOT` tool continuation, preventing
+an immediate finite-Skill retry against a degraded startup heartbeat.
 
 On approval resume, the host passes the saved `RunState` back without replacing
 its SDK context. This retains the exact approved/rejected call record and the
@@ -34,11 +65,14 @@ tool name and canonical arguments, excluding transient SDK call IDs. A
 genuinely new duplicate request is stopped rather than shown or executed
 again.
 
-Both the regular and developer UIs have separate browser-session switches for
-Provider activation, physical relative-pose motion, stationary world-to-arm
-calibration, and exact candidate activation. A fresh browser session defaults
-all four switches on, with a 35 cm translation authorization ceiling and a
-0.5 m/s nominal-speed authorization ceiling. Relative motion has
+Both the regular and developer views have browser-session switches for Provider
+activation and stop, physical relative-pose motion, stationary world-to-arm
+calibration and exact candidate activation, Basic safe-home, and spatial
+reinitialization. A fresh browser session defaults Provider activation and
+stop, bounded motion, calibration, exact candidate activation, and safe-home
+on. Spatial
+reinitialization remains off because it deliberately changes the world epoch
+and invalidates dependent state. Relative motion has
 operator-entered distance and nominal-speed maxima and can automatically
 approve only `execute_integrated_motion_preview` for the exact staged preview
 at or below both limits. The motion authorization also covers a bounded
@@ -51,15 +85,22 @@ active.
 The authorization control accepts up to 100 cm so it can cover future bounded
 tools, but the
 current relative-motion tool independently retains its 20 cm execution limit.
-Safe-home, Provider stop, and other protected operations remain outside these
-session authorizations and still ask.
+An operation outside the active session policy produces a normal SDK approval
+interruption for development. The policy decision never disables Provider or
+controller checks.
 
-Both Agent profiles offer an Integrated Controller relative-IK workflow.
+The shared Agent offers an Integrated Controller relative-IK workflow through
+either browser view.
 Its discoverable Skill contract declares the activation sequence explicitly:
-`robot_arm.rebot_dm` must become `HOT` first, followed by
-`robot_arm.primary.integrated`. The Agent inspects runtime and requests those
-authorization-gated transitions by directly calling the lifecycle tool before it
-requests a preview.
+`robot_arm.rebot_dm` with `robot.motion.arm.basic` must become `HOT` first,
+followed by `robot_arm.primary.integrated` with
+`robot.motion.arm.integrated.mit.one_shot`. The Agent inspects runtime and
+requests those authorization-gated transitions by directly calling the
+lifecycle tool before it requests a preview. If the model supplies a capability
+name that the selected Provider does not advertise, the lifecycle boundary
+does not wait for that impossible name. It waits for Provider readiness and
+continues to the finite Skill, whose adapter validates the exact operation
+capability.
 It first stages a nonphysical preview from the current measured controlled
 frame. If the preview is valid, it requests execution of the exact preview and
 uses either bounded session authorization or a separate readable
@@ -89,11 +130,12 @@ Every relative request is a new displacement from the current measured pose,
 including a repeated request after an unconfirmed arrival. The Agent does not
 expose a separate prior-target retry tool.
 
-Both profiles also expose a separate approval-gated Basic Controller safe-home
-tool. It preempts operational control, preserves the measured gripper angle,
-uses the controller's configured home policy, and reports completion only from
-`last_safe_home_result.success`. Gravity float, healthy status, and Provider
-stop are not accepted as substitutes for homing.
+The shared Agent also exposes a Basic Controller safe-home tool. It preempts
+operational control, preserves the measured gripper angle, uses the
+controller's configured home policy, and reports completion only from
+`last_safe_home_result.success`. The shared session policy may authorize this
+exact recovery operation without a dialog. Gravity float, healthy status, and
+Provider stop are not accepted as substitutes for homing.
 
 Each Agent UI provides independent selectors for the OpenAI Agent model,
 reasoning effort, and configured visual backend. The default Agent model is
@@ -103,10 +145,29 @@ configured by available API keys. `Auto routing` preserves the existing
 ordered VLM fallback, while an explicit visual selection uses only that model
 for the run.
 
-The developer surface deliberately has broader administrative reach than the
-regular Agent. Use the Midbrain observation pages first; their developer link
-requires a separate confirmation that the operator is overstepping the
-ordinary agent workflow.
+Both Agent prompt panels accept one optional JPEG, PNG, or WebP image up to
+8 MiB. The browser previews it, uploads it to bounded Midbrain process memory,
+and places only the returned attachment ID in the regular or developer run
+request. The OpenAI adapter resolves that ID into text-plus-image Agent input.
+This image is user context for the selected intellectual Agent model; it is not
+a Fabric observation and cannot replace the live robot-camera frame used by
+Robotics-ER Skills. The local Agents SDK session may retain the multimodal turn
+in `agent_sessions.sqlite3` for conversational continuity.
+
+Read-only VLM inference has a bounded transient retry before ordered fallback.
+By default, each selected backend may be attempted twice with a 0.25-second
+backoff. Only timeouts, transport failures, rate limits, and recognized
+transient server status codes are retried; invalid configuration and other
+non-transient failures move directly to the next configured backend or fail.
+`PHASE4_VLM_ATTEMPTS_PER_BACKEND` is restricted to `1..3`, and
+`PHASE4_VLM_RETRY_BACKOFF_S` to `0..5`. The result provenance reports every
+failed attempt and whether it was retryable. This does not retry an Agent run
+or any physical action.
+
+The developer view exposes broader read-only diagnostics than the regular
+view, but it has no broader Agent tool or execution policy. Component-specific
+development pages may still require a separate confirmation because their
+manual administrative controls can overstep the Agent workflow.
 
 When this optional service is started, it runs the formal Initialize /
 Re-establish Space Cognition Skill automatically in initialize-if-needed mode
@@ -116,11 +177,74 @@ variable to `false` for `-StartAgentUi`, so an explicitly opened Agent surface
 still begins idle and prompt-driven. The normal workspace launch does not
 start this service.
 
-Both Agent surfaces can call the approval-gated
-`reinitialize_space_cognition` tool when the operator explicitly requests a new
-origin. It revokes active workcell calibration before resetting VIO, clears
-point observations from the old epoch, and resumes capture only against the
-new epoch. It is not a Provider-readiness probe.
+The shared Agent can call the policy-gated `reinitialize_space_cognition`
+tool when a new origin or accepted drift recovery is required. It revokes
+active workcell calibration before resetting VIO, clears point observations
+from the old epoch, and resumes capture only against the new epoch. It is not a
+Provider-readiness probe, and both views leave its automatic authorization off
+by default.
+
+The streamed Agent contract is defined in
+`contracts/15_agent_event_stream.md`. The browser receives normalized Midbrain
+run, message, reasoning-summary, tool, and approval lifecycle events rather
+than raw SDK objects or tool arguments. Live SSE replay remains in memory. The
+same normalized events are also batched into the bounded robot-local SQLite
+journal defined in `contracts/19_agent_run_journal.md`; no browser subscriber
+is required. The journal survives process restarts and marks unfinished
+prior-process runs interrupted, but it is not yet an authenticated or encrypted
+field-audit system.
+
+Both Agent views project those events into a scrollable conversation. Each run
+keeps its user prompt, Agent answer, visual-evidence viewer, and an expandable
+execution summary. OpenAI runs request the model's public automatic reasoning
+summary; safe tool, approval, and retry lifecycle labels remain useful when a
+runtime does not emit summary text. Raw chain-of-thought, tool arguments, and
+tool outputs are not placed in browser history.
+
+The developer view uses a 50/50 workspace. Independently scrolling,
+individually collapsible diagnostics are on the left; its bottom-follow
+conversation and prompt composer are on the right. Developer turns add a
+two-level event view: the outer disclosure contains the normalized event log,
+and each retained event expands to its exact safe envelope. The durable journal
+remains the source for history across browser or process restarts.
+
+The regular page uses a fixed chat layout: its compact title remains at the
+top, the conversation grows upward inside the only main scroll region, and the
+prompt composer remains at the bottom. Compact Manager, Fabric, and Skill
+status appears with the activity on the left side of the conversation header.
+Active streamed turns follow their newest line. Model selectors are below the
+prompt box on both Agent pages. Enter submits the prompt; Shift+Enter inserts a
+newline.
+
+The Agent service projects at most the latest 40 runs from the current Manager
+boot into both chat surfaces. The prompt, public answer, safe event details,
+and model metadata come from the robot-local SQLite journal; attached image
+bytes do not. Both pages poll the same `/api/chat-session` projection, so they
+show the same transcript when open together and restore it after a tab closes.
+The tab that starts a live run retains ownership of that SSE stream while the
+other page observes journaled progress. There is no clear-history control.
+This robot-local projection is not yet an authenticated field-audit view; see
+`contracts/18_agent_chat_history.md` and `contracts/19_agent_run_journal.md`.
+
+When the pointing-identification or general visual-scene Skill analyzes a
+camera frame, both Agent pages receive a `visual.evidence.created` event for
+the exact retained RGB bytes used by the VLM. The browser renders normalized
+point and box records as an SVG overlay, can hide or recolor the overlay, and
+assigns distinct deterministic colors with an editable swatch for each
+annotation. The same per-annotation colors are used for client-side copy and
+download of a flattened PNG. Annotation labels use a compact medium-weight
+font with a translucent black halo so the bright annotation color remains
+legible without a pale border. The evidence contract can
+carry multiple named channels, but the current visual Skills publish only RGB;
+they do not attach the separately sampled latest depth image and imply false
+RGB-D synchronization. A later synchronized RGB-D producer can add a depth
+channel without changing the browser event or renderer.
+
+RGB capture waits up to 12 seconds for the first readable frame after Provider
+activation. Missing observations and recycled startup BufferRefs are retried at
+the capture boundary without re-running the Agent or VLM. A timeout returns
+`CAMERA_FRAME_UNAVAILABLE` with `retry_scope=CAPTURE_RGB_ONLY`; it does not
+claim that another Provider activation or physical action occurred.
 
 Relative arm motion separates direction authority from visual evidence. A
 current reviewed world-to-arm transform is the first authority for all WORLD
@@ -164,7 +288,7 @@ preview whose direction is already established by a reviewed transform or the
 upright-mount fallback. A changed-epoch or ambiguous after observation is
 `INCONCLUSIVE`; it is not rewritten as visual success.
 
-The regular Agent also exposes `calibrate_stationary_workcell`. VIO establishes
+The shared Agent also exposes `calibrate_stationary_workcell`. VIO establishes
 and tracks the local world epoch, while this finite Skill observes the
 stationary robot base/end effector and creates an immutable world-to-arm-base
 candidate. The Agent must then call
@@ -203,7 +327,8 @@ terminal tool error instead of repeatedly invoking an unavailable dependency.
 `32`, and allows multi-approval workflows to finish without removing the
 existing run timeout.
 
-Regular and developer Agent sessions use process-boot-scoped v4 session IDs.
+The single autonomous Agent uses one process-boot-scoped v5 session ID for
+requests from either browser view.
 Model input targets the latest `OPENAI_AGENT_SESSION_HISTORY_ITEMS` history
 items, defaulting to 32, and expands backward to the beginning of the enclosing
 user turn when needed. This prevents Responses reasoning, function-call, and

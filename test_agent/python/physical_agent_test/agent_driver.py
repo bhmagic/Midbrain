@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,7 @@ from agents import (
     ToolSearchTool,
 )
 
+from .agent_events import translate_openai_sdk_events
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .effector_front_adapter import EffectorFrontSkillAdapter
 from .gemini_pointing_skill import (
@@ -62,11 +64,148 @@ class InteractiveAgentResult:
 @dataclass(frozen=True)
 class AgentSessionAuthorization:
     auto_authorize_provider_activation: bool = False
+    auto_authorize_provider_stop: bool = False
     auto_authorize_relative_motion: bool = False
     max_auto_move_cm: float = 5.0
     max_auto_speed_m_s: float = MAX_RELATIVE_NOMINAL_SPEED_M_S
     auto_authorize_stationary_calibration: bool = False
     auto_authorize_stationary_activation: bool = False
+    auto_authorize_safe_home: bool = False
+    auto_authorize_space_reinitialization: bool = False
+
+
+AgentEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+AgentInput = str | list[dict[str, Any]] | RunState[Any]
+logger = logging.getLogger(__name__)
+
+
+def _provider_readiness_snapshot(
+    provider: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(provider, dict):
+        return None
+    report = provider.get("report")
+    report = report if isinstance(report, dict) else {}
+    return {
+        "provider_id": str(
+            provider.get("config", {}).get("id") or report.get("provider_id") or ""
+        ),
+        "process_state": provider.get("process_state"),
+        "residency": report.get("residency"),
+        "health": report.get("health"),
+        "ready": bool(report.get("ready")),
+        "expired": bool(report.get("expired")),
+        "instance_id": report.get("instance_id"),
+        "boot_id": report.get("boot_id"),
+        "last_seen": report.get("last_seen"),
+    }
+
+
+async def wait_for_provider_hot_readiness(
+    manager: ManagerClient,
+    provider_id: str,
+    *,
+    required_capability: str | None,
+    timeout_s: float,
+    poll_interval_s: float = 0.25,
+) -> dict[str, Any]:
+    timeout = float(timeout_s)
+    poll_interval = float(poll_interval_s)
+    if not math.isfinite(timeout) or timeout <= 0.0:
+        raise ValueError("provider HOT readiness timeout must be positive")
+    if not math.isfinite(poll_interval) or poll_interval <= 0.0:
+        raise ValueError("provider HOT readiness poll interval must be positive")
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    latest_provider: dict[str, Any] | None = None
+    latest_capability: dict[str, Any] | None = None
+    while True:
+        if required_capability is None:
+            providers = await manager.providers()
+            capabilities: list[dict[str, Any]] = []
+        else:
+            providers, capabilities = await asyncio.gather(
+                manager.providers(),
+                manager.capabilities(),
+            )
+        latest_provider = next(
+            (
+                provider
+                for provider in providers
+                if str(provider.get("config", {}).get("id") or "")
+                == provider_id
+            ),
+            None,
+        )
+        snapshot = _provider_readiness_snapshot(latest_provider)
+        provider_ready = bool(
+            snapshot
+            and snapshot["residency"] == "HOT"
+            and snapshot["ready"]
+            and not snapshot["expired"]
+        )
+
+        advertised_capabilities = [
+            capability
+            for capability in capabilities
+            if capability.get("provider_id") == provider_id
+        ]
+        latest_capability = next(
+            (
+                capability
+                for capability in advertised_capabilities
+                if capability.get("capability") == required_capability
+            ),
+            None,
+        )
+        capability_advertised = (
+            None if required_capability is None else latest_capability is not None
+        )
+        capability_ready = (
+            None
+            if required_capability is None or latest_capability is None
+            else bool(
+                latest_capability.get("available")
+                and latest_capability.get("ready")
+                and not latest_capability.get("expired")
+            )
+        )
+        if provider_ready and capability_ready is not False:
+            return {
+                "status": "READY",
+                "provider_ready": True,
+                "required_capability": required_capability,
+                "capability_advertised": capability_advertised,
+                "capability_ready": capability_ready,
+                "provider": snapshot,
+                "capability": latest_capability,
+                "advertised_capabilities": sorted(
+                    str(capability.get("capability") or "")
+                    for capability in advertised_capabilities
+                    if capability.get("capability")
+                ),
+                "timeout_s": timeout,
+            }
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0.0:
+            return {
+                "status": "TIMED_OUT",
+                "provider_ready": provider_ready,
+                "required_capability": required_capability,
+                "capability_advertised": capability_advertised,
+                "capability_ready": capability_ready,
+                "provider": snapshot,
+                "capability": latest_capability,
+                "advertised_capabilities": sorted(
+                    str(capability.get("capability") or "")
+                    for capability in advertised_capabilities
+                    if capability.get("capability")
+                ),
+                "timeout_s": timeout,
+            }
+        report_operation_progress("WAIT_PROVIDER_HOT_READINESS")
+        await asyncio.sleep(min(poll_interval, remaining))
 
 
 def _session_authorization(context_wrapper: Any) -> AgentSessionAuthorization:
@@ -77,7 +216,7 @@ def _session_authorization(context_wrapper: Any) -> AgentSessionAuthorization:
 
 
 def _runner_context(
-    input_value: str | RunState[Any],
+    input_value: AgentInput,
     authorization: AgentSessionAuthorization | None,
 ) -> AgentSessionAuthorization | None:
     """Keep the SDK-owned context when resuming an interrupted run."""
@@ -94,10 +233,11 @@ async def provider_activation_needs_approval(
 ) -> bool:
     authorization = _session_authorization(context_wrapper)
     action = str(arguments.get("action") or "").strip().lower()
-    return not (
-        authorization.auto_authorize_provider_activation
-        and action in {"start", "hot", "warm"}
-    )
+    if action in {"start", "hot", "warm"}:
+        return not authorization.auto_authorize_provider_activation
+    if action == "stop":
+        return not authorization.auto_authorize_provider_stop
+    return True
 
 
 async def relative_motion_needs_approval(
@@ -231,6 +371,42 @@ async def stationary_activation_needs_approval(
     return not authorization.auto_authorize_stationary_activation
 
 
+async def safe_home_needs_approval(
+    context_wrapper: Any,
+    _arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    return not authorization.auto_authorize_safe_home
+
+
+async def space_reinitialization_needs_approval(
+    context_wrapper: Any,
+    _arguments: dict[str, Any],
+    _call_id: str,
+) -> bool:
+    authorization = _session_authorization(context_wrapper)
+    return not authorization.auto_authorize_space_reinitialization
+
+
+async def consume_openai_agent_stream(
+    result: Any,
+    event_sink: AgentEventSink,
+) -> Any:
+    """Fully consume one SDK stream while isolating observer failures."""
+
+    async for sdk_event in result.stream_events():
+        for event_type, payload in translate_openai_sdk_events(sdk_event):
+            try:
+                await event_sink(event_type, payload)
+            except Exception:
+                logger.exception(
+                    "Midbrain event observer failed for %s",
+                    event_type,
+                )
+    return result
+
+
 def build_turn_safe_session_input(
     history: list[Any],
     new_input: list[Any],
@@ -339,6 +515,8 @@ class PrototypeAgentDriver:
         defer_loading: bool = False,
         adapter_timeout_s: float = 60.0,
         stationary_calibration_timeout_s: float = 600.0,
+        provider_hot_readiness_timeout_s: float = 20.0,
+        provider_hot_readiness_poll_interval_s: float = 0.25,
         max_turns: int = 16,
         session_history_item_limit: int | None = None,
     ):
@@ -346,6 +524,26 @@ class PrototypeAgentDriver:
         self.max_turns = int(max_turns)
         if not 1 <= self.max_turns <= 32:
             raise ValueError("max_turns must be between 1 and 32")
+        self.provider_hot_readiness_timeout_s = float(
+            provider_hot_readiness_timeout_s
+        )
+        self.provider_hot_readiness_poll_interval_s = float(
+            provider_hot_readiness_poll_interval_s
+        )
+        if (
+            not math.isfinite(self.provider_hot_readiness_timeout_s)
+            or self.provider_hot_readiness_timeout_s <= 0.0
+        ):
+            raise ValueError(
+                "provider_hot_readiness_timeout_s must be positive"
+            )
+        if (
+            not math.isfinite(self.provider_hot_readiness_poll_interval_s)
+            or self.provider_hot_readiness_poll_interval_s <= 0.0
+        ):
+            raise ValueError(
+                "provider_hot_readiness_poll_interval_s must be positive"
+            )
         root = workspace_root or Path(__file__).resolve().parents[3]
         eligible = set(
             eligible_tool_names or {"identify_pointed_object"}
@@ -509,6 +707,22 @@ class PrototypeAgentDriver:
             )
             eligible.add("preview_relative_effector_motion")
 
+        approval_overrides: dict[
+            str,
+            bool | Callable[..., Awaitable[bool]],
+        ] = {}
+        if stationary_calibration_skill is not None:
+            approval_overrides["calibrate_stationary_workcell"] = (
+                stationary_calibration_needs_approval
+            )
+        if (
+            space_cognition_reinitializer is not None
+            and "reinitialize_space_cognition" in eligible
+        ):
+            approval_overrides["reinitialize_space_cognition"] = (
+                space_reinitialization_needs_approval
+            )
+
         tools = build_agent_tools(
             descriptors,
             adapters,
@@ -524,15 +738,7 @@ class PrototypeAgentDriver:
                 if stationary_calibration_skill is not None
                 else None
             ),
-            approval_overrides=(
-                {
-                    "calibrate_stationary_workcell": (
-                        stationary_calibration_needs_approval
-                    )
-                }
-                if stationary_calibration_skill is not None
-                else None
-            ),
+            approval_overrides=approval_overrides or None,
         )
         self.offered_skill_descriptors = [
             descriptor
@@ -632,12 +838,22 @@ class PrototypeAgentDriver:
                 arguments = json.loads(raw_arguments)
                 provider_id = arguments.get("provider_id")
                 action = arguments.get("action")
+                required_capability = arguments.get("required_capability")
                 if not isinstance(provider_id, str) or not provider_id.strip():
                     raise ValueError("provider_id must be non-empty text")
                 if action not in {"start", "hot", "warm", "stop"}:
                     raise ValueError(
                         "action must be start, hot, warm, or stop"
                     )
+                if required_capability is not None and (
+                    not isinstance(required_capability, str)
+                    or not required_capability.strip()
+                ):
+                    raise ValueError(
+                        "required_capability must be non-empty text when supplied"
+                    )
+                if isinstance(required_capability, str):
+                    required_capability = required_capability.strip()
                 configured = {
                     str(provider.get("config", {}).get("id"))
                     for provider in await manager.providers()
@@ -647,18 +863,89 @@ class PrototypeAgentDriver:
                         f"{provider_id} is not a configured Provider"
                     )
                 result = await manager.set_residency(provider_id, action)
+                readiness = None
+                if action == "hot" or (
+                    action == "start" and required_capability is not None
+                ):
+                    readiness = await wait_for_provider_hot_readiness(
+                        manager,
+                        provider_id,
+                        required_capability=required_capability,
+                        timeout_s=self.provider_hot_readiness_timeout_s,
+                        poll_interval_s=(
+                            self.provider_hot_readiness_poll_interval_s
+                        ),
+                    )
+                lifecycle_complete = bool(
+                    readiness is None or readiness["status"] == "READY"
+                )
+                if (
+                    readiness is not None
+                    and lifecycle_complete
+                    and readiness.get("capability_advertised") is False
+                ):
+                    agent_instruction = (
+                        "The Provider is HOT and ready, but the requested "
+                        "capability name is not advertised by that Provider. "
+                        "It was treated as an advisory model guess rather than "
+                        "an impossible readiness gate. Do not invent a "
+                        "replacement or request this identical lifecycle "
+                        "transition again. Invoke the original finite Skill "
+                        "immediately; its adapter validates the exact "
+                        "capability needed for the operation."
+                    )
+                elif readiness is not None and lifecycle_complete:
+                    agent_instruction = (
+                        "The Provider is now HOT and ready. Do not request "
+                        "this identical lifecycle transition again in the "
+                        "current run. If a finite Skill required this "
+                        "transition, invoke that original Skill immediately; "
+                        "do not inspect the runtime again or finish before "
+                        "the Skill returns. If the user requested only this "
+                        "lifecycle change, report the observed readiness."
+                    )
+                elif readiness is not None:
+                    agent_instruction = (
+                        f"Manager accepted the {action.upper()} request, but "
+                        "the Provider did not become HOT and ready before "
+                        "the bounded timeout. Do "
+                        "not request the identical transition again or claim "
+                        "activation in this run. If the requested action was "
+                        "START and a finite Skill still needs the capability, "
+                        "call the reported required_next_tool for HOT. "
+                        "Otherwise report the readiness timeout and its "
+                        "latest evidence."
+                    )
+                else:
+                    agent_instruction = (
+                        "Do not request this identical lifecycle transition "
+                        "again in the current run. Continue the original "
+                        "finite task when this transition was its dependency."
+                    )
                 return json.dumps(
                     {
-                        "lifecycle_request_complete": True,
+                        "lifecycle_request_accepted": True,
+                        "lifecycle_request_complete": lifecycle_complete,
                         "provider_id": provider_id,
                         "requested_action": action.upper(),
+                        "required_capability": required_capability,
                         "manager_result": result,
-                        "agent_instruction": (
-                            "Do not request this identical lifecycle "
-                            "transition again in the current run. Continue "
-                            "the original finite task; its adapter performs "
-                            "its own bounded readiness checks."
+                        "readiness": readiness,
+                        "required_next_tool": (
+                            {
+                                "name": "set_provider_residency",
+                                "arguments": {
+                                    "provider_id": provider_id,
+                                    "action": "hot",
+                                    "required_capability": required_capability,
+                                },
+                            }
+                            if action == "start"
+                            and required_capability is not None
+                            and not lifecycle_complete
+                            else None
                         ),
+                        "agent_instruction": agent_instruction,
                     },
                     ensure_ascii=False,
                     default=str,
@@ -713,9 +1000,34 @@ class PrototypeAgentDriver:
                                 "action": {
                                     "type": "string",
                                     "enum": ["start", "hot", "warm", "stop"],
+                                    "description": (
+                                        "Use hot for a finite-Skill dependency, "
+                                        "even when the Provider process is "
+                                        "stopped; Manager starts it as part of "
+                                        "HOT. Start alone is process-only, but "
+                                        "when required_capability is non-null "
+                                        "it also waits for natural HOT "
+                                        "readiness."
+                                    ),
+                                },
+                                "required_capability": {
+                                    "type": ["string", "null"],
+                                 "description": (
+                                     "Exact capability that caused a cold "
+                                     "dependency transition, such as "
+                                     "camera.rgb. Copy it verbatim from a "
+                                     "finite Skill result or the runtime "
+                                     "catalog; never infer, shorten, or "
+                                     "synthesize it. Set it to null when no "
+                                     "exact capability was reported."
+                                 ),
                                 },
                             },
-                            "required": ["provider_id", "action"],
+                            "required": [
+                                "provider_id",
+                                "action",
+                                "required_capability",
+                            ],
                             "additionalProperties": False,
                         },
                         on_invoke_tool=set_provider_residency,
@@ -970,8 +1282,10 @@ class PrototypeAgentDriver:
                         "operation. It preempts active arm control, moves the "
                         "six arm joints to configured home while preserving "
                         "the measured gripper angle, and returns to gravity "
-                        "float. It always requires human approval and reports "
-                        "only controller-confirmed completion."
+                        "float. Host session policy may authorize the exact "
+                        "operation without an interactive prompt; controller "
+                        "safety checks remain authoritative. It reports only "
+                        "controller-confirmed completion."
                     ),
                     params_json_schema={
                         "type": "object",
@@ -981,7 +1295,7 @@ class PrototypeAgentDriver:
                     },
                     on_invoke_tool=execute_basic_safe_home,
                     strict_json_schema=True,
-                    needs_approval=True,
+                    needs_approval=safe_home_needs_approval,
                 )
             )
         narrow_initial = eligible == {"identify_pointed_object"}
@@ -1012,8 +1326,10 @@ class PrototypeAgentDriver:
                 "requested relative "
                 "effector motion, inspect the current runtime even if earlier "
                 "conversation says the Providers were running, then activate "
-                "robot_arm.rebot_dm to HOT first, then activate "
-                "robot_arm.primary.integrated to HOT. Only after both "
+                "robot_arm.rebot_dm to HOT first with exact capability "
+                "robot.motion.arm.basic, then activate "
+                "robot_arm.primary.integrated to HOT with exact capability "
+                "robot.motion.arm.integrated.mit.one_shot. Only after both "
                 "dependencies are ready, create the nonphysical preview and "
                 "then "
                 "request execution of that exact preview; do not stop at "
@@ -1105,16 +1421,27 @@ class PrototypeAgentDriver:
                     "and an identical approved transition must not be "
                     "requested a second time in that run. Do not "
                     "claim activation until the Manager tool returns success. "
-                    "After an approved activation, continue the original task "
-                    "within the same run."
+                    "When a Skill reports a required_capability, copy it into "
+                    "the lifecycle call and use action=hot even when the "
+                    "Provider process is stopped; Manager starts a stopped "
+                    "Provider as part of HOT. The tool waits for that exact "
+                    "capability. If you used start with a required capability, "
+                    "do not invoke the Skill unless that call reports ready; "
+                    "follow required_next_tool when it times out. After an "
+                    "approved activation reports ready, "
+                    "invoke the original finite Skill immediately within the "
+                    "same run; do not inspect the runtime again or stop at a "
+                    "lifecycle summary."
                 )
             if integrated_motion_skill is not None:
                 instructions += (
                     " For a requested relative end-effector motion, inspect "
                     "the current runtime even if earlier conversation says the "
                     "Providers were running. Activate robot_arm.rebot_dm to "
-                    "HOT first, then "
-                    "activate robot_arm.primary.integrated to HOT. Only after "
+                    "HOT first with exact capability robot.motion.arm.basic, "
+                    "then activate robot_arm.primary.integrated to HOT with "
+                    "exact capability "
+                    "robot.motion.arm.integrated.mit.one_shot. Only after "
                     "both are ready, create the nonphysical Integrated IK "
                     "preview and then request "
                     "execution of that exact preview. "
@@ -1250,8 +1577,9 @@ class PrototypeAgentDriver:
             instructions += (
                 " For an explicit safe-home request, use "
                 "execute_basic_safe_home after ensuring the Basic Provider "
-                "is running. Safe-home preempts active arm control and always "
-                "requires approval. Do not substitute gravity float, Provider "
+                "is running. Safe-home preempts active arm control and uses "
+                "the active host authorization policy. Do not substitute "
+                "gravity float, Provider "
                 "stop, or healthy status for homing. Report completion only "
                 "when physical_motion_completed=true. Safe-home preempts "
                 "Integrated's Basic lease, so RECOVERY_REQUIRED afterward is "
@@ -1264,12 +1592,20 @@ class PrototypeAgentDriver:
             instructions += (
                 " Use reinitialize_space_cognition only when the operator "
                 "explicitly requests a new local origin or accepts recovery "
-                "from spatial drift. It is not a readiness probe. Approval "
+                "from spatial drift. It is not a readiness probe. Host "
+                "authorization "
                 "revokes active workcell calibrations, resets the VIO epoch, "
                 "and clears observations bound to the old epoch. After it "
                 "succeeds, any world-to-arm calibration required by a later "
                 "motion task must be established again."
             )
+        instructions += (
+            " A user-supplied image in the current message is contextual "
+            "input only. It is not a live robot-camera observation and has "
+            "no Provider identity, capture freshness, depth, calibration, "
+            "spatial-frame, or physical-action authority. Never use it to "
+            "satisfy a finite Skill's live-sensor requirement."
+        )
         self.agent = Agent(
             name="Physical Agent Prototype Driver",
             model=model,
@@ -1308,12 +1644,13 @@ class PrototypeAgentDriver:
 
     async def run_interactive(
         self,
-        input_value: str | RunState[Any],
+        input_value: AgentInput,
         *,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         vlm_model_override: str | None = None,
         authorization: AgentSessionAuthorization | None = None,
+        event_sink: AgentEventSink | None = None,
     ) -> InteractiveAgentResult:
         result = await self._run(
             input_value,
@@ -1321,6 +1658,7 @@ class PrototypeAgentDriver:
             reasoning_effort=reasoning_effort,
             vlm_model_override=vlm_model_override,
             authorization=authorization,
+            event_sink=event_sink,
         )
         if result.interruptions:
             return InteractiveAgentResult(
@@ -1339,12 +1677,13 @@ class PrototypeAgentDriver:
 
     async def _run(
         self,
-        input_value: str | RunState[Any],
+        input_value: AgentInput,
         *,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
         vlm_model_override: str | None = None,
         authorization: AgentSessionAuthorization | None = None,
+        event_sink: AgentEventSink | None = None,
     ):
         if not os.getenv("OPENAI_API_KEY", "").strip():
             raise RuntimeError("OPENAI_API_KEY is empty in config/api_keys.env")
@@ -1358,21 +1697,38 @@ class PrototypeAgentDriver:
                     None
                     if reasoning_effort is None
                     else ModelSettings(
-                        reasoning={"effort": reasoning_effort}
+                        reasoning={
+                            "effort": reasoning_effort,
+                            "summary": "auto",
+                        }
                     )
                 ),
             )
         vlm_token = set_vlm_model_selection(vlm_model_override)
         try:
-            result = await await_with_progress_heartbeat(
-                Runner.run(
+            runner_arguments = {
+                "context": _runner_context(input_value, authorization),
+                "max_turns": self.max_turns,
+                "run_config": run_config,
+                "session": self.session,
+            }
+            if event_sink is None:
+                awaitable = Runner.run(
                     self.agent,
                     input_value,
-                    context=_runner_context(input_value, authorization),
-                    max_turns=self.max_turns,
-                    run_config=run_config,
-                    session=self.session,
-                ),
+                    **runner_arguments,
+                )
+            else:
+                awaitable = consume_openai_agent_stream(
+                    Runner.run_streamed(
+                        self.agent,
+                        input_value,
+                        **runner_arguments,
+                    ),
+                    event_sink,
+                )
+            result = await await_with_progress_heartbeat(
+                awaitable,
                 stage="AGENT_MODEL_AWAITING_RESPONSE",
             )
         finally:

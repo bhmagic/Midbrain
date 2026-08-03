@@ -1,5 +1,111 @@
 # Changelog
 
+## Unreleased
+
+- Record the next Agent objectives in the roadmap and version history. The
+  immediate performance objective is a measured deterministic command chain
+  for frequent robot operations that reduces extra model turns without
+  bypassing finite Skills, lifecycle policy, controller checks, leases,
+  evidence, or authorization. Contextual development approval cards are marked
+  near future; remote command security and durable evidence policy remain
+  explicit future work.
+- Reconcile periodically synchronized Agent turns in place instead of
+  destroying and recreating their DOM. Live local runs retain the correct
+  chronological position, unchanged server projections are skipped, expanded
+  execution/event disclosures remain open, and bottom-following occurs only
+  when the operator was already near the bottom.
+- Treat a model-supplied capability name that is absent from a Provider's
+  advertised Manager catalog as advisory rather than waiting for an impossible
+  match. A healthy `HOT` Provider can continue to its finite Skill, whose
+  adapter validates the exact operation capability. Relative arm activation
+  instructions and recovery continuations now carry the exact Basic and
+  Integrated one-shot capability names.
+- Persist the SDK-neutral Agent event sequence in a bounded robot-local SQLite
+  journal with Manager-boot session parents, in-place v1 migration, batched WAL
+  writes, terminal-run and per-run event retention, restart-safe `INTERRUPTED`
+  status for nonresumable runs, and read-only health reporting. Storage failure
+  degrades observability without blocking the Agent pipeline. Live SSE, SDK
+  sessions, and physical authority remain separate boundaries.
+- Store the bounded public Agent transcript under the active Manager boot and
+  project it through `/api/chat-session`. The regular and developer pages now
+  restore and periodically synchronize the same chat after tab close/reopen,
+  while a tab that starts a live SSE run retains local stream ownership. Remove
+  the browser clear-history control and browser `sessionStorage` transcript.
+- Add a read-only Agent run-journal GUI with expandable Midbrain-session
+  parents and familiar run cards on the left, plus a chat-like selected-run
+  outcome and category-then-event expansion on the right. Link it from the
+  Manager portal and both Agent views without adding command, resume, approval,
+  or deletion authority.
+- Route the regular page and developer view through one autonomous Agent
+  driver, process-scoped model session, tool policy, pending-approval store,
+  and streaming/resume implementation. Keep only the canonical
+  `/api/streaming-runs` execution family; remove the synchronous `/api/run`
+  route and developer execution aliases so diagnostic presentation cannot
+  drift into a second behavior policy.
+- Reshape the developer view into an equal two-pane workspace with
+  independently scrolling, individually collapsible diagnostics on the left
+  and a regular-style bottom-follow conversation and prompt composer on the
+  right. Developer chat turns can expand twice to reveal each normalized event
+  envelope retained in the browser session.
+- Reshape the regular Agent page into a fixed-height chat surface with a
+  persistent compact header, bottom-anchored scrolling conversation, and a
+  bottom composer. Compact Manager, Fabric, and Skill status is grouped into
+  the left side of the conversation header. Model selection now sits below the
+  prompt; Enter submits while Shift+Enter inserts a newline on both Agent
+  prompt surfaces, and active streamed turns follow their newest line.
+- Normalize Gemini Robotics-ER `0..1000` annotation coordinates at the VLM
+  boundary so visual Skill points and boxes reliably reach the shared SVG
+  viewer, while preserving normalized `0..1` evidence geometry.
+- Accept explicitly declared pixel annotations using exact captured-frame
+  dimensions and report bounded annotation acceptance/rejection diagnostics.
+- Use `gemini-robotics-er-2-preview` as the default Robotics-ER model while
+  preserving `GEMINI_ROBOTICS_MODEL` as a local compatibility override.
+- Reduce visual-annotation label size and weight, and replace the heavy opaque
+  outline with a thinner translucent-black halo in both SVG and flattened PNG
+  rendering.
+- Retry classified transient failures at the read-only VLM boundary, with two
+  attempts per backend by default, bounded backoff, and per-attempt provenance.
+  Non-transient failures still fall through without repeating the backend.
+- Retry a transient camera-frame timeout once at the finite visual Skill's
+  capture-only boundary. Camera binding and VLM inference are not repeated,
+  no physical action is submitted, and recovered or exhausted retry outcomes
+  are projected as SDK-neutral Agent events.
+- Allow one validated JPEG, PNG, or WebP user image to accompany turns from
+  either Agent view through a bounded Midbrain attachment ID. The OpenAI
+  adapter converts the reference to multimodal input while robot-camera Skills
+  retain separate live-evidence provenance.
+- Present runs in both Agent views as a bounded scrollable conversation
+  with one expandable execution summary and independently retained visual
+  evidence per turn. Terminal turns survive page reloads for the current
+  browser and backend process session; raw chain-of-thought, tool arguments,
+  and tool outputs are excluded.
+- Request the OpenAI runtime's public automatic reasoning summary for streamed
+  runs while retaining SDK-neutral tool and retry progress when a model does
+  not emit summary text.
+
+## Agent streaming and visual evidence — 2026-08-02
+
+- Added backend-owned, replayable Agent SSE runs for the regular and developer
+  pages, with a versioned SDK-neutral Midbrain event projection and the legacy
+  synchronous endpoints retained for compatibility.
+- Added exact retained RGB evidence with normalized point/box annotations,
+  interactive SVG overlays, deterministic per-annotation colors and editable
+  swatches, and color-faithful flattened copy/download. RGB capture now waits a
+  configurable bounded interval for the first readable frame after Provider
+  activation instead of failing the Agent task during normal camera warm-up.
+- Changed the Agent lifecycle boundary so a `HOT` request is not reported as
+  complete merely because the Provider accepted the transition. The tool now
+  waits for a fresh Manager report showing `HOT` and ready, optionally waits
+  for the exact capability that caused activation, and then directs the Agent
+  to resume the original finite Skill in the same run. A bounded timeout
+  remains visible instead of producing a false activation claim.
+- Applied the same readiness wait when the model chooses process-only `START`
+  with a non-null `required_capability`. This closes the stopped-camera race
+  where the model immediately retried the visual Skill while startup was still
+  publishing a degraded heartbeat. Dependency instructions now prefer `HOT`
+  even for a stopped Provider because Manager performs startup as part of that
+  transition; a timed-out `START` returns an exact `HOT` continuation.
+
 ## Unreleased — Canonical monorepo Git workflow
 
 - Allow a newly reviewed stationary workcell calibration to atomically

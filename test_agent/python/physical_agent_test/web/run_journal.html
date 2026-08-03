@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Midbrain Agent Run Journal</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", sans-serif;
+      --bg: #090909;
+      --surface: #131313;
+      --raised: #1c1c1c;
+      --border: #3b3b3b;
+      --text: #f2f2f2;
+      --muted: #a8a8a8;
+      --accent: #e5e5e5;
+      --ok: #8fd19e;
+      --warning: #f2b84b;
+      --danger: #f17878;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      height: 100dvh;
+      margin: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 76% -12%, rgba(255,255,255,.07), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+    }
+    a { color: var(--muted); text-decoration: none; }
+    a:hover { color: var(--text); }
+    button, input { font: inherit; }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 11px;
+      background: var(--raised);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    .shell {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      width: min(100%, 1900px);
+      height: 100%;
+      margin: 0 auto;
+      padding: 14px 18px 18px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-width: 0;
+      border-bottom: 1px solid var(--border);
+      padding: 0 2px 13px;
+    }
+    .topbar h1 { margin: 0; font-size: 1.25rem; letter-spacing: -.025em; }
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: .66rem;
+      font-weight: 750;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .nav-links { display: flex; flex-wrap: wrap; gap: 14px; font-size: .79rem; }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      min-height: 0;
+      gap: 16px;
+      padding-top: 16px;
+    }
+    .pane {
+      min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .record-pane { padding-right: 7px; }
+    .detail-pane { padding-right: 7px; }
+    .pane-head {
+      position: sticky;
+      z-index: 2;
+      top: 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px;
+      background: rgba(19,19,19,.97);
+    }
+    .pane-head h2 { margin: 0 0 3px; font-size: 1rem; }
+    .pane-head p { margin: 0; color: var(--muted); font-size: .72rem; }
+    .list-controls { display: flex; align-items: center; gap: 8px; }
+    .list-controls input {
+      width: min(220px, 28vw);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .journal-health { margin: -3px 2px 12px; color: var(--muted); font-size: .72rem; }
+    .record-list, .event-groups { display: grid; gap: 9px; }
+    .session-card, .record-card, .event-group, .event-record {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(19,19,19,.94);
+    }
+    .session-card[open], .record-card[open], .event-group[open] { border-color: #5b5b5b; }
+    .session-card.selected { box-shadow: inset 3px 0 #777; }
+    .record-card.selected { box-shadow: inset 3px 0 var(--accent); }
+    summary { cursor: pointer; list-style-position: inside; }
+    .session-summary, .record-summary, .event-group > summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+    }
+    .session-title, .record-title { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .session-title { font-size: .84rem; }
+    .session-subtitle, .record-subtitle { margin-top: 4px; color: var(--muted); font-size: .7rem; }
+    .session-body {
+      display: grid;
+      gap: 8px;
+      border-top: 1px solid rgba(59,59,59,.58);
+      padding: 10px 10px 10px 20px;
+      background: rgba(8,8,8,.42);
+    }
+    .session-body .record-card { background: rgba(19,19,19,.98); }
+    .status-chip {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 7px;
+      color: var(--muted);
+      font-size: .61rem;
+      font-weight: 750;
+      letter-spacing: .055em;
+    }
+    .status-chip.completed { border-color: rgba(143,209,158,.5); color: var(--ok); }
+    .status-chip.active { border-color: rgba(143,209,158,.5); color: var(--ok); }
+    .status-chip.closed, .status-chip.historical { color: var(--muted); }
+    .status-chip.failed { border-color: rgba(241,120,120,.55); color: var(--danger); }
+    .status-chip.interrupted { border-color: rgba(242,184,75,.52); color: var(--warning); }
+    .record-body { padding: 0 12px 12px; }
+    .record-meta, .run-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+      margin: 0 0 10px;
+    }
+    .record-meta div, .run-meta div {
+      min-width: 0;
+      border: 1px solid rgba(59,59,59,.72);
+      border-radius: 7px;
+      padding: 8px;
+      background: #101010;
+    }
+    dt { color: var(--muted); font-size: .62rem; letter-spacing: .05em; text-transform: uppercase; }
+    dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .73rem; }
+    .record-body button { width: 100%; }
+    .record-run-id { margin: 0 0 10px; color: var(--muted); font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: .64rem; overflow-wrap: anywhere; }
+    .record-event-loading { color: var(--muted); font-size: .68rem; }
+    .empty-state {
+      display: grid;
+      min-height: 240px;
+      place-content: center;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .run-header {
+      margin-bottom: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 15px;
+      background: rgba(19,19,19,.96);
+    }
+    .run-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .run-header h2 { margin: 0 0 5px; overflow-wrap: anywhere; font-size: 1.04rem; }
+    .run-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 13px 0 0; }
+    .conversation { display: grid; gap: 8px; margin-bottom: 12px; }
+    .message {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      background: #101010;
+    }
+    .message-head { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: .68rem; }
+    .message-head strong { color: var(--text); letter-spacing: .07em; text-transform: uppercase; }
+    .message pre {
+      margin: 9px 0 0;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .event-heading { margin: 18px 2px 9px; color: var(--muted); font-size: .72rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .event-group > summary strong { font-size: .82rem; }
+    .event-count { color: var(--muted); font-size: .68rem; }
+    .event-list { display: grid; gap: 7px; padding: 0 10px 10px; }
+    .event-record { background: #101010; }
+    .event-record.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(229,229,229,.12); }
+    .event-record > summary { padding: 9px 10px; color: var(--muted); font-size: .7rem; overflow-wrap: anywhere; }
+    .event-record pre {
+      max-height: 520px;
+      margin: 0 9px 9px;
+      overflow: auto;
+      border: 1px solid #303030;
+      border-radius: 7px;
+      padding: 10px;
+      background: #080808;
+      color: #d3d3d3;
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      font-size: .68rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .error-copy { color: var(--danger); }
+    @media (max-width: 900px) {
+      body { height: auto; min-height: 100dvh; overflow: auto; }
+      .shell { height: auto; min-height: 100dvh; }
+      .workspace { grid-template-columns: 1fr; }
+      .pane { max-height: 62dvh; }
+    }
+    @media (max-width: 600px) {
+      .shell { padding: 11px; }
+      .topbar, .pane-head { align-items: stretch; flex-direction: column; }
+      .list-controls input { width: 100%; }
+      .run-meta { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Read-only developer diagnostics</p>
+        <h1>Agent run journal</h1>
+      </div>
+      <nav class="nav-links" aria-label="Agent navigation">
+        <a href="http://127.0.0.1:7001/">Midbrain</a>
+        <a href="/">Regular agent</a>
+        <a href="/dev">Developer view</a>
+      </nav>
+    </header>
+    <section class="workspace">
+      <aside class="pane record-pane" aria-label="Midbrain session history" aria-labelledby="recordHeading">
+        <div class="pane-head">
+          <div>
+            <h2 id="recordHeading">Midbrain sessions</h2>
+            <p id="recordCount">Loading retained sessions...</p>
+          </div>
+          <div class="list-controls">
+            <input id="recordFilter" type="search" placeholder="Filter sessions or runs" aria-label="Filter sessions or runs">
+            <button id="refreshRecords" type="button">Refresh</button>
+          </div>
+        </div>
+        <p id="journalHealth" class="journal-health"></p>
+        <div id="recordList" class="record-list"></div>
+        <div id="recordEmpty" class="empty-state" hidden>No retained Midbrain sessions match this view.</div>
+      </aside>
+      <section id="runDetailPane" class="pane detail-pane" aria-labelledby="detailHeading">
+        <div id="detailEmpty" class="empty-state">Select a retained run to inspect its normalized event record.</div>
+        <div id="detailContent" hidden>
+          <header class="run-header">
+            <div class="run-title-row">
+              <div>
+                <p class="eyebrow">Selected record</p>
+                <h2 id="detailHeading"></h2>
+              </div>
+              <span id="detailStatus" class="status-chip"></span>
+            </div>
+            <dl id="runMeta" class="run-meta"></dl>
+          </header>
+          <section id="runConversation" class="conversation" aria-label="Run outcome"></section>
+          <h3 class="event-heading">Normalized event record · two-level detail</h3>
+          <section id="eventGroups" class="event-groups"></section>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="/assets/run_journal.js"></script>
+</body>
+</html>

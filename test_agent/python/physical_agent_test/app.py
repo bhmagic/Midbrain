@@ -13,15 +13,27 @@ from typing import Any
 import httpx
 import uvicorn
 from agents import RunState, SessionSettings, SQLiteSession
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .agent_attachments import (
+    AgentAttachmentStore,
+    build_multimodal_user_input,
+)
 from .agent_driver import (
+    AgentEventSink,
+    AgentInput,
     AgentSessionAuthorization,
     PrototypeAgentDriver,
     relative_motion_within_authorization,
 )
+from .agent_event_stream import (
+    AgentRunStreamRegistry,
+    parse_event_sequence,
+    stream_sse,
+)
+from .agent_run_journal import AgentRunJournal
 from .authorization import AuthorizationStore
 from .basic_client import BasicControllerClient
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
@@ -64,6 +76,7 @@ from .stationary_calibration_activation import (
     StationaryCalibrationActivationService,
 )
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
+from .visual_evidence import VisualEvidenceStore
 from .world_point_cloud import WorldPointCloudAccumulator
 from .vlm_router import build_default_vlm_router
 from stationary_world_arm_alignment.camera import RgbdCapture
@@ -76,6 +89,18 @@ settings = Settings()
 phase4_policy = Phase4Policy.from_environment()
 operation_registry = OperationRegistry()
 install_operation_registry(operation_registry)
+agent_run_journal = AgentRunJournal(
+    settings.agent_run_journal_path,
+    maximum_runs=settings.agent_run_journal_max_runs,
+    maximum_events_per_run=(
+        settings.agent_run_journal_max_events_per_run
+    ),
+    retention_days=settings.agent_run_journal_retention_days,
+)
+agent_run_stream_registry = AgentRunStreamRegistry(
+    maximum_events=settings.agent_run_journal_max_events_per_run,
+    journal=agent_run_journal,
+)
 fabric = FabricClient(settings.fabric_url)
 manager = ManagerClient(settings.manager_url)
 integrated = IntegratedControllerClient(
@@ -94,11 +119,19 @@ basic_safe_home_agent_adapter = BasicSafeHomeAdapter(basic)
 authorization_store = AuthorizationStore(
     signing_secret=settings.authorization_signing_secret,
 )
-capture = RgbCapture(fabric, settings.screenshot_dir)
+capture = RgbCapture(
+    fabric,
+    settings.screenshot_dir,
+    first_frame_timeout_s=settings.camera_first_frame_timeout_s,
+)
 depth_capture = DepthCapture(fabric, settings.screenshot_dir)
+visual_evidence_store = VisualEvidenceStore()
+agent_attachment_store = AgentAttachmentStore()
 agent_vlm_router = build_default_vlm_router(
     gemini_model=settings.gemini_model,
     attempt_timeout_s=phase4_policy.vlm_attempt_timeout_s,
+    attempts_per_backend=phase4_policy.vlm_attempts_per_backend,
+    retry_backoff_s=phase4_policy.vlm_retry_backoff_s,
 )
 pointing_skill = PointingIdentificationSkill(
     capture,
@@ -106,6 +139,9 @@ pointing_skill = PointingIdentificationSkill(
     manager=manager,
     fallback_camera_provider_id=settings.head_camera_provider_id,
     vlm_router=agent_vlm_router,
+    visual_evidence_store=visual_evidence_store,
+    capture_attempts=settings.camera_skill_capture_attempts,
+    capture_retry_backoff_s=settings.camera_skill_retry_backoff_s,
 )
 visual_scene_skill = VisualSceneAnalysisSkill(
     capture,
@@ -113,6 +149,9 @@ visual_scene_skill = VisualSceneAnalysisSkill(
     manager=manager,
     fallback_camera_provider_id=settings.head_camera_provider_id,
     vlm_router=agent_vlm_router,
+    visual_evidence_store=visual_evidence_store,
+    capture_attempts=settings.camera_skill_capture_attempts,
+    capture_retry_backoff_s=settings.camera_skill_retry_backoff_s,
 )
 rgbd_evidence_capture = RgbdEvidenceCapture(
     fabric,
@@ -248,13 +287,6 @@ integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
 )
 
 
-discoverable_agent_skill_catalog = discover_agent_skills(
-    settings.workspace_root,
-)
-all_discoverable_tool_names = {
-    descriptor.tool_name
-    for descriptor in discoverable_agent_skill_catalog
-}
 agent_session_database = (
     settings.workspace_root
     / "test_agent"
@@ -263,78 +295,83 @@ agent_session_database = (
 )
 agent_session_database.parent.mkdir(parents=True, exist_ok=True)
 agent_runtime_session_epoch = uuid.uuid4().hex
-driver = PrototypeAgentDriver(
-    pointing_skill,
-    settings.openai_model,
-    tool_choice=settings.openai_agent_tool_choice,
-    eligible_tool_names=set(settings.phase4_eligible_tools),
-    visual_scene_skill=visual_scene_skill,
-    rgbd_alignment_skill=rgbd_alignment_skill,
-    spatial_registration_skill=spatial_registration_skill,
-    effector_front_skill=effector_front_skill,
-    tool_registration_skill=tool_registration_skill,
-    stationary_calibration_skill=stationary_calibration_agent_adapter,
-    manager=manager,
-    provider_lifecycle_control=True,
-    integrated_motion_skill=integrated_motion_agent_adapter,
-    basic_safe_home_skill=basic_safe_home_agent_adapter,
-    space_cognition_reinitializer=_reinitialize_space_cognition,
-    session=SQLiteSession(
-        (
-            "midbrain-regular-agent-systemic-gui-v4-"
-            f"{agent_runtime_session_epoch}"
+midbrain_session_id = f"agent-process-{agent_runtime_session_epoch}"
+midbrain_session_source = "agent_process_fallback"
+midbrain_session_identity_lock = asyncio.Lock()
+midbrain_session_identity_checked_at = 0.0
+
+
+async def _refresh_midbrain_session_identity() -> None:
+    """Track Manager restarts without coupling a run to a browser tab."""
+
+    global midbrain_session_id, midbrain_session_source
+    global midbrain_session_identity_checked_at
+    now = time.monotonic()
+    if now - midbrain_session_identity_checked_at < 2.0:
+        return
+    async with midbrain_session_identity_lock:
+        now = time.monotonic()
+        if now - midbrain_session_identity_checked_at < 2.0:
+            return
+        midbrain_session_identity_checked_at = now
+        try:
+            manager_identity = await asyncio.wait_for(
+                manager.health(),
+                timeout=2.0,
+            )
+        except Exception:
+            return
+        manager_boot_id = str(manager_identity.get("boot_id") or "").strip()
+        if not manager_boot_id or manager_boot_id == midbrain_session_id:
+            return
+        midbrain_session_id = manager_boot_id
+        midbrain_session_source = "manager_boot_id"
+        await agent_run_journal.set_active_session(manager_boot_id)
+
+
+def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
+    """Build the single autonomous Agent used by every chat surface."""
+
+    return PrototypeAgentDriver(
+        pointing_skill,
+        settings.openai_model,
+        tool_choice=settings.openai_agent_tool_choice,
+        eligible_tool_names=set(settings.phase4_eligible_tools),
+        visual_scene_skill=visual_scene_skill,
+        rgbd_alignment_skill=rgbd_alignment_skill,
+        spatial_registration_skill=spatial_registration_skill,
+        effector_front_skill=effector_front_skill,
+        tool_registration_skill=tool_registration_skill,
+        stationary_calibration_skill=stationary_calibration_agent_adapter,
+        manager=manager,
+        provider_lifecycle_control=True,
+        integrated_motion_skill=integrated_motion_agent_adapter,
+        basic_safe_home_skill=basic_safe_home_agent_adapter,
+        space_cognition_reinitializer=_reinitialize_space_cognition,
+        session=SQLiteSession(
+            (
+                "midbrain-autonomous-agent-systemic-gui-v5-"
+                f"{agent_runtime_session_epoch}"
+            ),
+            agent_session_database,
+            session_settings=SessionSettings(limit=None),
         ),
-        agent_session_database,
-        session_settings=SessionSettings(limit=None),
-    ),
-    defer_loading=settings.agent_skill_defer_loading,
-    adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
-    stationary_calibration_timeout_s=(
-        settings.stationary_calibration_timeout_s
-    ),
-    max_turns=settings.openai_agent_max_turns,
-    session_history_item_limit=(
-        settings.openai_agent_session_history_items
-    ),
-)
-developer_driver = PrototypeAgentDriver(
-    pointing_skill,
-    settings.openai_model,
-    tool_choice="auto",
-    workspace_root=settings.workspace_root,
-    eligible_tool_names=all_discoverable_tool_names,
-    visual_scene_skill=visual_scene_skill,
-    rgbd_alignment_skill=rgbd_alignment_skill,
-    spatial_registration_skill=spatial_registration_skill,
-    effector_front_skill=effector_front_skill,
-    tool_registration_skill=tool_registration_skill,
-    stationary_calibration_skill=stationary_calibration_agent_adapter,
-    reviewed_observation_execution_skill=(
-        reviewed_observation_execution_skill
-    ),
-    manager=manager,
-    developer_mode=True,
-    integrated_motion_skill=integrated_motion_agent_adapter,
-    basic_safe_home_skill=basic_safe_home_agent_adapter,
-    space_cognition_reinitializer=_reinitialize_space_cognition,
-    session=SQLiteSession(
-        (
-            "midbrain-developer-agent-systemic-gui-v4-"
-            f"{agent_runtime_session_epoch}"
+        defer_loading=settings.agent_skill_defer_loading,
+        adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+        stationary_calibration_timeout_s=(
+            settings.stationary_calibration_timeout_s
         ),
-        agent_session_database,
-        session_settings=SessionSettings(limit=None),
-    ),
-    defer_loading=settings.agent_skill_defer_loading,
-    adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
-    stationary_calibration_timeout_s=(
-        settings.stationary_calibration_timeout_s
-    ),
-    max_turns=settings.openai_agent_max_turns,
-    session_history_item_limit=(
-        settings.openai_agent_session_history_items
-    ),
-)
+        provider_hot_readiness_timeout_s=(
+            settings.provider_hot_readiness_timeout_s
+        ),
+        max_turns=settings.openai_agent_max_turns,
+        session_history_item_limit=(
+            settings.openai_agent_session_history_items
+        ),
+    )
+
+
+driver = _build_autonomous_agent_driver()
 reviewed_observation_agent_driver = PrototypeAgentDriver(
     pointing_skill,
     settings.openai_model,
@@ -371,10 +408,8 @@ agent_reasoning_options = ("low", "medium", "high", "xhigh", "max")
 vlm_model_options = tuple(
     dict.fromkeys(backend.model_id for backend in agent_vlm_router.backends)
 )
-pending_regular_runs: dict[str, PendingAgentRun] = {}
-pending_regular_runs_lock = asyncio.Lock()
-pending_developer_runs: dict[str, PendingAgentRun] = {}
-pending_developer_runs_lock = asyncio.Lock()
+pending_agent_runs: dict[str, PendingAgentRun] = {}
+pending_agent_runs_lock = asyncio.Lock()
 replay_capture = Phase5ReplayCaptureService(fabric, settings.replay_bundle_dir)
 auto_initialization_task: asyncio.Task[None] | None = None
 auto_initialization_error: str | None = None
@@ -402,6 +437,21 @@ async def _auto_initialize() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global auto_initialization_task, auto_initialization_state
+    global midbrain_session_id, midbrain_session_source
+    global midbrain_session_identity_checked_at
+    try:
+        manager_identity = await asyncio.wait_for(
+            manager.health(),
+            timeout=2.0,
+        )
+        midbrain_session_identity_checked_at = time.monotonic()
+        manager_boot_id = str(manager_identity.get("boot_id") or "").strip()
+        if manager_boot_id:
+            midbrain_session_id = manager_boot_id
+            midbrain_session_source = "manager_boot_id"
+    except Exception:
+        pass
+    await agent_run_journal.start(session_id=midbrain_session_id)
     await world_point_cloud.start()
     if settings.auto_initialize_space_cognition:
         auto_initialization_task = asyncio.create_task(
@@ -418,11 +468,13 @@ async def lifespan(_app: FastAPI):
         except asyncio.CancelledError:
             pass
         auto_initialization_task = None
+    await agent_run_stream_registry.shutdown()
     await world_point_cloud.stop()
     await basic.close()
     await integrated.close()
     await fabric.close()
     await manager.close()
+    await agent_run_journal.close()
 
 
 app = FastAPI(
@@ -447,7 +499,12 @@ class PromptRequest(BaseModel):
         max_length=20,
     )
     vlm_model: str = Field(default="auto", min_length=1, max_length=100)
+    attachment_ids: list[str] = Field(
+        default_factory=list,
+        max_length=1,
+    )
     auto_authorize_provider_activation: bool = False
+    auto_authorize_provider_stop: bool = False
     auto_authorize_relative_motion: bool = False
     max_auto_move_cm: float = Field(default=35.0, ge=0.1, le=100.0)
     max_auto_speed_m_s: float = Field(
@@ -457,6 +514,17 @@ class PromptRequest(BaseModel):
     )
     auto_authorize_stationary_calibration: bool = False
     auto_authorize_stationary_activation: bool = False
+    auto_authorize_safe_home: bool = False
+    auto_authorize_space_reinitialization: bool = False
+
+
+class AgentAttachmentUpload(BaseModel):
+    filename: str = Field(default="user-image", max_length=255)
+    media_type: str = Field(
+        pattern=r"^image/(jpeg|png|webp)$",
+        max_length=40,
+    )
+    data_base64: str = Field(min_length=1, max_length=11_200_000)
 
 
 class RgbdAlignmentRequest(BaseModel):
@@ -545,9 +613,11 @@ class DeveloperApprovalDecision(BaseModel):
         default="MANUAL",
         pattern=(
             r"^(MANUAL|AUTO_PROVIDER_ACTIVATION|"
+            r"AUTO_PROVIDER_STOP|"
             r"AUTO_BOUNDED_RELATIVE_MOTION|"
             r"AUTO_STATIONARY_CALIBRATION|"
-            r"AUTO_STATIONARY_ACTIVATION)$"
+            r"AUTO_STATIONARY_ACTIVATION|"
+            r"AUTO_SAFE_HOME|AUTO_SPACE_REINITIALIZATION)$"
         ),
     )
     max_auto_move_cm: float | None = Field(
@@ -667,6 +737,25 @@ def _validate_automatic_agent_approval(
                 ),
             )
         return
+    if decision.approval_mode == "AUTO_PROVIDER_STOP":
+        eligible = all(
+            approval.get("tool_name") == "set_provider_residency"
+            and str(
+                _approval_arguments(approval).get("action") or ""
+            ).lower()
+            == "stop"
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The session Provider-stop authorization permits only "
+                    "exact stop transitions; activation, motion, and other "
+                    "protected operations retain their own policy."
+                ),
+            )
+        return
     if decision.approval_mode == "AUTO_BOUNDED_RELATIVE_MOTION":
         maximum_cm = decision.max_auto_move_cm
         maximum_speed_m_s = decision.max_auto_speed_m_s
@@ -740,6 +829,34 @@ def _validate_automatic_agent_approval(
                 ),
             )
         return
+    if decision.approval_mode == "AUTO_SAFE_HOME":
+        eligible = all(
+            approval.get("tool_name") == "execute_basic_safe_home"
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The safe-home session authorization permits only the "
+                    "exact Basic Controller safe-home operation."
+                ),
+            )
+        return
+    if decision.approval_mode == "AUTO_SPACE_REINITIALIZATION":
+        eligible = all(
+            approval.get("tool_name") == "reinitialize_space_cognition"
+            for approval in approvals
+        )
+        if not eligible:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The space-reinitialization session authorization "
+                    "permits only a deliberate Local VIO epoch reset."
+                ),
+            )
+        return
     raise HTTPException(
         status_code=422,
         detail="unknown automatic approval mode",
@@ -748,6 +865,18 @@ def _validate_automatic_agent_approval(
 
 REGULAR_PAGE = (
     Path(__file__).resolve().parent / "web" / "regular_agent.html"
+).read_text(encoding="utf-8")
+VISUAL_EVIDENCE_SCRIPT = (
+    Path(__file__).resolve().parent / "web" / "visual_evidence.js"
+).read_text(encoding="utf-8")
+AGENT_CHAT_HISTORY_SCRIPT = (
+    Path(__file__).resolve().parent / "web" / "agent_chat_history.js"
+).read_text(encoding="utf-8")
+RUN_JOURNAL_PAGE = (
+    Path(__file__).resolve().parent / "web" / "run_journal.html"
+).read_text(encoding="utf-8")
+RUN_JOURNAL_SCRIPT = (
+    Path(__file__).resolve().parent / "web" / "run_journal.js"
 ).read_text(encoding="utf-8")
 RGBD_ALIGNMENT_PAGE = (
     Path(__file__).resolve().parent / "web" / "rgbd_alignment.html"
@@ -762,9 +891,41 @@ async def index() -> str:
     return REGULAR_PAGE
 
 
+@app.get("/assets/visual_evidence.js")
+async def visual_evidence_script() -> Response:
+    return Response(
+        content=VISUAL_EVIDENCE_SCRIPT,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/assets/agent_chat_history.js")
+async def agent_chat_history_script() -> Response:
+    return Response(
+        content=AGENT_CHAT_HISTORY_SCRIPT,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/assets/run_journal.js")
+async def run_journal_script() -> Response:
+    return Response(
+        content=RUN_JOURNAL_SCRIPT,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/dev", response_class=HTMLResponse)
 async def developer_index() -> str:
     return PAGE
+
+
+@app.get("/dev/run-journal", response_class=HTMLResponse)
+async def run_journal_index() -> str:
+    return RUN_JOURNAL_PAGE
 
 
 @app.get(
@@ -799,6 +960,207 @@ async def spatial_axes_developer_index() -> str:
 @app.get("/health")
 async def ui_health() -> dict[str, str]:
     return {"status": "ok", "service": "physical-agent-ui"}
+
+
+@app.get("/api/run-journal/sessions")
+async def run_journal_sessions(limit: int = 100) -> Response:
+    if not 1 <= limit <= 500:
+        raise HTTPException(
+            status_code=422,
+            detail="run journal limit must be between 1 and 500",
+        )
+    try:
+        sessions = await agent_run_journal.list_sessions(limit=limit)
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"run journal is unavailable: {error}",
+        ) from error
+    return Response(
+        content=json.dumps(
+            {
+                "journal": agent_run_journal.health_snapshot(),
+                "sessions": sessions,
+            },
+            ensure_ascii=False,
+        ),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.get("/api/run-journal/sessions/{session_id}")
+async def run_journal_session(session_id: str) -> Response:
+    normalized_session_id = session_id.strip()
+    if not normalized_session_id or len(normalized_session_id) > 200:
+        raise HTTPException(status_code=422, detail="invalid session id")
+    try:
+        detail = await agent_run_journal.get_session(
+            normalized_session_id,
+            run_limit=500,
+        )
+        if detail is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Midbrain session was not found",
+            )
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"run journal is unavailable: {error}",
+        ) from error
+    return Response(
+        content=json.dumps(detail, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.get("/api/run-journal/runs/{run_id}")
+async def run_journal_run(run_id: str) -> Response:
+    normalized_run_id = run_id.strip()
+    if not normalized_run_id or len(normalized_run_id) > 200:
+        raise HTTPException(status_code=422, detail="invalid run id")
+    try:
+        run = await agent_run_journal.get_run(normalized_run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail="run journal record was not found",
+            )
+        events = await agent_run_journal.events(normalized_run_id)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"run journal is unavailable: {error}",
+        ) from error
+    return Response(
+        content=json.dumps(
+            {"run": run, "events": events},
+            ensure_ascii=False,
+        ),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+def _chat_progress_label(event: dict[str, Any]) -> str | None:
+    event_type = str(event.get("type") or "")
+    payload = event.get("payload")
+    values = payload if isinstance(payload, dict) else {}
+    tool_name = str(values.get("tool_name") or "Agent tool")
+    if event_type == "tool.called":
+        return f"Started {tool_name}"
+    if event_type == "tool.completed":
+        return f"Completed {tool_name}"
+    if event_type == "approval.required":
+        return "Development approval required"
+    if event_type == "approval.resolved":
+        return "Development approval resolved"
+    if event_type == "skill.retry.recovered":
+        return "Observation recovered after a bounded retry"
+    if event_type == "skill.retry.exhausted":
+        return "Observation retry exhausted"
+    if event_type == "visual.evidence.created":
+        return "Visual evidence attached to the response"
+    return None
+
+
+def _chat_turn_projection(run: dict[str, Any]) -> dict[str, Any] | None:
+    prompt = run.get("user_prompt")
+    if prompt is None:
+        return None
+    events = run.get("events")
+    safe_events = events if isinstance(events, list) else []
+    reasoning = "".join(
+        str((event.get("payload") or {}).get("text") or "")
+        for event in safe_events
+        if event.get("type") == "assistant.reasoning_summary.delta"
+        and isinstance(event.get("payload"), dict)
+    )
+    progress = [
+        {
+            "label": label,
+            "occurred_at": str(
+                event.get("occurred_at") or run["updated_at"]
+            ),
+        }
+        for event in safe_events
+        if (label := _chat_progress_label(event)) is not None
+    ]
+    visual_evidence = next(
+        (
+            event.get("payload")
+            for event in reversed(safe_events)
+            if event.get("type") == "visual.evidence.created"
+            and isinstance(event.get("payload"), dict)
+        ),
+        None,
+    )
+    status_value = str(run.get("status") or "INTERRUPTED").upper()
+    status = status_value if status_value in {
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "INTERRUPTED",
+    } else "INTERRUPTED"
+    return {
+        "schema": "midbrain.agent_chat_turn.v1",
+        "turn_id": str(run["run_id"]),
+        "run_id": str(run["run_id"]),
+        "prompt": str(prompt),
+        "attachment_name": (
+            "Attached image" if int(run.get("attachment_count") or 0) else ""
+        ),
+        "agent_model": str(run.get("agent_model") or ""),
+        "reasoning_effort": str(run.get("reasoning_effort") or ""),
+        "vlm_model": str(run.get("vlm_model") or ""),
+        "started_at": str(run["started_at"]),
+        "status": status,
+        "activity": status.title(),
+        "answer": str(run.get("assistant_answer") or ""),
+        "reasoning": reasoning,
+        "progress": progress[-80:],
+        "event_details": safe_events,
+        "visual_evidence": visual_evidence,
+    }
+
+
+@app.get("/api/chat-session")
+async def current_chat_session() -> Response:
+    await _refresh_midbrain_session_identity()
+    try:
+        detail = await agent_run_journal.get_session(
+            midbrain_session_id,
+            run_limit=40,
+            include_events=True,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"chat session is unavailable: {error}",
+        ) from error
+    session = detail["session"] if detail is not None else {
+        "session_id": midbrain_session_id,
+        "status": "ACTIVE",
+    }
+    turns = []
+    for run in detail["runs"] if detail is not None else []:
+        projected = _chat_turn_projection(run)
+        if projected is not None:
+            turns.append(projected)
+    return Response(
+        content=json.dumps(
+            {"session": session, "turns": turns},
+            ensure_ascii=False,
+        ),
+        media_type="application/json",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 async def _safe(call) -> Any:
@@ -853,6 +1215,10 @@ async def status() -> dict[str, Any]:
         "agent_session_history_item_limit": (
             settings.openai_agent_session_history_items
         ),
+        "agent_runtime_session_epoch": agent_runtime_session_epoch,
+        "midbrain_session_id": midbrain_session_id,
+        "midbrain_session_source": midbrain_session_source,
+        "agent_run_journal": agent_run_journal.health_snapshot(),
         "stationary_calibration_timeout_s": (
             settings.stationary_calibration_timeout_s
         ),
@@ -1562,6 +1928,24 @@ def _model_selection(
     return agent_model, reasoning_effort, vlm_model
 
 
+async def _agent_input(request: PromptRequest) -> AgentInput:
+    attachments = []
+    for attachment_id in request.attachment_ids:
+        try:
+            attachments.append(
+                await agent_attachment_store.read(attachment_id)
+            )
+        except KeyError as error:
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    "agent image attachment was not found or expired; "
+                    "upload it again"
+                ),
+            ) from error
+    return build_multimodal_user_input(request.prompt, attachments)
+
+
 def _session_authorization(
     request: PromptRequest,
 ) -> AgentSessionAuthorization:
@@ -1569,6 +1953,7 @@ def _session_authorization(
         auto_authorize_provider_activation=(
             request.auto_authorize_provider_activation
         ),
+        auto_authorize_provider_stop=request.auto_authorize_provider_stop,
         auto_authorize_relative_motion=request.auto_authorize_relative_motion,
         max_auto_move_cm=request.max_auto_move_cm,
         max_auto_speed_m_s=request.max_auto_speed_m_s,
@@ -1578,32 +1963,199 @@ def _session_authorization(
         auto_authorize_stationary_activation=(
             request.auto_authorize_stationary_activation
         ),
+        auto_authorize_safe_home=request.auto_authorize_safe_home,
+        auto_authorize_space_reinitialization=(
+            request.auto_authorize_space_reinitialization
+        ),
     )
 
 
-@app.post("/api/run")
-async def run_prompt(request: PromptRequest) -> dict[str, Any]:
+@app.post("/api/streaming-runs", status_code=202)
+async def start_streaming_run(request: PromptRequest) -> dict[str, Any]:
+    """Start a backend-owned run and return an independently replayable SSE URL."""
+
+    await _refresh_midbrain_session_identity()
     run_id = str(uuid.uuid4())
     agent_model, reasoning_effort, vlm_model = _model_selection(request)
     authorization = _session_authorization(request)
-    try:
-        return await _regular_agent_step(
-            request.prompt,
+    input_value = await _agent_input(request)
+    await agent_run_journal.record_turn(
+        run_id,
+        session_id=midbrain_session_id,
+        prompt=request.prompt,
+        agent_model=agent_model,
+        reasoning_effort=reasoning_effort,
+        vlm_model=vlm_model or "auto",
+        attachment_count=len(request.attachment_ids),
+    )
+    channel = await agent_run_stream_registry.create(run_id)
+    await channel.publish(
+        "run.started",
+        {
+            "surface": "autonomous",
+            "midbrain_session_id": midbrain_session_id,
+            "agent_model": agent_model,
+            "reasoning_effort": reasoning_effort,
+            "vlm_model": vlm_model or "auto",
+            "attachment_count": len(request.attachment_ids),
+        },
+    )
+    await channel.set_status("RUNNING")
+    await agent_run_stream_registry.launch(
+        run_id,
+        _run_streaming_autonomous_agent(
+            input_value,
             run_id,
             agent_model=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model=vlm_model,
             authorization=authorization,
+        ),
+    )
+    return {
+        "status": "running",
+        "run_id": run_id,
+        "events_url": f"/api/streaming-runs/{run_id}/events",
+        "status_url": f"/api/streaming-runs/{run_id}",
+        "decision_url": f"/api/streaming-runs/{run_id}/decision",
+    }
+
+
+@app.get("/api/streaming-runs/{run_id}")
+async def streaming_run_status(run_id: str) -> dict[str, Any]:
+    try:
+        channel = await agent_run_stream_registry.get(run_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="streaming agent run was not found or expired",
+        ) from error
+    return await channel.snapshot()
+
+
+@app.get("/api/streaming-runs/{run_id}/events")
+async def streaming_run_events(
+    run_id: str,
+    request: Request,
+    after: int = 0,
+) -> StreamingResponse:
+    try:
+        channel = await agent_run_stream_registry.get(run_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="streaming agent run was not found or expired",
+        ) from error
+    last_event_id = parse_event_sequence(
+        request.headers.get("last-event-id")
+    )
+    after_sequence = max(0, int(after), last_event_id)
+    return StreamingResponse(
+        stream_sse(channel, after_sequence=after_sequence),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/streaming-runs/{run_id}/decision", status_code=202)
+async def decide_streaming_run(
+    run_id: str,
+    decision: DeveloperApprovalDecision,
+) -> dict[str, Any]:
+    try:
+        channel = await agent_run_stream_registry.get(run_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="streaming agent run was not found or expired",
+        ) from error
+    snapshot = await channel.snapshot()
+    if snapshot["status"] != "AWAITING_APPROVAL":
+        raise HTTPException(
+            status_code=409,
+            detail="streaming agent run is not awaiting approval",
         )
-    except httpx.HTTPStatusError as error:
-        detail = error.response.text or str(error)
-        raise HTTPException(status_code=502, detail=detail) from error
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    async with pending_agent_runs_lock:
+        entry = pending_agent_runs.pop(run_id, None)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail="pending autonomous agent run was not found or expired",
+        )
+    if time.monotonic() - entry.created_monotonic > 600.0:
+        await channel.publish(
+            "run.failed",
+            {"error": "pending autonomous agent approval expired"},
+        )
+        await channel.set_status(
+            "FAILED",
+            result={
+                "status": "failed",
+                "run_id": run_id,
+                "error": "pending autonomous agent approval expired",
+            },
+        )
+        raise HTTPException(
+            status_code=410,
+            detail="pending autonomous agent approval expired",
+        )
+    interruptions = entry.state.get_interruptions()
+    if not interruptions:
+        raise HTTPException(
+            status_code=409,
+            detail="autonomous agent run has no pending approvals",
+        )
+    try:
+        _validate_automatic_agent_approval(interruptions, decision)
+    except HTTPException:
+        async with pending_agent_runs_lock:
+            pending_agent_runs[run_id] = entry
+        raise
+    approval_decisions = _record_approval_decisions(
+        interruptions,
+        approved=decision.approve,
+        existing=entry.approval_decisions,
+    )
+    for interruption in interruptions:
+        if decision.approve:
+            entry.state.approve(interruption)
+        else:
+            entry.state.reject(
+                interruption,
+                rejection_message=decision.rejection_message,
+            )
+    await channel.publish(
+        "approval.resolved",
+        {
+            "approved": decision.approve,
+            "approval_mode": decision.approval_mode,
+        },
+    )
+    await channel.set_status("RUNNING")
+    await agent_run_stream_registry.launch(
+        run_id,
+        _run_streaming_autonomous_agent(
+            entry.state,
+            run_id,
+            agent_model=entry.agent_model,
+            reasoning_effort=entry.reasoning_effort,
+            vlm_model=entry.vlm_model,
+            authorization=entry.authorization,
+            approval_decisions=approval_decisions,
+        ),
+    )
+    return {
+        "status": "running",
+        "run_id": run_id,
+        "approved": decision.approve,
+    }
 
 
-async def _regular_agent_step(
-    input_value: str | RunState[Any],
+async def _run_streaming_autonomous_agent(
+    input_value: AgentInput,
     run_id: str,
     *,
     agent_model: str,
@@ -1611,15 +2163,87 @@ async def _regular_agent_step(
     vlm_model: str | None,
     authorization: AgentSessionAuthorization,
     approval_decisions: dict[str, bool] | None = None,
+) -> None:
+    channel = await agent_run_stream_registry.get(run_id)
+
+    async def publish(
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        await channel.publish(event_type, payload)
+
+    try:
+        result = await _autonomous_agent_step(
+            input_value,
+            run_id,
+            agent_model=agent_model,
+            reasoning_effort=reasoning_effort,
+            vlm_model=vlm_model,
+            authorization=authorization,
+            approval_decisions=approval_decisions,
+            event_sink=publish,
+        )
+    except Exception as error:
+        detail = (
+            error.response.text
+            if isinstance(error, httpx.HTTPStatusError)
+            and error.response.text
+            else str(error)
+        )
+        failed = {
+            "status": "failed",
+            "run_id": run_id,
+            "error": detail,
+        }
+        await channel.publish("run.failed", {"error": detail})
+        await channel.set_status("FAILED", result=failed)
+        return
+
+    if result["status"] == "approval_required":
+        await channel.publish(
+            "approval.required",
+            {
+                "status": result["status"],
+                "run_id": run_id,
+                "approvals": result["approvals"],
+            },
+        )
+        await channel.set_status("AWAITING_APPROVAL", result=result)
+        return
+    await channel.publish(
+        "run.completed",
+        {
+            "status": result["status"],
+            "answer": result.get("answer"),
+            "approval_loop_prevented": result.get(
+                "approval_loop_prevented",
+                False,
+            ),
+        },
+    )
+    await channel.set_status("COMPLETED", result=result)
+
+
+async def _autonomous_agent_step(
+    input_value: AgentInput,
+    run_id: str,
+    *,
+    agent_model: str,
+    reasoning_effort: str,
+    vlm_model: str | None,
+    authorization: AgentSessionAuthorization,
+    approval_decisions: dict[str, bool] | None = None,
+    event_sink: AgentEventSink | None = None,
 ) -> dict[str, Any]:
     result = await operation_registry.run(
-        f"openai_regular_agent_run:{run_id}",
+        f"openai_autonomous_agent_run:{run_id}",
         driver.run_interactive(
             input_value,
             model_override=agent_model,
             reasoning_effort=reasoning_effort,
             vlm_model_override=vlm_model,
             authorization=authorization,
+            event_sink=event_sink,
         ),
         hard_timeout_s=min(
             settings.phase4_agent_run_timeout_s,
@@ -1642,8 +2266,8 @@ async def _regular_agent_step(
     )
     if repeated is not None:
         return repeated
-    async with pending_regular_runs_lock:
-        pending_regular_runs[run_id] = PendingAgentRun(
+    async with pending_agent_runs_lock:
+        pending_agent_runs[run_id] = PendingAgentRun(
             state=result.state,
             created_monotonic=time.monotonic(),
             agent_model=agent_model,
@@ -1658,211 +2282,6 @@ async def _regular_agent_step(
         "answer": None,
         "approvals": result.approvals,
     }
-
-
-@app.post("/api/runs/{run_id}/decision")
-async def decide_regular_run(
-    run_id: str,
-    decision: DeveloperApprovalDecision,
-) -> dict[str, Any]:
-    async with pending_regular_runs_lock:
-        entry = pending_regular_runs.pop(run_id, None)
-        expired = [
-            pending_id
-            for pending_id, pending in pending_regular_runs.items()
-            if time.monotonic() - pending.created_monotonic > 600.0
-        ]
-        for pending_id in expired:
-            pending_regular_runs.pop(pending_id, None)
-    if entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail="pending regular agent run was not found or expired",
-        )
-    if time.monotonic() - entry.created_monotonic > 600.0:
-        raise HTTPException(
-            status_code=410,
-            detail="pending regular agent approval expired",
-        )
-    interruptions = entry.state.get_interruptions()
-    if not interruptions:
-        raise HTTPException(
-            status_code=409,
-            detail="regular agent run has no pending approvals",
-        )
-    try:
-        _validate_automatic_agent_approval(interruptions, decision)
-    except HTTPException:
-        async with pending_regular_runs_lock:
-            pending_regular_runs[run_id] = entry
-        raise
-    approval_decisions = _record_approval_decisions(
-        interruptions,
-        approved=decision.approve,
-        existing=entry.approval_decisions,
-    )
-    for interruption in interruptions:
-        if decision.approve:
-            entry.state.approve(interruption)
-        else:
-            entry.state.reject(
-                interruption,
-                rejection_message=decision.rejection_message,
-            )
-    try:
-        return await _regular_agent_step(
-            entry.state,
-            run_id,
-            agent_model=entry.agent_model,
-            reasoning_effort=entry.reasoning_effort,
-            vlm_model=entry.vlm_model,
-            authorization=entry.authorization,
-            approval_decisions=approval_decisions,
-        )
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-
-
-async def _developer_agent_step(
-    input_value: str | RunState[Any],
-    run_id: str,
-    *,
-    agent_model: str,
-    reasoning_effort: str,
-    vlm_model: str | None,
-    authorization: AgentSessionAuthorization,
-    approval_decisions: dict[str, bool] | None = None,
-) -> dict[str, Any]:
-    result = await operation_registry.run(
-        f"openai_developer_agent_run:{run_id}",
-        developer_driver.run_interactive(
-            input_value,
-            model_override=agent_model,
-            reasoning_effort=reasoning_effort,
-            vlm_model_override=vlm_model,
-            authorization=authorization,
-        ),
-        hard_timeout_s=min(
-            settings.phase4_agent_run_timeout_s,
-            phase4_policy.operation_hard_timeout_s,
-        ),
-        idle_timeout_s=phase4_policy.operation_idle_timeout_s,
-    )
-    if result.state is None:
-        return {
-            "status": "completed",
-            "run_id": run_id,
-            "answer": result.answer,
-            "approvals": [],
-        }
-    decisions = dict(approval_decisions or {})
-    repeated = _repeated_approval_response(
-        run_id=run_id,
-        approvals=result.approvals,
-        decisions=decisions,
-    )
-    if repeated is not None:
-        return repeated
-    async with pending_developer_runs_lock:
-        pending_developer_runs[run_id] = PendingAgentRun(
-            state=result.state,
-            created_monotonic=time.monotonic(),
-            agent_model=agent_model,
-            reasoning_effort=reasoning_effort,
-            vlm_model=vlm_model,
-            authorization=authorization,
-            approval_decisions=decisions,
-        )
-    return {
-        "status": "approval_required",
-        "run_id": run_id,
-        "answer": None,
-        "approvals": result.approvals,
-    }
-
-
-@app.post("/api/dev/run")
-async def run_developer_prompt(request: PromptRequest) -> dict[str, Any]:
-    run_id = str(uuid.uuid4())
-    agent_model, reasoning_effort, vlm_model = _model_selection(request)
-    authorization = _session_authorization(request)
-    try:
-        return await _developer_agent_step(
-            request.prompt,
-            run_id,
-            agent_model=agent_model,
-            reasoning_effort=reasoning_effort,
-            vlm_model=vlm_model,
-            authorization=authorization,
-        )
-    except httpx.HTTPStatusError as error:
-        detail = error.response.text or str(error)
-        raise HTTPException(status_code=502, detail=detail) from error
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-
-
-@app.post("/api/dev/runs/{run_id}/decision")
-async def decide_developer_run(
-    run_id: str,
-    decision: DeveloperApprovalDecision,
-) -> dict[str, Any]:
-    async with pending_developer_runs_lock:
-        entry = pending_developer_runs.pop(run_id, None)
-        expired = [
-            pending_id
-            for pending_id, pending in pending_developer_runs.items()
-            if time.monotonic() - pending.created_monotonic > 600.0
-        ]
-        for pending_id in expired:
-            pending_developer_runs.pop(pending_id, None)
-    if entry is None:
-        raise HTTPException(
-            status_code=404,
-            detail="pending developer agent run was not found or expired",
-        )
-    if time.monotonic() - entry.created_monotonic > 600.0:
-        raise HTTPException(
-            status_code=410,
-            detail="pending developer agent approval expired",
-        )
-    interruptions = entry.state.get_interruptions()
-    if not interruptions:
-        raise HTTPException(
-            status_code=409,
-            detail="developer agent run has no pending approvals",
-        )
-    try:
-        _validate_automatic_agent_approval(interruptions, decision)
-    except HTTPException:
-        async with pending_developer_runs_lock:
-            pending_developer_runs[run_id] = entry
-        raise
-    approval_decisions = _record_approval_decisions(
-        interruptions,
-        approved=decision.approve,
-        existing=entry.approval_decisions,
-    )
-    for interruption in interruptions:
-        if decision.approve:
-            entry.state.approve(interruption)
-        else:
-            entry.state.reject(
-                interruption,
-                rejection_message=decision.rejection_message,
-            )
-    try:
-        return await _developer_agent_step(
-            entry.state,
-            run_id,
-            agent_model=entry.agent_model,
-            reasoning_effort=entry.reasoning_effort,
-            vlm_model=entry.vlm_model,
-            authorization=entry.authorization,
-            approval_decisions=approval_decisions,
-        )
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @app.post("/api/rgbd-alignment/validate")
@@ -1958,6 +2377,62 @@ async def latest_depth() -> Response:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
+@app.post("/api/agent-attachments", status_code=201)
+async def upload_agent_attachment(
+    request: AgentAttachmentUpload,
+) -> dict[str, object]:
+    try:
+        attachment = await agent_attachment_store.register_base64(
+            data_base64=request.data_base64,
+            media_type=request.media_type,
+            filename=request.filename,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return attachment.public_metadata()
+
+
+@app.get("/api/agent-attachments/{attachment_id}")
+async def agent_attachment_preview(attachment_id: str) -> Response:
+    try:
+        attachment = await agent_attachment_store.read(attachment_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="agent image attachment was not found or expired",
+        ) from error
+    return Response(
+        content=attachment.data,
+        media_type=attachment.media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/api/visual-evidence/{evidence_id}/channels/{channel_id}")
+async def visual_evidence_channel(
+    evidence_id: str,
+    channel_id: str,
+) -> Response:
+    try:
+        channel = await visual_evidence_store.read(evidence_id, channel_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="visual evidence channel was not found or expired",
+        ) from error
+    return Response(
+        content=channel.data,
+        media_type=channel.media_type,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 def main() -> None:
     uvicorn.run(app, host=settings.ui_host, port=settings.ui_port, log_level="info")
 
@@ -1968,7 +2443,7 @@ PAGE = r"""
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Physical Agent Test Scaffold</title>
+  <title>Midbrain Autonomous Agent</title>
   <style>
     :root {
       font-family: Inter, Segoe UI, sans-serif;
@@ -1995,13 +2470,41 @@ PAGE = r"""
         var(--mb-bg);
       color: var(--mb-text);
     }
-    main { max-width: 1480px; margin: 0 auto; padding: 24px; }
+    main { max-width: 1900px; margin: 0 auto; padding: 24px; }
+    body.developer-workspace { height: 100dvh; overflow: hidden; }
+    body.developer-workspace main { display: flex; height: 100%; flex-direction: column; padding: 14px 18px 18px; }
+    body.developer-workspace .developer-nav-bar { margin-bottom: 10px !important; }
+    body.developer-workspace h1 { margin-top: 2px; font-size: 1.72rem; }
+    body.developer-workspace .sub { margin-bottom: 12px; font-size: 12px; }
     h1 { margin-bottom: 4px; }
     h2 { margin-top: 4px; }
     .sub { color: var(--mb-muted); margin-top: 0; }
     .role-kicker { color: var(--mb-accent); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
-    .grid { display: grid; grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr); gap: 18px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0; gap: 18px; }
+    body.developer-workspace .grid { flex: 1; }
+    .dev-pane { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 7px; }
+    .conversation-pane { overflow: hidden; padding-right: 0; }
     .card { background: rgba(19,19,19,.96); border: 1px solid var(--mb-border); border-radius: 14px; padding: 16px; margin-bottom: 18px; }
+    .diagnostic-card { margin-top: 0; padding: 0; color: var(--mb-text); }
+    .diagnostic-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; color: var(--mb-text); font-weight: 700; }
+    .diagnostic-card > summary small { color: var(--mb-muted); font-size: 10px; font-weight: 550; letter-spacing: .08em; text-transform: uppercase; }
+    .diagnostic-card[open] > summary { border-bottom: 1px solid var(--mb-border); }
+    .diagnostic-body { padding: 15px 16px 16px; }
+    #agentPromptPanel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 0; margin: 0; overflow: hidden; padding: 0; }
+    .developer-conversation-head { padding: 14px 16px 10px; }
+    .developer-conversation-head .chat-panel-head { margin: 0; }
+    .developer-chat-scroll { min-height: 0; overflow: hidden; border-top: 1px solid var(--mb-border); border-bottom: 1px solid var(--mb-border); background: #0d0d0d; }
+    .developer-chat-scroll .chat-history-empty { margin: 22px 16px; }
+    .developer-chat-scroll .chat-history { display: flex; height: 100%; max-height: none; flex-direction: column; padding: 12px 9px 12px 14px; }
+    .chat-history-spacer { flex: 1 1 auto; min-height: 0; }
+    .developer-composer { max-height: 48vh; overflow-y: auto; padding: 13px 16px 15px; scrollbar-gutter: stable; }
+    .developer-composer label[for="prompt"] { display: block; margin-bottom: 6px; color: var(--mb-muted); font-size: 11px; font-weight: 700; }
+    .developer-composer textarea { min-height: 86px; }
+    .developer-composer-actions { display: flex; justify-content: flex-end; }
+    .developer-composer-actions button { margin-left: 0; }
+    .developer-composer .authorization-controls { margin-top: 10px; }
+    .authorization-disclosure { margin-top: 10px; }
+    .authorization-disclosure > summary { color: var(--mb-muted); font-size: 11px; }
     .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 12px; }
     .model-controls label { color: var(--mb-muted); font-size: 11px; }
     .authorization-controls { display: grid; gap: 9px; margin-top: 14px; border-top: 1px solid var(--mb-border); padding-top: 13px; }
@@ -2009,8 +2512,62 @@ PAGE = r"""
     .authorization-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--mb-accent); }
     .authorization-toggle input[type="number"] { width: 72px; border: 1px solid var(--mb-border); border-radius: 6px; padding: 6px 7px; background: var(--mb-bg); color: var(--mb-text); font: inherit; }
     .authorization-ticker { margin: 2px 0 0; color: var(--mb-muted); font-size: 11px; line-height: 1.5; }
+    .agent-activity { margin: 10px 0 0; color: var(--mb-muted); font-size: 12px; }
+    .chat-panel-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-top: 16px; }
+    .chat-panel-head h2 { margin: 0 0 4px; }
+    .chat-panel-head .agent-activity { margin: 0; }
+    .chat-panel-head button { margin: 0; padding: 7px 10px; background: transparent; color: var(--mb-muted); font-size: 11px; }
+    .chat-history-empty { margin: 22px 0; color: var(--mb-muted); font-size: 13px; text-align: center; }
+    .chat-history { display: grid; gap: 15px; max-height: min(72vh, 980px); overflow-y: auto; overscroll-behavior: contain; padding: 2px 7px 2px 0; scrollbar-gutter: stable; }
+    .chat-turn { display: grid; gap: 8px; }
+    .chat-message { border: 1px solid var(--mb-border); border-radius: 10px; padding: 12px; }
+    .chat-message-user { width: min(92%, 720px); margin-left: auto; background: var(--mb-surface-raised); }
+    .chat-message-assistant { background: #101010; }
+    .chat-message-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; color: var(--mb-muted); font-size: 10px; }
+    .chat-message-head strong { color: var(--mb-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .chat-model-label { margin-left: auto; }
+    .chat-message-text { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+    .chat-attachment { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--mb-muted); font-size: 11px; }
+    .chat-attachment img { width: 58px; height: 58px; border: 1px solid var(--mb-border); border-radius: 7px; object-fit: cover; background: #050505; }
+    .chat-turn-activity { margin: 0 0 9px; color: var(--mb-muted); font-size: 11px; }
+    .chat-answer { min-height: 0; color: var(--mb-secondary); }
+    .reasoning-panel { margin: 12px 0 0; border-top: 1px solid var(--mb-border); padding-top: 10px; }
+    .reasoning-panel pre { min-height: 0; max-height: 240px; color: var(--mb-muted); }
+    .chat-progress-list { display: grid; gap: 6px; margin: 10px 0 0; padding-left: 22px; color: var(--mb-muted); font-size: 11px; }
+    .chat-progress-list li time { float: right; margin-left: 12px; color: #777; }
+    .chat-execution-summary h4 { margin: 12px 0 0; color: var(--mb-muted); font-size: 11px; font-weight: 650; }
+    .chat-event-details { margin: 10px 0 0; border-top: 1px solid var(--mb-border); padding-top: 10px; color: var(--mb-muted); }
+    .chat-event-details > summary { font-size: 11px; font-weight: 650; }
+    .chat-event-list { display: grid; gap: 6px; margin-top: 9px; }
+    .chat-event-record { margin: 0; border: 1px solid var(--mb-border); border-radius: 7px; background: #0b0b0b; }
+    .chat-event-record > summary { padding: 7px 9px; font-size: 10px; overflow-wrap: anywhere; }
+    .chat-event-record > pre { min-height: 0; max-height: 360px; margin: 0 7px 7px; border: 1px solid #2f2f2f; padding: 9px; background: #070707; color: #cfcfcf; font-size: 10px; }
+    .visual-evidence { margin: 12px 0 0; border: 1px solid var(--mb-border); border-radius: 10px; padding: 12px; background: #101010; }
+    .visual-evidence-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .visual-evidence-head h3 { margin: 0 0 3px; font-size: 14px; }
+    .visual-evidence-head p { margin: 0; color: var(--mb-muted); font-size: 11px; }
+    .visual-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 9px; }
+    .visual-toolbar button { margin: 0; padding: 6px 9px; background: #252525; color: var(--mb-text); font-size: 11px; }
+    .visual-toolbar button.active { outline: 1px solid var(--mb-accent); }
+    .visual-toolbar label { display: inline-flex; align-items: center; gap: 5px; color: var(--mb-muted); font-size: 11px; }
+    .visual-toolbar input[type="color"] { width: 28px; height: 24px; padding: 0; border: 0; background: transparent; }
+    .visual-annotation-colors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .visual-color-control { max-width: 190px; padding: 3px 7px; border: 1px solid var(--mb-border); border-radius: 999px; background: #181818; }
+    .visual-color-control span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .visual-canvas { position: relative; width: 100%; overflow: hidden; border-radius: 8px; background: #050505; }
+    .visual-canvas img, .visual-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .visual-canvas img { object-fit: contain; }
+    .visual-canvas svg { pointer-events: none; }
     select { width: 100%; margin-top: 5px; padding: 8px; border: 1px solid var(--mb-border); border-radius: 7px; background: var(--mb-bg); color: var(--mb-text); }
     textarea { width: 100%; min-height: 100px; resize: vertical; padding: 12px; border-radius: 8px; border: 1px solid var(--mb-border); background: var(--mb-bg); color: var(--mb-text); }
+    .agent-attachment-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 9px; }
+    .agent-attachment-picker input[type="file"] { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+    .agent-attachment-button { display: inline-flex; border: 1px solid var(--mb-border); border-radius: 7px; padding: 7px 10px; background: var(--mb-surface-raised); color: var(--mb-text); cursor: pointer; font-size: 12px; }
+    .agent-attachment-hint { color: var(--mb-muted); font-size: 11px; }
+    .agent-attachment-preview { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .agent-attachment-preview img { width: 44px; height: 44px; min-height: 0; border: 1px solid var(--mb-border); border-radius: 7px; object-fit: cover; }
+    .agent-attachment-preview span { max-width: 240px; overflow: hidden; color: var(--mb-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-attachment-preview button { margin: 0; padding: 6px 8px; border: 1px solid var(--mb-border); background: transparent; color: var(--mb-muted); font-size: 11px; }
     button { margin-top: 10px; padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; font-weight: 600; }
     button.primary { background: var(--mb-accent); color: #111; }
     button.secondary { background: var(--mb-surface-raised); color: var(--mb-text); margin-left: 8px; }
@@ -2055,9 +2612,10 @@ PAGE = r"""
     .screen-axis-overlay { position: absolute; right: 10px; bottom: 10px; width: 184px; height: 116px; border-radius: 8px; background: rgba(5,5,5,.88); border: 1px solid rgba(255,255,255,.18); pointer-events: none; }
     .screen-axis-overlay svg { width: 100%; height: 100%; }
     .screen-axis-overlay text { fill: #d7d7d7; font: 10px system-ui, sans-serif; }
-    body.spatial-inspector-mode main { max-width: 1900px; }
-    body.spatial-inspector-mode .grid { grid-template-columns: 1fr; }
-    body.spatial-inspector-mode .grid > div:first-child,
+    body.focused-utility-mode { height: auto; min-height: 100vh; overflow: auto; }
+    body.focused-utility-mode main { display: block; height: auto; max-width: 1900px; }
+    body.focused-utility-mode .grid { display: block; }
+    body.focused-utility-mode .dev-pane { overflow: visible; padding-right: 0; }
     body.spatial-inspector-mode #spaceCognitionLinkPanel { display: none; }
     body.spatial-inspector-mode .viewer-wrap { height: min(76vh, 960px); min-height: 560px; }
     .init-summary { margin-top: 10px; padding: 9px 10px; background: #181818; border-radius: 8px; color: #d1d1d1; font-size: 13px; }
@@ -2089,19 +2647,29 @@ PAGE = r"""
     .decision-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 0 20px 20px; }
     .decision-actions button { margin: 0; }
     .decision-note { color: var(--mb-warning); font-size: 12px; }
-    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .viewer-wrap { height: 55vh; } }
+    @media (max-width: 980px) {
+      body.developer-workspace { height: auto; min-height: 100dvh; overflow: auto; }
+      body.developer-workspace main { height: auto; min-height: 100dvh; }
+      .grid { grid-template-columns: 1fr; }
+      .dev-pane { max-height: 68dvh; }
+      .conversation-pane { min-height: 72dvh; }
+      .viewer-wrap { height: 55vh; }
+    }
     @media (max-width: 640px) { .sensor-grid, .catalog-grid, .model-controls { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 <main>
-  <nav style="display:flex;justify-content:space-between;gap:16px;margin-bottom:24px">
+  <nav class="developer-nav-bar" style="display:flex;justify-content:space-between;gap:16px;margin-bottom:24px">
     <a href="http://127.0.0.1:7001/" style="color:var(--mb-muted);text-decoration:none">← Midbrain</a>
-    <a id="secondaryNav" href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
+    <span style="display:flex;gap:16px">
+      <a href="/dev/run-journal" style="color:var(--mb-muted);text-decoration:none">Run journal</a>
+      <a id="secondaryNav" href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
+    </span>
   </nav>
-  <div class="role-kicker">Development UI</div>
-  <h1 id="pageTitle">Physical Agent Developer</h1>
-  <p class="sub" id="pageSubtitle">All adapter-bound Skills, Provider lifecycle tools, relative IK, controller-owned safe-home, selectable models, and detailed development controls</p>
+  <div class="role-kicker">Developer view</div>
+  <h1 id="pageTitle">Autonomous Agent · Developer view</h1>
+  <p class="sub" id="pageSubtitle">The same autonomous Agent as the regular page, with additional Provider, Skill, replay, point-cloud, and normalized-event diagnostics.</p>
   <div class="grid">
     <div>
       <section class="card" id="spaceCognitionPanel">
@@ -2126,12 +2694,22 @@ PAGE = r"""
       <section class="card" id="agentPromptPanel">
         <div class="role-kicker">Agent observation</div>
         <h2>Prompt</h2>
+        <textarea id="prompt" placeholder="Describe the task for the agent."></textarea>
         <div class="model-controls">
           <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
           <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
           <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
         </div>
-        <textarea id="prompt" placeholder="Describe the task for the agent."></textarea>
+        <div class="agent-attachment-picker">
+          <label class="agent-attachment-button" for="developerAgentImageInput">Attach image</label>
+          <input id="developerAgentImageInput" type="file" accept="image/jpeg,image/png,image/webp">
+          <span id="developerAttachmentHint" class="agent-attachment-hint">Optional JPEG, PNG, or WebP; maximum 8 MB.</span>
+          <div id="developerAttachmentPreview" class="agent-attachment-preview" hidden>
+            <img id="developerAttachmentPreviewImage" alt="Selected user image">
+            <span id="developerAttachmentName"></span>
+            <button id="removeDeveloperAttachment" type="button">Remove</button>
+          </div>
+        </div>
         <div>
           <button class="primary" id="run">Run prompt</button>
         </div>
@@ -2139,6 +2717,10 @@ PAGE = r"""
           <label class="authorization-toggle">
             <input id="autoApproveProviders" type="checkbox" checked>
             Auto-authorize Provider start, HOT, and WARM transitions
+          </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveProviderStop" type="checkbox" checked>
+            Auto-authorize Provider stop transitions
           </label>
           <label class="authorization-toggle">
             <input id="autoApproveMoves" type="checkbox" checked>
@@ -2156,10 +2738,24 @@ PAGE = r"""
             <input id="autoApproveCalibrationActivation" type="checkbox" checked>
             Auto-authorize exact qualified calibration candidate activation
           </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveSafeHome" type="checkbox" checked>
+            Auto-authorize the exact controller-owned safe-home operation
+          </label>
+          <label class="authorization-toggle">
+            <input id="autoApproveSpaceReinitialization" type="checkbox">
+            Auto-authorize deliberate spatial-origin reinitialization
+          </label>
           <p id="authorizationTicker" class="authorization-ticker"></p>
         </div>
-        <h2>Answer</h2>
-        <pre id="answer">Ready.</pre>
+        <div class="chat-panel-head">
+          <div>
+            <h2>Conversation</h2>
+            <p id="agentActivity" class="agent-activity">Ready.</p>
+          </div>
+        </div>
+        <p id="developerChatHistoryEmpty" class="chat-history-empty">No runs in this Midbrain session.</p>
+        <div id="developerChatHistory" class="chat-history" aria-live="polite"></div>
       </section>
       <section class="card" id="replayPanel">
         <div class="role-kicker">Replay provenance</div>
@@ -2252,12 +2848,15 @@ PAGE = r"""
     <button class="primary" id="approveAuthorization">Approve decision</button>
   </div>
 </dialog>
+<script src="/assets/visual_evidence.js"></script>
+<script src="/assets/agent_chat_history.js"></script>
 <script>
 const dedicatedSpaceCognition = location.pathname.endsWith(
   '/dev/skills/initialize-space-cognition'
 );
 const dedicatedSpatialAxes = location.pathname.endsWith('/dev/spatial-axes');
 const focusedUtilityPage = dedicatedSpaceCognition || dedicatedSpatialAxes;
+document.body.classList.toggle('focused-utility-mode', focusedUtilityPage);
 const pageTitle = document.getElementById('pageTitle');
 const pageSubtitle = document.getElementById('pageSubtitle');
 const secondaryNav = document.getElementById('secondaryNav');
@@ -2266,13 +2865,14 @@ const spaceCognitionPanel = document.getElementById('spaceCognitionPanel');
 const agentPromptPanel = document.getElementById('agentPromptPanel');
 const replayPanel = document.getElementById('replayPanel');
 const platformCatalogPanel = document.getElementById('platformCatalogPanel');
+const worldPointCloudPanel = document.getElementById('worldPointCloudPanel');
 if (dedicatedSpaceCognition) {
   document.title = 'Space Cognition Development | Midbrain';
   pageTitle.textContent = 'Space Cognition Development';
   pageSubtitle.textContent =
     'Initialize or deliberately re-establish the local spatial epoch, inspect VIO state, and review the accumulated world model.';
   secondaryNav.href = '/dev';
-  secondaryNav.textContent = 'Developer agent';
+  secondaryNav.textContent = 'Developer view';
   spaceCognitionLinkPanel.hidden = true;
   agentPromptPanel.hidden = true;
   replayPanel.hidden = true;
@@ -2284,11 +2884,115 @@ if (dedicatedSpaceCognition) {
   pageSubtitle.textContent =
     'Inspect the live point cloud together with world, robot, camera, joint, object, and explicit 2D screen coordinate frames.';
   secondaryNav.href = '/dev';
-  secondaryNav.textContent = 'Developer agent';
+  secondaryNav.textContent = 'Developer view';
+  spaceCognitionPanel.hidden = true;
+  agentPromptPanel.hidden = true;
+  replayPanel.hidden = true;
+  platformCatalogPanel.hidden = true;
+  spaceCognitionLinkPanel.hidden = true;
 } else {
-  document.title = 'Developer Agent | Midbrain';
+  document.title = 'Autonomous Agent Developer View | Midbrain';
   spaceCognitionPanel.hidden = true;
 }
+
+function collapsibleDiagnostic(panel, open = false) {
+  if (!panel || panel.hidden) return;
+  const heading = panel.querySelector(':scope > h2');
+  const kicker = panel.querySelector(':scope > .role-kicker');
+  const details = document.createElement('details');
+  details.className = 'card diagnostic-card';
+  details.open = open;
+  const summary = document.createElement('summary');
+  const title = document.createElement('span');
+  title.textContent = heading?.textContent || 'Developer diagnostic';
+  const category = document.createElement('small');
+  category.textContent = kicker?.textContent || 'Diagnostics';
+  summary.append(title, category);
+  heading?.remove();
+  kicker?.remove();
+  panel.className = 'diagnostic-body';
+  panel.replaceWith(details);
+  details.append(summary, panel);
+}
+
+function modernizeDeveloperWorkspace() {
+  document.body.classList.add('developer-workspace');
+  const grid = document.querySelector('.grid');
+  const diagnosticsPane = grid?.children[0];
+  const conversationPane = grid?.children[1];
+  if (!grid || !diagnosticsPane || !conversationPane) return;
+  diagnosticsPane.id = 'developerDiagnosticsPane';
+  diagnosticsPane.className = 'dev-pane diagnostics-pane';
+  conversationPane.id = 'developerConversationPane';
+  conversationPane.className = 'dev-pane conversation-pane';
+  diagnosticsPane.append(
+    worldPointCloudPanel,
+    replayPanel,
+    platformCatalogPanel,
+    spaceCognitionLinkPanel
+  );
+  conversationPane.replaceChildren(agentPromptPanel);
+  for (const panel of [
+    worldPointCloudPanel,
+    replayPanel,
+    platformCatalogPanel,
+    spaceCognitionLinkPanel
+  ]) {
+    collapsibleDiagnostic(panel, panel === worldPointCloudPanel);
+  }
+
+  const promptLabel = document.createElement('label');
+  promptLabel.htmlFor = 'prompt';
+  promptLabel.textContent = 'Prompt';
+  const modelControls = agentPromptPanel.querySelector('.model-controls');
+  const attachmentPicker = agentPromptPanel.querySelector(
+    '.agent-attachment-picker'
+  );
+  const runButtonWrapper = agentPromptPanel.querySelector('#run').parentElement;
+  const authorizationControls = agentPromptPanel.querySelector(
+    '.authorization-controls'
+  );
+  const chatHead = agentPromptPanel.querySelector('.chat-panel-head');
+  const chatEmpty = document.getElementById('developerChatHistoryEmpty');
+  const chatHistory = document.getElementById('developerChatHistory');
+  const oldKicker = agentPromptPanel.querySelector(':scope > .role-kicker');
+  const oldHeading = agentPromptPanel.querySelector(':scope > h2');
+  oldKicker?.remove();
+  oldHeading?.remove();
+
+  const head = document.createElement('div');
+  head.className = 'developer-conversation-head';
+  head.appendChild(chatHead);
+  const chatScroll = document.createElement('div');
+  chatScroll.className = 'developer-chat-scroll';
+  const spacer = document.createElement('div');
+  spacer.className = 'chat-history-spacer';
+  spacer.setAttribute('aria-hidden', 'true');
+  chatHistory.prepend(spacer);
+  chatScroll.append(chatEmpty, chatHistory);
+  const composer = document.createElement('div');
+  composer.className = 'developer-composer';
+  runButtonWrapper.className = 'developer-composer-actions';
+  const authorizationDisclosure = document.createElement('details');
+  authorizationDisclosure.className = 'authorization-disclosure';
+  const authorizationDisclosureTitle = document.createElement('summary');
+  authorizationDisclosureTitle.textContent = 'Development autonomy policy';
+  authorizationDisclosure.append(
+    authorizationDisclosureTitle,
+    authorizationControls
+  );
+  composer.append(
+    promptLabel,
+    document.getElementById('prompt'),
+    modelControls,
+    attachmentPicker,
+    runButtonWrapper,
+    authorizationDisclosure
+  );
+  agentPromptPanel.replaceChildren(head, chatScroll, composer);
+}
+
+if (!focusedUtilityPage) modernizeDeveloperWorkspace();
 const runButton = document.getElementById('run');
 const refreshReplayButton = document.getElementById('refreshReplay');
 const initializeButton = document.getElementById('initialize');
@@ -2307,14 +3011,45 @@ const authorizationDetails = document.getElementById('authorizationDetails');
 const approveAuthorization = document.getElementById('approveAuthorization');
 const denyAuthorization = document.getElementById('denyAuthorization');
 const promptBox = document.getElementById('prompt');
-const answer = document.getElementById('answer');
+const developerAgentImageInput = document.getElementById(
+  'developerAgentImageInput'
+);
+const developerAttachmentHint = document.getElementById(
+  'developerAttachmentHint'
+);
+const developerAttachmentPreview = document.getElementById(
+  'developerAttachmentPreview'
+);
+const developerAttachmentPreviewImage = document.getElementById(
+  'developerAttachmentPreviewImage'
+);
+const developerAttachmentName = document.getElementById(
+  'developerAttachmentName'
+);
+const removeDeveloperAttachment = document.getElementById(
+  'removeDeveloperAttachment'
+);
+const agentActivity = document.getElementById('agentActivity');
+const developerChatHistory = new window.MidbrainAgentChatHistory({
+  container: document.getElementById('developerChatHistory'),
+  emptyState: document.getElementById('developerChatHistoryEmpty'),
+  detailedEvents: true,
+  onStatus: (message) => agentActivity.textContent = message
+});
 const agentModel = document.getElementById('agentModel');
 const reasoningEffort = document.getElementById('reasoningEffort');
 const vlmModel = document.getElementById('vlmModel');
 const autoApproveProviders = document.getElementById('autoApproveProviders');
+const autoApproveProviderStop = document.getElementById(
+  'autoApproveProviderStop'
+);
 const autoApproveMoves = document.getElementById('autoApproveMoves');
 const autoApproveCalibration = document.getElementById('autoApproveCalibration');
 const autoApproveCalibrationActivation = document.getElementById('autoApproveCalibrationActivation');
+const autoApproveSafeHome = document.getElementById('autoApproveSafeHome');
+const autoApproveSpaceReinitialization = document.getElementById(
+  'autoApproveSpaceReinitialization'
+);
 const maxAutoMoveCm = document.getElementById('maxAutoMoveCm');
 const maxAutoSpeedMps = document.getElementById('maxAutoSpeedMps');
 const authorizationTicker = document.getElementById('authorizationTicker');
@@ -2337,6 +3072,86 @@ let latestCameraPose = null;
 let activeAuthorizationId = null;
 const AGENT_AUTHORIZATION_STORAGE_KEY =
   'midbrain.developerAgent.sessionAuthorization.v1';
+const DEVELOPER_AGENT_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp'
+]);
+const DEVELOPER_AGENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+let developerSelectedImage = null;
+let developerSelectedImageUrl = null;
+
+function clearDeveloperSelectedImage() {
+  if (developerSelectedImageUrl) {
+    URL.revokeObjectURL(developerSelectedImageUrl);
+  }
+  developerSelectedImageUrl = null;
+  developerSelectedImage = null;
+  developerAgentImageInput.value = '';
+  developerAttachmentPreviewImage.removeAttribute('src');
+  developerAttachmentName.textContent = '';
+  developerAttachmentPreview.hidden = true;
+  developerAttachmentHint.hidden = false;
+}
+
+function selectDeveloperImage(file) {
+  if (!file) {
+    clearDeveloperSelectedImage();
+    return;
+  }
+  if (!DEVELOPER_AGENT_IMAGE_TYPES.has(file.type)) {
+    throw new Error('Choose a JPEG, PNG, or WebP image.');
+  }
+  if (file.size > DEVELOPER_AGENT_IMAGE_MAX_BYTES) {
+    throw new Error('The attached image exceeds 8 MB.');
+  }
+  clearDeveloperSelectedImage();
+  developerSelectedImage = file;
+  developerSelectedImageUrl = URL.createObjectURL(file);
+  developerAttachmentPreviewImage.src = developerSelectedImageUrl;
+  developerAttachmentName.textContent =
+    file.name + ' | ' + (file.size / 1024).toFixed(0) + ' KB';
+  developerAttachmentPreview.hidden = false;
+  developerAttachmentHint.hidden = true;
+}
+
+function readDeveloperImageAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the image.'));
+    reader.onload = () => {
+      const value = String(reader.result || '');
+      const separator = value.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('Could not encode the image.'));
+        return;
+      }
+      resolve(value.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadDeveloperImage() {
+  if (!developerSelectedImage) return [];
+  agentActivity.textContent = 'Uploading image attachment...';
+  const response = await fetch('/api/agent-attachments', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      filename: developerSelectedImage.name,
+      media_type: developerSelectedImage.type,
+      data_base64: await readDeveloperImageAsBase64(
+        developerSelectedImage
+      )
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || 'Image upload failed');
+  }
+  return [data.attachment_id];
+}
 
 function loadAgentAuthorizationPreferences() {
   let saved = {};
@@ -2351,6 +3166,10 @@ function loadAgentAuthorizationPreferences() {
     typeof saved.autoApproveProviders === 'boolean'
       ? saved.autoApproveProviders
       : true;
+  autoApproveProviderStop.checked =
+    typeof saved.autoApproveProviderStop === 'boolean'
+      ? saved.autoApproveProviderStop
+      : true;
   autoApproveMoves.checked =
     typeof saved.autoApproveMoves === 'boolean'
       ? saved.autoApproveMoves
@@ -2363,6 +3182,14 @@ function loadAgentAuthorizationPreferences() {
     typeof saved.autoApproveCalibrationActivation === 'boolean'
       ? saved.autoApproveCalibrationActivation
       : true;
+  autoApproveSafeHome.checked =
+    typeof saved.autoApproveSafeHome === 'boolean'
+      ? saved.autoApproveSafeHome
+      : true;
+  autoApproveSpaceReinitialization.checked =
+    typeof saved.autoApproveSpaceReinitialization === 'boolean'
+      ? saved.autoApproveSpaceReinitialization
+      : false;
   const savedMaximum = Number(saved.maxAutoMoveCm);
   maxAutoMoveCm.value =
     Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
@@ -2379,10 +3206,14 @@ function agentAuthorizationPreferences() {
   const maximumSpeed = Number(maxAutoSpeedMps.value);
   return {
     autoApproveProviders: autoApproveProviders.checked,
+    autoApproveProviderStop: autoApproveProviderStop.checked,
     autoApproveMoves: autoApproveMoves.checked,
     autoApproveCalibration: autoApproveCalibration.checked,
     autoApproveCalibrationActivation:
       autoApproveCalibrationActivation.checked,
+    autoApproveSafeHome: autoApproveSafeHome.checked,
+    autoApproveSpaceReinitialization:
+      autoApproveSpaceReinitialization.checked,
     maxAutoMoveCm:
       Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
         ? maximum
@@ -2400,6 +3231,9 @@ function updateAgentAuthorizationTicker() {
   const providerState = preferences.autoApproveProviders
     ? 'Provider activation AUTO'
     : 'Provider activation asks';
+  const providerStopState = preferences.autoApproveProviderStop
+    ? 'Provider stop AUTO'
+    : 'Provider stop asks';
   const motionState = preferences.autoApproveMoves
     ? 'relative arm pose AUTO <= ' + preferences.maxAutoMoveCm + ' cm, <= ' +
       preferences.maxAutoSpeedMps + ' m/s nominal average; ' +
@@ -2411,10 +3245,17 @@ function updateAgentAuthorizationTicker() {
   const activationState = preferences.autoApproveCalibrationActivation
     ? 'exact calibration activation AUTO'
     : 'exact calibration activation asks';
+  const safeHomeState = preferences.autoApproveSafeHome
+    ? 'safe-home AUTO'
+    : 'safe-home asks';
+  const reinitializationState = preferences.autoApproveSpaceReinitialization
+    ? 'spatial reinitialization AUTO'
+    : 'spatial reinitialization asks';
   authorizationTicker.textContent =
-    providerState + ' | ' + motionState + ' | ' + calibrationState + ' | ' +
-    activationState + '. Provider and controller safety checks remain active; ' +
-    'stop, safe-home, and other protected actions still ask.';
+    providerState + ' | ' + providerStopState + ' | ' + motionState + ' | ' +
+    calibrationState + ' | ' + activationState + ' | ' + safeHomeState +
+    ' | ' + reinitializationState + '. Provider and controller safety ' +
+    'checks remain active.';
   try {
     window.sessionStorage.setItem(
       AGENT_AUTHORIZATION_STORAGE_KEY,
@@ -2455,6 +3296,22 @@ function automaticDeveloperApprovalDecision(approvals) {
       max_auto_move_cm: null,
       max_auto_speed_m_s: null,
       label: 'Session authorization automatically approved Provider activation.'
+    };
+  }
+  const providerStopEligible =
+    preferences.autoApproveProviderStop &&
+    approvals.every((approval) => {
+      const action = String(agentApprovalArguments(approval).action || '')
+        .toLowerCase();
+      return approval.tool_name === 'set_provider_residency' &&
+        action === 'stop';
+    });
+  if (providerStopEligible) {
+    return {
+      approval_mode: 'AUTO_PROVIDER_STOP',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label: 'Session authorization automatically approved Provider stop.'
     };
   }
   const motionEligible =
@@ -2533,6 +3390,34 @@ function automaticDeveloperApprovalDecision(approvals) {
       max_auto_speed_m_s: null,
       label:
         'Session authorization automatically approved exact stationary calibration activation.'
+    };
+  }
+  const safeHomeEligible =
+    preferences.autoApproveSafeHome &&
+    approvals.every(
+      (approval) => approval.tool_name === 'execute_basic_safe_home'
+    );
+  if (safeHomeEligible) {
+    return {
+      approval_mode: 'AUTO_SAFE_HOME',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label:
+        'Session authorization automatically approved controller-owned safe-home.'
+    };
+  }
+  const reinitializationEligible =
+    preferences.autoApproveSpaceReinitialization &&
+    approvals.every(
+      (approval) => approval.tool_name === 'reinitialize_space_cognition'
+    );
+  if (reinitializationEligible) {
+    return {
+      approval_mode: 'AUTO_SPACE_REINITIALIZATION',
+      max_auto_move_cm: null,
+      max_auto_speed_m_s: null,
+      label:
+        'Session authorization automatically approved spatial reinitialization.'
     };
   }
   return null;
@@ -2918,13 +3803,8 @@ clearCloudButton.addEventListener('click', async () => {
   await fetch('/api/world-point-cloud/clear', {method: 'POST'});
 });
 
-async function handleDeveloperAgentResult(data) {
-  if (data.status !== 'approval_required') {
-    answer.textContent = data.answer || 'Completed without a text response.';
-    return;
-  }
-  const approvals = data.approvals || [];
-  const summary = approvals.map((approval) => {
+function developerApprovalSummary(approvals) {
+  return approvals.map((approval) => {
     const details = (approval.details || []).map(
       (detail) => detail.label + ': ' + detail.value
     );
@@ -2939,77 +3819,258 @@ async function handleDeveloperAgentResult(data) {
       'Approve this request?'
     ].join('\n');
   }).join('\n\n');
-  answer.textContent = summary;
+}
+
+let chatSessionLoadPending = false;
+async function loadChatSession() {
+  if (focusedUtilityPage) return;
+  if (chatSessionLoadPending) return;
+  chatSessionLoadPending = true;
+  try {
+    const response = await fetch('/api/chat-session', {cache: 'no-store'});
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Chat session could not be loaded');
+    }
+    developerChatHistory.hydrate(data.turns || []);
+  } catch (error) {
+    agentActivity.textContent = 'History unavailable: ' + error.message;
+  } finally {
+    chatSessionLoadPending = false;
+  }
+}
+
+function developerRunRequest(attachmentIds) {
+  const authorization = agentAuthorizationPreferences();
+  return {
+    prompt: promptBox.value,
+    attachment_ids: attachmentIds,
+    agent_model: agentModel.value,
+    reasoning_effort: reasoningEffort.value,
+    vlm_model: vlmModel.value,
+    auto_authorize_provider_activation:
+      authorization.autoApproveProviders,
+    auto_authorize_provider_stop:
+      authorization.autoApproveProviderStop,
+    auto_authorize_relative_motion: authorization.autoApproveMoves,
+    max_auto_move_cm: authorization.maxAutoMoveCm,
+    max_auto_speed_m_s: authorization.maxAutoSpeedMps,
+    auto_authorize_stationary_calibration:
+      authorization.autoApproveCalibration,
+    auto_authorize_stationary_activation:
+      authorization.autoApproveCalibrationActivation,
+    auto_authorize_safe_home: authorization.autoApproveSafeHome,
+    auto_authorize_space_reinitialization:
+      authorization.autoApproveSpaceReinitialization
+  };
+}
+
+async function submitStreamingDeveloperApproval(started, approvals) {
+  const summary = developerApprovalSummary(approvals);
   const automaticDecision = automaticDeveloperApprovalDecision(approvals);
   const approved = automaticDecision ? true : window.confirm(summary);
-  if (automaticDecision) {
-    answer.textContent = automaticDecision.label + '\nContinuing the same run...';
+  agentActivity.textContent = automaticDecision
+    ? automaticDecision.label + ' Continuing the same run...'
+    : approved
+      ? 'Approval accepted. Continuing the same run...'
+      : 'Operation rejected. Returning the decision to the agent...';
+  const decisionUrl = started.decision_url ||
+    '/api/streaming-runs/' + encodeURIComponent(started.run_id) +
+    '/decision';
+  const response = await fetch(decisionUrl, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      approve: approved,
+      approval_mode:
+        (automaticDecision && automaticDecision.approval_mode) || 'MANUAL',
+      max_auto_move_cm:
+        (automaticDecision && automaticDecision.max_auto_move_cm) || null,
+      max_auto_speed_m_s:
+        (automaticDecision && automaticDecision.max_auto_speed_m_s) || null,
+      rejection_message: approved ? null : 'Rejected in the developer UI'
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || JSON.stringify(data));
   }
-  const decisionResponse = await fetch(
-    '/api/dev/runs/' + encodeURIComponent(data.run_id) + '/decision',
-    {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        approve: approved,
-        approval_mode:
-          (automaticDecision && automaticDecision.approval_mode) || 'MANUAL',
-        max_auto_move_cm:
-          (automaticDecision && automaticDecision.max_auto_move_cm) || null,
-        max_auto_speed_m_s:
-          (automaticDecision && automaticDecision.max_auto_speed_m_s) || null,
-        rejection_message: approved ? null : 'Rejected in the developer UI'
-      })
+}
+
+function consumeStreamingDeveloperRun(started, turn) {
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(started.events_url);
+    const handledApprovals = new Set();
+    let answerText = '';
+    let terminal = false;
+    turn.setRunId(started.run_id);
+
+    function fail(error) {
+      if (terminal) return;
+      terminal = true;
+      source.close();
+      const failure = error instanceof Error
+        ? error
+        : new Error(String(error));
+      turn.fail(failure);
+      reject(failure);
     }
-  );
-  const next = await decisionResponse.json();
-  if (!decisionResponse.ok) {
-    throw new Error(next.detail || JSON.stringify(next));
-  }
-  await handleDeveloperAgentResult(next);
+
+    source.onopen = () => {
+      agentActivity.textContent = 'Live autonomous Agent stream connected';
+      turn.setActivity('Live autonomous Agent stream connected');
+    };
+    source.onerror = () => {
+      if (!terminal) {
+        agentActivity.textContent =
+          'Live stream interrupted; reconnecting without restarting the run...';
+      }
+    };
+    source.onmessage = async (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        turn.addEvent(event);
+        const payload = event.payload || {};
+        if (event.type === 'run.started') {
+          agentActivity.textContent = 'Autonomous Agent run started';
+          turn.setActivity('Autonomous Agent run started');
+          turn.addProgress('Autonomous Agent run started');
+        } else if (event.type === 'assistant.message.delta') {
+          answerText += String(payload.text || '');
+          turn.appendAnswer(String(payload.text || ''));
+        } else if (
+          event.type === 'assistant.reasoning_summary.delta'
+        ) {
+          turn.appendReasoning(String(payload.text || ''));
+        } else if (event.type === 'tool.called') {
+          const name = payload.tool_name || 'agent tool';
+          agentActivity.textContent = 'Running ' + name + '...';
+          turn.setActivity('Running ' + name + '...');
+          turn.addProgress('Started ' + name);
+        } else if (event.type === 'tool.completed') {
+          const name = payload.tool_name || 'Agent tool';
+          agentActivity.textContent = name + ' completed';
+          turn.setActivity(name + ' completed');
+          turn.addProgress('Completed ' + name);
+        } else if (event.type === 'skill.retry.recovered') {
+          const update =
+            'Camera observation recovered after ' +
+            payload.attempt_count + ' attempts';
+          agentActivity.textContent = update;
+          turn.setActivity(update);
+          turn.addProgress(update);
+        } else if (event.type === 'skill.retry.exhausted') {
+          const update =
+            'Camera observation unavailable after ' +
+            payload.attempt_count + ' attempts';
+          agentActivity.textContent = update;
+          turn.setActivity(update);
+          turn.addProgress(update);
+        } else if (event.type === 'visual.evidence.created') {
+          turn.showVisualEvidence(payload);
+          agentActivity.textContent = 'Visual evidence available';
+          turn.setActivity('Visual evidence available');
+          turn.addProgress('Visual evidence attached to the response');
+        } else if (event.type === 'agent.updated') {
+          turn.addProgress(
+            'Active agent: ' + (payload.agent_name || 'agent')
+          );
+        } else if (event.type === 'approval.required') {
+          turn.addProgress('Development approval required');
+          const approvalKey = String(
+            event.event_id || message.lastEventId
+          );
+          if (!handledApprovals.has(approvalKey)) {
+            handledApprovals.add(approvalKey);
+            await submitStreamingDeveloperApproval(
+              started,
+              payload.approvals || []
+            );
+          }
+        } else if (event.type === 'run.completed') {
+          terminal = true;
+          source.close();
+          turn.complete(
+            payload.answer || answerText ||
+              'Completed without a text response.'
+          );
+          agentActivity.textContent = 'Completed';
+          resolve(payload);
+        } else if (event.type === 'run.failed') {
+          fail(new Error(payload.error || 'Autonomous Agent run failed'));
+        }
+      } catch (error) {
+        fail(error);
+      }
+    };
+  });
 }
 
 runButton.addEventListener('click', async () => {
+  const prompt = promptBox.value.trim();
+  if (!prompt) return;
+  const turn = developerChatHistory.startTurn({
+    prompt,
+    attachmentFile: developerSelectedImage,
+    agentModel: agentModel.value,
+    reasoningEffort: reasoningEffort.value,
+    vlmModel: vlmModel.value
+  });
   runButton.disabled = true;
-  answer.textContent = 'Running…';
+  agentActivity.textContent = 'Starting backend-owned Agent run...';
   try {
-    const authorization = agentAuthorizationPreferences();
-    const response = await fetch('/api/dev/run', {
+    const attachmentIds = await uploadDeveloperImage();
+    const requestPayload = developerRunRequest(attachmentIds);
+    const response = await fetch('/api/streaming-runs', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        prompt: promptBox.value,
-        agent_model: agentModel.value,
-        reasoning_effort: reasoningEffort.value,
-        vlm_model: vlmModel.value,
-        auto_authorize_provider_activation:
-          authorization.autoApproveProviders,
-        auto_authorize_relative_motion: authorization.autoApproveMoves,
-        max_auto_move_cm: authorization.maxAutoMoveCm,
-        max_auto_speed_m_s: authorization.maxAutoSpeedMps,
-        auto_authorize_stationary_calibration:
-          authorization.autoApproveCalibration,
-        auto_authorize_stationary_activation:
-          authorization.autoApproveCalibrationActivation
-      })
+      body: JSON.stringify(requestPayload)
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
-    await handleDeveloperAgentResult(data);
+    if (!response.ok) {
+      throw new Error(data.detail || JSON.stringify(data));
+    }
+    await consumeStreamingDeveloperRun(data, turn);
+    clearDeveloperSelectedImage();
     refreshStatus();
   } catch (error) {
-    answer.textContent = 'Error: ' + error;
+    if (turn.state.status === 'RUNNING') turn.fail(error);
+    agentActivity.textContent = 'Autonomous Agent run failed';
   } finally {
     runButton.disabled = false;
   }
 });
+promptBox.addEventListener('keydown', (event) => {
+  if (
+    event.key !== 'Enter' ||
+    event.shiftKey ||
+    event.isComposing
+  ) return;
+  event.preventDefault();
+  if (!runButton.disabled) runButton.click();
+});
+developerAgentImageInput.addEventListener('change', (event) => {
+  try {
+    selectDeveloperImage(event.target.files?.[0] || null);
+  } catch (error) {
+    clearDeveloperSelectedImage();
+    agentActivity.textContent = 'Error: ' + error.message;
+  }
+});
+removeDeveloperAttachment.addEventListener(
+  'click',
+  clearDeveloperSelectedImage
+);
 refreshReplayButton.addEventListener('click', refreshReplayProvenance);
 
 for (const control of [
   autoApproveProviders,
+  autoApproveProviderStop,
   autoApproveMoves,
   autoApproveCalibration,
   autoApproveCalibrationActivation,
+  autoApproveSafeHome,
+  autoApproveSpaceReinitialization,
   maxAutoMoveCm,
   maxAutoSpeedMps
 ]) {
@@ -3589,6 +4650,7 @@ resetViewButton.addEventListener('click', () => {
 });
 fitAxesButton.addEventListener('click', fitVisibleAxes);
 
+loadChatSession();
 refreshStatus();
 if (!focusedUtilityPage) refreshReplayProvenance();
 renderCloud();
@@ -3596,6 +4658,7 @@ refreshCloud();
 refreshSpatialAxes();
 setInterval(refreshStatus, 2500);
 if (!focusedUtilityPage) {
+  setInterval(loadChatSession, 3000);
   setInterval(refreshReplayProvenance, 10000);
   setInterval(refreshAuthorization, 1000);
   refreshAuthorization();

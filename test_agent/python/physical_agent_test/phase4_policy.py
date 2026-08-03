@@ -48,18 +48,34 @@ class Phase4Policy:
     operation_idle_timeout_s: float
     vlm_attempt_timeout_s: float
     skill_adapter_timeout_s: float
+    vlm_attempts_per_backend: int = 2
+    vlm_retry_backoff_s: float = 0.25
 
     @classmethod
     def from_environment(cls) -> "Phase4Policy":
         hard_timeout = float(os.getenv("PHASE4_OPERATION_HARD_TIMEOUT_S", "90"))
         idle_timeout = float(os.getenv("PHASE4_OPERATION_IDLE_TIMEOUT_S", "30"))
         vlm_timeout = float(os.getenv("PHASE4_VLM_ATTEMPT_TIMEOUT_S", "45"))
+        vlm_attempts = int(
+            os.getenv("PHASE4_VLM_ATTEMPTS_PER_BACKEND", "2")
+        )
+        vlm_retry_backoff = float(
+            os.getenv("PHASE4_VLM_RETRY_BACKOFF_S", "0.25")
+        )
         adapter_timeout = float(os.getenv("PHASE4_SKILL_ADAPTER_TIMEOUT_S", "60"))
         if min(hard_timeout, idle_timeout, vlm_timeout, adapter_timeout) <= 0.0:
             raise ValueError("Phase 4 operation timeouts must be positive")
         if idle_timeout > hard_timeout:
             raise ValueError(
                 "PHASE4_OPERATION_IDLE_TIMEOUT_S must not exceed the hard timeout"
+            )
+        if not 1 <= vlm_attempts <= 3:
+            raise ValueError(
+                "PHASE4_VLM_ATTEMPTS_PER_BACKEND must be between 1 and 3"
+            )
+        if not 0.0 <= vlm_retry_backoff <= 5.0:
+            raise ValueError(
+                "PHASE4_VLM_RETRY_BACKOFF_S must be between 0 and 5"
             )
         return cls(
             binding=_policy_mode("PHASE4_BINDING_MODE", "SHADOW"),
@@ -83,6 +99,8 @@ class Phase4Policy:
             operation_idle_timeout_s=idle_timeout,
             vlm_attempt_timeout_s=vlm_timeout,
             skill_adapter_timeout_s=adapter_timeout,
+            vlm_attempts_per_backend=vlm_attempts,
+            vlm_retry_backoff_s=vlm_retry_backoff,
         )
 
     def as_dict(self) -> dict[str, Any]:

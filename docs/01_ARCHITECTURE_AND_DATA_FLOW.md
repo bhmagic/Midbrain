@@ -68,8 +68,9 @@ dynamic measurement edges for compatibility comparisons.
    liveness, readiness, and observation links without activating them.
 3. The operator enters a guarded development flow or asks an Agent to perform a
    task.
-4. The Agent or bounded Skill inspects current runtime state and requests
-   approval for required Provider activations.
+4. The Agent or bounded Skill inspects current runtime state and requests host
+   policy authorization for required Provider activations. Development may
+   project an unresolved decision into an approval dialog.
 5. For spatial initialization, the formal Initialize / Re-establish Space
    Cognition Skill selects the camera, depth, IMU, and VIO Providers. A
    deliberate re-origin is approval-gated and revokes active workcell
@@ -104,3 +105,61 @@ dynamic measurement edges for compatibility comparisons.
 6. Clear old-epoch points only after the new epoch is accepted.
 7. Reset camera frame cursor and reopen shared-memory readers.
 8. Resume point accumulation when a body pose and synchronized RGB-D bundle are available in the new epoch.
+
+## Agent visual evidence
+
+Camera-facing Agent Skills retain the exact frame they analyzed and may return
+normalized point or box annotations. The SDK-specific run stream is projected
+onto the versioned Midbrain event contract, and the browser renders those
+records as an interactive SVG overlay. The raster and annotation records remain
+separate authoritative artifacts; browser copy/download is a convenience
+flattening step. Channel applicability is explicit so a future synchronized
+RGB-D producer can add depth without showing RGB-only annotations on that
+channel. The initial pointing and general scene Skills publish RGB only.
+
+## Agent user-image input
+
+An operator-selected image follows a separate SDK-neutral attachment route.
+The browser uploads one validated still image into a bounded Midbrain store and
+receives an opaque attachment ID. Requests from either Agent view contain
+that ID rather than image bytes. Immediately before Agent execution, the active
+runtime adapter resolves it into the model's native text-plus-image input
+shape. Text-only runs preserve the legacy string path.
+
+User attachments are conversational context, not Fabric observations. They
+cannot satisfy live-camera readiness, depth, calibration, spatial-frame,
+freshness, or physical-authorization requirements. Robotics-ER Skills continue
+to obtain exact evidence from the robot camera through their existing route.
+
+## Agent conversation projection
+
+The regular page and developer view are presentation variants over one
+autonomous `PrototypeAgentDriver`, one process-scoped model session, and one
+run/approval/streaming implementation. Both pages submit only to the canonical
+`/api/streaming-runs` contract; there is no synchronous execution route or
+developer execution alias. Developer diagnostics do not change the Agent's
+eligible tools, lifecycle policy, retries, or authorization behavior.
+
+The browser groups each backend-owned run into one user/Agent turn. Public
+reasoning-summary deltas and sanitized lifecycle events populate an expandable
+execution summary, while visual evidence remains attached to the turn that
+created it. The projection excludes private chain-of-thought and raw tool
+payloads.
+
+The Manager boot UUID parents a robot-local conversation session. The journal
+batches the prompt, public answer, model-selection metadata, and normalized
+events into SQLite. Both pages hydrate and periodically synchronize from the
+same active-session projection, so closing a tab or opening both pages does not
+fork or erase the transcript. Attached image bytes, private reasoning, and raw
+tool payloads are excluded. The SDK model-session database remains separate.
+The journal marks nonresumable prior-process runs interrupted and stays outside
+the command and authorization paths. It is durable development diagnostics,
+not yet an authenticated field-audit store.
+
+The local developer service supplies that durable observation view at
+`/dev/run-journal`. Its bounded GET endpoints return Manager-boot sessions,
+their Agent runs, and a selected run's normalized envelopes. The left pane adds
+the session parent above the existing run cards. The right pane groups
+envelopes behind category and per-event disclosures. It adds no command,
+resume, approval, or deletion path. Both Agent views link to the viewer, and
+the Manager portal exposes the same loopback surface.
