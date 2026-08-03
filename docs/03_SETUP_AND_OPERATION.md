@@ -24,7 +24,7 @@ Optional reBot arm operation additionally requires:
 
 - The supported reBot/Damiao seven-motor assembly and its reviewed local calibration
 - A Windows serial connection and `motorbridge>=0.4.9`
-- An Xbox-compatible controller for the current operator motion gate
+- An Xbox-compatible controller only for the manual Integrated hardware-test GUI
 
 The Orbbec SDK is not redistributed in this repository.
 
@@ -283,7 +283,14 @@ When Integrated is HOT and ready, Manager `GET /v1/capabilities` advertises usab
 
 POS_VEL one-shot is labeled limited to paths at or below 20 cm with no payload or high external load. POS_VEL continuous and arm POS_TOR one-shot remain experimental/unstable GUI tests and are intentionally absent from Manager capability discovery.
 
-The current upstream flow is target/settings staging through Fabric stream `robot_arm.primary.integrated.command`, followed by the local operator's Engage + Xbox LB release. Use the provider's documented `stop_physical_gui_test.ps1` path for authoritative safe-home termination.
+The Agent flow stages target/settings through Fabric stream
+`robot_arm.primary.integrated.command`, binds authorization to one exact
+unexpired preview, and then requests the Integrated one-shot commit. Manager
+authority, Basic fencing, Integrated limits, and terminal completion evidence
+remain enforced. The separate manual hardware-test GUI retains its documented
+Engage + Xbox LB development release. Use the Provider's documented
+`stop_physical_gui_test.ps1` path for authoritative termination of that manual
+GUI session.
 
 ## Forced VIO reinitialization
 

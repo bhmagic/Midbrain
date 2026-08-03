@@ -17,9 +17,20 @@ The long-term goal is to provide a reusable foundation for robotic systems that 
 * Autonomous and human-directed agents
 * Shared spatial and operational state
 
-> **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack, policy-enforced control authority, integrated arm motion planning, and a narrowly bounded OpenAI Agents SDK test path. It is not yet a production-certified robotics control system.
+> **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack, policy-enforced control authority, integrated arm motion planning, and one backend-owned OpenAI Agents SDK runtime projected into regular and developer views. It is not yet a production-certified robotics control system or a hardened remote operator console.
 
-The latest system-housecleaning and guarded physical validation are recorded in the [Changelog](CHANGELOG.md), [Build and Validation Report](BUILD_REPORT.md), and [Phase 5 completion record](docs/reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md). The work separates durable mechanism from task policy, makes control submissions auditable, adds discoverable Skill and data-route contracts, introduces lease and authorization enforcement, and exercises a decision-only Agents SDK path through reviewed motion.
+The current Test Agent v0.4.2 checkpoint is recorded in the [Changelog](CHANGELOG.md), [Version History](docs/11_VERSION_HISTORY_AND_DECISIONS.md), and [Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md). It separates SDK-specific execution from versioned Midbrain events, makes the regular and developer pages views of the same autonomous runtime, and retains the existing Manager, finite-Skill, authorization, lease, and controller boundaries.
+
+Agent runs now use only the canonical `/api/streaming-runs` family. A
+backend-owned run continues when an SSE browser connection closes. Both Agent
+pages share the conversation associated with the current Manager boot, while a
+bounded robot-local SQLite journal retains normalized events for the read-only
+run viewer. The prompt accepts one optional user image; robot-camera visual
+Skills separately retain the exact analyzed RGB frame and normalized point or
+box annotations for interactive SVG display and flattened copy/download.
+Gemini Robotics-ER 2.0 is the default Robotics-ER backend. These interfaces
+remain loopback development surfaces: command APIs and retained records are not
+yet authenticated, encrypted, or qualified as field-audit infrastructure.
 
 Midbrain now defines one canonical 3D language contract: world/robot +X is
 front, +Y is left, and +Z is up opposite gravity. Natural-language directions
@@ -231,7 +242,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | reBot Arm Integrated Provider | `providers/rebot_arm_integrated`                                        | Cartesian IK and operator-supervised motion prototype with Manager capability discovery, an Xbox/GUI test drive, gripper control, and Fabric target input |
 | Stationary World-Space Arm Finder | `skills/stationary_world_arm_alignment`                                | Finite camera/world/arm-base alignment Skill with FoundationPose and VLM RGB-D modes, source-labeled results, and a monitoring GUI |
 | Archived Vegetable Cutting Prototype | `docs/archive/legacy_skills/vegetable_cutting`                    | Historical, non-loadable experiment retained only for evidence and future decomposition into smaller Skills |
-| Test Agent                 | `test_agent`                                                               | Separate regular and developer OpenAI Agents SDK surfaces used to exercise the platform                    |
+| Test Agent                 | `test_agent`                                                               | One autonomous OpenAI Agents SDK runtime with regular/developer projections, SSE runs, shared chat, visual evidence, and a read-only run journal |
 | Midbrain main GUI portal   | `platform_core/manager/web`                                                | Primary system entry for observation, guarded component access, Agents, and shutdown                       |
 | Point-cloud and pose GUI   | `test_agent`                                                               | Developer-only live world-frame point cloud, camera pose, reset controls, and estimator diagnostics        |
 | IMU calibration GUI        | `providers/orbbec_femto_bolt/python/orbbec_femto_provider/calibration_web` | Six-position accelerometer calibration workflow                                                            |
@@ -265,7 +276,7 @@ These components demonstrate how a brand-specific hardware Provider and a brand-
 
 ### reBot arm provider status
 
-The reBot arm stack is split into two Providers, each with its own `.venv`. Basic 0.1.20 owns DM serial transport and final motor-command validation. Integrated 0.7.0 leases Basic and exposes Cartesian target staging, MIT/POS_VEL/POS_TOR experiments, gripper controls, gravity-float, safe termination, and a local hardware-test GUI.
+The reBot arm stack is split into two Providers, each with its own `.venv`. Basic 0.1.20 owns DM serial transport and final motor-command validation. Integrated 0.8.1 leases Basic and exposes Cartesian target staging, MIT/POS_VEL/POS_TOR experiments, gripper controls, gravity-float, safe termination, and a local hardware-test GUI.
 
 The reviewed Integrated discovery labels are:
 
@@ -275,7 +286,7 @@ The reviewed Integrated discovery labels are:
 - POS_VEL `HOLD_LB`: **EXPERIMENTAL / UNSTABLE**, local GUI only, not Manager-discoverable
 - Arm POS_TOR `ONE_SHOT`: **EXPERIMENTAL / UNSTABLE**, local GUI only, not Manager-discoverable
 
-Integrated publishes capability-specific readiness in its Manager heartbeat and exposes an operation map at provider `GET /v1/capabilities`. Upstream Skills can discover the reviewed profiles, stage Cartesian targets/settings through Fabric, and call the documented HTTP operations. Physical arm execution remains operator-gated by Engage + Xbox LB because the audited Manager revision does not yet provide the required physical control-authority lease.
+Integrated publishes capability-specific readiness in its Manager heartbeat and exposes an operation map at provider `GET /v1/capabilities`. Upstream Skills can discover the reviewed profiles, stage Cartesian targets/settings through Fabric, and call the documented HTTP operations. The Agent path may submit one exact, unexpired reviewed preview after session authorization or an SDK approval interruption; Manager authority leases, Integrated validation, fencing, and terminal completion evidence remain mandatory. The separate local hardware-test GUI retains its documented Engage/Xbox development gate.
 
 The global `platform_core\scripts\stop_workspace.ps1` shutdown orders
 Integrated before Basic, honors each Provider's graceful-stop timeout, and
@@ -410,7 +421,7 @@ Providers, Skills, and Agents should expose status, health, diagnostics, and exe
 | `contracts`     | Provider, Fabric, Skill, calibration, pose, and safety contracts             |
 | `providers`     | Hardware and persistent computational Providers                              |
 | `skills`        | Bounded operations with isolated environments, contracts, tests, and artifacts |
-| `test_agent`    | Mock Agent, example Skill, point-cloud GUI, and functional checks            |
+| `test_agent`    | Autonomous Agent test runtime, regular/developer UIs, run journal, visual evidence, example Skills, and functional checks |
 | `docs`          | Architecture, setup, tutorials, contracts, audits, and release documentation |
 | `scripts`       | Repository validation, manifest generation, and GitHub publishing tools      |
 
@@ -459,9 +470,10 @@ The main GUI is the primary interaction portal. Use it to:
    observations.
 3. Open a read-only component observation page.
 4. Request guarded activation before entering a component development UI.
-5. Open the regular Agent for ordinary tasks or the developer Agent for wider
-   discovery and testing.
-6. Review Provider lifecycle and physical-motion approvals in plain language.
+5. Open the regular Agent for ordinary tasks or the developer view for the
+   same Agent conversation plus wider read-only diagnostics.
+6. Review the enabled session-authorization limits and any unresolved Provider
+   lifecycle or physical-motion approvals in plain language.
 7. Shut down the entire workspace through the safety-ordered shutdown link.
 
 Opening Midbrain does not activate a Provider, run a Skill, or authorize
@@ -526,6 +538,7 @@ Direct local endpoints for development and recovery:
 | Fabric              | `http://127.0.0.1:7002` |
 | Regular Agent UI    | `http://127.0.0.1:8000/` |
 | Developer Agent UI  | `http://127.0.0.1:8000/dev` |
+| Agent Run Journal   | `http://127.0.0.1:8000/dev/run-journal` |
 | Arm Alignment Skill GUI | `http://127.0.0.1:8011` |
 | IMU Calibration GUI | `http://127.0.0.1:8111` |
 | FoundationPose control API | `http://127.0.0.1:7103` |
@@ -601,23 +614,25 @@ Generated validation and build outputs remain local and are excluded from Git.
 
 ## Development direction
 
-Near-term platform development is expected to focus on:
+The next Agent objective is faster bounded command completion. Common robot
+commands, beginning with relative arm motion, should use measured deterministic
+orchestration after intent resolution instead of spending additional model
+turns rediscovering the same inspect, activate, plan, preview, execute, and
+interpret chain. This optimization must retain finite-Skill compatibility,
+SDK-neutral events, lifecycle policy, controller validation, authority leases,
+evidence, and authorization.
 
-* Formalizing Provider capability discovery
-* Defining Provider resource reservations and exclusivity
-* Expanding Skill lifecycle and result contracts
-* Supporting Agent-to-Skill invocation
-* Improving persistent service supervision
-* Adding robot-arm and actuator Providers
-* Adding complementary object detection, segmentation, and tracking Providers
-* Supporting multiple sensor and pose implementations
-* Improving synchronized observation access
-* Adding recording and deterministic replay
-* Strengthening safety, policy, and motion-inhibit controls
-* Supporting cross-Skill state and long-running robotic workflows
-* Expanding simulation and hardware-independent testing
+Other active objectives include low-interaction field missions, safe
+uncertain-outcome recovery, faster visual arm-mount attestation, contextual
+development approval cards, and dead-man gesture control. Remote Agent
+security and durable evidence policy remain future work; active-run steering
+and external Skill docking are optional. The complete objective list and
+acceptance boundaries are maintained in the
+[Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md).
 
-The current RGB-D implementation is the starting point for this larger robotic runtime.
+The current RGB-D implementation remains the starting point for the larger
+robotic runtime, including deterministic sensor recording/replay, stronger
+resource supervision, and broader hardware-independent testing.
 
 ---
 
@@ -634,6 +649,9 @@ The following areas require additional development and validation:
 * Hardware fault recovery
 * Multi-Agent conflict handling
 * Robot motion safety certification
+* Authenticated and role-authorized remote Agent command access
+* Encrypted, retained, exportable, and tamper-evident Agent evidence policy
+* Reduced model-turn latency for common multi-stage robot commands
 * Long-duration localization accuracy
 * Camera and IMU time-offset estimation
 * Formal object-pose repeatability, symmetry handling, and failure detection

@@ -88,22 +88,25 @@ Open **Regular Agent** from the main portal for normal natural-language tasks.
 The regular Agent can:
 
 - Inspect the current Provider and Skill catalog
-- Request approval to activate required Providers
+- Resolve required Provider activation through bounded session policy or a
+  development approval
 - Invoke its curated typed Skills
 - Request approval to establish a new spatial origin when explicitly asked
 - Preview supported relative arm motion
-- Request approval for the exact physical-motion preview
+- Resolve the exact physical-motion preview through bounded session policy or
+  a development approval
 - Request the Basic Controller safe-home operation
 
 For arm motion, the intended flow is:
 
 1. Inspect current runtime state.
-2. Request approval to activate Basic to `HOT`, if needed.
-3. Request approval to activate Integrated to `HOT`, if needed.
+2. Resolve authorization for Basic to reach `HOT`, if needed.
+3. Resolve authorization for Integrated to reach `HOT`, if needed.
 4. Create a nonphysical IK preview from the latest measured pose.
-5. Present a plain-language approval for that exact preview.
-6. Execute only after approval and report the controller's bounded completion
-   result.
+5. Evaluate bounded session authorization for that exact preview; if policy
+   does not resolve it, present a plain-language development approval.
+6. Execute only after authorization resolves and report the controller's
+   bounded completion result.
 
 Each repeated relative request is another displacement from the latest
 measured pose. The Agent does not silently reinterpret it as an absolute

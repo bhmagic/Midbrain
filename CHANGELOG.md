@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Refresh the public README, canonical documentation index, executive
+  overview, setup guide, and security guide for the Test Agent v0.4.2
+  checkpoint. Document the single regular/developer runtime, canonical
+  streaming API, shared Manager-session chat, visual evidence, run journal,
+  Robotics-ER 2.0 default, current arm authorization path, local trust
+  boundary, and next command-chain objective.
 - Record the next Agent objectives in the roadmap and version history. The
   immediate performance objective is a measured deterministic command chain
   for frequent robot operations that reduces extra model turns without

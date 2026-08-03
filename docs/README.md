@@ -2,7 +2,9 @@
 
 This directory is the canonical reading order for the GitHub repository.
 
-The 2026-07-29 guarded-agent checkpoint is summarized in the canonical [Validation](06_VALIDATION.md), [Workspace Audit](08_WORKSPACE_AUDIT.md), [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md), and [Version History](11_VERSION_HISTORY_AND_DECISIONS.md) documents. Detailed evidence is retained in [Phase 5 Agent SDK Completion and Shutdown](reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md), [Agent SDK Roadblocks](reference/project_notes/OPENAI_AGENT_SDK_ROADBLOCKS_20260729.md), [Component Changes](reference/project_notes/COMPONENT_CHANGES_20260729.md), and [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+The 2026-08-03 Test Agent v0.4.2 checkpoint is summarized in the canonical [Architecture and Data Flow](01_ARCHITECTURE_AND_DATA_FLOW.md), [Setup and Operation](03_SETUP_AND_OPERATION.md), [Main GUI Portal](04_MAIN_GUI_PORTAL.md), [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md), and [Version History](11_VERSION_HISTORY_AND_DECISIONS.md). It adds one autonomous regular/developer Agent runtime, canonical streaming runs, user-image input, retained annotated robot-camera evidence, shared Manager-session chat, and a read-only run journal. The framework-neutral boundaries are specified in [Agent Event Stream](../contracts/15_agent_event_stream.md), [Visual Evidence](../contracts/16_visual_evidence_and_annotations.md), [Image Attachments](../contracts/17_agent_image_attachments.md), [Chat History](../contracts/18_agent_chat_history.md), and [Run Journal](../contracts/19_agent_run_journal.md).
+
+The earlier 2026-07-29 guarded-motion evidence remains available in [Phase 5 Agent SDK Completion and Shutdown](reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md), [Agent SDK Roadblocks](reference/project_notes/OPENAI_AGENT_SDK_ROADBLOCKS_20260729.md), [Component Changes](reference/project_notes/COMPONENT_CHANGES_20260729.md), and [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
 
 | Order | Document | Purpose |
 |---|---|---|
@@ -12,7 +14,7 @@ The 2026-07-29 guarded-agent checkpoint is summarized in the canonical [Validati
 | 4 | [Setup and Operation](03_SETUP_AND_OPERATION.md) | Windows prerequisites, installation, command-line fallback, and recovery. |
 | 5 | [Midbrain Main GUI Portal](04_MAIN_GUI_PORTAL.md) | Canonical operator entry point for observation, activation, Agents, developer escalation, and shutdown. |
 | 6 | [Validation](06_VALIDATION.md) | Automated checks, hardware checks, and acceptance criteria. |
-| 7 | [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md) | Local configuration, secrets, calibration ownership, and publish exclusions. |
+| 7 | [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md) | Local configuration, secrets, calibration ownership, Agent API/record trust boundaries, and publish exclusions. |
 | 8 | [Workspace Audit](08_WORKSPACE_AUDIT.md) | Undocumented differences found between the handover snapshot and working workspace. |
 | 9 | [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Known technical gaps and next milestones. |
 | 10 | [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Clean build, staged-file review, upload script, and release checklist. |
