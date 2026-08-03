@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/contracts/visual_evidence.v1.schema.json",
+  "title": "Midbrain Visual Evidence v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "evidence_id",
+    "title",
+    "default_channel",
+    "channels",
+    "annotation_space",
+    "annotations",
+    "confidence",
+    "model",
+    "source_skill"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.visual_evidence"},
+    "schema_version": {"const": 1},
+    "evidence_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,100}$"
+    },
+    "title": {"type": "string", "maxLength": 200},
+    "default_channel": {"type": "string", "maxLength": 100},
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/channel"}
+    },
+    "annotation_space": {
+      "type": "object",
+      "required": ["units", "origin", "x_axis", "y_axis"],
+      "properties": {
+        "units": {"const": "normalized"},
+        "origin": {"const": "top_left"},
+        "x_axis": {"const": "right"},
+        "y_axis": {"const": "down"}
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/annotation"}
+    },
+    "confidence": {
+      "enum": ["low", "medium", "high", "unknown"]
+    },
+    "model": {"type": "string", "maxLength": 100},
+    "source_skill": {"type": "string", "maxLength": 160}
+  },
+  "$defs": {
+    "normalized": {"type": "number", "minimum": 0, "maximum": 1},
+    "channel": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "url",
+        "media_type",
+        "width",
+        "height",
+        "sha256"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$"},
+        "label": {"type": "string", "maxLength": 40},
+        "url": {"type": "string", "pattern": "^/api/visual-evidence/"},
+        "media_type": {"enum": ["image/jpeg", "image/png", "image/webp"]},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "annotation": {
+      "oneOf": [
+        {"$ref": "#/$defs/point"},
+        {"$ref": "#/$defs/box"}
+      ]
+    },
+    "base_annotation": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "label",
+        "confidence",
+        "applies_to_channels"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$"},
+        "type": {"enum": ["point", "box"]},
+        "label": {"type": "string", "maxLength": 120},
+        "confidence": {"enum": ["low", "medium", "high", "unknown"]},
+        "applies_to_channels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 100}
+        }
+      }
+    },
+    "point": {
+      "allOf": [
+        {"$ref": "#/$defs/base_annotation"},
+        {
+          "type": "object",
+          "required": ["x", "y"],
+          "properties": {
+            "type": {"const": "point"},
+            "x": {"$ref": "#/$defs/normalized"},
+            "y": {"$ref": "#/$defs/normalized"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "box": {
+      "allOf": [
+        {"$ref": "#/$defs/base_annotation"},
+        {
+          "type": "object",
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "type": {"const": "box"},
+            "x": {"$ref": "#/$defs/normalized"},
+            "y": {"$ref": "#/$defs/normalized"},
+            "width": {"$ref": "#/$defs/normalized"},
+            "height": {"$ref": "#/$defs/normalized"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "additionalProperties": false
+}

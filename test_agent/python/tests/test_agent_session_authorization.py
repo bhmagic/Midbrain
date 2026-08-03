@@ -22,8 +22,8 @@ from physical_agent_test.app import (
     _approval_fingerprint,
     _record_approval_decisions,
     _repeated_approval_response,
+    _session_authorization,
     _validate_automatic_agent_approval,
-    run_developer_prompt,
 )
 from physical_agent_test.agent_driver import (
     AgentSessionAuthorization,
@@ -31,6 +31,8 @@ from physical_agent_test.agent_driver import (
     _runner_context,
     provider_activation_needs_approval,
     relative_motion_needs_approval,
+    safe_home_needs_approval,
+    space_reinitialization_needs_approval,
     stationary_activation_needs_approval,
     stationary_calibration_needs_approval,
 )
@@ -188,6 +190,64 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                     )
                 ],
                 decision,
+            )
+
+    def test_provider_stop_has_a_separate_auto_authorization(self) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_PROVIDER_STOP",
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "set_provider_residency",
+                    '{"provider_id":"camera.femto_bolt","action":"stop"}',
+                )
+            ],
+            decision,
+        )
+
+        with self.assertRaisesRegex(HTTPException, "permits only exact stop"):
+            _validate_automatic_agent_approval(
+                [
+                    _interruption(
+                        "set_provider_residency",
+                        (
+                            '{"provider_id":"camera.femto_bolt",'
+                            '"action":"hot"}'
+                        ),
+                    )
+                ],
+                decision,
+            )
+
+    def test_recovery_authorizations_are_exact_tool_only(self) -> None:
+        safe_home = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_SAFE_HOME",
+        )
+        reinitialization = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_SPACE_REINITIALIZATION",
+        )
+
+        _validate_automatic_agent_approval(
+            [_interruption("execute_basic_safe_home", "{}")],
+            safe_home,
+        )
+        _validate_automatic_agent_approval(
+            [
+                _interruption(
+                    "reinitialize_space_cognition",
+                    '{"reason":"recover spatial drift"}',
+                )
+            ],
+            reinitialization,
+        )
+        with self.assertRaises(HTTPException):
+            _validate_automatic_agent_approval(
+                [_interruption("execute_basic_safe_home", "{}")],
+                reinitialization,
             )
 
     def test_motion_auto_authorization_enforces_exact_tool_and_cm_limit(
@@ -416,11 +476,14 @@ class DynamicAgentApprovalPredicateTests(
         context = SimpleNamespace(
             context=AgentSessionAuthorization(
                 auto_authorize_provider_activation=True,
+                auto_authorize_provider_stop=True,
                 auto_authorize_relative_motion=True,
                 max_auto_move_cm=35.0,
                 max_auto_speed_m_s=0.2,
                 auto_authorize_stationary_calibration=True,
                 auto_authorize_stationary_activation=True,
+                auto_authorize_safe_home=True,
+                auto_authorize_space_reinitialization=True,
             )
         )
 
@@ -429,6 +492,13 @@ class DynamicAgentApprovalPredicateTests(
                 context,
                 {"provider_id": "robot_arm.primary.integrated", "action": "hot"},
                 "provider-call",
+            )
+        )
+        self.assertFalse(
+            await provider_activation_needs_approval(
+                context,
+                {"provider_id": "camera.femto_bolt", "action": "stop"},
+                "provider-stop-call",
             )
         )
         self.assertFalse(
@@ -463,6 +533,16 @@ class DynamicAgentApprovalPredicateTests(
                 "activation-call",
             )
         )
+        self.assertFalse(
+            await safe_home_needs_approval(context, {}, "safe-home-call")
+        )
+        self.assertFalse(
+            await space_reinitialization_needs_approval(
+                context,
+                {"reason": "recover spatial drift"},
+                "reinitialization-call",
+            )
+        )
 
     async def test_session_authorization_remains_fail_closed(self) -> None:
         context = SimpleNamespace(
@@ -473,6 +553,8 @@ class DynamicAgentApprovalPredicateTests(
                 max_auto_speed_m_s=0.1,
                 auto_authorize_stationary_calibration=False,
                 auto_authorize_stationary_activation=False,
+                auto_authorize_safe_home=False,
+                auto_authorize_space_reinitialization=False,
             )
         )
 
@@ -515,6 +597,16 @@ class DynamicAgentApprovalPredicateTests(
                 context,
                 {},
                 "activation-call",
+            )
+        )
+        self.assertTrue(
+            await safe_home_needs_approval(context, {}, "safe-home-call")
+        )
+        self.assertTrue(
+            await space_reinitialization_needs_approval(
+                context,
+                {"reason": "recover spatial drift"},
+                "reinitialization-call",
             )
         )
 
@@ -561,37 +653,32 @@ class DynamicAgentApprovalPredicateTests(
         )
 
 
-class DeveloperRouteAuthorizationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_developer_route_forwards_session_authorization(self) -> None:
+class AutonomousRouteAuthorizationTests(unittest.IsolatedAsyncioTestCase):
+    def test_streaming_route_builds_session_authorization(self) -> None:
         request = PromptRequest(
             prompt="establish the world and arm-base coordinates",
             auto_authorize_provider_activation=True,
+            auto_authorize_provider_stop=True,
             auto_authorize_relative_motion=True,
             max_auto_move_cm=35.0,
             max_auto_speed_m_s=0.5,
             auto_authorize_stationary_calibration=True,
             auto_authorize_stationary_activation=True,
+            auto_authorize_safe_home=True,
+            auto_authorize_space_reinitialization=True,
         )
-        completed = {
-            "status": "completed",
-            "run_id": "test",
-            "answer": "done",
-            "approvals": [],
-        }
-        with patch(
-            "physical_agent_test.app._developer_agent_step",
-            new=AsyncMock(return_value=completed),
-        ) as step:
-            result = await run_developer_prompt(request)
-
-        self.assertEqual(result, completed)
-        authorization = step.await_args.kwargs["authorization"]
+        authorization = _session_authorization(request)
         self.assertTrue(authorization.auto_authorize_provider_activation)
+        self.assertTrue(authorization.auto_authorize_provider_stop)
         self.assertTrue(authorization.auto_authorize_relative_motion)
         self.assertEqual(authorization.max_auto_move_cm, 35.0)
         self.assertEqual(authorization.max_auto_speed_m_s, 0.5)
         self.assertTrue(authorization.auto_authorize_stationary_calibration)
         self.assertTrue(authorization.auto_authorize_stationary_activation)
+        self.assertTrue(authorization.auto_authorize_safe_home)
+        self.assertTrue(
+            authorization.auto_authorize_space_reinitialization
+        )
 
 
 if __name__ == "__main__":

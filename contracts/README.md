@@ -27,5 +27,27 @@ Document 14 defines the canonical `+X` forward, `+Y` left, `+Z` up spatial
 language, keeps raw camera optical axes explicit, and requires deterministic
 semantic-direction resolution before motion planning.
 
+Document 15 defines the implementation-neutral Agent event envelope, the
+initial OpenAI Agents SDK adapter projection, replayable browser SSE transport,
+and the separation between development approval interactions and autonomous
+host authorization policy.
+
+Document 16 defines exact visual-evidence references, normalized structured
+annotations, channel applicability, browser-controlled overlays, and
+client-side flattened export without making a burned raster overlay the
+authoritative artifact.
+
+Document 17 defines the SDK-neutral user-image upload/reference boundary and
+keeps operator attachments separate from authoritative robot-camera evidence.
+
+Document 18 defines the bounded browser-session chat projection, per-turn
+expandable execution summaries, process-epoch continuity boundary, and the
+exclusion of private reasoning and raw tool data.
+
+Document 19 defines the bounded robot-local SQLite journal for SDK-neutral
+Agent events, its read-only two-level developer viewer, interrupted-run
+recovery semantics, and the boundary between durable development diagnostics
+and a future authenticated field-audit store.
+
 The finite-Skill contract also defines the depth-backed general effector-front
 landmark boundary and separates it from task-specific action geometry.

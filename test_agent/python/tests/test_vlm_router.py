@@ -90,6 +90,70 @@ class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.text, "usable")
         self.assertIn("timeout after", result.failed_attempts[0]["error"])
 
+    async def test_transient_failure_retries_the_same_read_only_backend(
+        self,
+    ) -> None:
+        class _TransientBackend(_Backend):
+            def generate(
+                self,
+                image_bytes: bytes,
+                mime_type: str,
+                prompt: str,
+            ) -> str:
+                self.call_count += 1
+                if self.call_count == 1:
+                    raise TimeoutError("temporary inference timeout")
+                return "recovered result"
+
+        backend = _TransientBackend("remote.vlm", "vision", result=None)
+        router = VisionLanguageRouter(
+            [backend],
+            attempts_per_backend=2,
+            retry_backoff_s=0.0,
+        )
+
+        result = await router.generate(
+            image_bytes=b"image",
+            mime_type="image/jpeg",
+            prompt="Inspect",
+        )
+
+        self.assertEqual(result.text, "recovered result")
+        self.assertEqual(result.attempt_count, 2)
+        self.assertEqual(backend.call_count, 2)
+        self.assertEqual(len(result.failed_attempts), 1)
+        self.assertTrue(result.failed_attempts[0]["retryable"])
+        self.assertEqual(result.failed_attempts[0]["backend_attempt"], 1)
+
+    async def test_nonretryable_failure_falls_back_without_repeating(
+        self,
+    ) -> None:
+        invalid = _Backend("invalid", "bad-config", error="invalid model")
+        fallback = _Backend("fallback", "usable", result="fallback result")
+        router = VisionLanguageRouter(
+            [invalid, fallback],
+            attempts_per_backend=3,
+            retry_backoff_s=0.0,
+        )
+
+        result = await router.generate(
+            image_bytes=b"image",
+            mime_type="image/jpeg",
+            prompt="Inspect",
+        )
+
+        self.assertEqual(result.text, "fallback result")
+        self.assertEqual(invalid.call_count, 1)
+        self.assertFalse(result.failed_attempts[0]["retryable"])
+
+    def test_retry_policy_is_strictly_bounded(self) -> None:
+        backend = _Backend("test", "model", result="ok")
+
+        with self.assertRaisesRegex(ValueError, "between 1 and 3"):
+            VisionLanguageRouter([backend], attempts_per_backend=4)
+        with self.assertRaisesRegex(ValueError, "between 0 and 5"):
+            VisionLanguageRouter([backend], retry_backoff_s=6.0)
+
     async def test_explicit_model_selection_uses_only_that_model(self) -> None:
         first = _Backend("first", "small", result="small result")
         selected = _Backend("selected", "large", result="large result")

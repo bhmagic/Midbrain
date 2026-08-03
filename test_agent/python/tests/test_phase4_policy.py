@@ -23,6 +23,8 @@ class Phase4PolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(policy.manager_authority, "SHADOW")
         self.assertEqual(policy.generic_rgbd_route, "SHADOW")
         self.assertEqual(policy.physical_execution, "DISABLED")
+        self.assertEqual(policy.vlm_attempts_per_backend, 2)
+        self.assertEqual(policy.vlm_retry_backoff_s, 0.25)
         self.assertFalse(policy.as_dict()["physical_authorization_inherited"])
 
     def test_invalid_or_coupled_timeout_configuration_is_rejected(self) -> None:
@@ -35,6 +37,23 @@ class Phase4PolicyTests(unittest.IsolatedAsyncioTestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ValueError, "must not exceed"):
+                Phase4Policy.from_environment()
+
+    def test_invalid_vlm_retry_configuration_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"PHASE4_VLM_ATTEMPTS_PER_BACKEND": "4"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "between 1 and 3"):
+                Phase4Policy.from_environment()
+
+        with patch.dict(
+            os.environ,
+            {"PHASE4_VLM_RETRY_BACKOFF_S": "6"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "between 0 and 5"):
                 Phase4Policy.from_environment()
 
     async def test_idle_operation_is_cancelled_without_user_monitoring(self) -> None:

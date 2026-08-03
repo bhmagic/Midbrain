@@ -152,12 +152,16 @@ async function refresh() {
 
     const agents = data.agents || {};
     $("agentState").textContent = agents.online
-      ? "Agent runtime is online. Regular and developer profiles share the same bounded backend."
+      ? "Agent runtime is online. Regular, developer, and journal views share one autonomous Agent backend."
       : "Agent runtime is offline by design. Start it explicitly when either agent surface is needed.";
     $("regularAgentLink").href = agents.regular_url || "http://127.0.0.1:8000/";
     $("developerAgentLink").href = agents.developer_url || "http://127.0.0.1:8000/dev";
+    const agentBaseUrl = agents.regular_url || "http://127.0.0.1:8000/";
+    $("runJournalLink").href = agents.journal_url ||
+      new URL("/dev/run-journal", agentBaseUrl).toString();
     $("regularAgentLink").dataset.online = String(Boolean(agents.online));
     $("developerAgentLink").dataset.online = String(Boolean(agents.online));
+    $("runJournalLink").dataset.online = String(Boolean(agents.online));
 
     renderProviders(providers);
     renderSkills(skills);

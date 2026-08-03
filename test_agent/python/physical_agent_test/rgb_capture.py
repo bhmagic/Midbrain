@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +29,18 @@ class CameraObservationUnavailable(RuntimeError):
 
 
 class RgbCapture:
-    def __init__(self, fabric: FabricClient, screenshot_dir: Path):
+    def __init__(
+        self,
+        fabric: FabricClient,
+        screenshot_dir: Path,
+        *,
+        first_frame_timeout_s: float = 12.0,
+        retry_interval_s: float = 0.25,
+    ):
         self.fabric = fabric
         self.screenshot_dir = screenshot_dir
+        self.first_frame_timeout_s = max(0.0, float(first_frame_timeout_s))
+        self.retry_interval_s = max(0.0, float(retry_interval_s))
 
     async def capture_latest(
         self,
@@ -44,51 +55,66 @@ class RgbCapture:
             routes_from_observation(route_observation),
             provider_id=provider_id,
         )
+        deadline = time.monotonic() + self.first_frame_timeout_s
         last_error: Exception | None = None
-        for _ in range(3):
+        while True:
             observation = await self.fabric.latest_optional(
                 "camera.rgb.frame_ref"
             )
             if observation is None:
-                raise CameraObservationUnavailable(
+                last_error = CameraObservationUnavailable(
                     "camera.rgb.frame_ref is unavailable because no camera "
                     "Provider is currently publishing RGB observations"
                 )
-            observed_provider_id = str(observation.get("provider_id") or "")
-            if provider_id and observed_provider_id != provider_id:
-                raise RuntimeError(
-                    "camera binding/provider mismatch: "
-                    f"expected {provider_id}, observed {observed_provider_id or 'unknown'}"
+            else:
+                observed_provider_id = str(
+                    observation.get("provider_id") or ""
                 )
-            reference = observation["data"]
-            mapping_name = reference["mapping_name"]
-            reader = CameraSharedMemory(mapping_name).open()
-            try:
-                raw = reader.read_ref(reference)
-            except Exception as error:
-                last_error = error
-                continue
-            finally:
-                reader.close()
-            image_bytes, mime_type = self._normalize_to_jpeg(raw, reference)
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-            path = self.screenshot_dir / f"rgb_{stamp}.jpg"
-            path.write_bytes(image_bytes)
-            return CapturedRgb(
-                image_bytes=image_bytes,
-                mime_type=mime_type,
-                path=path,
-                observation=observation,
-                data_route=(
-                    {
-                        **route.as_dict(),
-                        "binding_id": binding_id,
-                    }
-                    if route is not None
-                    else None
-                ),
-            )
-        raise RuntimeError(f"latest RGB BufferRef expired before it could be read: {last_error}")
+                if provider_id and observed_provider_id != provider_id:
+                    raise RuntimeError(
+                        "camera binding/provider mismatch: "
+                        f"expected {provider_id}, observed "
+                        f"{observed_provider_id or 'unknown'}"
+                    )
+                reference = observation["data"]
+                mapping_name = reference["mapping_name"]
+                reader = CameraSharedMemory(mapping_name).open()
+                try:
+                    raw = reader.read_ref(reference)
+                except Exception as error:
+                    last_error = error
+                else:
+                    image_bytes, mime_type = self._normalize_to_jpeg(
+                        raw,
+                        reference,
+                    )
+                    stamp = datetime.now(timezone.utc).strftime(
+                        "%Y%m%dT%H%M%S_%fZ"
+                    )
+                    path = self.screenshot_dir / f"rgb_{stamp}.jpg"
+                    path.write_bytes(image_bytes)
+                    return CapturedRgb(
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        path=path,
+                        observation=observation,
+                        data_route=(
+                            {
+                                **route.as_dict(),
+                                "binding_id": binding_id,
+                            }
+                            if route is not None
+                            else None
+                        ),
+                    )
+                finally:
+                    reader.close()
+            if time.monotonic() >= deadline:
+                raise CameraObservationUnavailable(
+                    "camera RGB frame did not become readable within "
+                    f"{self.first_frame_timeout_s:.1f} seconds: {last_error}"
+                ) from last_error
+            await asyncio.sleep(self.retry_interval_s)
 
     @staticmethod
     def _normalize_to_jpeg(payload: bytes, reference: dict[str, Any]) -> tuple[bytes, str]:

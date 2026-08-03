@@ -44,7 +44,7 @@ Midbrain shows:
 - installed Skill availability, adapter readiness, current run, and last
   terminal run state;
 - a separate observation link next to each component's liveness;
-- regular and developer agent entry points;
+- regular Agent and developer-view entry points;
 - a guarded whole-workspace shutdown entry point; and
 - aggregate counts that help identify cold, stale, unhealthy, running, or
   unavailable components.

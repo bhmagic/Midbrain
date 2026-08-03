@@ -16,7 +16,7 @@ root. The launcher starts:
 
 - Resource Provider Manager
 - World State Fabric
-- The idle regular and developer Agent UI service
+- The idle regular Agent and developer-view UI service
 - The browser at the Midbrain portal
 
 Providers remain stopped until an operator or an approved Agent workflow
@@ -121,16 +121,26 @@ quality may improve planning and interpretation, but it never replaces
 Provider validation, approval, fencing, collision checking, or physical safety
 controls.
 
-## Use the developer Agent
+## Use the Agent developer view
 
-Open **Developer Agent** when testing discovery, routing, or a wider typed tool
-catalog. It can inspect more Provider and Skill adapters and can prompt across
-the developer-visible surface.
+Open **Developer view** when a run needs additional Provider, Skill, replay,
+point-cloud, or normalized-event diagnostics. Its prompt uses the same
+autonomous Agent driver, model session, tool policy, lifecycle behavior,
+authorization policy, and retries as the regular page.
 
-Developer mode is not an approval bypass. Provider lifecycle changes,
-safe-home, and physical execution retain their separate human confirmations.
-Use the regular Agent for ordinary operation and the developer Agent when the
-extra visibility is part of the test.
+The developer view is not an approval bypass and does not expose a wider Agent
+tool catalog. Provider lifecycle changes, safe-home, and physical execution
+retain the same bounded session policy and development confirmations. Use the
+regular view for ordinary operation and the developer view when extra
+visibility is part of the test.
+
+The developer view uses an equal two-pane layout. Provider, Skill, replay,
+and point-cloud diagnostics are independently collapsible and scroll on the
+left. The conversation, model controls, prompt, and development autonomy policy
+remain on the right. A **Run Journal** link on the portal and both Agent pages
+ opens the read-only durable record viewer. Expand a chat/run on the left to
+select one of its events; on the right, expand its category and event to inspect
+the complete retained SDK-neutral envelope.
 
 FoundationPose is normally invoked as a finite nested Skill by Stationary
 Alignment. Its backend resources are released before the parent returns. If

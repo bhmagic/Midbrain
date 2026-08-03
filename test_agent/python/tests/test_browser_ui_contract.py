@@ -251,7 +251,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertNotIn("method: 'POST'", component)
         self.assertIn('cache: "no-store"', component)
 
-    def test_mainframe_exposes_both_agent_profiles(self) -> None:
+    def test_mainframe_exposes_agent_profiles_and_run_journal(self) -> None:
         root = Path(__file__).resolve().parents[3]
         mainframe = (
             root
@@ -263,8 +263,75 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn('id="regularAgentLink"', mainframe)
         self.assertIn('id="developerAgentLink"', mainframe)
+        self.assertIn('id="runJournalLink"', mainframe)
         self.assertIn('id="providerRows"', mainframe)
         self.assertIn('id="skillRows"', mainframe)
+
+    def test_run_journal_is_read_only_and_two_level_expandable(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        web_root = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+        )
+        page = (web_root / "run_journal.html").read_text(encoding="utf-8")
+        script = (web_root / "run_journal.js").read_text(encoding="utf-8")
+        regular = (web_root / "regular_agent.html").read_text(
+            encoding="utf-8"
+        )
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)', page)
+        self.assertIn('id="recordList"', page)
+        self.assertIn("Midbrain sessions", page)
+        self.assertIn('id="eventGroups"', page)
+        self.assertIn('className = "session-card"', script)
+        self.assertIn('className = "record-card"', script)
+        self.assertIn("runsBySessionId: new Map()", script)
+        self.assertIn("detailsByRunId: new Map()", script)
+        self.assertIn('className = "event-group"', script)
+        self.assertIn('className = "event-record"', script)
+        self.assertIn("JSON.stringify(event, null, 2)", script)
+        self.assertIn('/api/run-journal/sessions?limit=100', script)
+        self.assertIn('/api/run-journal/sessions/${encodeURIComponent(sessionId)}', script)
+        self.assertIn('/api/run-journal/runs/${encodeURIComponent(runId)}', script)
+        self.assertNotIn("innerHTML", script)
+        self.assertNotIn('method: "POST"', script)
+        self.assertIn('href="/dev/run-journal"', regular)
+        self.assertIn('@app.get("/dev/run-journal"', app)
+        self.assertIn('@app.get("/api/run-journal/sessions")', app)
+        self.assertIn('@app.get("/api/run-journal/sessions/{session_id}")', app)
+        self.assertIn('@app.get("/api/run-journal/runs/{run_id}")', app)
+        self.assertNotIn('@app.post("/api/run-journal', app)
+
+    def test_developer_agent_uses_split_collapsible_workspace(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        history = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "agent_chat_history.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)", app)
+        self.assertIn("developerDiagnosticsPane", app)
+        self.assertIn("developerConversationPane", app)
+        self.assertIn("collapsibleDiagnostic", app)
+        self.assertIn("modernizeDeveloperWorkspace", app)
+        self.assertIn("developer-chat-scroll", app)
+        self.assertIn("detailedEvents: true", app)
+        self.assertIn("turn.addEvent(event)", app)
+        self.assertIn('className = "chat-event-details"', history)
+        self.assertIn('className = "chat-event-record"', history)
 
     def test_both_agent_surfaces_expose_model_controls(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -290,6 +357,60 @@ class BrowserUiContractTests(unittest.TestCase):
             self.assertIn('id="vlmModel"', surface)
             self.assertIn("reasoning_effort", surface)
             self.assertIn("vlm_model", surface)
+            self.assertLess(
+                surface.index('<textarea id="prompt"'),
+                surface.index('<div class="model-controls"'),
+            )
+            self.assertIn("addEventListener(\"keydown\"", surface.replace("'", '"'))
+            self.assertIn('event.key !== "Enter"', surface.replace("'", '"'))
+            self.assertIn("event.shiftKey", surface)
+            self.assertIn("event.preventDefault()", surface)
+
+    def test_regular_agent_uses_a_bottom_anchored_chat_layout(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        regular = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "regular_agent.html"
+        ).read_text(encoding="utf-8")
+        history = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "agent_chat_history.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("height: 100dvh", regular)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr) auto", regular)
+        self.assertIn(".chat-history-spacer", regular)
+        self.assertIn('class="chat-history-spacer"', regular)
+        self.assertIn("clamp(38px, 7.2vw, 69px)", regular)
+        self.assertNotIn(
+            "This surface exposes curated finite Skills",
+            regular,
+        )
+        self.assertLess(
+            regular.index('class="answer-panel"'),
+            regular.index('class="bottom-dock"'),
+        )
+        self.assertIn('class="runtime-statuses"', regular)
+        self.assertNotIn('class="status-grid"', regular)
+        self.assertLess(
+            regular.index('id="activity"'),
+            regular.index('id="managerState"'),
+        )
+        self.assertNotIn('id="clearChatHistory"', regular)
+        self.assertGreaterEqual(
+            history.count(
+                'followIfNearBottom(this.state.status === "RUNNING")'
+            ),
+            6,
+        )
 
     def test_space_cognition_has_a_dedicated_development_surface(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -453,7 +574,7 @@ class BrowserUiContractTests(unittest.TestCase):
             app,
         )
         self.assertIn("approval.title", regular)
-        self.assertIn("/api/runs/", regular)
+        self.assertIn("/api/streaming-runs/", regular)
 
     def test_regular_agent_has_bounded_session_authorization_controls(
         self,
@@ -474,6 +595,9 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('id="autoApproveProviders"', regular)
         self.assertIn('id="autoApproveMoves"', regular)
         self.assertIn('id="autoApproveCalibration"', regular)
+        self.assertIn('id="autoApproveProviderStop"', regular)
+        self.assertIn('id="autoApproveSafeHome"', regular)
+        self.assertIn('id="autoApproveSpaceReinitialization"', regular)
         self.assertIn('id="maxAutoMoveCm"', regular)
         self.assertIn('id="maxAutoSpeedMps"', regular)
         self.assertIn(
@@ -489,6 +613,46 @@ class BrowserUiContractTests(unittest.TestCase):
             regular,
         )
         self.assertIn(
+            'id="autoApproveProviderStop" type="checkbox" checked',
+            regular,
+        )
+        self.assertIn(
+            'id="autoApproveSafeHome" type="checkbox" checked',
+            regular,
+        )
+
+    def test_regular_agent_uses_replayable_backend_owned_stream(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        regular = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "regular_agent.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('@app.post("/api/streaming-runs"', app)
+        self.assertIn('media_type="text/event-stream"', app)
+        self.assertIn("AgentRunStreamRegistry", app)
+        self.assertIn('new EventSource(started.events_url)', regular)
+        self.assertIn('event.type === "assistant.message.delta"', regular)
+        self.assertIn('event.type === "skill.retry.recovered"', regular)
+        self.assertIn('event.type === "skill.retry.exhausted"', regular)
+        self.assertIn('id="agentImageInput"', regular)
+        self.assertIn('fetch("/api/agent-attachments"', regular)
+        self.assertIn("attachment_ids: attachmentIds", regular)
+        self.assertIn(
+            'event.type === "assistant.reasoning_summary.delta"',
+            regular,
+        )
+        self.assertIn('id="chatHistory"', regular)
+        self.assertIn('/assets/agent_chat_history.js', regular)
+        self.assertIn("turn.appendReasoning", regular)
+        self.assertIn(
             'id="autoApproveCalibrationActivation" '
             'type="checkbox" checked',
             regular,
@@ -497,7 +661,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('max="0.5"', regular)
         self.assertIn('value="0.5"', regular)
         self.assertIn(
-            'midbrain.regularAgent.sessionAuthorization.v3',
+            'midbrain.regularAgent.sessionAuthorization.v4',
             regular,
         )
         self.assertIn('max="100"', regular)
@@ -516,17 +680,18 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("controlled-frame yaw AUTO <= 45°", regular)
         self.assertIn('["start", "hot", "warm"]', regular)
         self.assertIn("execute_integrated_motion_preview", regular)
-        self.assertIn("stop, safe-home", regular)
+        self.assertIn("Provider stop AUTO", regular)
+        self.assertIn("safe-home AUTO", regular)
         self.assertIn("_validate_automatic_agent_approval", app)
         self.assertIn(
-            '"midbrain-regular-agent-systemic-gui-v4-"',
+            '"midbrain-autonomous-agent-systemic-gui-v5-"',
             app,
         )
         self.assertIn("agent_runtime_session_epoch = uuid.uuid4().hex", app)
         self.assertIn("SessionSettings(limit=None)", app)
         self.assertIn("session_history_item_limit=", app)
 
-    def test_developer_agent_has_matching_session_authorization_controls(
+    def test_developer_view_uses_the_shared_autonomous_agent_controls(
         self,
     ) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -536,6 +701,10 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn(
             'id="autoApproveProviders" type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveProviderStop" type="checkbox" checked',
             app,
         )
         self.assertIn(
@@ -549,6 +718,14 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn(
             'id="autoApproveCalibrationActivation" '
             'type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveSafeHome" type="checkbox" checked',
+            app,
+        )
+        self.assertIn(
+            'id="autoApproveSpaceReinitialization" type="checkbox"',
             app,
         )
         self.assertIn('id="maxAutoMoveCm"', app)
@@ -565,16 +742,167 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("AUTO_BOUNDED_RELATIVE_MOTION", app)
         self.assertIn("AUTO_STATIONARY_CALIBRATION", app)
         self.assertIn("AUTO_STATIONARY_ACTIVATION", app)
+        self.assertIn("AUTO_PROVIDER_STOP", app)
+        self.assertIn("AUTO_SAFE_HOME", app)
+        self.assertIn("AUTO_SPACE_REINITIALIZATION", app)
         self.assertIn("NEW_RELATIVE_POSE_MOVE", app)
         self.assertIn("NEW_RELATIVE_ROTATION", app)
         self.assertIn("APPLY_CONTROLLED_FRAME_YAW_DELTA", app)
         self.assertIn("controlled-frame yaw AUTO <= 45°", app)
         self.assertIn("auto_authorize_provider_activation", app)
+        self.assertIn("auto_authorize_provider_stop", app)
         self.assertIn("auto_authorize_relative_motion", app)
         self.assertIn("max_auto_move_cm", app)
         self.assertIn("max_auto_speed_m_s", app)
         self.assertIn("auto_authorize_stationary_calibration", app)
         self.assertIn("auto_authorize_stationary_activation", app)
+        self.assertIn("auto_authorize_safe_home", app)
+        self.assertIn("auto_authorize_space_reinitialization", app)
+        self.assertIn("Provider stop AUTO", app)
+        self.assertIn("safe-home AUTO", app)
+        self.assertNotIn('"/api/dev/streaming-runs",', app)
+        self.assertNotIn('"/api/dev/streaming-runs/{run_id}/decision"', app)
+        self.assertIn("driver = _build_autonomous_agent_driver()", app)
+        self.assertNotIn("developer_driver =", app)
+        self.assertNotIn("_developer_agent_step", app)
+        self.assertIn("fetch('/api/streaming-runs'", app)
+        self.assertIn("'/api/streaming-runs/'", app)
+        self.assertNotIn("fetch('/api/run'", app)
+        self.assertIn("new EventSource(started.events_url)", app)
+        self.assertIn("consumeStreamingDeveloperRun", app)
+        self.assertIn("assistant.message.delta", app)
+        self.assertIn("assistant.reasoning_summary.delta", app)
+        self.assertIn("skill.retry.recovered", app)
+        self.assertIn("skill.retry.exhausted", app)
+        self.assertIn('id="developerAgentImageInput"', app)
+        self.assertIn("fetch('/api/agent-attachments'", app)
+        self.assertIn("attachment_ids: attachmentIds", app)
+        self.assertIn('id="developerChatHistory"', app)
+        self.assertIn('/assets/agent_chat_history.js', app)
+        self.assertIn("turn.appendReasoning", app)
+        self.assertNotIn("runLegacyDeveloper", app)
+
+    def test_agent_surfaces_share_safe_visual_evidence_viewer(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        regular = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "regular_agent.html"
+        ).read_text(encoding="utf-8")
+        viewer = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "visual_evidence.js"
+        ).read_text(encoding="utf-8")
+        chat_history = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "agent_chat_history.js"
+        ).read_text(encoding="utf-8")
+        package_config = (
+            root / "test_agent" / "python" / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+
+        for surface in (app, regular):
+            self.assertIn('/assets/visual_evidence.js', surface)
+            self.assertIn('/assets/agent_chat_history.js', surface)
+            self.assertIn("visual.evidence.created", surface)
+
+        self.assertIn("createVisualEvidenceElements", chat_history)
+        self.assertIn("new window.MidbrainVisualEvidenceViewer", chat_history)
+        self.assertIn('copyButton.textContent = "Copy annotated"', chat_history)
+        self.assertIn(
+            'downloadButton.textContent = "Download PNG"',
+            chat_history,
+        )
+
+        self.assertIn(
+            '@app.get("/api/visual-evidence/{evidence_id}/channels/{channel_id}")',
+            app,
+        )
+        self.assertIn("document.createElementNS", viewer)
+        self.assertIn('this.overlay.setAttribute(', viewer)
+        self.assertIn('"viewBox"', viewer)
+        self.assertIn("navigator.clipboard.write", viewer)
+        self.assertIn("downloadAnnotatedImage", viewer)
+        self.assertIn("ANNOTATION_PALETTE", viewer)
+        self.assertIn("renderColorControls", viewer)
+        self.assertIn("this.colorFor(annotation, index)", viewer)
+        self.assertIn(
+            'ANNOTATION_LABEL_HALO = "rgba(0, 0, 0, 0.72)"',
+            viewer,
+        )
+        self.assertIn("ANNOTATION_LABEL_WEIGHT = 500", viewer)
+        self.assertIn("elements = {}", viewer)
+        self.assertIn("this.labelFontSize(width)", viewer)
+        self.assertIn("this.labelHaloWidth(width)", viewer)
+        self.assertNotIn("visualOverlayColor", viewer)
+        self.assertNotIn("innerHTML", viewer)
+        self.assertIn('"web/*.js"', package_config)
+
+    def test_agent_surfaces_share_bounded_robot_local_session_history(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        regular = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "regular_agent.html"
+        ).read_text(encoding="utf-8")
+        history = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "agent_chat_history.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="chatHistory" class="chat-history"', regular)
+        self.assertIn('id="developerChatHistory" class="chat-history"', app)
+        self.assertNotIn('id="clearChatHistory"', regular)
+        self.assertNotIn('id="clearDeveloperChatHistory"', app)
+        self.assertIn("DEFAULT_MAXIMUM_TURNS = 40", history)
+        self.assertNotIn("window.sessionStorage.setItem", history)
+        self.assertNotIn("window.sessionStorage.removeItem", history)
+        self.assertNotIn("bindRuntimeEpoch", history)
+        self.assertIn("agent_runtime_session_epoch", app)
+        self.assertIn('fetch("/api/chat-session"', regular)
+        self.assertIn("fetch('/api/chat-session'", app)
+        self.assertIn("agentChatHistory.hydrate", regular)
+        self.assertIn("developerChatHistory.hydrate", app)
+        self.assertIn("setInterval(loadChatSession, 3000)", regular)
+        self.assertIn("setInterval(loadChatSession, 3000)", app)
+        self.assertIn("this.localOwner = !restoring", history)
+        self.assertIn("midbrain.agent_chat_turn.v1", history)
+        self.assertIn("updateFromServer(nextState)", history)
+        self.assertIn("renderEventsPreservingExpansion", history)
+        self.assertIn("serverStateRevision(state)", history)
+        self.assertIn("const wasNearBottom = this.nearBottom()", history)
+        self.assertNotIn("if (!locallyOwned.includes(turn))", history)
+        self.assertIn("In-progress execution summary", history)
+        self.assertIn("Model-provided reasoning summary", history)
+        self.assertIn("visual_evidence: null", history)
+        self.assertNotIn("tool_arguments", history)
+        self.assertNotIn("tool_output", history)
 
     def test_world_point_cloud_shows_live_local_axes_and_keeps_gravity(
         self,

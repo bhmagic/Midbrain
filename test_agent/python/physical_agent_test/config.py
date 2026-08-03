@@ -75,6 +75,15 @@ class Settings:
     openai_agent_session_history_items: int = int(
         os.getenv("OPENAI_AGENT_SESSION_HISTORY_ITEMS", "32")
     )
+    agent_run_journal_max_runs: int = int(
+        os.getenv("AGENT_RUN_JOURNAL_MAX_RUNS", "500")
+    )
+    agent_run_journal_max_events_per_run: int = int(
+        os.getenv("AGENT_RUN_JOURNAL_MAX_EVENTS_PER_RUN", "2048")
+    )
+    agent_run_journal_retention_days: float = float(
+        os.getenv("AGENT_RUN_JOURNAL_RETENTION_DAYS", "30")
+    )
     authorization_signing_secret: str = os.getenv(
         "MIDBRAIN_AUTHORIZATION_SECRET",
         "",
@@ -83,8 +92,23 @@ class Settings:
         "MIDBRAIN_REVIEW_AUTH_SECRET",
         "",
     )
-    gemini_model: str = os.getenv("GEMINI_ROBOTICS_MODEL", "gemini-robotics-er-1.6-preview")
+    gemini_model: str = os.getenv(
+        "GEMINI_ROBOTICS_MODEL",
+        "gemini-robotics-er-2-preview",
+    )
     head_camera_provider_id: str = os.getenv("HEAD_CAMERA_PROVIDER_ID", "camera.femto_bolt")
+    camera_first_frame_timeout_s: float = float(
+        os.getenv("CAMERA_FIRST_FRAME_TIMEOUT_S", "12")
+    )
+    camera_skill_capture_attempts: int = int(
+        os.getenv("CAMERA_SKILL_CAPTURE_ATTEMPTS", "2")
+    )
+    camera_skill_retry_backoff_s: float = float(
+        os.getenv("CAMERA_SKILL_RETRY_BACKOFF_S", "0.25")
+    )
+    provider_hot_readiness_timeout_s: float = float(
+        os.getenv("PROVIDER_HOT_READINESS_TIMEOUT_S", "20")
+    )
     local_vio_provider_id: str = os.getenv("LOCAL_VIO_PROVIDER_ID", "localization.local_vio")
     space_cognition_timeout_s: float = float(os.getenv("SPACE_COGNITION_TIMEOUT_S", "45"))
     auto_initialize_space_cognition: bool = os.getenv("AUTO_INITIALIZE_SPACE_COGNITION", "true").lower() in {"1", "true", "yes", "on"}
@@ -145,3 +169,15 @@ class Settings:
         path = self.package_root / "replay_bundles"
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def agent_run_journal_path(self) -> Path:
+        configured = os.getenv("AGENT_RUN_JOURNAL_PATH", "").strip()
+        if configured:
+            return Path(configured).resolve()
+        return (
+            self.workspace_root
+            / "test_agent"
+            / "run"
+            / "agent_run_journal.v1.sqlite3"
+        )

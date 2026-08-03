@@ -9,6 +9,8 @@ from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from typing import Protocol
 
+import httpx
+
 try:
     from google import genai
     from google.genai import types
@@ -58,7 +60,7 @@ class VlmInferenceResult:
     backend_id: str
     model_id: str
     attempt_count: int
-    failed_attempts: tuple[dict[str, str], ...]
+    failed_attempts: tuple[dict[str, object], ...]
     quality_control_mode: str
     elapsed_ms: float
     input_sha256: str
@@ -176,6 +178,8 @@ class VisionLanguageRouter:
         backends: list[VisionLanguageBackend],
         *,
         maximum_attempts: int | None = None,
+        attempts_per_backend: int = 2,
+        retry_backoff_s: float = 0.25,
         quality_control_mode: str = "OFF_FUTURE",
         attempt_timeout_s: float = 45.0,
     ):
@@ -186,8 +190,14 @@ class VisionLanguageRouter:
             len(self.backends),
             max(1, int(maximum_attempts or len(self.backends))),
         )
+        self.attempts_per_backend = int(attempts_per_backend)
+        self.retry_backoff_s = float(retry_backoff_s)
         self.quality_control_mode = str(quality_control_mode)
         self.attempt_timeout_s = float(attempt_timeout_s)
+        if not 1 <= self.attempts_per_backend <= 3:
+            raise ValueError("VLM attempts per backend must be between 1 and 3")
+        if not 0.0 <= self.retry_backoff_s <= 5.0:
+            raise ValueError("VLM retry backoff must be between 0 and 5 seconds")
         if self.attempt_timeout_s <= 0.0:
             raise ValueError("VLM attempt timeout must be positive")
         if self.quality_control_mode != "OFF_FUTURE":
@@ -202,7 +212,7 @@ class VisionLanguageRouter:
     ) -> VlmInferenceResult:
         started = time.monotonic()
         input_sha256 = hashlib.sha256(image_bytes).hexdigest()
-        failures: list[dict[str, str]] = []
+        failures: list[dict[str, object]] = []
         selected_model = _selected_vlm_model.get()
         backends = self.backends
         maximum_attempts = self.maximum_attempts
@@ -217,52 +227,66 @@ class VisionLanguageRouter:
                     f"selected VLM model is unavailable: {selected_model}"
                 )
             maximum_attempts = 1
-        for attempt, backend in enumerate(
-            backends[:maximum_attempts],
-            start=1,
-        ):
-            report_operation_progress(
-                f"VLM_ATTEMPT_{attempt}_{backend.backend_id}"
-            )
-            try:
-                text = await self._await_backend(
-                    asyncio.to_thread(
-                        backend.generate,
-                        image_bytes,
-                        mime_type,
-                        prompt,
-                    ),
-                    attempt=attempt,
-                    backend_id=backend.backend_id,
-                )
+        attempt_count = 0
+        for backend in backends[:maximum_attempts]:
+            for backend_attempt in range(1, self.attempts_per_backend + 1):
+                attempt_count += 1
                 report_operation_progress(
-                    f"VLM_ATTEMPT_{attempt}_COMPLETED"
+                    f"VLM_ATTEMPT_{attempt_count}_{backend.backend_id}"
                 )
-                return VlmInferenceResult(
-                    text=text,
-                    backend_id=backend.backend_id,
-                    model_id=backend.model_id,
-                    attempt_count=attempt,
-                    failed_attempts=tuple(failures),
-                    quality_control_mode=self.quality_control_mode,
-                    elapsed_ms=(time.monotonic() - started) * 1000.0,
-                    input_sha256=input_sha256,
-                    input_bytes=len(image_bytes),
-                    mime_type=str(mime_type),
-                )
-            except Exception as error:
-                error_text = (
-                    f"timeout after {self.attempt_timeout_s:.3f}s"
-                    if isinstance(error, TimeoutError)
-                    else str(error)
-                )
-                failures.append(
-                    {
-                        "backend_id": backend.backend_id,
-                        "model_id": backend.model_id,
-                        "error": error_text,
-                    }
-                )
+                try:
+                    text = await self._await_backend(
+                        asyncio.to_thread(
+                            backend.generate,
+                            image_bytes,
+                            mime_type,
+                            prompt,
+                        ),
+                        attempt=attempt_count,
+                        backend_id=backend.backend_id,
+                    )
+                    report_operation_progress(
+                        f"VLM_ATTEMPT_{attempt_count}_COMPLETED"
+                    )
+                    return VlmInferenceResult(
+                        text=text,
+                        backend_id=backend.backend_id,
+                        model_id=backend.model_id,
+                        attempt_count=attempt_count,
+                        failed_attempts=tuple(failures),
+                        quality_control_mode=self.quality_control_mode,
+                        elapsed_ms=(time.monotonic() - started) * 1000.0,
+                        input_sha256=input_sha256,
+                        input_bytes=len(image_bytes),
+                        mime_type=str(mime_type),
+                    )
+                except Exception as error:
+                    retryable = self._is_retryable_failure(error)
+                    error_text = (
+                        f"timeout after {self.attempt_timeout_s:.3f}s"
+                        if isinstance(error, TimeoutError)
+                        else str(error)
+                    )
+                    failures.append(
+                        {
+                            "backend_id": backend.backend_id,
+                            "model_id": backend.model_id,
+                            "attempt": attempt_count,
+                            "backend_attempt": backend_attempt,
+                            "retryable": retryable,
+                            "error": error_text,
+                        }
+                    )
+                    if (
+                        not retryable
+                        or backend_attempt >= self.attempts_per_backend
+                    ):
+                        break
+                    report_operation_progress(
+                        f"VLM_ATTEMPT_{attempt_count}_RETRY_WAIT"
+                    )
+                    if self.retry_backoff_s > 0.0:
+                        await asyncio.sleep(self.retry_backoff_s)
         raise RuntimeError(
             "all configured VLM backends failed: "
             + "; ".join(
@@ -271,6 +295,34 @@ class VisionLanguageRouter:
                 for failure in failures
             )
         )
+
+    @staticmethod
+    def _is_retryable_failure(error: Exception) -> bool:
+        candidate: BaseException | None = error
+        visited: set[int] = set()
+        while candidate is not None and id(candidate) not in visited:
+            visited.add(id(candidate))
+            if isinstance(
+                candidate,
+                (
+                    TimeoutError,
+                    ConnectionError,
+                    httpx.TimeoutException,
+                    httpx.TransportError,
+                ),
+            ):
+                return True
+            status_code = getattr(candidate, "status_code", None)
+            if status_code is None:
+                status_code = getattr(candidate, "code", None)
+            try:
+                normalized_status = int(status_code)
+            except (TypeError, ValueError):
+                normalized_status = None
+            if normalized_status in {408, 409, 425, 429, 500, 502, 503, 504}:
+                return True
+            candidate = candidate.__cause__ or candidate.__context__
+        return False
 
     async def _await_backend(
         self,
@@ -308,6 +360,8 @@ def build_default_vlm_router(
     *,
     gemini_model: str,
     attempt_timeout_s: float,
+    attempts_per_backend: int = 2,
+    retry_backoff_s: float = 0.25,
 ) -> VisionLanguageRouter:
     backends: list[VisionLanguageBackend] = []
     gemini_api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -336,4 +390,6 @@ def build_default_vlm_router(
     return VisionLanguageRouter(
         backends,
         attempt_timeout_s=attempt_timeout_s,
+        attempts_per_backend=attempts_per_backend,
+        retry_backoff_s=retry_backoff_s,
     )

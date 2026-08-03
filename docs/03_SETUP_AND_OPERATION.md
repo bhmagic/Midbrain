@@ -114,7 +114,7 @@ Use the PowerShell launcher for automation, recovery, or development:
 Options:
 
 - `-NoBrowser`: start without opening the portal.
-- `-StartAgentUi`: start the regular and developer Agent pages on port 8000.
+- `-StartAgentUi`: start the regular and developer views on port 8000.
 - `-AllowProviderAutoStart`: explicitly honor Provider `auto_start` entries.
 - `-CoreOnly`: compatibility alias for Manager + Fabric only; it cannot be
   combined with `-StartAgentUi`.
@@ -135,8 +135,8 @@ Use the portal in this order:
    that administrative controls can overstep the Agent.
 5. If the component is stopped, review the activation request and confirm only
    when the hardware and work area are ready.
-6. Open the regular Agent for ordinary tasks. Use the developer Agent when
-   wider Skill/Provider discovery is the purpose of the test.
+6. Open the regular Agent for ordinary tasks. Use its developer view when the
+   same run needs additional Provider, Skill, replay, or event diagnostics.
 7. Use **Shut down Midbrain** when finished. It invokes
    `platform_core\scripts\stop_workspace.ps1` through the guarded portal flow.
 
@@ -146,8 +146,9 @@ The portal links have distinct authority:
 |---|---|
 | Provider/Skill observation | Read-only state and diagnostics; does not activate or execute. |
 | Development UI | Requires overstepping acknowledgement; may request bounded activation before opening. |
-| Regular Agent | Curated typed Skills and approval-gated lifecycle or motion actions. |
-| Developer Agent | Wider typed discovery and testing; approval requirements remain. |
+| Regular Agent | Curated typed Skills and bounded session-policy authorization. |
+| Developer view | Same autonomous Agent behavior with additional read-only diagnostics. |
+| Agent Run Journal | Read-only retained normalized events; no run or robot authority. |
 | Shut down Midbrain | Runs the safety-ordered workspace stop after confirmation. |
 
 See [Midbrain Main GUI Portal](04_MAIN_GUI_PORTAL.md) for the complete operator
@@ -155,29 +156,98 @@ workflow and recovery guidance.
 
 ## Agent interaction from the portal
 
-Both Agent surfaces may inspect current runtime state and propose Provider
-lifecycle changes. Every lifecycle change presents a plain-language
-confirmation naming the Provider, requested state, and hardware consequence.
+The single Agent, from either browser view, may inspect current runtime state and propose Provider
+lifecycle changes. An operation outside the active session policy presents a
+plain-language development confirmation naming the Provider, requested state,
+and hardware consequence.
 
 For supported relative arm motion, the Agent should:
 
 1. Inspect current runtime state, even if an earlier conversation reported the
    controllers running.
-2. Request approval for Basic to reach `HOT`.
-3. Request approval for Integrated to reach `HOT`.
+2. Request policy authorization for Basic to reach `HOT`.
+3. Request policy authorization for Integrated to reach `HOT`.
 4. Produce a nonphysical IK preview from the latest measured pose.
-5. Present a separate approval for execution of that exact preview.
+5. Evaluate session policy for execution of that exact preview and present a
+   development approval only when the policy does not resolve it.
 6. Wait for the bounded controller result and report success only when physical
    completion is confirmed.
 
 Repeated relative commands are cumulative from the latest measured pose. The
 Agent does not convert them into absolute world-coordinate requests. Safe-home
-is a separate approval-gated Basic Controller operation.
+is a separate policy-gated Basic Controller operation.
 
 Both Agent pages support per-run Agent model, reasoning-effort, and configured
 visual-backend selection. Terra with medium reasoning is the balanced default.
 A stronger model can improve interpretation but cannot replace controller
 validation, approval, fencing, collision checks, or physical safety controls.
+Both prompt panels start the same backend-owned autonomous run path and observe
+it through the same replayable SSE contract. The sole execution contract is
+`POST /api/streaming-runs` plus its status, SSE-events, and decision routes.
+The synchronous `/api/run` path and `/api/dev/...` execution aliases are not
+available.
+
+Each run appears as a separate user/Agent turn in a bounded scrollable history
+owned by the current Manager boot session.
+Expand **Execution summary** on a turn to inspect public model reasoning-summary
+text plus safe Agent, tool, approval, and retry lifecycle updates. Raw private
+reasoning and tool payloads are not shown. The regular and developer pages read
+the same robot-local SQLite projection and periodically synchronize, so both
+show the same transcript when open together and a reopened tab restores the
+same Manager-boot session. There is no browser clear-history action.
+
+The prompt panels can attach one JPEG, PNG, or WebP image up to 8 MiB. Selection
+creates only a browser-local preview; starting a run uploads and validates the
+image, then sends its bounded Midbrain attachment ID in the run request. The
+selected Agent model receives the prompt and image together. Uploaded images
+are not robot observations and do not carry capture time, calibration, depth,
+spatial-frame, or physical-action authority. Robotics-ER Skills continue to
+capture the live bot camera independently.
+
+Visual inference automatically retries a classified transient failure on the
+same read-only backend before using the next configured backend. The default
+is two attempts per backend with a 0.25-second backoff, controlled by
+`PHASE4_VLM_ATTEMPTS_PER_BACKEND` and `PHASE4_VLM_RETRY_BACKOFF_S`.
+Authentication, invalid-model, and other non-transient failures are not
+repeated. This policy does not retry a complete Agent task or robot action.
+
+For a visual Skill that produces annotations, the Agent page shows the exact
+retained camera image used for inference. Overlay visibility and color are
+browser controls. Multiple annotations receive distinct colors and expose
+independent labeled swatches; **Reset colors** restores the deterministic
+palette. **Copy annotated** and **Download annotated** create a flattened PNG
+with those colors without changing the source evidence. SVG and flattened
+exports use the same compact medium-weight labels and translucent black halo.
+Channel buttons appear
+only for channels supplied by that evidence record. The present pointing and
+scene Skills publish RGB only; do not interpret the absence of a depth button
+as a camera-depth failure.
+
+After a cold dependency requests `HOT`, the Agent lifecycle tool waits up to 20
+seconds for a fresh Manager report showing that the Provider is `HOT` and
+ready. `HOT` is the correct dependency action even when the process is stopped,
+because Manager starts it as part of the transition. If the model instead
+chooses `START` with an exact `required_capability`, that call uses the same
+wait rather than returning at process creation. The lifecycle tool also waits
+for the capability to become available from the same Provider. Only then does
+the model resume the original finite Skill. This interval is configured by
+`PROVIDER_HOT_READINESS_TIMEOUT_S`.
+
+A plain `START` with a null capability remains process-only. If `START` with a
+required capability times out because a Provider remains `WARM`, the result
+supplies an exact `HOT` continuation instead of telling the model to retry the
+finite Skill against an unready dependency.
+
+The visual capture boundary then independently waits up to 12 seconds for the
+first readable RGB `BufferRef`, configured by
+`CAMERA_FIRST_FRAME_TIMEOUT_S`. The second check covers the narrow data-plane
+race after control-plane readiness and recycled shared-memory slots. If that
+bounded capture attempt times out, the finite visual Skill retries only the
+RGB capture by default, controlled by `CAMERA_SKILL_CAPTURE_ATTEMPTS` (`1..3`)
+and `CAMERA_SKILL_RETRY_BACKOFF_S` (`0..5`). Camera binding is retained, VLM
+inference waits for a usable frame, and no physical action is submitted. A
+camera that exhausts those bounded attempts fails visibly rather than waiting
+indefinitely or requiring a second user request.
 
 ## Direct endpoints for development and recovery
 
@@ -194,7 +264,8 @@ Use these when the portal is unavailable or when developing a component:
 | reBot Arm DM Basic control | `http://127.0.0.1:8791` |
 | reBot Arm Integrated control/GUI | `http://127.0.0.1:8793` |
 | Regular Agent UI | `http://127.0.0.1:8000/` |
-| Developer Agent UI | `http://127.0.0.1:8000/dev` |
+| Autonomous Agent developer view | `http://127.0.0.1:8000/dev` |
+| Agent Run Journal | `http://127.0.0.1:8000/dev/run-journal` |
 | Calibration GUI | `http://127.0.0.1:8111` |
 
 ## Status and stop

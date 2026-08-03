@@ -23,32 +23,48 @@
       color: var(--text);
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
       margin: 0;
+      overflow: hidden;
       background:
         radial-gradient(circle at 82% -20%, rgba(255,255,255,.09), transparent 36rem),
         var(--background);
     }
-    .shell { width: min(calc(100% - 32px), 1040px); margin: 0 auto; padding: 28px 0; }
-    nav { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 70px; }
+    .shell {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: min(calc(100% - 32px), 1040px);
+      height: 100%;
+      margin: 0 auto;
+      padding: 16px 0 10px;
+    }
+    .top-shell { min-width: 0; border-bottom: 1px solid rgba(59,59,59,.65); padding-bottom: 11px; }
+    nav { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 13px; }
+    .nav-links { display: flex; gap: 16px; }
     nav a { color: var(--muted); font-size: 13px; text-decoration: none; }
     nav a:last-child { color: var(--warning); }
     .eyebrow { margin: 0 0 9px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .15em; }
-    h1 { margin: 0; font-size: clamp(48px, 9vw, 86px); font-weight: 650; letter-spacing: -.07em; line-height: .95; }
-    .subtitle { max-width: 720px; margin: 17px 0 0; color: var(--muted); line-height: 1.6; }
-    .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 38px 0 12px; }
-    .status-card, .prompt-panel, .answer-panel {
+    h1 { margin: 0; font-size: clamp(38px, 7.2vw, 69px); font-weight: 650; letter-spacing: -.07em; line-height: .95; }
+    .prompt-panel, .answer-panel {
       border: 1px solid var(--border);
       border-radius: 11px;
       background: rgba(19,19,19,.95);
     }
-    .status-card { min-height: 105px; padding: 15px; }
-    .status-card span { display: block; color: var(--muted); font-size: 12px; }
-    .status-card strong { display: block; margin-top: 28px; font-size: 17px; }
-    .prompt-panel { padding: 20px; }
-    label { display: block; margin-bottom: 10px; color: var(--secondary); font-size: 13px; font-weight: 650; }
-    .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+    .prompt-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 10px;
+      padding: 13px;
+    }
+    .prompt-panel > label,
+    .prompt-panel > textarea,
+    .prompt-panel > .model-controls,
+    .prompt-panel > .authorization-controls { grid-column: 1 / -1; }
+    label { display: block; margin-bottom: 0; color: var(--secondary); font-size: 13px; font-weight: 650; }
+    .model-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .model-controls label { margin: 0; color: var(--muted); font-size: 11px; }
     select {
       width: 100%;
@@ -62,7 +78,8 @@
     }
     textarea {
       width: 100%;
-      min-height: 155px;
+      min-height: 78px;
+      max-height: 180px;
       resize: vertical;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -73,14 +90,30 @@
       line-height: 1.5;
     }
     textarea:focus { border-color: var(--accent); outline: none; }
-    .actions { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 13px; }
-    .policy { color: var(--muted); font-size: 12px; }
+    .attachment-picker { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .attachment-picker input[type="file"] { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+    .attachment-button { display: inline-flex; margin: 0; border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; background: var(--surface-raised); color: var(--text); cursor: pointer; font-size: 12px; }
+    .attachment-hint { color: var(--muted); font-size: 11px; }
+    .attachment-preview { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .attachment-preview img { width: 46px; height: 46px; border: 1px solid var(--border); border-radius: 7px; object-fit: cover; background: #050505; }
+    .attachment-preview span { max-width: 260px; overflow: hidden; color: var(--secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .attachment-preview button { padding: 6px 9px; border-color: var(--border); background: transparent; color: var(--muted); font-size: 11px; }
+    .actions { display: flex; justify-content: flex-end; align-items: center; gap: 15px; }
+    .policy { display: none; color: var(--muted); font-size: 12px; }
     .authorization-controls {
-      display: grid;
-      gap: 9px;
-      margin-top: 15px;
+      margin-top: 0;
       border-top: 1px solid var(--border);
       padding-top: 14px;
+    }
+    .authorization-controls[open] {
+      display: grid;
+      gap: 9px;
+    }
+    .authorization-controls summary {
+      color: var(--secondary);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
     }
     .authorization-toggle {
       display: flex;
@@ -122,53 +155,155 @@
       cursor: pointer;
     }
     button:disabled { opacity: .5; cursor: wait; }
-    .answer-panel { min-height: 170px; margin-top: 12px; padding: 20px; }
-    .answer-panel h2 { margin: 0 0 14px; font-size: 15px; }
+    .answer-panel {
+      display: flex;
+      min-height: 0;
+      flex-direction: column;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      padding: 12px 0 8px;
+      overflow: hidden;
+      background: transparent;
+    }
+    .answer-panel h2 { margin: 0 0 5px; font-size: 15px; }
+    .chat-panel-head { display: flex; align-items: start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    .conversation-heading { min-width: 0; }
+    .conversation-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 13px; }
+    .runtime-statuses { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 11px; }
+    .runtime-status { display: inline-flex; align-items: baseline; gap: 4px; color: var(--muted); font-size: 11px; }
+    .runtime-status strong { color: var(--secondary); font-size: 11px; }
+    .chat-panel-head button { border-color: var(--border); padding: 7px 10px; background: transparent; color: var(--muted); font-size: 11px; }
+    .activity { margin: 0; color: var(--muted); font-size: 12px; }
+    .chat-history-empty { margin: auto 0; color: var(--muted); font-size: 13px; text-align: center; }
+    .chat-history {
+      display: flex;
+      min-height: 0;
+      flex: 1;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 2px 7px 2px 0;
+      scrollbar-gutter: stable;
+    }
+    .chat-history-spacer { flex: 1 1 auto; min-height: 0; }
+    .chat-turn { display: grid; gap: 8px; }
+    .chat-message { border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
+    .chat-message-user { width: min(88%, 760px); margin-left: auto; background: #202020; }
+    .chat-message-assistant { background: #101010; }
+    .chat-message-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; color: var(--muted); font-size: 10px; }
+    .chat-message-head strong { color: var(--secondary); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .chat-model-label { margin-left: auto; }
+    .chat-message-text { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+    .chat-attachment { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .chat-attachment img { width: 58px; height: 58px; border: 1px solid var(--border); border-radius: 7px; object-fit: cover; background: #050505; }
+    .chat-turn-activity { margin: 0 0 9px; color: var(--muted); font-size: 11px; }
+    .chat-answer { min-height: 0; color: var(--secondary); }
+    .reasoning-panel { margin: 0 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+    .reasoning-panel summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+    .reasoning-panel pre { margin-top: 9px; color: var(--muted); }
+    .chat-progress-list { display: grid; gap: 6px; margin: 10px 0 0; padding-left: 22px; color: var(--muted); font-size: 11px; }
+    .chat-progress-list li { padding-left: 3px; }
+    .chat-progress-list li time { float: right; margin-left: 12px; color: #777; }
+    .chat-execution-summary h4 { margin: 12px 0 0; color: var(--muted); font-size: 11px; font-weight: 650; }
+    .visual-evidence { margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: #101010; }
+    .visual-evidence-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .visual-evidence-head h3 { margin: 0 0 3px; font-size: 14px; }
+    .visual-evidence-head p { margin: 0; color: var(--muted); font-size: 11px; }
+    .visual-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 9px; }
+    .visual-toolbar button { padding: 6px 9px; background: #252525; color: var(--text); font-size: 11px; }
+    .visual-toolbar button.active { outline: 1px solid var(--accent); }
+    .visual-toolbar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+    .visual-toolbar input[type="color"] { width: 28px; height: 24px; padding: 0; border: 0; background: transparent; }
+    .visual-annotation-colors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .visual-color-control { max-width: 190px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; background: #181818; }
+    .visual-color-control span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .visual-canvas { position: relative; width: 100%; overflow: hidden; border-radius: 8px; background: #050505; }
+    .visual-canvas img, .visual-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .visual-canvas img { object-fit: contain; }
+    .visual-canvas svg { pointer-events: none; }
     pre { margin: 0; color: var(--secondary); font: 13px/1.6 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
-    footer { display: flex; justify-content: space-between; margin-top: 18px; color: var(--muted); font-size: 11px; }
+    .bottom-dock { min-width: 0; max-height: 58vh; overflow-y: auto; scrollbar-gutter: stable; }
+    footer { display: flex; justify-content: space-between; margin-top: 7px; color: var(--muted); font-size: 10px; }
     .error { color: var(--danger); }
     @media (max-width: 680px) {
-      nav { margin-bottom: 42px; }
-      .status-grid { grid-template-columns: 1fr; }
-      .model-controls { grid-template-columns: 1fr; }
-      .actions, footer { align-items: stretch; flex-direction: column; }
+      .shell { width: min(calc(100% - 20px), 1040px); padding-top: 10px; }
+      nav { margin-bottom: 10px; }
+      h1 { font-size: clamp(34px, 11vw, 54px); }
+      .model-controls { grid-template-columns: repeat(3, minmax(112px, 1fr)); overflow-x: auto; }
+      .chat-message-user { width: 96%; }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <nav>
-      <a href="http://127.0.0.1:7001/">← Midbrain</a>
-      <a href="/dev">Developer agent…</a>
-    </nav>
-    <header>
-      <p class="eyebrow">MIDBRAIN · REGULAR AGENT</p>
-      <h1>Ask the robot system.</h1>
-      <p class="subtitle">This surface exposes curated finite Skills, authorized Provider lifecycle control, preview-then-authorize relative arm IK, and controller-owned safe-home. Eligible operations can use the bounded session authorization below without pausing; all Provider-side safety checks remain active.</p>
-    </header>
+    <div class="top-shell">
+      <nav>
+        <a href="http://127.0.0.1:7001/">← Midbrain</a>
+        <span class="nav-links">
+          <a href="/dev/run-journal">Run journal</a>
+          <a href="/dev">Developer view…</a>
+        </span>
+      </nav>
+      <header>
+        <p class="eyebrow">MIDBRAIN · REGULAR AGENT</p>
+        <h1>Ask the robot system.</h1>
+      </header>
+    </div>
 
-    <section class="status-grid" aria-label="Runtime summary">
-      <article class="status-card"><span>Manager</span><strong id="managerState">Checking</strong></article>
-      <article class="status-card"><span>Fabric</span><strong id="fabricState">Checking</strong></article>
-      <article class="status-card"><span>Available Skills</span><strong id="skillState">Checking</strong></article>
+    <section class="answer-panel">
+      <div class="chat-panel-head">
+        <div class="conversation-heading">
+          <h2>Conversation</h2>
+          <div class="conversation-meta">
+            <p id="activity" class="activity">Idle</p>
+            <div class="runtime-statuses" aria-label="Runtime summary">
+              <span class="runtime-status"><span>Manager</span><strong id="managerState">Checking</strong></span>
+              <span class="runtime-status"><span>Fabric</span><strong id="fabricState">Checking</strong></span>
+              <span class="runtime-status"><span>Skills</span><strong id="skillState">Checking</strong></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p id="chatHistoryEmpty" class="chat-history-empty">No runs in this Midbrain session.</p>
+      <div id="chatHistory" class="chat-history" aria-live="polite">
+        <div class="chat-history-spacer" aria-hidden="true"></div>
+      </div>
     </section>
 
-    <section class="prompt-panel">
+    <div class="bottom-dock">
+      <section class="prompt-panel">
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="Describe what you want Midbrain to observe or do through its available Skills."></textarea>
       <div class="model-controls" aria-label="Model selection">
         <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
         <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
         <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
       </div>
-      <label for="prompt">Prompt</label>
-      <textarea id="prompt" placeholder="Describe what you want Midbrain to observe or do through its available Skills."></textarea>
+      <div class="attachment-picker">
+        <label class="attachment-button" for="agentImageInput">Attach image</label>
+        <input id="agentImageInput" type="file" accept="image/jpeg,image/png,image/webp">
+        <span id="attachmentHint" class="attachment-hint">Optional JPEG, PNG, or WebP; maximum 8 MB.</span>
+        <div id="attachmentPreview" class="attachment-preview" hidden>
+          <img id="attachmentPreviewImage" alt="Selected user image">
+          <span id="attachmentName"></span>
+          <button id="removeAttachment" type="button">Remove</button>
+        </div>
+      </div>
       <div class="actions">
         <span class="policy">Stateful and physical operations retain host authorization and Provider-side checks.</span>
         <button id="runButton" type="button">Run prompt</button>
       </div>
-      <div class="authorization-controls" aria-label="Session authorization">
+      <details class="authorization-controls" aria-label="Session authorization">
+        <summary id="authorizationSummary">Bounded autonomy policy</summary>
         <label class="authorization-toggle">
           <input id="autoApproveProviders" type="checkbox" checked>
           Auto-authorize Provider start, HOT, and WARM transitions
+        </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveProviderStop" type="checkbox" checked>
+          Auto-authorize Provider stop transitions
         </label>
         <label class="authorization-toggle">
           <input id="autoApproveMoves" type="checkbox" checked>
@@ -186,21 +321,111 @@
           <input id="autoApproveCalibrationActivation" type="checkbox" checked>
           Auto-authorize exact qualified calibration candidate activation
         </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveSafeHome" type="checkbox" checked>
+          Auto-authorize the exact controller-owned safe-home operation
+        </label>
+        <label class="authorization-toggle">
+          <input id="autoApproveSpaceReinitialization" type="checkbox">
+          Auto-authorize deliberate spatial-origin reinitialization
+        </label>
         <p id="authorizationTicker" class="authorization-ticker"></p>
-      </div>
-    </section>
+      </details>
+      </section>
 
-    <section class="answer-panel" aria-live="polite">
-      <h2>Agent response</h2>
-      <pre id="answer">Ready.</pre>
-    </section>
-    <footer><span>Persistent local agent session</span><span id="lastUpdated">No status sample</span></footer>
+      <footer><span>Persistent robot-local Midbrain session</span><span id="lastUpdated">No status sample</span></footer>
+    </div>
   </main>
+  <script src="/assets/visual_evidence.js"></script>
+  <script src="/assets/agent_chat_history.js"></script>
   <script>
     "use strict";
     const byId = (id) => document.getElementById(id);
     const AUTHORIZATION_STORAGE_KEY =
-      "midbrain.regularAgent.sessionAuthorization.v3";
+      "midbrain.regularAgent.sessionAuthorization.v4";
+    const agentChatHistory = new window.MidbrainAgentChatHistory({
+      container: byId("chatHistory"),
+      emptyState: byId("chatHistoryEmpty"),
+      onStatus: (message) => byId("activity").textContent = message
+    });
+    const AGENT_IMAGE_TYPES = new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp"
+    ]);
+    const AGENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+    let selectedImageFile = null;
+    let selectedImageObjectUrl = null;
+
+    function clearSelectedImage() {
+      if (selectedImageObjectUrl) {
+        URL.revokeObjectURL(selectedImageObjectUrl);
+      }
+      selectedImageObjectUrl = null;
+      selectedImageFile = null;
+      byId("agentImageInput").value = "";
+      byId("attachmentPreviewImage").removeAttribute("src");
+      byId("attachmentName").textContent = "";
+      byId("attachmentPreview").hidden = true;
+      byId("attachmentHint").hidden = false;
+    }
+
+    function selectImage(file) {
+      if (!file) {
+        clearSelectedImage();
+        return;
+      }
+      if (!AGENT_IMAGE_TYPES.has(file.type)) {
+        throw new Error("Choose a JPEG, PNG, or WebP image.");
+      }
+      if (file.size > AGENT_IMAGE_MAX_BYTES) {
+        throw new Error("The attached image exceeds 8 MB.");
+      }
+      clearSelectedImage();
+      selectedImageFile = file;
+      selectedImageObjectUrl = URL.createObjectURL(file);
+      byId("attachmentPreviewImage").src = selectedImageObjectUrl;
+      byId("attachmentName").textContent =
+        `${file.name} | ${(file.size / 1024).toFixed(0)} KB`;
+      byId("attachmentPreview").hidden = false;
+      byId("attachmentHint").hidden = true;
+    }
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("Could not read the image."));
+        reader.onload = () => {
+          const value = String(reader.result || "");
+          const separator = value.indexOf(",");
+          if (separator < 0) {
+            reject(new Error("Could not encode the image."));
+            return;
+          }
+          resolve(value.slice(separator + 1));
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function uploadSelectedImage() {
+      if (!selectedImageFile) return [];
+      byId("activity").textContent = "Uploading image attachment...";
+      const response = await fetch("/api/agent-attachments", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          filename: selectedImageFile.name,
+          media_type: selectedImageFile.type,
+          data_base64: await readFileAsBase64(selectedImageFile)
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Image upload failed");
+      }
+      return [data.attachment_id];
+    }
 
     function loadAuthorizationPreferences() {
       let saved = {};
@@ -215,6 +440,10 @@
         typeof saved.autoApproveProviders === "boolean"
           ? saved.autoApproveProviders
           : true;
+      byId("autoApproveProviderStop").checked =
+        typeof saved.autoApproveProviderStop === "boolean"
+          ? saved.autoApproveProviderStop
+          : true;
       byId("autoApproveMoves").checked =
         typeof saved.autoApproveMoves === "boolean"
           ? saved.autoApproveMoves
@@ -227,6 +456,14 @@
         typeof saved.autoApproveCalibrationActivation === "boolean"
           ? saved.autoApproveCalibrationActivation
           : true;
+      byId("autoApproveSafeHome").checked =
+        typeof saved.autoApproveSafeHome === "boolean"
+          ? saved.autoApproveSafeHome
+          : true;
+      byId("autoApproveSpaceReinitialization").checked =
+        typeof saved.autoApproveSpaceReinitialization === "boolean"
+          ? saved.autoApproveSpaceReinitialization
+          : false;
       const savedMaximum = Number(saved.maxAutoMoveCm);
       byId("maxAutoMoveCm").value =
         Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
@@ -243,11 +480,16 @@
       const maximumSpeed = Number(byId("maxAutoSpeedMps").value);
       return {
         autoApproveProviders: byId("autoApproveProviders").checked,
+        autoApproveProviderStop:
+          byId("autoApproveProviderStop").checked,
         autoApproveMoves: byId("autoApproveMoves").checked,
         autoApproveCalibration:
           byId("autoApproveCalibration").checked,
         autoApproveCalibrationActivation:
           byId("autoApproveCalibrationActivation").checked,
+        autoApproveSafeHome: byId("autoApproveSafeHome").checked,
+        autoApproveSpaceReinitialization:
+          byId("autoApproveSpaceReinitialization").checked,
         maxAutoMoveCm:
           Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
             ? maximum
@@ -265,6 +507,9 @@
       const providerState = preferences.autoApproveProviders
         ? "Provider activation AUTO"
         : "Provider activation asks";
+      const providerStopState = preferences.autoApproveProviderStop
+        ? "Provider stop AUTO"
+        : "Provider stop asks";
       const motionState = preferences.autoApproveMoves
         ? `relative arm pose AUTO <= ${preferences.maxAutoMoveCm} cm, ` +
           `<= ${preferences.maxAutoSpeedMps} m/s nominal average; ` +
@@ -276,11 +521,21 @@
       const activationState = preferences.autoApproveCalibrationActivation
         ? "exact calibration activation AUTO"
         : "exact calibration activation asks";
+      const safeHomeState = preferences.autoApproveSafeHome
+        ? "safe-home AUTO"
+        : "safe-home asks";
+      const reinitializationState =
+        preferences.autoApproveSpaceReinitialization
+          ? "spatial reinitialization AUTO"
+          : "spatial reinitialization asks";
       byId("authorizationTicker").textContent =
-        `${providerState} | ${motionState} | ${calibrationState} | ` +
-        `${activationState}. ` +
-        "Provider and controller safety checks remain active; stop, safe-home, " +
-        "and other protected actions still ask.";
+        `${providerState} | ${providerStopState} | ${motionState} | ` +
+        `${calibrationState} | ${activationState} | ${safeHomeState} | ` +
+        `${reinitializationState}. Provider and controller safety checks ` +
+        "remain active.";
+      byId("authorizationSummary").textContent =
+        "Bounded autonomy policy · routine actions " +
+        (preferences.autoApproveMoves ? "automatic" : "may ask");
       try {
         window.sessionStorage.setItem(
           AUTHORIZATION_STORAGE_KEY,
@@ -391,6 +646,24 @@
           label: "Session authorization automatically approved Provider activation."
         };
       }
+      const providerStopEligible =
+        preferences.autoApproveProviderStop &&
+        approvals.every((approval) => {
+          const action = String(
+            approvalArguments(approval).action || ""
+          ).toLowerCase();
+          return approval.tool_name === "set_provider_residency" &&
+            action === "stop";
+        });
+      if (providerStopEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_PROVIDER_STOP",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label: "Session authorization automatically approved Provider stop."
+        };
+      }
       const motionEligible =
         preferences.autoApproveMoves &&
         approvals.every((approval) => {
@@ -485,28 +758,96 @@
             "Session authorization automatically approved exact stationary calibration activation."
         };
       }
+      const safeHomeEligible =
+        preferences.autoApproveSafeHome &&
+        approvals.every(
+          (approval) =>
+            approval.tool_name === "execute_basic_safe_home"
+        );
+      if (safeHomeEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_SAFE_HOME",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label:
+            "Session authorization automatically approved controller-owned safe-home."
+        };
+      }
+      const reinitializationEligible =
+        preferences.autoApproveSpaceReinitialization &&
+        approvals.every(
+          (approval) =>
+            approval.tool_name === "reinitialize_space_cognition"
+        );
+      if (reinitializationEligible) {
+        return {
+          approve: true,
+          approval_mode: "AUTO_SPACE_REINITIALIZATION",
+          max_auto_move_cm: null,
+          max_auto_speed_m_s: null,
+          label:
+            "Session authorization automatically approved spatial reinitialization."
+        };
+      }
       return null;
     }
 
-    async function handleAgentResult(data) {
-      if (data.status !== "approval_required") {
-        byId("answer").textContent =
-          data.answer || "Completed without a text response.";
-        return;
+    let chatSessionLoadPending = false;
+    async function loadChatSession() {
+      if (chatSessionLoadPending) return;
+      chatSessionLoadPending = true;
+      try {
+        const response = await fetch("/api/chat-session", {cache: "no-store"});
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Chat session could not be loaded");
+        }
+        agentChatHistory.hydrate(data.turns || []);
+      } catch (error) {
+        byId("activity").textContent = `History unavailable: ${error.message}`;
+      } finally {
+        chatSessionLoadPending = false;
       }
-      const approvals = data.approvals || [];
+    }
+
+    function buildRunRequest(prompt, authorization, attachmentIds) {
+      return {
+        prompt,
+        attachment_ids: attachmentIds,
+        agent_model: byId("agentModel").value,
+        reasoning_effort: byId("reasoningEffort").value,
+        vlm_model: byId("vlmModel").value,
+        auto_authorize_provider_activation:
+          authorization.autoApproveProviders,
+        auto_authorize_provider_stop:
+          authorization.autoApproveProviderStop,
+        auto_authorize_relative_motion: authorization.autoApproveMoves,
+        max_auto_move_cm: authorization.maxAutoMoveCm,
+        max_auto_speed_m_s: authorization.maxAutoSpeedMps,
+        auto_authorize_stationary_calibration:
+          authorization.autoApproveCalibration,
+        auto_authorize_stationary_activation:
+          authorization.autoApproveCalibrationActivation,
+        auto_authorize_safe_home: authorization.autoApproveSafeHome,
+        auto_authorize_space_reinitialization:
+          authorization.autoApproveSpaceReinitialization
+      };
+    }
+
+    async function submitStreamingApproval(runId, approvals) {
       const readable = approvals.map(approvalMessage).join("\n\n");
-      byId("answer").textContent = readable;
       const automaticDecision = automaticApprovalDecision(approvals);
       const approved = automaticDecision
         ? true
         : window.confirm(readable);
-      if (automaticDecision) {
-        byId("answer").textContent =
-          `${automaticDecision.label}\nContinuing the same run…`;
-      }
-      const decisionResponse = await fetch(
-        `/api/runs/${encodeURIComponent(data.run_id)}/decision`,
+      byId("activity").textContent = automaticDecision
+        ? `${automaticDecision.label} Continuing the same run...`
+        : approved
+          ? "Approval accepted. Continuing the same run..."
+          : "Operation rejected. Returning the decision to the agent...";
+      const response = await fetch(
+        `/api/streaming-runs/${encodeURIComponent(runId)}/decision`,
         {
           method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -524,57 +865,187 @@
           })
         }
       );
-      const next = await decisionResponse.json();
-      if (!decisionResponse.ok) {
-        throw new Error(next.detail || "Approval decision failed");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Approval decision failed");
       }
-      await handleAgentResult(next);
+    }
+
+    function consumeStreamingRun(started, turn) {
+      return new Promise((resolve, reject) => {
+        const source = new EventSource(started.events_url);
+        const handledApprovals = new Set();
+        let answerText = "";
+        let terminal = false;
+        turn.setRunId(started.run_id);
+
+        function fail(error) {
+          if (terminal) return;
+          terminal = true;
+          source.close();
+          const failure = error instanceof Error
+            ? error
+            : new Error(String(error));
+          turn.fail(failure);
+          reject(failure);
+        }
+
+        source.onopen = () => {
+          byId("activity").textContent = "Live agent stream connected";
+          turn.setActivity("Live agent stream connected");
+        };
+        source.onerror = () => {
+          if (!terminal) {
+            byId("activity").textContent =
+              "Live stream interrupted; reconnecting without restarting the run...";
+          }
+        };
+        source.onmessage = async (message) => {
+          try {
+            const event = JSON.parse(message.data);
+            const payload = event.payload || {};
+            if (event.type === "run.started") {
+              byId("activity").textContent = "Agent run started";
+              turn.setActivity("Agent run started");
+              turn.addProgress("Agent run started");
+            } else if (event.type === "assistant.message.delta") {
+              answerText += String(payload.text || "");
+              turn.appendAnswer(String(payload.text || ""));
+            } else if (
+              event.type === "assistant.reasoning_summary.delta"
+            ) {
+              turn.appendReasoning(String(payload.text || ""));
+            } else if (event.type === "tool.called") {
+              const name = payload.tool_name || "agent tool";
+              byId("activity").textContent = `Running ${name}...`;
+              turn.setActivity(`Running ${name}...`);
+              turn.addProgress(`Started ${name}`);
+            } else if (event.type === "tool.completed") {
+              const name = payload.tool_name || "Agent tool";
+              byId("activity").textContent = `${name} completed`;
+              turn.setActivity(`${name} completed`);
+              turn.addProgress(`Completed ${name}`);
+            } else if (event.type === "skill.retry.recovered") {
+              const update =
+                `Camera observation recovered after ${payload.attempt_count} attempts`;
+              byId("activity").textContent = update;
+              turn.setActivity(update);
+              turn.addProgress(update);
+            } else if (event.type === "skill.retry.exhausted") {
+              const update =
+                `Camera observation unavailable after ${payload.attempt_count} attempts`;
+              byId("activity").textContent = update;
+              turn.setActivity(update);
+              turn.addProgress(update);
+            } else if (event.type === "visual.evidence.created") {
+              turn.showVisualEvidence(payload);
+              byId("activity").textContent = "Visual evidence available";
+              turn.setActivity("Visual evidence available");
+              turn.addProgress("Visual evidence attached to the response");
+            } else if (event.type === "agent.updated") {
+              turn.addProgress(
+                `Active agent: ${payload.agent_name || "agent"}`
+              );
+            } else if (event.type === "approval.required") {
+              turn.addProgress("Development approval required");
+              const approvalKey = String(
+                event.event_id || message.lastEventId
+              );
+              if (!handledApprovals.has(approvalKey)) {
+                handledApprovals.add(approvalKey);
+                await submitStreamingApproval(
+                  started.run_id,
+                  payload.approvals || []
+                );
+              }
+            } else if (event.type === "run.completed") {
+              terminal = true;
+              source.close();
+              const finalAnswer = payload.answer || answerText ||
+                "Completed without a text response.";
+              turn.complete(finalAnswer);
+              byId("activity").textContent = "Completed";
+              resolve(payload);
+            } else if (event.type === "run.failed") {
+              fail(new Error(payload.error || "Agent run failed"));
+            }
+          } catch (error) {
+            fail(error);
+          }
+        };
+      });
     }
 
     byId("runButton").addEventListener("click", async () => {
       const prompt = byId("prompt").value.trim();
       if (!prompt) return;
+      const turn = agentChatHistory.startTurn({
+        prompt,
+        attachmentFile: selectedImageFile,
+        agentModel: byId("agentModel").value,
+        reasoningEffort: byId("reasoningEffort").value,
+        vlmModel: byId("vlmModel").value
+      });
       byId("runButton").disabled = true;
-      byId("answer").className = "";
-      byId("answer").textContent = "Running…";
+      byId("activity").textContent = "Starting backend-owned run...";
       try {
         const authorization = authorizationPreferences();
-        const response = await fetch("/api/run", {
+        const attachmentIds = await uploadSelectedImage();
+        const requestPayload = buildRunRequest(
+          prompt,
+          authorization,
+          attachmentIds
+        );
+        const response = await fetch("/api/streaming-runs", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            prompt,
-            agent_model: byId("agentModel").value,
-            reasoning_effort: byId("reasoningEffort").value,
-            vlm_model: byId("vlmModel").value,
-            auto_authorize_provider_activation:
-              authorization.autoApproveProviders,
-            auto_authorize_relative_motion: authorization.autoApproveMoves,
-            max_auto_move_cm: authorization.maxAutoMoveCm,
-            max_auto_speed_m_s: authorization.maxAutoSpeedMps,
-            auto_authorize_stationary_calibration:
-              authorization.autoApproveCalibration,
-            auto_authorize_stationary_activation:
-              authorization.autoApproveCalibrationActivation
-          })
+          body: JSON.stringify(requestPayload)
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
-        await handleAgentResult(data);
+        if (!response.ok) {
+          throw new Error(data.detail || JSON.stringify(data));
+        }
+        await consumeStreamingRun(data, turn);
+        clearSelectedImage();
         await refreshStatus();
       } catch (error) {
-        byId("answer").className = "error";
-        byId("answer").textContent = `Error: ${error.message}`;
+        if (turn.state.status === "RUNNING") turn.fail(error);
+        byId("activity").textContent = "Agent run failed";
       } finally {
         byId("runButton").disabled = false;
       }
     });
 
+    byId("prompt").addEventListener("keydown", (event) => {
+      if (
+        event.key !== "Enter" ||
+        event.shiftKey ||
+        event.isComposing
+      ) return;
+      event.preventDefault();
+      if (!byId("runButton").disabled) byId("runButton").click();
+    });
+
+    byId("agentImageInput").addEventListener("change", (event) => {
+      try {
+        selectImage(event.target.files?.[0] || null);
+      } catch (error) {
+        clearSelectedImage();
+        byId("activity").textContent = `Error: ${error.message}`;
+      }
+    });
+    byId("removeAttachment").addEventListener(
+      "click",
+      clearSelectedImage
+    );
     for (const id of [
       "autoApproveProviders",
+      "autoApproveProviderStop",
       "autoApproveMoves",
       "autoApproveCalibration",
       "autoApproveCalibrationActivation",
+      "autoApproveSafeHome",
+      "autoApproveSpaceReinitialization",
       "maxAutoMoveCm",
       "maxAutoSpeedMps"
     ]) {
@@ -589,7 +1060,9 @@
       updateAuthorizationTicker
     );
     loadAuthorizationPreferences();
+    loadChatSession();
     refreshStatus();
+    window.setInterval(loadChatSession, 3000);
     window.setInterval(refreshStatus, 3000);
   </script>
 </body>

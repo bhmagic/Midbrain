@@ -1087,6 +1087,9 @@ class IntegratedRelativeMotionAdapterTests(
                 "arguments": {
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
+                    "required_capability": (
+                        "robot.motion.arm.integrated.mit.one_shot"
+                    ),
                 },
             },
         )

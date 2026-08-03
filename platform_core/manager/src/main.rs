@@ -666,6 +666,8 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "service": "resource-provider-manager",
+        "instance_id": state.manager_instance_id,
+        "boot_id": state.manager_boot_id,
         "provider_autostart_enabled": state.provider_autostart_enabled,
         "shutdown_execution_enabled": state.shutdown_execution_enabled,
         "workcell_calibration_activation_identity_configured":

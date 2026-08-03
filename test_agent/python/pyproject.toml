@@ -26,4 +26,4 @@ where = ["."]
 include = ["physical_agent_test*"]
 
 [tool.setuptools.package-data]
-physical_agent_test = ["web/*.html"]
+physical_agent_test = ["web/*.html", "web/*.js"]

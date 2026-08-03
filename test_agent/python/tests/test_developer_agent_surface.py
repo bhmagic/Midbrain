@@ -347,12 +347,37 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
 
 
 class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lifecycle_result_tells_agent_to_continue_without_repeat(
+    async def test_unadvertised_model_capability_does_not_false_timeout(
         self,
     ) -> None:
-        class _ConfiguredManager(_Manager):
+        class _ReadyManager(_Manager):
             async def providers(self):
-                return [{"config": {"id": "camera.femto_bolt"}}]
+                return [
+                    {
+                        "config": {"id": "robot_arm.primary.integrated"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "robot_arm.primary.integrated",
+                            "residency": "HOT",
+                            "health": "HEALTHY",
+                            "ready": True,
+                            "expired": False,
+                        },
+                    }
+                ]
+
+            async def capabilities(self):
+                return [
+                    {
+                        "capability": (
+                            "robot.motion.arm.integrated.mit.one_shot"
+                        ),
+                        "provider_id": "robot_arm.primary.integrated",
+                        "available": True,
+                        "ready": True,
+                        "expired": False,
+                    }
+                ]
 
         root = Path(__file__).resolve().parents[3]
         driver = PrototypeAgentDriver(
@@ -360,8 +385,91 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             "gpt-test",
             workspace_root=root,
             eligible_tool_names={"identify_pointed_object"},
-            manager=_ConfiguredManager(),
+            manager=_ReadyManager(),
             developer_mode=True,
+            provider_hot_readiness_timeout_s=0.1,
+            provider_hot_readiness_poll_interval_s=0.001,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                None,
+                json.dumps(
+                    {
+                        "provider_id": "robot_arm.primary.integrated",
+                        "action": "hot",
+                        "required_capability": "robot.motion.arm.integrated",
+                    }
+                ),
+            )
+        )
+
+        self.assertTrue(result["lifecycle_request_complete"])
+        self.assertEqual(result["readiness"]["status"], "READY")
+        self.assertFalse(result["readiness"]["capability_advertised"])
+        self.assertIsNone(result["readiness"]["capability_ready"])
+        self.assertIn(
+            "robot.motion.arm.integrated.mit.one_shot",
+            result["readiness"]["advertised_capabilities"],
+        )
+        self.assertIn("advisory model guess", result["agent_instruction"])
+
+    async def test_start_dependency_waits_for_hot_capability_then_continues(
+        self,
+    ) -> None:
+        class _ConfiguredManager(_Manager):
+            def __init__(self) -> None:
+                self.hot_requested = False
+                self.readiness_polls = 0
+
+            async def providers(self):
+                if self.hot_requested:
+                    self.readiness_polls += 1
+                ready = self.readiness_polls >= 2
+                return [
+                    {
+                        "config": {"id": "camera.femto_bolt"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "camera.femto_bolt",
+                            "residency": "HOT" if ready else "WARM",
+                            "health": "HEALTHY",
+                            "ready": ready,
+                            "expired": False,
+                        },
+                    }
+                ]
+
+            async def capabilities(self):
+                ready = self.readiness_polls >= 2
+                return [
+                    {
+                        "capability": "camera.rgb",
+                        "provider_id": "camera.femto_bolt",
+                        "available": ready,
+                        "ready": ready,
+                        "expired": False,
+                    }
+                ]
+
+            async def set_residency(self, provider_id: str, action: str):
+                self.hot_requested = True
+                return await super().set_residency(provider_id, action)
+
+        root = Path(__file__).resolve().parents[3]
+        manager = _ConfiguredManager()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=manager,
+            developer_mode=True,
+            provider_hot_readiness_timeout_s=0.1,
+            provider_hot_readiness_poll_interval_s=0.001,
         )
         tool = {
             candidate.name: candidate for candidate in driver.agent.tools
@@ -372,16 +480,141 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             json.dumps(
                 {
                     "provider_id": "camera.femto_bolt",
-                    "action": "hot",
+                    "action": "start",
+                    "required_capability": "camera.rgb",
                 }
             ),
         )
         result = json.loads(raw)
 
+        self.assertTrue(result["lifecycle_request_accepted"])
         self.assertTrue(result["lifecycle_request_complete"])
-        self.assertEqual(result["requested_action"], "HOT")
+        self.assertEqual(result["requested_action"], "START")
+        self.assertEqual(result["required_capability"], "camera.rgb")
+        self.assertEqual(result["readiness"]["status"], "READY")
+        self.assertTrue(result["readiness"]["capability_ready"])
+        self.assertIsNone(result["required_next_tool"])
+        self.assertGreaterEqual(manager.readiness_polls, 2)
         self.assertIn("Do not request", result["agent_instruction"])
-        self.assertIn("Continue", result["agent_instruction"])
+        self.assertIn("invoke that original Skill", result["agent_instruction"])
+        self.assertEqual(
+            tool.params_json_schema["required"],
+            ["provider_id", "action", "required_capability"],
+        )
+
+    async def test_hot_lifecycle_reports_bounded_readiness_timeout(self) -> None:
+        class _NeverReadyManager(_Manager):
+            async def providers(self):
+                return [
+                    {
+                        "config": {"id": "camera.femto_bolt"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "camera.femto_bolt",
+                            "residency": "HOT",
+                            "health": "DEGRADED",
+                            "ready": False,
+                            "expired": False,
+                        },
+                    }
+                ]
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_NeverReadyManager(),
+            developer_mode=True,
+            provider_hot_readiness_timeout_s=0.005,
+            provider_hot_readiness_poll_interval_s=0.001,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                None,
+                json.dumps(
+                    {
+                        "provider_id": "camera.femto_bolt",
+                        "action": "hot",
+                        "required_capability": None,
+                    }
+                ),
+            )
+        )
+
+        self.assertTrue(result["lifecycle_request_accepted"])
+        self.assertFalse(result["lifecycle_request_complete"])
+        self.assertEqual(result["readiness"]["status"], "TIMED_OUT")
+        self.assertFalse(result["readiness"]["provider_ready"])
+        self.assertIn("did not become HOT and ready", result["agent_instruction"])
+
+    async def test_start_dependency_timeout_requires_exact_hot_continuation(
+        self,
+    ) -> None:
+        class _NeverReadyManager(_Manager):
+            async def providers(self):
+                return [
+                    {
+                        "config": {"id": "camera.femto_bolt"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "camera.femto_bolt",
+                            "residency": "WARM",
+                            "health": "HEALTHY",
+                            "ready": False,
+                            "expired": False,
+                        },
+                    }
+                ]
+
+            async def capabilities(self):
+                return []
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_NeverReadyManager(),
+            developer_mode=True,
+            provider_hot_readiness_timeout_s=0.005,
+            provider_hot_readiness_poll_interval_s=0.001,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                None,
+                json.dumps(
+                    {
+                        "provider_id": "camera.femto_bolt",
+                        "action": "start",
+                        "required_capability": "camera.rgb",
+                    }
+                ),
+            )
+        )
+
+        self.assertFalse(result["lifecycle_request_complete"])
+        self.assertEqual(
+            result["required_next_tool"],
+            {
+                "name": "set_provider_residency",
+                "arguments": {
+                    "provider_id": "camera.femto_bolt",
+                    "action": "hot",
+                    "required_capability": "camera.rgb",
+                },
+            },
+        )
 
 
 if __name__ == "__main__":
