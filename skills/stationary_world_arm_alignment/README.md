@@ -2,7 +2,7 @@
 
 This finite Midbrain Skill aligns a stationary reBot arm base into a camera-origin world frame. All Skill orchestration, configuration, run artifacts, calibration revisions, schemas, tests, and the monitoring GUI live in this folder.
 
-Version 0.8.9 uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. Robot-base local axes
+The current implementation uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. Robot-base local axes
 remain positive X forward, positive Y left, and positive Z model-up. World
 semantic directions are transformed into that local frame when motion is
 planned.

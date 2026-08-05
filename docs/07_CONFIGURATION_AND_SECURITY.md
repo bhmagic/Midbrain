@@ -1,118 +1,127 @@
 # Configuration and Security
 
-## Local configuration ownership
+This guide defines where local state belongs and the trust boundary of the
+current development system. The root [Security Policy](../SECURITY.md) remains
+the reporting entry point.
 
-Tracked source contains clean examples plus the sanitized FoundationPose restore profile. Machine-local files belong under `config` and are ignored by Git.
+## Configuration ownership
 
-Typical files:
+Tracked source contains blank examples, deterministic generators, component
+defaults, and the sanitized FoundationPose restore profile. Machine-local
+state belongs under ignored `config` and component runtime directories.
+
+The workspace initializer creates missing top-level configuration from safe
+examples and preserves existing files:
 
 - `config/system.env`
 - `config/api_keys.env`
 - `config/providers.json`
-- `config/calibration/devices/...`
-- `config/foundation_pose/...`
+- serial-bound device calibration under `config/calibration/devices`
 
-`platform_core\scripts\initialize_config.ps1` preserves existing configuration and creates all three top-level files from root examples. It creates `api_keys.env` with blank secret values. The same initializer runs during core setup and workspace launch, so a missing top-level file does not require an interactive repair.
+The audited mapping is in
+[Configuration Baseline Inventory](../config/BASELINE_INVENTORY.md). A clean
+checkout must have either a safe baseline or a deterministic noninteractive
+generator for every required active file.
 
-The audited ownership and generation table is in `config\BASELINE_INVENTORY.md`. Serial-bound calibration, alignment results, captures, caches, and run state are generated at runtime and deliberately do not have populated reusable templates.
+Provider installation scripts merge their entries into local
+`config/providers.json` without replacing unrelated Providers. Active robot
+calibration, alignment candidates, captures, caches, run state, and device
+identities are generated locally and must not have populated reusable
+templates.
 
-## API keys
+## Secrets
 
-The Test Agent and FoundationPose tracking GUI can use optional hosted-model integrations. Keys must be placed only in `config/api_keys.env`:
+API keys and signing secrets belong only in ignored local configuration or an
+approved external secret store. Never place them in source, examples,
+screenshots, logs, terminal transcripts, commit messages, issues, fixtures, or
+support bundles.
 
-```text
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-```
+Blank examples document supported variable names. Runtime defaults and model
+selections are owned by the active configuration and component code; other
+documentation should not duplicate them.
 
-Never place keys in source, screenshots, logs, commit messages, issues, or PowerShell history. The examples intentionally contain empty values.
+If a secret appears in a log, review transcript, or Git object, treat it as
+exposed and rotate it. Removing the visible file alone does not invalidate the
+credential or erase history.
 
-## Provider configuration
+## Device and spatial calibration
 
-The root recovery template is `config/providers.json.example`. An identical package fallback is kept at `platform_core/config_templates/providers.json.example`. They register:
+Device calibration is owned by the hardware Provider and keyed by manufacturer,
+model, and serial identity. Runtime estimator bias must not overwrite physical
+device calibration.
 
-- `camera.femto_bolt` at control port `7101`, auto-start disabled.
-- `localization.local_vio` at control port `7102`, auto-start disabled until requested.
+Spatial alignment records must preserve camera and robot identity, boot,
+calibration revision, frame convention, VIO epoch, evidence, decision, and
+activation lineage. Serial-bound or measured calibration must not be published
+unless it is an intentionally reviewed dataset.
 
-The workspace launcher ignores all preserved `auto_start: true` values unless
-the operator explicitly supplies `-AllowProviderAutoStart`. This keeps an
-older machine-local registry from silently activating hardware during a normal
-Midbrain launch.
+## Hosted models and image disclosure
 
-The FoundationPose `scripts\setup.ps1` installer merges its Provider registration into the machine-local configuration without overwriting unrelated entries. Its default control port is `7103`, and its persistent model/target settings live under `config/foundation_pose`.
+An Agent attachment and a live robot-camera observation are different
+provenance paths, but either may disclose image content to a configured hosted
+model. Before enabling a hosted backend:
 
-Every Provider registration script can also create an empty `providers` document when no active file exists, then merge its own canonical `config_templates/provider_entry.json` entry. Registration does not require a hand-written placeholder file.
+- confirm which component sends the data;
+- review the selected service's access, retention, and privacy terms;
+- avoid sensitive workcell content; and
+- use a local backend or manual workflow when data cannot leave the machine.
 
-OpenAI visual localization sends the selected camera image and CAD reference renders to a hosted service. Treat those images as externally disclosed data, review the service retention and privacy terms for the deployment, and use manual boxes or a fully local detector when images cannot leave the machine. SAM2 segmentation runs locally when installed.
+SAM2 and other local perception do not make a preceding hosted localization
+request local. Visual model output is evidence, not physical authority.
 
-The GUI uses `gpt-5.6-luna` by default. Set `OPENAI_VISION_MODEL` in the local `config/api_keys.env` only when intentionally evaluating a different compatible visual model.
+## Local API trust boundary
 
-The Agent uses `gpt-5.6-terra` as its default intellectual model and
-`gemini-robotics-er-2-preview` as its default Robotics-ER visual model. Set
-`OPENAI_AGENT_MODEL` or `GEMINI_ROBOTICS_MODEL` only when deliberately testing
-a compatible replacement. An image attached to an Agent prompt is sent to the
-selected intellectual model. A live robot-camera image analyzed by a visual
-Skill is sent to its selected visual backend. These are distinct provenance
-paths, but either may disclose image content to a hosted service.
+Manager, Fabric, Agent, Provider, and component UI endpoints are loopback
+development interfaces. The Agent run, approval, attachment, chat, journal,
+Provider lifecycle, calibration, spatial reset, and motion routes do not yet
+provide a field-ready identity and authorization boundary.
 
-Environment placeholders are expanded by the Manager:
+Do not bind them beyond loopback or place them behind a remotely reachable
+proxy until the system provides:
 
-- `${PHYSICAL_AGENT_ROOT}`
-- `${MANAGER_URL}`
-- `${FABRIC_URL}`
-- `${CAMERA_MAPPING_NAME}`
+- authenticated users and services;
+- role-based observation and command authority;
+- TLS or an authenticated gateway;
+- browser origin and CSRF protection;
+- bounded requests and rate limits;
+- request and decision audit identity; and
+- secure failure and credential-rotation procedures.
 
-Canonical Python Provider entries resolve the interpreter under that
-Provider's own `.venv`. The workspace launcher imports `config/system.env`
-before starting the Manager, so canonical Provider entries inherit the
-remaining values. A manually launched Manager process must receive the same
-environment explicitly.
+Loopback reduces network exposure; it does not protect against another local
+process or a compromised browser session.
 
-## Device calibration
+## Retained Agent records
 
-Physical calibration is owned by the camera/IMU Provider and bound to manufacturer, model, and serial. Runtime VIO bias estimates are session state and must not overwrite device calibration.
+Agent sessions, normalized run events, attachments, and visual evidence may
+contain prompts, images, workcell information, and operational history. The
+current robot-local SQLite and in-memory stores are development diagnostics.
+They are not authenticated, encrypted, redacted, tamper-evident, or suitable as
+field-audit evidence.
 
-Do not publish device serial numbers or measured calibration unless intentionally releasing a sanitized dataset.
+Exclude runtime databases and evidence from publication and support bundles
+unless they have been deliberately reviewed. Field deployment requires defined
+retention, deletion, export, redaction, encryption, storage-failure, and legal
+hold policies.
 
-## Large payloads and shared memory
+## Shared memory and large payloads
 
-RGB, depth, IR, aligned depth, and point cloud bytes remain in Windows named shared memory. Fabric observations contain BufferRefs. Shared-memory mapping names and references should remain within the local trust boundary unless an authenticated access layer is added.
+Shared-memory discovery information and BufferRefs are local access metadata.
+They must remain inside the local trust boundary until access control and a
+separate authenticated remote-payload transport exist. A BufferRef is
+disposable and does not grant permanent access to its payload.
 
-## Agent API and retained-record trust boundary
+## Pre-publication review
 
-The Agent service is a loopback development interface. Its streaming-run,
-approval-decision, attachment, chat-session, and run-journal routes do not yet
-authenticate an operator or assign roles. Do not bind port 8000 beyond
-loopback or place it behind a remotely reachable proxy until authenticated
-identity, role-based command authority, TLS, origin/CSRF enforcement, rate
-limits, and audit identity are implemented.
-
-Uploaded attachment bytes are held only in bounded process memory, but the
-Agents SDK may retain the multimodal conversation in
-`test_agent/run/agent_sessions.sqlite3`. The normalized run journal is stored
-by default in `test_agent/run/agent_run_journal.v1.sqlite3`, with
-bounded count, per-run event, and age policies from `config/system.env`.
-Neither database is currently encrypted, authenticated, redacted, or
-tamper-evident. Treat both as development records rather than field-audit
-evidence, and exclude them from publication or support bundles unless they
-have been deliberately reviewed.
-
-## Pre-push review
+Before staging or publishing:
 
 ```powershell
 git status --short
 git diff --cached --check
 git diff --cached --name-only
+.\scripts\test_config_baselines.ps1
 ```
 
-Review for:
-
-- secret or `.env` files
-- calibration and serial paths
-- captures, images, point clouds, or logs
-- native SDK binaries
-- `target`, `build`, `.venv`, `__pycache__`, and package metadata
-- unrelated providers or backup trees
-- raw FoundationPose captures, mask diagnostics, and hosted-model response logs
-
-Run `scripts\test_config_baselines.ps1` to verify clean examples, blank secrets, generation/preservation behavior, ignore rules, Provider-entry consistency, and FoundationPose registry targets without starting any Provider.
+Review for secrets, active `.env` files, serial numbers, measured calibration,
+captures, images, point clouds, logs, databases, SDK binaries, virtual
+environments, caches, build output, backup trees, and license-restricted model
+or CAD assets.

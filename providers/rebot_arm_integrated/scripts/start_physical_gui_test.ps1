@@ -1,5 +1,5 @@
 param(
-    [string]$ProjectRoot = "C:\Projects\testing_physical_ai",
+    [string]$ProjectRoot = "",
     [string]$ManagerUrl = "http://127.0.0.1:7001",
     [string]$FabricUrl = "http://127.0.0.1:7002",
     [string]$BasicUrl = "http://127.0.0.1:8791",
@@ -8,6 +8,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $ProjectRoot) {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+}
 $ProviderRoot = Split-Path -Parent $PSScriptRoot
 function Test-HttpService { param([string]$Url) try { Invoke-RestMethod -Uri $Url -TimeoutSec 1 | Out-Null; return $true } catch { return $false } }
 function Wait-Json { param([string]$Url, [int]$TimeoutSeconds = 20) $Deadline = (Get-Date).AddSeconds($TimeoutSeconds); do { try { return Invoke-RestMethod -Uri $Url -TimeoutSec 2 } catch { Start-Sleep -Milliseconds 500 } } while ((Get-Date) -lt $Deadline); throw "Timed out waiting for $Url" }

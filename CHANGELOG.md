@@ -13,13 +13,14 @@
   plan, including next-iteration handoff constraints and required negative
   tests. Preserve general point clouds at distance and reserve dense,
   overlapping spheres for selected workpieces at very close range.
-- Refresh the public README, canonical documentation index, executive
-  overview, setup guide, and security guide for the Test Agent v0.4.9
-  checkpoint. Document the single regular/developer runtime, canonical
-  streaming API, shared Manager-session chat, visual evidence, run journal,
-  Robotics-ER 2.0 default, current arm authorization path, local trust
-  boundary, and next command-chain objective.
-- Record the next Agent objectives in the roadmap and version history. The
+- Rebuild the public documentation around autonomous operation and framework
+  compatibility. Replace the linear numbered reading sequence with operator,
+  integrator, developer, and maintainer paths; add a Provider/Skill/Agent
+  extension guide; consolidate setup, portal, validation, security, and
+  roadmap guidance; retire completed phase notes and stale snapshots; and add
+  automated local-link, duplicate-heading, stale-path, and workspace-path
+  checks.
+- Record the next Agent objectives in the active roadmap. The
   immediate performance objective is a measured deterministic command chain
   for frequent robot operations that reduces extra model turns without
   bypassing finite Skills, lifecycle policy, controller checks, leases,
@@ -276,7 +277,9 @@
 - Narrowed the OpenAI Agents SDK execution surface to a reviewed decision ID. The model selected the Skill; policy and motion authority remained deterministic and server-side.
 - Completed an operator-observed no-contact toilet-paper standoff trial, a measured 12.67 cm vertical lift from the tested pose, safe-home, gravity-float verification, and full service shutdown.
 - Preserved error behavior in which loss/fault paths prefer gravity float, while non-error control retains the current mode until a later command.
-- Documented remaining Agent SDK roadblocks, component changes, authority lineage, and the unresolved Cartesian-axis/alignment problem under `docs/reference/project_notes`.
+- Documented the then-current Agent SDK roadblocks, component changes,
+  authority lineage, and Cartesian-axis/alignment problem. Those completed
+  task notes are now retired from the active tree and remain in Git history.
 - Kept machine-local `config/api_keys.env`, `config/system.env`, active `config/providers.json`, calibration, captures, logs, and runtime state outside the publication.
 - Synchronized public configuration templates with blank secret fields, fixed
   an ambiguous Orbbec test import, and added monorepo test source setup.
@@ -309,7 +312,10 @@
 - Added root recovery examples for `system.env` and `providers.json`, made the core initializer create a blank `api_keys.env`, synchronized package fallback templates, and made canonical Provider entries inherit Manager/Fabric endpoints plus the camera mapping name from `system.env`.
 - Added a configuration-baseline inventory and automated clean-checkout audit covering generation, preservation, blank secrets, ignore rules, Provider-entry consistency, arm/Skill templates, and FoundationPose runtime references.
 - Added active `providers.json` to the publication blocklist so a force-added machine-local Provider registry cannot be uploaded accidentally.
-- Recorded the corrective validation and remaining hardware boundary in `BUILD_REPORT.md`. The local vegetable-cutting experiment remains non-deployable and is intentionally not published as a production Skill.
+- Recorded the corrective validation and remaining hardware boundary in the
+  release history. The former standalone build report was retired after its
+  current validation rules moved to `docs/06_VALIDATION.md`; the local
+  vegetable-cutting experiment remains non-deployable.
 
 ## Stationary World-Space Arm Finder v0.4.0 (2026-07-24)
 

@@ -1,40 +1,102 @@
-# reBot Arm DM Basic Controller 0.1.20
+# reBot Arm DM Basic Resource Provider
 
-Basic is the hardware-facing reBot/Damiao provider. It owns MotorBridge transport, seven-motor feedback, motor-mode validation, fenced operational leases, command/lease timeouts, gravity-float, calibration/friction support, and safe-home termination.
+The Basic Provider is the sole hardware-facing owner of the reBot/Damiao motor
+transport. It publishes seven-motor feedback and local transforms, enforces
+fenced operational leases and command deadlines, validates motor modes and
+limits, maintains gravity support, and owns the authoritative safe-home
+termination path.
 
-Basic owns a provider-local Python environment at `providers/rebot_arm_dm/.venv`. Create it with `scripts/setup.ps1 -WithMotorBridge`; it is not shared with Integrated and is not committed to Git.
+It deliberately does not own Cartesian planning, desktop geometry, semantic
+obstacle interpretation, or task policy. Those responsibilities belong to
+higher-level Providers and finite Skills. They submit commands through the
+Basic contract; they must never open the motor transport directly.
 
-The setup script creates missing active model, calibration, and calibration-collision files from `config_templates`. Files under the active `config` directory are machine-local and are not committed.
+`manifest.json` is authoritative for Provider identity, version, capabilities,
+and readiness metadata. The command schema is authoritative for accepted API
+mode strings. Documentation explains their meaning and safety boundary.
 
-0.1.20 preserves the 0.1.19 architecture and adds two narrow capabilities needed by Integrated 0.7.0:
+## Command terminology
 
-- fenced payload mass and tool-frame COM configuration under the current operational lease;
-- payload gravity compensation added to MIT, gravity-float, and safe-home support.
+Three vocabularies appear in the stack. Use the canonical Basic API term in
+schemas, requests, and implementation discussions; use a shorter alias only
+when discussing the named device or Integrated profile.
 
-Safe-home now revokes the active operational lease and clears pending commands
-before sending its first supported MIT frame. New operational commands are
-rejected while the controller is in `SAFE_HOME`, preventing late Integrated
-gripper keepalives or trajectory commands from competing with homing.
-Operational lease acquisition, renewal, and payload updates are also blocked
-for the full safe-home operation. An explicit gravity-float safety request
-cancels the safe-home writer before changing state, so the two control paths
-cannot transmit concurrently.
+| Canonical Basic API mode | Damiao/MotorBridge name | Integrated profile or UI name | Meaning |
+|---|---|---|---|
+| `IMPEDANCE` | MIT | `PRESS_MIT` | Cyclic position, velocity, stiffness, damping, and feed-forward torque setpoint |
+| `POSITION_VELOCITY_LIMITED` | `POS_VEL` | `TRANSIT_SPEED` | Latched position endpoint with a velocity limit |
+| `VELOCITY` | `VEL` | No reviewed Integrated profile | Continuous velocity command; excluded from the calibration GUI |
+| `POSITION_EFFORT_LIMITED` | `FORCE_POS` | `CONTACT_WORK` / `POS_TOR` | Latched position endpoint with velocity and effort-ratio limits |
 
-The supplied Manager registration sets `force_kill_on_stop_timeout` to `false`.
-With a Manager that supports this field, an incomplete graceful stop is
-reported instead of escalating automatically to process-tree termination.
-An explicitly requested force kill remains available for emergency recovery.
+`POS_TOR` is not an additional Basic command mode: it is Integrated terminology
+that maps to Basic `POSITION_EFFORT_LIMITED`, whose MotorBridge mode name is
+`FORCE_POS`. `POS_SPEED` names a speed-cap policy in the current Integrated
+controller; it is not a motor mode and must not be substituted for `POS_VEL`
+in Basic requests.
 
-Combined gravity feed-forward is clipped to each motor's configured TMAX. Existing MIT tracking-effort limits, Kd limits, joint/rate limits, minimum load-bearing Kp, lease fencing, and timeout-to-float behavior remain active.
+See [Motor command semantics](docs/MOTOR_COMMAND_OVERWRITE_SEMANTICS.md) for
+endpoint replacement, keepalive, and mode-transition behavior.
 
-For gripper FORCE_POS commands, the requested `velocity_limit_rad_s` is a
-physical ceiling rather than a raw hardware-native value. Basic applies the
-configured native conversion scale and a measured-feedback hysteretic
-brake/hold at that ceiling. Runtime telemetry exposes requested/native limits,
-measured and peak speed, hold position, and trip history. This guard has
-software coverage but still requires an authorized physical calibration before
-contact use.
+## Environment and configuration
 
-The arm-joint `provider_test_caps.max_kp` values now permit up to the documented MIT protocol ceiling of 500. This does not mean 500 is physically validated on this arm; it only removes the former validation conflict so Integrated can request stronger stiffness and show the effective clamp explicitly. Physical tuning should increase gradually from the known 1.0x profile.
+Basic owns a Provider-local Python environment at
+`providers/rebot_arm_dm/.venv`. Create it with
+`scripts/setup.ps1 -WithMotorBridge`; it is not shared with Integrated and is
+not committed to Git.
 
-Basic exposes motor primitives and safety functions rather than claiming high-level path maturity. The Integrated provider publishes the reviewed upstream motion profiles: usable MIT one-shot/continuous, limited unloaded POS_VEL one-shot, and no advertised capability for the experimental continuous POS_VEL or arm POS_TOR one-shot modes.
+Setup seeds missing machine-local model, calibration, and calibration-collision
+files from `config_templates`. Active files under `config` are installation
+state and must not be committed or overwritten during an update.
+
+Follow [Windows setup and bring-up](docs/WINDOWS_INSTALL_COMPILE_RUN.md) for
+installation, stopped validation, simulation, read-only hardware connection,
+and normal shutdown. Read [Safety behavior](docs/SAFETY.md) before opening a
+real motor connection.
+
+## Responsibility summary
+
+Basic owns:
+
+- exclusive motor-bus access and hardware identity checks;
+- measured feedback and local arm transforms;
+- command-schema, joint, rate, stiffness, damping, effort, and deadline checks;
+- fenced lease acquisition, renewal, expiry, and revocation;
+- calibrated arm and declared-payload gravity feed-forward;
+- gravity-float, fault response, and safe-home sequencing; and
+- bounded calibration primitives and machine-local calibration output.
+
+Basic exposes motor primitives and hard safety enforcement. The Integrated
+Provider owns reviewed Cartesian profiles, path previews, semantic-scene
+checks, and higher-level physical release policy.
+
+## Documentation
+
+Human and installation-agent entry points:
+
+- [Windows setup and bring-up](docs/WINDOWS_INSTALL_COMPILE_RUN.md) — install,
+  simulation, first read-only connection, operation, and shutdown.
+- [Safety behavior](docs/SAFETY.md) — load-bearing stiffness, gravity support,
+  calibration motion, failures, and safe-home invariants.
+- [Calibration](docs/CALIBRATION.md) — attended friction-calibration workflow
+  and the fitted model.
+- [Validation](VALIDATION.md) — stopped coverage and physical checks that
+  remain outstanding.
+
+Coder and coding-agent references:
+
+- [Architecture](docs/ARCHITECTURE.md) — ownership boundary, states, timing,
+  and physical command modes.
+- [Motor command semantics](docs/MOTOR_COMMAND_OVERWRITE_SEMANTICS.md) —
+  canonical/alias mapping, latest-envelope behavior, endpoint keepalive, and
+  transitions.
+- [Upstream references](docs/OFFICIAL_REFERENCES.md) — source revisions,
+  motor specifications, unresolved upstream conflicts, and interpretation
+  limits.
+- [`manifest.json`](manifest.json) and
+  [`robot_arm_command.schema.json`](schemas/robot_arm_command.schema.json) —
+  authoritative machine-readable interface.
+
+History and compliance:
+
+- [Changelog](CHANGELOG.md) — release history; not current operating guidance.
+- [Notice](NOTICE.md) — upstream and redistribution boundary.

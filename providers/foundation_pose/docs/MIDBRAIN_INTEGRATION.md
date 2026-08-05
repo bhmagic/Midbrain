@@ -1,111 +1,94 @@
-# Midbrain integration
+# Midbrain Integration
+
+FoundationPose has two explicit Midbrain routes:
+
+1. `foundation_pose_object_localization` is a finite Skill used inside a
+   bounded parent operation. It owns estimator sessions and releases GPU
+   resources before returning.
+2. The FoundationPose Provider preserves the former session/tracking interface
+   for compatibility diagnostics and guarded route comparison.
+
+The Provider is not the ordinary generic alignment path, is not an automatic
+fallback, and should not remain `HOT` without a task-specific reason.
+
+Provider ID: `perception.object_pose.foundation_pose`
+
+The Manager capability catalog and `manifest.json` are authoritative for the
+current callable surface. The compatibility request actions are:
+
+- `estimate` for one initialized result;
+- `track` to initialize and retain a session;
+- `relocalize` after a tracked session loses the target;
+- `stop` to end an owned session;
+- `release_resources` only after every session has stopped;
+- `status`, `list_models`, and `reload_models` for diagnostics and registry
+  maintenance.
+
+Initialization evidence may be a reviewed local `mask_path`, a validated
+`bounding_box`, or a current `perception.object.mask` observation. Bounding-box
+coordinates and accepted request fields belong to the checked-in request
+schema and implementation; callers should validate against those sources
+rather than copying an example payload from a changelog.
 
 ## Responsibility boundary
 
-FoundationPose is a long-lived computational **Provider**. The Manager owns its
-process lifecycle and residency. The Provider consumes timestamped sensor state
-from the Fabric and publishes measurement observations back to the Fabric.
+FoundationPose estimates the camera-relative pose of a known rigid model from
+reviewed RGB-D initialization evidence. It does not define world space, grant
+motion authority, decide that a transform is safe to activate, or replace the
+parent alignment workflow.
 
-Task-specific interpretation belongs in Skills. In particular:
+The parent finite Skill owns:
 
-- Base/gripper orientation ambiguity is not silently corrected by the Provider.
-- Visual measurements do not overwrite robot kinematics.
-- Camera-to-robot calibration is not persisted by this Provider.
-- Fusion of object pose, joint state, VIO/world state, or task constraints is
-  external.
+- motion inhibit and stationary-workcell checks;
+- synchronized RGB-D and VIO-epoch evidence;
+- target identity, reviewed regions, and masks;
+- sampling, outlier rejection, symmetry handling, and uncertainty;
+- conversion into a reviewed world/arm alignment candidate; and
+- verification that every owned estimator/session resource was released.
+
+Manager owns final activation, revocation, and supersession of a motion-usable
+workcell transform.
+
+## Observations and frames
+
+FoundationPose consumes camera observations only when they explicitly declare
+the native optical convention. Pose outputs are camera-relative measurements
+with source capture time, Provider/boot identity, model and session identity,
+calibration revision, quality, and validity.
+
+Native optical point components use `camera_system_x`, `camera_system_y`, and
+`camera_system_z`. A camera-relative model pose must not be published or
+interpreted as world-frame authority.
+
+The default Base reporter's semantic frame `robot/arm_root` and the Integrated
+controller frame `rebot_arm_base` are not aliases. The former is a raw visual
+model frame; a reviewed alignment candidate and Manager activation are
+required before any relationship can become motion-usable. Likewise, the
+default Gripper reporter is a centered rigid mesh frame, not a TCP, controlled
+frame, or task action point.
+
+## Large payloads
+
+RGB and depth bytes remain behind validated BufferRefs. A consumer must reject
+a recycled generation, obsolete camera boot, mismatched calibration, invalid
+alignment, or evidence from a different VIO epoch. Copying a payload for a
+bounded estimator attempt does not extend the authority of its metadata.
 
 ## Lifecycle
 
-Registered Provider:
+The finite route loads and releases estimator resources inside one parent
+operation. The compatibility Provider follows Manager `COLD`, `WARM`, and
+`HOT` lifecycle and must reject resource release while foreign sessions remain.
+After a compatibility run, close every owned session and request resource
+release or transition the Provider to `WARM`.
 
-`perception.object_pose.foundation_pose`
+The normal Agent may invoke FoundationPose only for the exact documented
+operator request in [Setup and Operation](../../../docs/03_SETUP_AND_OPERATION.md).
+Generic alignment language must not silently start it.
 
-Default registration uses `auto_start: false`.
+## Related documentation
 
-Normal flow:
-
-1. Manager starts the Provider.
-2. Manager requests HOT residency.
-3. A Skill/Agent sends `estimate` or `track` through the Manager.
-4. The Provider reads the latest complete RGB-D bundle from Fabric.
-5. The Provider publishes pose, transform, and status observations.
-6. Manager stops or warms the Provider according to workload policy.
-
-## Bounding-box initialization contract
-
-The Provider advertises `perception.object_pose.bounding_box_init`. A Skill or
-Agent may initialize FoundationPose by adding a rectangle to the normal Manager
-request payload:
-
-```json
-{
-  "action": "track",
-  "payload": {
-    "model_id": "robot_gripper_slider_support",
-    "bounding_box": {
-      "box_2d": [210, 480, 520, 720],
-      "coordinate_space": "normalized_0_1000"
-    }
-  }
-}
-```
-
-The rectangle order is `[ymin, xmin, ymax, xmax]`. The Provider validates and
-rasterizes it into the same binary-mask type used by FoundationPose
-registration. Initialization source precedence is local `mask_path`, request
-bounding box, then the configured Fabric mask stream. Once initialization
-succeeds, the same TRACK session uses `track_one()` and no longer consults the
-rectangle unless `relocalize` supplies a new initializer.
-
-## Fabric timestamp policy
-
-The Provider extracts the source RGB BufferRef timestamp and uses it as
-`observed_at_us` for pose and transform observations.
-
-Inference completion time is retained as `latency_ms`; it is not substituted
-for the acquisition timestamp.
-
-## Transform authority
-
-Published transform stream:
-
-`transform.foundation_pose.object`
-
-Schema:
-
-`physical_agent.transform`
-
-The edge is a visual measurement:
-
-`femto_bolt_color_optical_frame -> observed_object/...`
-
-Each dynamic edge contains:
-
-- `authority`
-- `session_epoch`
-- `calibration_revision`
-- covariance metadata
-- `continuity: MEASUREMENT`
-- source model/frame/mode metadata
-
-Default reBot child frames are stable across sessions while `session_epoch`
-separates tracking epochs:
-
-- `observed_object/rebot_b601_dm/base`
-- `observed_object/rebot_b601_dm/gripper_slider_support`
-
-## Concurrency
-
-The Provider can maintain multiple object sessions, but the NVLabs backend
-serializes GPU inference behind one runtime lock. Base and Gripper sessions are
-therefore time-sliced on the newest available RGB-D frame rather than executing
-FoundationPose CUDA work concurrently.
-
-This prevents unbounded GPU contention but means achieved update rate must be
-measured on the deployed GPU.
-
-## Shared memory
-
-Large RGB-D payloads are not copied through Fabric JSON. The Provider reads
-generation-checked camera BufferRefs through the existing Orbbec named
-shared-memory access package.
+- [Compatibility Provider README](../README.md)
+- [Finite FoundationPose Skill](../../../skills/foundation_pose_object_localization/README.md)
+- [Stationary Alignment](../../../skills/stationary_world_arm_alignment/README.md)
+- [Active movement-alignment plan](../../../docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)

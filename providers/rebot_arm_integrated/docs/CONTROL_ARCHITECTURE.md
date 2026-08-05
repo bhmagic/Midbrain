@@ -2,6 +2,22 @@
 
 This document is the working design for the prototype. It separates planning from physical release so that path, force, and input behavior can be tested without treating a successful software test as permission to move the arm.
 
+## Terminology
+
+- `PRESS_MIT`, `TRANSIT_SPEED`, and `CONTACT_WORK` are Integrated execution
+  profiles, not Basic command modes.
+- Their Basic modes are `IMPEDANCE`, `POSITION_VELOCITY_LIMITED`, and
+  `POSITION_EFFORT_LIMITED` respectively.
+- MIT, `POS_VEL`, and `FORCE_POS` are Damiao/MotorBridge names. Integrated
+  commonly calls the effort-limited backend `POS_TOR`.
+- `POS_SPEED` describes speed-cap selection for transit; it is not a motor
+  mode.
+- The controlled frame is the IK target frame. A task action point may be
+  represented by that frame, but “action point” is not an API synonym for it.
+
+See the [Basic terminology mapping](../../rebot_arm_dm/README.md#command-terminology)
+for the hardware-facing source of truth.
+
 ## Non-negotiable safety invariants
 
 - A Fabric observation may stage a Cartesian target, tool transform, payload, execution mode, or semantic scene. It never grants physical motion authority.
@@ -44,13 +60,27 @@ motor commands.
 
 `GET /v1/capabilities` exposes the callable provider operation map. The provider heartbeat places only advertised capabilities in `details.capability_readiness`, which is the source consumed by the Manager's `GET /v1/capabilities`. The two experimental profiles remain accessible to the local hardware-test GUI but have no Manager-discoverable motion capability.
 
-POS_VEL and POS_TOR must not receive a 100 Hz series of moving endpoints. Basic uses latest-envelope-wins ingress, and the motor protocol treats these modes as endpoint commands. Replacing endpoints before the motor settles can repeatedly restart its internal target behavior and can produce bounce or reversal. MIT is different because each frame is intentionally a cyclic spring setpoint.
+Basic's `POSITION_VELOCITY_LIMITED` and `POSITION_EFFORT_LIMITED` endpoint
+modes must not receive a high-rate series of moving endpoints. Basic uses
+latest-envelope-wins ingress, and the motor protocol treats these as endpoint
+commands. Replacing endpoints before the motor settles can repeatedly restart
+its target behavior and produce bounce or reversal. MIT is different because
+each frame is intentionally a cyclic spring setpoint.
 
 TRANSIT_SPEED reads Basic's POS_SPEED caps (currently 5 rad/s for J1-J3 and 10 rad/s for J4-J6) and uses them consistently for duration and synchronized endpoint limits. Requested Cartesian speed is converted into per-joint demand; above 10 rad/s requires explicit authentication and at or above 20 rad/s is rejected. A rejected continuous replan does not revoke the last valid endpoint: Integrated retains and refreshes the last Basic-accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`. This prevents an input-validation failure from causing an unrelated POS_VEL-to-float motor-mode transition.
 
 Motor mode changes are staged one joint per Basic control tick. Before each potentially blocking register-10 confirmation, Basic refreshes the captured-position or gravity-supported hold for every other joint. Missing register-10 confirmation receives the same bounded serial retry as Windows transport timeouts. The POS_VEL endpoint remains withheld until all requested modes are confirmed. TRANSIT_SPEED ONE_SHOT requests float only after stable measured arrival. Gravity-float is not considered confirmed while Basic reports any pending motor-mode transition, and Integrated allows up to eight seconds for the staged transition to finish.
 
-The gripper input begins with a joint-7-only request at a 10 Hz provider keepalive while Basic continues its 50 Hz MIT support loop. Basic also limits unchanged motor-side POS_VEL/POS_TOR endpoint frames to 10 Hz. RB selects the configured open endpoint at approximately -4.887 rad and RT selects close at approximately -0.349 rad. The GUI can select gripper MIT or gripper POS_TOR. Releasing the input latches that endpoint and keeps refreshing it. Each later arm command envelope includes joint 7 with the same latched endpoint, so Basic's latest-envelope rule cannot overwrite the gripper hold. LT, Float, or Safe terminate releases it. Starting a different gripper action is blocked while an arm trajectory is active.
+The gripper input begins with a joint-7-only request at a 10 Hz Provider
+keepalive while Basic continues its 50 Hz MIT support loop. Basic also limits
+unchanged motor-side `POS_VEL`/`FORCE_POS` endpoint frames to 10 Hz. RB selects
+the configured open endpoint at approximately -4.887 rad and RT selects close
+at approximately -0.349 rad. The GUI can select gripper MIT or `POS_TOR`, which
+maps to Basic `POSITION_EFFORT_LIMITED`. Releasing the input latches that
+endpoint and keeps refreshing it. Each later arm command envelope includes
+joint 7 with the same latched endpoint, so Basic's latest-envelope rule cannot
+overwrite the gripper hold. LT, Float, or Safe terminate releases it. Starting
+a different gripper action is blocked while an arm trajectory is active.
 
 ## Planning and semantic objects
 
@@ -113,10 +143,10 @@ avoids a float/reacquire/mode-transition discontinuity between iterative
 corrections while preserving fresh measured-start, authorization, and scene
 revalidation for every chained path.
 
-`WAIT_FOR_NEXT` currently accepts the successor after measured arrival. A
-separate in-flight successor queue—where the next command arrives before the
-current command finishes—is still TODO and must bind the successor to the
-current plan's terminal state before permitting a seamless transition.
+`WAIT_FOR_NEXT` accepts a successor only after measured arrival. In-flight
+successor queuing is outside the implemented interface; its design and
+promotion gates belong in the
+[active roadmap](../../../docs/09_LIMITATIONS_AND_ROADMAP.md#controller-owned-multistep-routing).
 
 The physical DM serial loop and Integrated MIT stream default to 50 Hz for the next operator test. Reducing only Integrated would not reduce the actual motor traffic because Basic retransmits the current seven-joint command on every internal tick. Basic therefore exposes completed/attempted command frames, feedback requests and polls, mode switches, I/O error count, and measured rates.
 
@@ -128,29 +158,25 @@ For joint `i`, the expected no-contact torque at the current pose is `tau_expect
 
 This subtraction compensates only for the change represented by Basic's calibrated arm-plus-payload gravity model. It does not make the result a Cartesian force measurement and does not remove friction, cable forces, sensor bias, acceleration torque, model error, or tool dynamics. Directional end-effector force reasoning therefore also needs the Jacobian and a reviewed uncertainty margin.
 
-POS_TOR ratios are computed from expected absolute torque plus the operator-entered external torque budget and margin, divided by configured motor `TMAX`. The budget can be a direct six-joint vector, a controlled-frame six-axis wrench box, or isotropic force and torque magnitude balls. Wrench boxes map through `abs(J_controlled^T) * wrench_limits`; isotropic limits use the corresponding Jacobian row 2-norms multiplied by the force and torque magnitudes. A required ratio above the reviewed physical-test cap saturates at that cap rather than rejecting the task.
+Effort-limit ratios are computed from expected absolute torque plus the
+operator-entered external torque budget and margin, divided by configured
+motor `TMAX`. The budget can be a direct six-joint vector, a controlled-frame
+six-axis wrench box, or isotropic force and torque magnitude balls. Wrench
+boxes map through `abs(J_controlled^T) * wrench_limits`; isotropic limits use
+the corresponding Jacobian row 2-norms multiplied by the force and torque
+magnitudes. A required ratio above the reviewed physical-test cap saturates at
+that cap rather than rejecting the task.
 
 Integrated sends zero extra MIT feed-forward because Basic owns calibrated arm-plus-payload gravity torque. Height loss during rotation can therefore indicate an incorrect/missing payload model, gravity-model error, torque clamping, MIT tracking saturation, stale feedback, or serial loss. The state now reports Basic gravity torque, payload torque, clamp flags, hardware I/O counters, and controlled-frame height error so the next physical run can distinguish these cases.
 
-If a CONTACT_WORK residual exceeds an operator-entered joint budget, the affected POS_TOR joint allowance rises to its reviewed physical ceiling and the same endpoint remains active until the configured one-shot duration expires. The event and joints are exposed as saturation telemetry. Timed completion then requests gravity-float; explicit Float/LT and authoritative Safe Terminate remain available earlier.
+If a CONTACT_WORK residual exceeds an operator-entered joint budget, the
+affected `POSITION_EFFORT_LIMITED` allowance rises to its reviewed physical
+ceiling and the same endpoint remains active until the configured one-shot
+duration expires. The event and joints are exposed as saturation telemetry.
+Timed completion then requests gravity float; explicit Float/LT and
+authoritative safe termination remain available earlier.
 
-## Xbox mapping
-
-- Sticks and D-pad edit the staged Cartesian target only.
-- `Y` cycles `PRESS_MIT`, `TRANSIT_SPEED`, and `CONTACT_WORK` while settings are editable.
-- `LB` is the current motion deadman/commit input.
-- `RB` holds the gripper open; `RT` holds it closed using the backend selected in the GUI.
-- `LT` requests immediate gravity-float and disengages.
-- Clicking the left stick captures the steady torque baseline while verified in gravity-float.
-- Holding `View + Menu` for two seconds launches the authoritative safe-home termination path.
-
-The GUI provides the same controls and exposes the selected gripper backend, measured/target position, torque, and active action. Xbox convenience does not bypass engagement, lease fencing, or Midbrain inhibit.
-
-## Next physical release sequence
-
-1. Continue characterization of POS_VEL ONE_SHOT across the reachable workspace without payload or high external load.
-2. Compare Basic hardware I/O telemetry and USB fault rate at 50 Hz against the earlier 60 Hz and 100 Hz observations.
-3. Keep POS_VEL HOLD_LB in experimental GUI testing; do not publish it as an upstream capability until stable.
-4. Keep CONTACT_WORK POS_TOR one-shot in experimental GUI testing; do not publish it as an upstream capability until baseline and force behavior are stable.
-5. Physically characterize torque signs, bias, friction, gravity-model error, and transport-loss behavior before using CONTACT_WORK for precision tasks.
-6. Physically qualify the HOT scene compiler and then add general waypoint/search planning without changing the authority rules above.
+Operator controls and the bounded test sequence live in
+[Physical testing](PHYSICAL_TEST.md). Remaining qualification belongs in
+[Validation](../VALIDATION.md), so release work is not copied into this
+architecture reference.

@@ -1,59 +1,70 @@
 # Physical AI Contracts
 
-Version: 0.4 working draft.
+These documents define Midbrain's framework-neutral interoperability,
+lifecycle, spatial, evidence, and physical-authority boundaries. They are
+working contracts at different maturity levels; the version in one contract
+is not the repository release version.
 
-This contract set defines Resource Providers, World State Fabric transport,
-safety/authority policy, native timestamped transforms, finite Skills, device
-calibration, Local VIO, startup space cognition, motion-inhibit coordination,
-advisory agent Skill discovery, and provider data-route advertisement.
+Machine-readable schemas under `contracts/schemas` take precedence over an
+example payload in prose. A component should declare the exact contract and
+schema versions it supports.
 
-Document 11 defines the non-enforcing OpenAI Agents SDK discovery boundary and
-its separation from deterministic Manager provider binding.
+## Core Provider and Fabric contracts
 
-Document 12 defines Fabric-visible direct data-route discovery without putting
-large or latency-sensitive payloads through the Fabric.
+| Contract | Scope | Maturity stated by document |
+|---|---|---|
+| [Terminology and Scope](00_terminology_and_scope.md) | Canonical names and boundary rules | v0.2 working draft |
+| [Resource Provider Contract](01_resource_provider_contract.md) | Manifest, lifecycle, readiness, requests, observations, failures, fallback, and authority | v0.3.9 working draft |
+| [Provider Implementation Guide](02_resource_provider_implementation_guide.md) | Recommended implementation structure | v0.3.9 guidance |
+| [Fabric Transport Specification](03_world_state_fabric_transport_specification.md) | Observation envelopes, BufferRefs, pools, synchronization, and backpressure | v0.2 working draft |
+| [Provider Conformance Tests](04_resource_provider_conformance_test_suite.md) | Core, transport, physical, GUI, and Skill integration tests | v0.3.9 working draft |
+| [Safety and Lease Policy](05_safety_and_lease_policy.md) | Control authority, fencing, expiry, relinquish, and emergency-stop separation | v0.3.10 working draft |
 
-Document 13 defines the Manager-hosted Midbrain portal,
-implementation-neutral component observation pages, finite-Skill liveness
-semantics, and the guarded transition to development surfaces. Its descriptor schema is
-`schemas/component_ui.v1.schema.json`.
+## Spatial and Skill contracts
 
-Documents 00-05 retain the v0.2 foundations and incorporate the v0.3.11
-safety-critical process-escalation and layered-authority-lineage rules.
-Documents 06-10 add the interfaces required for camera/IMU pose tracking and
-world-frame spatial visualization.
+| Contract | Scope | Maturity stated by document |
+|---|---|---|
+| [Timestamped Transform Graph](06_timestamped_transform_graph.md) | Transform observations, composition, authority, and conflicts | v0.3 working draft |
+| [Finite Skill Contract](07_skill_contract.md) | Bounded lifecycle, temporal policy, discovery, cleanup, and motion coordination | v0.3 working draft |
+| [Device Calibration](08_device_calibration_contract.md) | Physical identity, persistence, ownership, and runtime bias separation | v0.3 working draft |
+| [Local VIO and Space Cognition](09_local_vio_and_space_cognition.md) | Inertial-first Provider and initialization Skill | v0.4 working draft |
+| [Motion Inhibit for Initialization](10_motion_inhibit_initialization_policy.md) | Stationary initialization coordination | v0.3 working draft |
+| [Agent Skill Discovery](11_agent_skill_discovery.md) | Concise discovery and adapter boundary | v0.1 advisory draft |
+| [Data-Route Advertisement](12_data_route_advertisement.md) | Direct payload-route discovery with Fabric-visible semantics | v0.1 working draft |
+| [Component Observation UI](13_component_observation_ui.md) | Portal, observation, development transition, and UI descriptors | v0.1 advisory draft |
+| [Spatial Frame Convention](14_spatial_frame_convention_v2.md) | +X forward, +Y left, +Z up semantics and native optical frames | v0.4 working draft |
 
-Document 14 defines the canonical `+X` forward, `+Y` left, `+Z` up spatial
-language, keeps raw camera optical axes explicit, and requires deterministic
-semantic-direction resolution before motion planning.
+## Agent, evidence, and history contracts
 
-Document 15 defines the implementation-neutral Agent event envelope, the
-initial OpenAI Agents SDK adapter projection, replayable browser SSE transport,
-and the separation between development approval interactions and autonomous
-host authorization policy.
+| Contract | Scope | Maturity stated by document |
+|---|---|---|
+| [Agent Event Stream](15_agent_event_stream.md) | SDK-neutral run, message, tool, approval, and replay events | v0.1 compatibility draft |
+| [Visual Evidence and Annotations](16_visual_evidence_and_annotations.md) | Exact image channels, normalized annotations, and UI projection | v0.1 compatibility draft |
+| [Agent Image Attachments](17_agent_image_attachments.md) | User-image upload and separation from robot evidence | v0.1 development contract |
+| [Agent Chat History](18_agent_chat_history.md) | Manager-boot conversation projection and safe execution summary | v0.2 robot-local draft |
+| [Agent Run Journal](19_agent_run_journal.md) | Durable normalized diagnostic events and read-only viewer | v0.2 local-diagnostics draft |
 
-Document 16 defines exact visual-evidence references, normalized structured
-annotations, channel applicability, browser-controlled overlays, and
-client-side flattened export without making a burned raster overlay the
-authoritative artifact.
+## How to use the set
 
-Document 17 defines the SDK-neutral user-image upload/reference boundary and
-keeps operator attachments separate from authoritative robot-camera evidence.
+- A new Provider starts with contracts 00–05 and adds the applicable spatial,
+  calibration, route, or UI documents.
+- A new Skill starts with contracts 07, 11, and the contracts for every
+  observation or physical capability it consumes.
+- A new Agent adapter starts with contracts 11 and 15–19.
+- Any component that emits or consumes spatial values follows contracts 06 and
+  14.
+- Any physical controller follows contract 05 in addition to its hardware
+  safety rules.
 
-Document 18 defines the bounded browser-session chat projection, per-turn
-expandable execution summaries, process-epoch continuity boundary, and the
-exclusion of private reasoning and raw tool data.
+See [Compatibility and Extension](../docs/05_COMPATIBILITY_AND_EXTENSION.md)
+for the implementation workflow.
 
-Document 19 defines the bounded robot-local SQLite journal for SDK-neutral
-Agent events, its read-only two-level developer viewer, interrupted-run
-recovery semantics, and the boundary between durable development diagnostics
-and a future authenticated field-audit store.
+## Open contract work
 
-The finite-Skill contract also defines the depth-backed general effector-front
-landmark boundary and separates it from task-specific action geometry.
+[Open Contract Items](OPEN_ITEMS.md) tracks unresolved normative questions.
+Project delivery priorities remain in the
+[Current Limitations and Roadmap](../docs/09_LIMITATIONS_AND_ROADMAP.md).
 
-The Fabric-hosted arm scene policy and tracked sphere payloads are regulated by
-`schemas/arm_scene_segmentation_policy.v1.schema.json` and
-`schemas/arm_semantic_assertions.v1.schema.json`. Only described upstream
-objects may become `KEEP_OUT`; unclaimed visible geometry defaults to
-non-blocking `PUSHABLE` data.
+When a contract changes incompatibly, update its major version and the
+corresponding schema identifier. Changelog entries and implementation notes do
+not silently redefine a contract.

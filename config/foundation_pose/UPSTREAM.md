@@ -1,5 +1,10 @@
 # reBot B601-DM CAD provenance
 
+This file is one of two intentional restore-profile mirrors at
+`config/foundation_pose` and
+`providers/foundation_pose/defaults/rebot_b601_dm`. Keep the copies
+byte-identical; configuration validation enforces the mirror.
+
 The default robot geometry in this directory is derived from the Seeed Studio
 `reBot-DevArm` hardware repository.
 

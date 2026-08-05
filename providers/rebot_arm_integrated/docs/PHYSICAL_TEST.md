@@ -1,14 +1,19 @@
-# Physical MIT bring-up test — 0.8.1
+# Attended physical test procedure
 
-## Capability maturity
+Read [Integrated safety](SAFETY.md) and
+[Basic safety](../../rebot_arm_dm/docs/SAFETY.md) first. This is an attended
+hardware-characterization procedure, not an autonomous Agent workflow and not
+a substitute for deployment qualification.
 
-- PRESS_MIT ONE_SHOT: **USABLE**
-- PRESS_MIT HOLD_LB: **USABLE**
-- TRANSIT_SPEED/POS_VEL ONE_SHOT: **USABLE** for IK-valid free-space requests up to 1.2 m; actual arm reach and joint/scene limits apply
-- TRANSIT_SPEED/POS_VEL HOLD_LB: **EXPERIMENTAL / UNSTABLE**, GUI-only and not Manager-discoverable
-- CONTACT_WORK arm POS_TOR ONE_SHOT: **EXPERIMENTAL / UNSTABLE**, GUI-only and not Manager-discoverable
+Confirm current profile maturity in `manifest.json` and the live
+`GET /v1/capabilities` response. The local GUI can expose experimental modes
+that are deliberately absent from Agent discovery.
 
-Prerequisites: Midbrain Manager and Fabric healthy; Basic hardware provider healthy and in `SAFE_HOLD_GRAVITY_FLOAT`; Integrated healthy with its fenced Basic lease; no global motion inhibit.
+## Prerequisites
+
+Require Manager and Fabric healthy, Basic healthy and in
+`SAFE_HOLD_GRAVITY_FLOAT`, Integrated healthy with its fenced Basic lease, and
+no global motion inhibit.
 
 Start with payload mass `0` unless the held tool mass and tool-frame COM are known.
 
@@ -40,7 +45,13 @@ Use the dedicated panel to select `MIT` or `POS_TOR`. The physical mapping is RB
 
 Select `CONTACT_WORK`, `POSE_6DOF`, `ONE_SHOT`, and a target within 20 cm of the current pose. Choose JOINT_6, WRENCH_6, or ISOTROPIC_2 in the contact budget panel. The JOINT_6 default is 2, 2, 2, 1, 1, 1 Nm. ISOTROPIC_2 treats the entered force and torque as Euclidean magnitude limits valid in any controlled-frame direction, then maps their worst-case joint effects. With the arm in the posture to be used, click `Capture float torque baseline (manual)` and wait for `CAPTURED`. That command leaves physical control disengaged. Separately click Engage, stage the target, and click LB. Integrated uses the stored baseline and sends the POS_TOR endpoint without performing another real-time baseline capture. It applies the task for the configured one-shot duration and returns to float when time expires; reaching the IK goal is not required.
 
-The GUI displays IK residuals as telemetry along with the selected budget mode, mapped joint budgets, calculated torque-limit ratios, live baseline-relative residual torque, and saturated joints. Neither position nor orientation residual rejects the physical action. A live torque residual beyond an effective joint budget raises affected joints to the physical ceiling while retaining the POS_TOR endpoint until normal timed completion.
+The GUI displays IK residuals with the selected budget mode, mapped joint
+budgets, calculated effort-limit ratios, live baseline-relative residual
+torque, and saturated joints. Position and orientation residuals outside the
+configured IK tolerances reject the action before execution. A live torque
+residual beyond an effective joint budget can raise affected joints to the
+reviewed physical ceiling while retaining the effort-limited endpoint until
+normal timed completion.
 
 ## 6-DoF after 3-DoF
 
@@ -48,4 +59,24 @@ Select `POSE_6DOF` and make small orientation changes. Watch position and orient
 
 GUI Safe Terminate is not considered physically verified by software tests. The authoritative shutdown command is:
 
-`powershell -ExecutionPolicy Bypass -File "C:\Projects\testing_physical_ai_testing_pose\providers\rebot_arm_integrated\scripts\stop_physical_gui_test.ps1" -ProjectRoot "C:\Projects\testing_physical_ai_testing_pose" -StopCore`
+From the repository root, run
+`.\providers\rebot_arm_integrated\scripts\stop_physical_gui_test.ps1 -ProjectRoot (Resolve-Path .) -StopCore`.
+
+## Gamepad mapping
+
+- Left stick left/right edits base X; left stick up/down edits base Y.
+- D-pad up/down edits base Z.
+- In `POSE_6DOF`, right stick left/right edits base-Z yaw, right stick
+  up/down edits base-Y pitch, and B/X edits positive/negative base-X roll.
+- LB commits once in `ONE_SHOT`; in `HOLD_LB`, hold LB for eligible target
+  revisions and release it to request gravity float.
+- RB commands gripper open and RT commands gripper close with the selected
+  backend; releasing either input latches the last endpoint.
+- LT requests immediate gravity float and disengages.
+- Y cycles the execution profile while motion is idle.
+- Left-stick click captures the steady gravity-float torque baseline.
+- Hold View + Menu for two seconds to launch authoritative safe termination.
+
+GUI engagement is required before local arm execution or a new gripper
+endpoint. Gamepad convenience does not bypass Basic lease fencing, Midbrain
+motion inhibit, or Provider-side validation.

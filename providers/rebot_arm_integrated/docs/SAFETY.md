@@ -1,37 +1,71 @@
-# Safety — MIT bring-up 0.8.1
+# Integrated Provider safety boundary
 
-- Arm motion requires GUI Engage and Xbox LB. A new gripper endpoint requires GUI Engage and RB/RT; releasing RB/RT latches the endpoint.
-- Agentic transit never uses the GUI/Xbox gate. It requires a separate exact
-  controller preview plus a signed, short-lived, decision-specific, one-time
-  authorization assertion. Approval alone does not execute; commit is a
-  distinct request.
-- Gamepad and Fabric target editing remain non-physical while Basic is in gravity-float.
-- Free-space direct and routed targets accept displacements up to the 1.2 m request envelope; actual reach is determined by joint ranges, IK continuity, residual, singularity, and collision checks. CONTACT_WORK retains its separate 20 cm short-stroke policy.
-- Workspace bounds are enforced before IK.
-- Integrated physically exposes MIT, latched POS_VEL transit, baseline-budgeted latched arm POS_TOR work, and isolated joint-7 gripper MIT/POS_TOR tests. Basic remains final authority for Kp/Kd, torque, rate, tracking-effort, joint-limit, lease, and timeout validation.
-- Manager discovery advertises usable MIT ONE_SHOT/HOLD_LB and POS_VEL ONE_SHOT. The old `pos_vel.one_shot_limited` name remains a deprecated compatibility alias. POS_VEL HOLD_LB and arm POS_TOR ONE_SHOT are experimental/unstable GUI-only tests and are excluded from `capability_readiness`.
-- Requested and effective gains are exposed. Gain clamping is not hidden.
-- Command gaps, lease loss, Manager/Fabric readiness loss, motion inhibit, unrecoverable serial/mode-confirmation failure, IK rejection, or continuous-replan faults request gravity-float.
-- Signed transit revalidates the current semantic-scene revision, collision
-  result, measured start drift, controller identity/configuration, preview
-  expiry, and fenced Basic lease before its first physical endpoint.
-- Signed transit derives requested per-joint speed from the Cartesian request.
-  Any joint above 10 rad/s requires explicit authentication and any joint at
-  or above 20 rad/s is rejected. Execution uses the smaller of the controller
-  POS_SPEED cap, Basic's reported cap, and motor VMAX. It waits for stable measured arrival before
-  advancing to the next exact controller-owned waypoint.
-- A healthy signed transit holds its final POS_VEL endpoint until explicit
-  `/v1/motion/path-release`. Errors and invalidated safety gates request
-  gravity-float; normal short command gaps do not create an implicit mode
-  switch.
-- PRESS_MIT and TRANSIT_SPEED ONE_SHOT completion return to gravity-float. CONTACT_WORK returns to gravity-float when its configured one-shot duration expires, regardless of endpoint arrival. HOLD_LB release returns to gravity-float.
-- CONTACT_WORK is ONE_SHOT-only and requires 6-DoF, a maximum 20 cm baseline-relative stroke, and a complete JOINT_6, WRENCH_6, or ISOTROPIC_2 budget. Baseline capture is a separate operator command performed in verified float; a later Engage + LB action uses that stored posture-local baseline. IK residuals are reported but do not reject the action. Required ratios and live residual overruns saturate affected joints at the reviewed physical POS_TOR ceilings instead of ending the action early.
-- Releasing RB/RT latches the last gripper MIT or POS_TOR endpoint. LT, Float, and Safe terminate explicitly release the gripper latch.
-- Payload mass/COM must be set only when known. Basic clips combined gravity feed-forward to configured motor TMAX.
-- GUI Safe Terminate launches the authoritative PowerShell helper in a hidden
-  process and waits for a launch-ID acknowledgement in
-  `runtime_logs/safe_terminate.log`. Callers must treat only
-  `status=accepted` with `safe_termination.state=RUNNING` as evidence that
-  safe-home started. `LAUNCH_UNCONFIRMED` is a failure to start, not successful
-  homing; use the standalone `stop_physical_gui_test.ps1` sequence and inspect
-  the log.
+Integrated plans and coordinates motion, but the Basic Provider remains the
+final hardware authority for motor mode, load-bearing stiffness and damping,
+joint/rate/effort limits, tracking effort, lease fencing, deadlines, gravity
+support, and safe-home. Read [Basic safety](../../rebot_arm_dm/docs/SAFETY.md)
+before physical use.
+
+Low force, low torque, low stiffness, or slow movement is not inherently safe.
+In particular, lowering load-bearing MIT stiffness can allow the arm to fall
+before gravity support stabilizes.
+
+## Physical authority boundaries
+
+Local operator testing requires GUI engagement plus the documented gamepad or
+GUI action. Editing a target, changing a profile, receiving a Fabric command,
+or generating a preview remains nonphysical.
+
+Agentic transit uses a different boundary: an exact controller-owned preview
+must be followed by a signed, short-lived, decision-specific, one-time commit.
+The commit revalidates controller/configuration identity, the reviewed
+workcell activation, observation lifetime, measured start, current semantic
+scene and collisions, path limits, motion inhibit, readiness, and the fenced
+Basic lease. Approval or preview alone does not execute motion.
+
+The current capability names and maturity are authoritative in
+`manifest.json` and the live capability response. A profile exposed only by
+the local test GUI is not thereby available to an Agent.
+
+## Fallback and completion
+
+Transport uncertainty, stale physical feedback, lost lease, motion inhibit,
+Manager/Fabric readiness loss where required, Basic fault, invalidated
+workcell/scene evidence, or an execution error blocks new commands and
+requests gravity float when the lease is still valid. Integrated does not
+automatically retry physical work after a safety fallback.
+
+Completion telemetry distinguishes elapsed command duration from stable
+measured target arrival. Callers must inspect the reported outcome and final
+state; they must not infer success from a completed deadline. Signed transit
+may request `FLOAT`, `FIXED`, or bounded `WAIT_FOR_NEXT`, each enforced by the
+stored preview and commit contract.
+
+## Contact and gripper limits
+
+`CONTACT_WORK` requires `POSE_6DOF`, a configured short-stroke limit, a
+separately captured steady gravity-float baseline, a complete joint/wrench
+budget, and an IK result inside the configured position and orientation
+residual tolerances. Required effort ratios and live residual overruns may
+saturate affected joints at Basic's reviewed physical ceilings; this is
+telemetry, not proof of contact safety or Cartesian-force accuracy.
+
+A released gripper input intentionally latches the last selected endpoint.
+Float, LT, and safe termination explicitly release that latch. New gripper
+input remains interlocked while an arm trajectory is active.
+
+Payload mass and tool-frame center of mass must be supplied only when known.
+Basic clips combined arm-plus-payload gravity feed-forward to configured motor
+limits.
+
+## Safe termination
+
+The GUI safe-terminate route launches the authoritative PowerShell helper and
+waits for a launch-ID acknowledgement. Only `status=accepted` together with
+`safe_termination.state=RUNNING` is evidence that the helper started; neither
+state proves that safe-home completed.
+
+On an unconfirmed launch, use
+`scripts/stop_physical_gui_test.ps1` and inspect
+`runtime_logs/safe_terminate.log`. Do not force-kill a process that may be
+providing powered support merely to free a port.

@@ -233,8 +233,10 @@ function Write-Manifest {
 
 $componentDirectories = @(
     (Join-Path $workspace 'contracts'),
-    (Join-Path $workspace 'docs\reference\project_notes'),
     (Join-Path $workspace 'platform_core'),
+    (Join-Path $workspace 'config\foundation_pose'),
+    (Join-Path $workspace 'providers\foundation_pose\defaults\rebot_b601_dm'),
+    (Join-Path $workspace 'providers\foundation_pose'),
     (Join-Path $workspace 'providers\rebot_arm_dm'),
     (Join-Path $workspace 'providers\rebot_arm_integrated'),
     (Join-Path $workspace 'providers\arm_scene_compiler'),

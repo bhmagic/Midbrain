@@ -2,72 +2,40 @@
 
 ## 0.4.0 - 2026-07-30
 
-- Added a bounded fixed-rig stationary attestation for VIO initialization.
-  It supplies stationary IMU evidence without acquiring the global
-  motion-inhibit lease, resetting the epoch, or revoking an arm-controller
-  lease.
-- Published the active stationary-initialization gate and attestation Skill
-  identity in VIO status diagnostics.
+- Added bounded fixed-rig stationary attestation for initialization without
+  acquiring the global motion-inhibit lease, resetting the VIO epoch, or
+  revoking an arm-controller lease.
 
 ## 0.3.0 - 2026-07-30
 
-- Migrated every new VIO epoch to positive X initial leveled forward, positive
-  Y left, and positive Z opposite gravity.
-- Changed the estimator gravity vector from world negative Y to world negative
-  Z without altering hardware accelerometer calibration or camera/IMU
-  extrinsics.
-- Kept camera optical X-right, Y-down, Z-forward explicit and added a
-  gravity-leveled camera frame for camera-relative 3D reasoning.
-- Marked pre-migration epochs as historical `LEGACY_Y_UP_V1` data that must not
-  be silently reinterpreted.
-- Added basis, gravity propagation, heading preservation, and camera-level
-  regression coverage.
+- Migrated new epochs to
+  `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`, retained explicit optical-camera axes,
+  and marked older Y-up epochs as historical rather than reinterpreting them.
 
 ## 0.2.3 - 2026-07-29
 
-- Stopped treating a cached Fabric `camera.rgbd.bundle` ring reference as
-  reusable image storage. Fabric metadata remains cached briefly, but each
-  visual iteration now obtains the current provider-local RGB and
-  aligned-depth references from the already-open shared-memory mapping.
-- Copies depth and RGB immediately, retries a recycled slot at most four
-  times, and rejects missing timestamps or pairs outside the bundle's declared
-  synchronization threshold.
-- Keeps the optional IR correction path nonblocking when its latest
-  shared-memory slot recycles.
-- Added regression coverage for replacing stale Fabric references with current
-  provider-local references. Live validation recovered a current tracking pose
-  without requiring Fabric to decide Skill-specific freshness.
+- Reacquired current Provider-local shared-memory references for every visual
+  iteration instead of treating cached Fabric BufferRefs as image storage.
 
 ## 0.2.2
 
-- Fix an impossible startup gate at 50 Hz: 80 required samples no longer have to fit inside a fixed 1.5-second window.
-- Select the newest fixed-count accelerometer and gyroscope windows in the common IMU time domain, with a five-second stale-history ceiling.
-- Publish initialization window counts and inferred accel/gyro sample rates.
-- Add a 50 Hz, 80-sample regression test matching the Femto Bolt hardware report.
+- Made stationary initialization independent of an assumed camera/IMU sample
+  rate by selecting a fixed-count window with a bounded age.
 
 ## 0.2.1
 
-- Fix startup initialization by selecting accelerometer and gyroscope stationarity windows in the common IMU timestamp domain instead of around the RGB timestamp.
-- Prefer SDK system timestamps consistently for video and IMU internal VIO processing.
-- Add explicit IMU-history, timestamp-skew, and initialization-blocker diagnostics.
+- Moved startup stationarity selection into the common IMU time domain and
+  exposed history, skew, and blocker diagnostics.
 
 ## 0.2.0
 
-- Replaced the visual-first pose loop with a 15-state inertial error-state filter.
-- Propagates orientation, position, velocity, gyroscope bias, accelerometer bias, and covariance from every ordered IMU sample.
-- Added high-rate non-committing pose prediction between visual updates.
-- Converted RGB-D odometry into a gated metric correction measurement rather than direct pose authority.
-- Added optional synchronized IR plus native-depth correction for weak or dark RGB scenes.
-- Added pose covariance, estimated bias, correction magnitude, visual staleness, and propagation diagnostics.
-- Preserved the established adaptive circular local-contrast-normalization frontend.
-- Preserved quiet-IMU gravity leveling, including the adaptive gyro noise-floor gate.
-- Preserved reset epoch, monotonic sequence, startup motion-inhibit, and point-cloud lifecycle fixes.
+- Replaced the visual-first loop with a 15-state inertial error-state filter,
+  high-rate non-committing propagation, gated RGB-D corrections, and optional
+  synchronized IR/depth fallback.
+- Added covariance, bias, correction, staleness, and propagation diagnostics
+  while preserving epoch and motion-inhibit boundaries.
 
 ## 0.1.6
 
-- Made reset acceptance independent of immediate Fabric status publication.
-- Added full 3D visual/gyro rotation disagreement instead of scalar-angle-only checks.
-- Added gyro-seeded iterative PnP as a secondary candidate while retaining raw EPNP as baseline.
-- Added short gyro rotation propagation with translation hold when visual rotation is unavailable or untrustworthy.
-- Marked gyro-only propagation as `DEGRADED` so mapping pauses instead of accepting corrupted points.
-- Added rotation source, disagreement angle, gyro sample count, and gyro step diagnostics.
+- Added full 3D visual/gyro disagreement checks and bounded gyro-only degraded
+  propagation when visual rotation is unavailable.

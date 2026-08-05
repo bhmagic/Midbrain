@@ -1,42 +1,103 @@
-# Documentation Index
+# Midbrain Documentation Hub
 
-This directory is the canonical reading order for the GitHub repository.
+This hub indexes the active documentation. It is organized by what a reader is
+trying to do rather than by the order in which documents were created.
 
-The 2026-08-05 Test Agent v0.4.9 checkpoint is summarized in the canonical [Architecture and Data Flow](01_ARCHITECTURE_AND_DATA_FLOW.md), [Setup and Operation](03_SETUP_AND_OPERATION.md), [Main GUI Portal](04_MAIN_GUI_PORTAL.md), [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md), [Version History](11_VERSION_HISTORY_AND_DECISIONS.md), and [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md). It retains the single autonomous regular/developer Agent runtime and adds Fabric-regulated semantic scenes, no-contact approach composition, full-destination POS_SPEED motion, before/after arm-root evidence, and an explicit-only FoundationPose boundary. The framework-neutral Agent boundaries remain specified in [Agent Event Stream](../contracts/15_agent_event_stream.md), [Visual Evidence](../contracts/16_visual_evidence_and_annotations.md), [Image Attachments](../contracts/17_agent_image_attachments.md), [Chat History](../contracts/18_agent_chat_history.md), and [Run Journal](../contracts/19_agent_run_journal.md).
+## Choose a path
 
-The earlier 2026-07-29 guarded-motion evidence remains available in [Phase 5 Agent SDK Completion and Shutdown](reference/project_notes/PHASE5_AGENT_SDK_COMPLETION_AND_SHUTDOWN_20260729.md), [Agent SDK Roadblocks](reference/project_notes/OPENAI_AGENT_SDK_ROADBLOCKS_20260729.md), [Component Changes](reference/project_notes/COMPONENT_CHANGES_20260729.md), and [Cartesian Axis and Alignment Open Issue](reference/project_notes/CARTESIAN_AXIS_ALIGNMENT_OPEN_ISSUE_20260729.md).
+### Understand the platform
 
-| Order | Document | Purpose |
-|---|---|---|
-| 1 | [Overview](00_OVERVIEW.md) | Scope, current baseline, safety boundary, and working capabilities. |
-| 2 | [Architecture and Data Flow](01_ARCHITECTURE_AND_DATA_FLOW.md) | Manager, Fabric, Providers, Skills, BufferRefs, transforms, startup, runtime, and reset flow. |
-| 3 | [VIO Sensor-Fusion Design](02_VIO_SENSOR_FUSION_DESIGN.md) | Inertial-first ESKF design and visual correction policy. |
-| 4 | [Setup and Operation](03_SETUP_AND_OPERATION.md) | Windows prerequisites, installation, command-line fallback, and recovery. |
-| 5 | [Midbrain Main GUI Portal](04_MAIN_GUI_PORTAL.md) | Canonical operator entry point for observation, activation, Agents, developer escalation, and shutdown. |
-| 6 | [Validation](06_VALIDATION.md) | Automated checks, hardware checks, and acceptance criteria. |
-| 7 | [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md) | Local configuration, secrets, calibration ownership, Agent API/record trust boundaries, and publish exclusions. |
-| 8 | [Workspace Audit](08_WORKSPACE_AUDIT.md) | Undocumented differences found between the handover snapshot and working workspace. |
-| 9 | [Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Known technical gaps and next milestones. |
-| 10 | [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Clean build, staged-file review, upload script, and release checklist. |
-| 11 | [Version History and Decisions](11_VERSION_HISTORY_AND_DECISIONS.md) | Milestone history and decisions that should be preserved. |
-| 12 | [FoundationPose Object Pose](12_FOUNDATIONPOSE_OBJECT_POSE.md) | Base/Gripper initialization, mask refinement, Fabric transforms, and camera-alignment boundary. |
-| 13 | [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md) | Next-iteration plan for movement-based rigid registration, close-range translation refinement, and the explicit-only FoundationPose boundary. |
+1. Read the project [aim and infrastructure rationale](../README.md#aim-autonomous-robots-without-framework-lock-in).
+2. Read [Architecture and Data Flow](01_ARCHITECTURE_AND_DATA_FLOW.md).
+3. Use the [contract index](../contracts/README.md) when implementing or
+   reviewing an interoperability boundary.
 
-## Reference material
+### Operate the reference robot
 
-Detailed framework contracts remain under [`contracts`](../contracts). Component-specific documentation remains beside each component:
+1. Read [Setup and Operation](03_SETUP_AND_OPERATION.md).
+2. Review [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md).
+3. Run the checks in [Validation](06_VALIDATION.md).
+4. Consult the relevant Provider's `README.md`, `SAFETY.md`, and
+   `VALIDATION.md` before activating physical hardware.
 
-- [`platform_core/docs`](../platform_core/docs)
-- [`providers/orbbec_femto_bolt/docs`](../providers/orbbec_femto_bolt/docs)
-- [`providers/foundation_pose/docs`](../providers/foundation_pose/docs)
-- [`providers/rebot_arm_dm`](../providers/rebot_arm_dm)
-- [`providers/rebot_arm_integrated/docs`](../providers/rebot_arm_integrated/docs)
-- [`skills/stationary_world_arm_alignment`](../skills/stationary_world_arm_alignment/README.md)
-- [`test_agent/docs`](../test_agent/docs)
+### Add another Provider, Skill, or Agent
 
-Earlier component-first tutorials are retained under
-[`docs/archive`](archive/README.md). Earlier planning, research, and handover
-notes remain under
-[`docs/reference/project_notes`](reference/project_notes). Both locations are
-historical references; the numbered documents above are the canonical
-operational documentation.
+1. Start with [Compatibility and Extension](05_COMPATIBILITY_AND_EXTENSION.md).
+2. Select the applicable documents in the [contract index](../contracts/README.md).
+3. Follow [Contributing](../CONTRIBUTING.md) and keep implementation-specific
+   instructions beside the component.
+
+### Continue current engineering work
+
+- [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) contains
+  only active gaps and priorities.
+- [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
+  is the active implementation plan for the next alignment route.
+- [Release and GitHub](10_RELEASE_AND_GITHUB.md) covers local validation and
+  publication mechanics.
+- [Changelog](../CHANGELOG.md) is the release and milestone history.
+
+## Active framework documentation
+
+| Document | Authority and scope |
+|---|---|
+| [Architecture and Data Flow](01_ARCHITECTURE_AND_DATA_FLOW.md) | Explanatory system architecture. Contracts and runtime schemas take precedence. |
+| [Setup and Operation](03_SETUP_AND_OPERATION.md) | Current workspace setup, portal operation, recovery, and shutdown. |
+| [Compatibility and Extension](05_COMPATIBILITY_AND_EXTENSION.md) | Practical entry point for outside Providers, Skills, and Agent adapters. |
+| [Validation](06_VALIDATION.md) | Current validation commands, evidence classes, and remaining qualification. |
+| [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md) | Local configuration ownership, secrets, trust boundaries, and publication exclusions. |
+| [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Active limitations and prioritized work only. |
+| [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Maintainer release workflow. |
+| [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md) | Active design plan; not an implemented operator workflow yet. |
+
+The VIO implementation design belongs to
+[`providers/local_vio`](../providers/local_vio/README.md). FoundationPose setup
+and compatibility details belong to
+[`providers/foundation_pose`](../providers/foundation_pose/README.md) and the
+finite
+[`foundation_pose_object_localization`](../skills/foundation_pose_object_localization/README.md)
+Skill. Component-specific controller and camera details remain beside those
+components.
+
+## Documentation source-of-truth rules
+
+When two statements conflict, use this order:
+
+1. Machine-readable schemas, manifests, and enforced runtime validation.
+2. Versioned contracts under `contracts`.
+3. Component README, safety, API, and validation documentation beside the
+   implementation.
+4. Framework and operator guides under `docs`.
+5. Roadmaps and active design plans.
+6. Changelogs and Git history for historical behavior.
+
+Mutable facts such as package versions, test counts, model defaults, ports,
+and capability maturity should have one owner. Other documents should link to
+that owner rather than copying the value.
+
+## Document lifecycle
+
+Active documents describe current behavior or an explicitly active design.
+Completed phase plans, temporary handovers, superseded progress snapshots, and
+one-time workspace audits are retired from the active tree. Their commits
+remain available through Git history. Release-relevant outcomes are retained
+in the root or component changelog, while current validation boundaries remain
+in `VALIDATION.md` files.
+
+An active design must say what is implemented, what is proposed, what can
+grant physical authority, and what constitutes acceptance. A completed design
+is folded into the owning contract and component documentation, then retired.
+
+## Contracts and component references
+
+- [Contracts](../contracts/README.md)
+- [Platform Core](../platform_core/README.md)
+- [Orbbec Femto Bolt Provider](../providers/orbbec_femto_bolt/README.md)
+- [Local VIO Provider](../providers/local_vio/README.md)
+- [SAM2 Scene Tracker](../providers/sam2_scene_tracker/README.md)
+- [Arm Scene Compiler](../providers/arm_scene_compiler/README.md)
+- [reBot Arm Basic Provider](../providers/rebot_arm_dm/README.md)
+- [reBot Arm Integrated Provider](../providers/rebot_arm_integrated/README.md)
+- [FoundationPose Compatibility Provider](../providers/foundation_pose/README.md)
+- [Stationary World-Space Arm Alignment Skill](../skills/stationary_world_arm_alignment/README.md)
+- [Reference Agent](../test_agent/README.md)

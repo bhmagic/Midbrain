@@ -69,3 +69,7 @@ new label requests start every 20 seconds during motion or low SAM2 confidence,
 and every 40 seconds while stable. The first annotation after activation remains
 immediate. Only one request may be in flight, so slow responses are coalesced
 instead of queued against old frames.
+
+## Documentation
+
+- [Changelog](CHANGELOG.md) — release history; not an operating procedure.

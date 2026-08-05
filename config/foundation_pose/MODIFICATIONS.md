@@ -1,5 +1,10 @@
 # Modification notice for reBot B601-DM CAD derivatives
 
+This file is one of two intentional restore-profile mirrors at
+`config/foundation_pose` and
+`providers/foundation_pose/defaults/rebot_b601_dm`. Keep the copies
+byte-identical; configuration validation enforces the mirror.
+
 Date: 2026-07-21
 
 The following changes were made to selected Seeed Studio reBot B601-DM

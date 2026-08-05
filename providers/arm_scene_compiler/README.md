@@ -54,7 +54,7 @@ HOT compilation requires all of the following to be fresh at the same time:
 - for semantic-only depth fallback, at least one unexpired explicit semantic
   assertion.
 
-The reviewed mounted camera/world-to-arm registration is identity- and
+The reviewed mounted camera-to-`rebot_arm_base` registration is identity- and
 calibration-gated rather than wall-clock-expired. Temporary camera loss
 suspends scene production; recovery with the same canonical camera device,
 calibration, and reviewed activation restores it without requiring a Local VIO
@@ -74,7 +74,7 @@ surface. It reports producer identity, freshness, scene revision, both ROI
 policies, counts by type and scope, depth mode, and an optional bounded sphere
 list. It is read-only and never authorizes movement. A practical test order is:
 
-1. Establish a fresh world-to-arm registration.
+1. Establish a fresh camera-to-`rebot_arm_base` registration.
 2. Keep the camera and Basic arm Providers HOT, without commanding motion.
 3. Set `world_model.arm_scene_compiler` HOT.
 4. Run `locate_item` for the toilet-paper roll in `rebot_arm_base`; a metric
@@ -87,3 +87,7 @@ list. It is read-only and never authorizes movement. A practical test order is:
 The Provider control endpoints are read-only diagnostics at `/health`,
 `/v1/status`, `/v1/scene`, and `/v1/diagnostics`; lifecycle controls use the
 standard `/v1/control/hot`, `/warm`, `/stop`, and `/request` paths.
+
+## Documentation
+
+- [Changelog](CHANGELOG.md) — release history; not an operating procedure.

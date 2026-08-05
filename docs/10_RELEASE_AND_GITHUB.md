@@ -2,10 +2,9 @@
 
 ## Clean validation
 
-From Developer PowerShell:
+From Developer PowerShell in the repository root:
 
 ```powershell
-cd C:\Projects\Midbrain
 .\scripts\validate.ps1
 ```
 
@@ -31,10 +30,13 @@ Confirm no secrets, local configuration, calibration, serial numbers, SDK binari
 
 ## Branch workflow
 
+Use a temporary branch for every change. Do not push or merge until the owner
+explicitly authorizes that remote action.
+
 ```powershell
 git switch main
 git pull --ff-only
-git switch -c feature/<short-description>
+git switch -c codex/<short-description>
 ```
 
 Stage only reviewed files. Do not use `git add --all` until ignored and untracked
@@ -71,8 +73,10 @@ Authentication is not embedded; use Git Credential Manager or GitHub CLI.
 - [ ] Required Provider observation, activation, Agent, and shutdown paths pass
   on hardware.
 - [ ] Staged-file secret/config review is clean.
-- [ ] README screenshots, if added, contain no serial numbers or private room imagery.
+- [ ] README screenshots, if added, contain no serial numbers or private workcell imagery.
 - [x] MIT License added for original project code.
 - [ ] Third-party source and dependency-license audit is complete and notices are recorded.
 - [ ] Third-party Orbbec SDK redistribution terms have been reviewed.
-- [ ] A version tag and release notes are created after the first successful hardware validation.
+- [ ] Package, manifest, documentation, and changelog versions are consistent.
+- [ ] Active documentation passes link, navigation, and stale-path checks.
+- [ ] A version tag and release notes are created only for an explicitly approved release.

@@ -1,5 +1,10 @@
 # Gripper-Motion Arm-Root Alignment Plan
 
+Status: active implementation design; the ordinary movement workflow is not
+yet available to operators. Retire this plan after its contracts, solver,
+finite Skill, Manager activation, tests, and component documentation are
+implemented and verified.
+
 ## Decision and scope
 
 The next alignment path will estimate the stationary world-to-arm-base

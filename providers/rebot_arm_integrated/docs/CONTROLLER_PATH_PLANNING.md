@@ -1,6 +1,6 @@
 # Controller-Owned Transit Planning and Authorized Execution
 
-Status: Phase 5 enforced commit; preview remains nonphysical
+Status: signed physical commit enforced; preview remains nonphysical
 
 ## Purpose
 
@@ -50,11 +50,23 @@ Callers that intend to create an operator decision must include
 - `binding_id`;
 - `camera_provider_id`, `camera_provider_instance_id`, and `camera_boot_id`;
 - `workcell_transform_id`, `workcell_transform_revision`, and
-  `workcell_transform_validity_policy` (currently
-  `MOUNTED_IDENTITY_TRACKING_GATED_V1`);
-- `vio_session_epoch`;
+  `workcell_transform_validity_policy`;
 - `observation_timestamp_us` and `observation_expires_at_us`; and
 - `scene_revision`.
+
+Two mounted-workcell policies are intentionally supported:
+
+- `MOUNTED_IDENTITY_TRACKING_GATED_V1` additionally requires
+  `vio_session_epoch` and remains bound to camera process/boot and VIO-session
+  identity.
+- `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` requires the exact
+  `camera_calibration_revision`. Its reviewed activation does not expire merely
+  because a process or VIO epoch changes, but camera identity, calibration,
+  activation state, or transform revision changes still invalidate use.
+
+Callers must copy the policy and its required identity fields from the active
+Manager workcell activation. They must not convert V1 evidence to V2, omit a
+V1 epoch, or invent a calibration revision.
 
 Legacy nonphysical diagnostic calls may omit this object, but the returned
 contract then reports `request_context_complete: false` and must not be used to
@@ -119,42 +131,8 @@ gravity-float. The local append-only audit synchronously records the exact
 request and authorization-token SHA-256; the raw token is never persisted and
 Fabric receives only an asynchronous audit copy.
 
-TODO: add an in-flight successor queue distinct from `WAIT_FOR_NEXT`. It must
-allow path B to be previewed and authorized while path A is still executing,
-bind B's start to A's reviewed terminal joint state and plan identity, then
-recheck measured transition drift and the newest semantic scene at the A-to-B
-boundary. The first implementation should be a bounded one-successor queue;
-later multistep routing may generalize it without weakening per-path authority.
-This queue is the controller-side latency buffer for agentic workflows: Fabric
-observations, perception, and planning may complete at different times, while
-the servo loop must never depend on synchronous Agent dialogue. Queue admission
-uses the predicted terminal state; activation remains fenced by the measured
-terminal state and newest Fabric scene.
-
-The future slicing Skill should submit task geometry and motion intent, such as
-the desired cut line and speed envelope. The Integrated controller should own
-the resulting collision-aware, singularity-aware, rate-capped physical path.
-
-## Multistep environment routing TODO
-
-The current candidate set contains a few fixed direct, clearance-Z, and lateral
-alternatives. It is not yet a general route search. Add a controller-owned
-multistep planner that:
-
-- accepts one high-level controlled-frame goal and task/contact policy;
-- searches the current canonical semantic scene for a complete collision-free
-  route rather than asking the Agent to choose each intermediate displacement;
-- time-parameterizes the resulting joint path against the active qualified
-  motion profile;
-- previews and authorizes the complete route as one immutable plan;
-- advances through exact measured-arrival stages while monitoring newer scene
-  revisions;
-- stops or chooses another already authorized branch when clearance becomes
-  unsafe; and
-- returns structured per-leg and replan evidence.
-
-Local replanning must stay inside the authorized goal, contact policy,
-workspace, speed/effort envelope, and expiry. It must not turn a no-contact
-approach into contact, change the selected workpiece, or expand task authority.
-This functionality reduces Agent commands and dialogue without moving planning
-or physical authority into the Agent.
+General route search, an in-flight successor queue, task-level slicing paths,
+and broader multistep orchestration are not part of this implemented boundary.
+Their design and promotion gates belong in the
+[active roadmap](../../../docs/09_LIMITATIONS_AND_ROADMAP.md#controller-owned-multistep-routing),
+not in this current-interface reference.

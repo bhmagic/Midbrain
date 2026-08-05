@@ -1,138 +1,109 @@
-# reBot Arm Integrated Motion Prototype
+# reBot Arm Integrated Resource Provider
 
-Integrated leases the Basic provider and exposes direct hardware test modes. Physical execution remains gated by GUI Engage plus Xbox LB.
+The Integrated Provider leases the hardware-facing Basic Provider and turns
+Cartesian targets into reviewed arm-control profiles. It owns inverse
+kinematics, controller-owned path previews, semantic-scene collision checks,
+profile-specific execution, gripper coordination, and local control auditing.
+Basic remains the final authority for motor transport, leases, joint and motor
+limits, load-bearing control, gravity support, and safe-home.
+
+Operator testing and autonomous execution use separate authority boundaries:
+
+- local physical testing requires the Provider's documented GUI engagement
+  and gamepad input;
+- agentic transit requires an exact nonphysical preview plus a signed,
+  short-lived, decision-specific, one-time authorization assertion;
+- Fabric targets, capability discovery, scene observations, and previews never
+  grant physical motion authority by themselves.
+
+`manifest.json` and the live `GET /v1/capabilities` response are authoritative
+for current capability names and maturity. Package release identity is not
+publishable until `VERSION`, manifest, Python metadata, and runtime version
+surfaces agree; repository-wide normalization is tracked in the
+[active roadmap](../../docs/09_LIMITATIONS_AND_ROADMAP.md#normalize-package-and-contract-versions).
+This README explains the stable component boundary rather than copying the
+full operation catalog.
+
+## Control terminology
+
+Integrated profile names, Basic API modes, and Damiao/MotorBridge names are
+related but not interchangeable:
+
+| Integrated profile | Canonical Basic API mode | Motor/device alias | Meaning |
+|---|---|---|---|
+| `PRESS_MIT` | `IMPEDANCE` | MIT | Cyclic impedance trajectory |
+| `TRANSIT_SPEED` | `POSITION_VELOCITY_LIMITED` | `POS_VEL` | Latched position endpoint with a velocity limit |
+| `CONTACT_WORK` | `POSITION_EFFORT_LIMITED` | `FORCE_POS` | Latched position endpoint with velocity and effort-ratio limits |
+
+Integrated historically calls the CONTACT_WORK backend `POS_TOR`; that alias
+maps to Basic `POSITION_EFFORT_LIMITED` and the motor-adapter `FORCE_POS` mode.
+`POS_SPEED` describes the policy used to choose a speed ceiling; it is not a
+fourth motor mode and must not replace `POS_VEL` in a Basic command.
+
+[Control architecture](docs/CONTROL_ARCHITECTURE.md) owns execution-profile
+semantics. [Basic motor command semantics](../rebot_arm_dm/docs/MOTOR_COMMAND_OVERWRITE_SEMANTICS.md)
+owns endpoint overwrite, keepalive, and motor-mode transition behavior.
+
+## Spatial terminology
+
+| Term | Meaning |
+|---|---|
+| `rebot_arm_base` | Canonical controller planning and scene frame |
+| `rebot_arm_tool` | Basic's measured terminal tool frame |
+| controlled frame | The frame whose target pose Integrated solves and controls; it may be offset from `rebot_arm_tool` |
+| `ik_offset` | Tool-to-controlled-frame transform applied once by Integrated |
+| action point | Task-level semantic point associated with a tool; not a substitute API name for the controlled frame |
+| arm root | Visual/calibration semantic term used by some model profiles; it is not a controller frame identifier until a reviewed alignment binds it to `rebot_arm_base` |
+
+Upstream callers provide the desired controlled-frame pose and must not
+pre-apply `ik_offset`. Doing so would apply the offset twice. See
+[Upstream integration](docs/UPSTREAM_INTEGRATION.md) for the command boundary
+and [the active arm-root alignment plan](../../docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
+for the unfinished calibration relationship.
+
+## Environment and configuration
+
+Integrated owns `providers/rebot_arm_integrated/.venv`, created by
+`scripts/setup.ps1`. It does not share Basic's environment. Setup seeds a
+missing machine-local `config/controller.json` from
+`config_templates/controller.default.json`; active configuration and runtime
+audit logs are not committed.
 
 If Basic fences or revokes the operational lease, Integrated enters
-`RECOVERY_REQUIRED`, marks itself not ready, and stops background lease
-acquisition. A later lease may be acquired only through an explicit HOT
-transition after the Basic safety operation has completed.
+`RECOVERY_REQUIRED`, stops background lease acquisition, and becomes not
+ready. A new lease is attempted only after an explicit HOT transition once the
+Basic safety operation has completed.
 
-Integrated owns its own Python environment at `providers/rebot_arm_integrated/.venv`, created by `scripts/setup.ps1`. It does not share Basic's environment, and neither environment is committed to Git.
+Read [Safety](docs/SAFETY.md) before physical use, then follow the bounded
+[physical test procedure](docs/PHYSICAL_TEST.md). Use
+[Validation](VALIDATION.md) to distinguish stopped software evidence from
+guarded physical qualification.
 
-The setup script also creates missing local `config/controller.json` from `config_templates/controller.default.json`. The active runtime config is machine-local and is not committed.
+## Documentation
 
-The reviewed discovery status is:
+Human and installation-agent entry points:
 
-- `PRESS_MIT` with `ONE_SHOT`: **USABLE**.
-- `PRESS_MIT` with `HOLD_LB`: **USABLE**.
-- `TRANSIT_SPEED`/POS_VEL with `ONE_SHOT`: **USABLE** for IK-valid free-space motion within the 1.2 m request envelope, subject to actual arm reach, joint ranges, scene clearance, and provider/motor POS_SPEED caps. No-payload operation is the reviewed default.
-- `TRANSIT_SPEED`/POS_VEL with `HOLD_LB`: **EXPERIMENTAL / UNSTABLE**, GUI-only, and excluded from Manager capability discovery.
-- `CONTACT_WORK` arm POS_TOR with `ONE_SHOT`: **EXPERIMENTAL / UNSTABLE**, GUI-only, and excluded from Manager capability discovery.
+- [Safety](docs/SAFETY.md) — authority boundaries, fallback behavior,
+  payload assumptions, and safe termination.
+- [Physical test procedure](docs/PHYSICAL_TEST.md) — attended bring-up order
+  and exact gamepad mapping.
+- [Validation](VALIDATION.md) — current stopped coverage and remaining
+  physical qualification.
 
-Two physical test interactions are available:
+Coder and coding-agent references:
 
-- `ONE_SHOT`: edit the staged target while floating, Engage, click LB once, and solve from fresh physical joints. PRESS_MIT streams until its fixed deadline and returns to float; the result separately reports whether stable measured arrival was confirmed. TRANSIT_SPEED returns to float after stable measured arrival. CONTACT_WORK applies POS_TOR for the configured duration and then returns to float whether or not the IK goal was reached.
-- `HOLD_LB`: while LB is held, PRESS_MIT or TRANSIT_SPEED replans only after the staged target revision changes; an unchanged target is not repeatedly resubmitted. Releasing LB floats. CONTACT_WORK is intentionally forced to `ONE_SHOT`.
+- [Control architecture](docs/CONTROL_ARCHITECTURE.md) — ownership,
+  execution-profile semantics, scene policy, and torque-baseline model.
+- [Upstream integration](docs/UPSTREAM_INTEGRATION.md) — capability discovery,
+  HTTP operations, Fabric command schema, acknowledgements, and retries.
+- [Controller-owned path planning](docs/CONTROLLER_PATH_PLANNING.md) —
+  nonphysical preview and separately authorized signed commit.
+- [Provider-local control audit](docs/CONTROL_AUDIT.md) — synchronous local
+  audit and asynchronous Fabric copy.
+- [`manifest.json`](manifest.json) — authoritative identity, capabilities,
+  profile metadata, and readiness declarations.
 
-## Operational-limit recovery at trajectory start
+History:
 
-Basic rejects any commanded joint target outside its calibrated operational
-range. A physical joint can nevertheless be measured slightly outside that
-range after compliant contact or gravity-float. Integrated therefore clamps
-the first outgoing trajectory target to the Basic operational range and then
-continues inward toward the IK goal. It never expands or bypasses the Basic
-limit. Inspect `trajectory.operational_range_recovery_count` and
-`trajectory.last_operational_range_recovery_joint_indices` when diagnosing
-this recovery. Skill authors should still avoid IK goals near a joint limit;
-this recovery handles the otherwise unrecoverable first command, not a poor
-task posture.
-
-IK can be `POSITION_3DOF` or `POSE_6DOF`. The controlled frame can be offset from the tool frame, so upstream targets may represent a tool tip or other acting point. Cartesian targets are poses of that controlled frame; upstream callers must not pre-apply the configured tool-to-controlled offset. The GUI displays measured and staged frame axes plus separate position/orientation residuals.
-
-At calibrated safe-home the default controlled frame is approximately aligned
-with the arm base: controlled +X is arm-base/front and controlled +Z is
-arm-base/up. Preserving that orientation during a 25 cm +Z translation
-requires about 1.06 rad of joint-3 travel in the factory model. Free-space
-direct and routed transit now use each joint's complete calibrated operational
-span rather than a separate small-step displacement proxy. Actual joint ranges,
-IK continuity, residual, singularity, collision, authority, and
-physical-authorization checks remain authoritative.
-
-Ordinary motion defaults to `TRANSIT_SPEED`. Requested endpoint speed is
-translated into per-joint demand: any joint above 10 rad/s requires explicit
-authentication, while a request reaching 20 rad/s is rejected. Physical
-execution is still limited to the lower of the configured POS_SPEED cap and
-the motor VMAX (5 rad/s for J1-J3 and 10 rad/s for J4-J6 in the requested
-motor-envelope configuration).
-
-Preview, fresh physical commit, and HOLD_LB replan reject position residuals
-above the configured tolerance. `POSE_6DOF` also rejects excessive orientation
-residual. Completion telemetry distinguishes a fixed deadline that floated
-before stable arrival from a confirmed arrival; callers must inspect
-`completion_success` and `completion_outcome` rather than treating a completed
-deadline as target success.
-
-The Kp field is a multiplier of Basic's nominal per-joint Kp profile. Requested and effective Kp/Kd are shown explicitly. Basic remains the final hard-safety authority.
-
-Fabric input is enabled by default on `robot_arm.primary.integrated.command` using `physical_agent.arm_integrated_command`. It accepts explicit `ik_location`, tool-to-acting-point `ik_offset`, and base-frame `ik_gravity_offset` components while retaining the legacy target fields. Fabric updates only staged target/settings and does not bypass GUI Engage + Xbox LB.
-
-The provider heartbeat publishes `details.capability_readiness`, which makes the reviewed capabilities visible through the Midbrain Manager at `GET /v1/capabilities`. The provider-local `GET /v1/capabilities` endpoint maps each advertised capability and GUI operation to its HTTP or Fabric invocation. Experimental continuous POS_VEL and arm POS_TOR one-shot execution are deliberately absent from the Manager capability map.
-
-Payload mass and tool-frame COM are forwarded under the fenced Basic lease so Basic can add payload gravity feed-forward during motion and float.
-
-Semantic sphere scenes remain optional for the operator-debug controls. They
-are mandatory, revision-bound collision input for the signed agentic transit
-path.
-
-`POST /v1/motion/path-plan` also emits a short-lived, digest-bound nonphysical
-preview contract for external authorization workflows. It binds the normalized
-request, caller-supplied camera/workcell/VIO/scene context, selected plan,
-controller instance/boot/configuration, and current lease snapshot. The
-contract grants no commit authority and does not change control state.
-
-`POST /v1/motion/path-commit` is a separate physical operation. It accepts
-only the exact stored plan/request/preview digests and a
-`X-Midbrain-Authorization` assertion signed by the configured authorization
-identity. The assertion binds the controller provider, instance, boot,
-configuration, plan, preview scene, decision, and expiry; both the assertion
-and plan are consumed once. A newer accepted compiler scene does not invalidate
-the stored path by revision alone: commit rechecks every stored waypoint
-against that newest scene and records both revisions. Commit also rechecks
-measured start drift, collision clearance, whole-path joint travel, lease,
-inhibit, and controller health before sending any endpoint. It then advances
-through the controller's exact joint waypoints only after measured stable
-arrival, with both Cartesian and per-joint speed caps. The signed request also
-binds one controller-owned `final_state`: `FLOAT` requests verified gravity
-float after measured arrival; `FIXED` holds the final endpoint until
-`POST /v1/motion/path-release`; and `WAIT_FOR_NEXT` holds the endpoint for a
-bounded 30-second chaining window. During that window a new signed path may
-start from fresh measured joints without an intermediate float or motor-mode
-transition. Expiry returns to verified gravity float.
-Errors, lease loss, inhibit, stale platform state, or stage timeout request
-gravity-float.
-
-The authorization header is never copied into the audit. The synchronous
-provider-local record contains its SHA-256 plus the exact submitted control
-request; Fabric receives the asynchronous audit copy and is not in the motor
-command path.
-
-See `docs/CONTROLLER_PATH_PLANNING.md` for the complete preview/commit boundary
-and physical execution invariants.
-
-`POST /v1/motion/plan` now provides a direct, nonphysical controller-owned
-stage-and-preview call. State-changing control submissions are copied first to
-a provider-local append-only JSONL audit and then replayed asynchronously to
-`robot_arm.integrated.control_audit`. Fabric availability is not in the
-synchronous control path. A strict pre-action local-write failure blocks the
-operation. A post-action audit failure is reported without rewriting a
-successful hardware outcome as rejected. See `docs/CONTROL_AUDIT.md`.
-
-The provider also observes the Manager's advisory authority view for
-`robot_arm.primary` and reports how it compares with the existing fenced Basic
-lease. The versioned comparison exposes both fencing namespaces, explicit
-upstream lineage, Basic lease-held versus operational-writer state, controller
-and relinquishment context, stable disagreement reasons, and
-per-state/per-reason counters. Manager and Basic generation numbers are
-deliberately never compared. A HOT idle Basic lease is reported as standby,
-not as a writer conflict. Until an active writer receives and binds the exact
-upstream Manager owner and authority lease ID, that active case is reported as
-`DUAL_LAYER_UNCORRELATED`. This is shadow telemetry only: the provider-local
-lease remains the enforced authority.
-
-The GUI includes a dedicated joint-7 gripper test panel. Select `MIT` or `POS_TOR`, Engage physical control, then hold Xbox RB to open or RT to close. Releasing both latches the last selected endpoint and its keepalive so the gripper continues holding. Later arm envelopes include the latched joint-7 endpoint, preventing arm motion from overwriting the gripper command. LT, Float, or Safe terminate explicitly releases the gripper latch. Starting a new gripper action remains interlocked while an arm trajectory is active.
-
-CONTACT_WORK requires `POSE_6DOF`, a baseline-relative stroke no longer than 20 cm, and one configured budget. Baseline capture and force execution are deliberately separate operator commands: first capture a posture-local floating baseline, then Engage and click LB for the one-shot action. The default direct J1–J6 external torque budget is 2, 2, 2, 1, 1, 1 Nm. Preview, commit, and replan reject excessive IK position or orientation residual before execution. The GUI also accepts a controlled-frame six-axis wrench box or one isotropic force/torque magnitude pair valid in any direction. Required POS_TOR ratios include expected baseline torque, the effective external budget, and three times measured baseline MAD. If that requirement or a live torque residual exceeds the budgeted allowance, affected joints saturate at Basic's reviewed 27 Nm J1–J3 or 7 Nm J4–J6 ceiling until the configured duration expires.
-
-See `docs/CONTROL_ARCHITECTURE.md` for command overwrite semantics, torque-baseline math, safety invariants, Xbox mappings, and the physical release sequence.
-
-See `docs/UPSTREAM_DISCOVERY.md` for capability names, maturity gates, and the upstream invocation map.
+- [Changelog](CHANGELOG.md) — historical implementation changes; not current
+  operating or capability guidance.

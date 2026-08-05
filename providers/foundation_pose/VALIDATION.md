@@ -49,7 +49,7 @@ a validation failure.
 
 ## Real hardware validation baseline
 
-The runtime behavior inherited by v0.2.4 was exercised on native Windows with:
+The retained native runtime baseline was exercised on Windows with:
 
 - Python 3.11.9;
 - PyTorch 2.7.1 + CUDA 12.8;
@@ -151,4 +151,4 @@ the same validation before copying weights into the NVLabs checkout or
 persistent cache.
 
 Release installers use the bundled payload in offline mode; Google Drive
-availability is not part of the v0.2.4 installation gate.
+availability is not part of the installation gate.

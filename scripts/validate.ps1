@@ -64,6 +64,9 @@ function Get-ValidationPython {
 
 Write-Host "Validating repository: $workspace"
 
+Write-Host "[docs] Checking documentation integrity"
+& (Join-Path $PSScriptRoot "check_docs.ps1")
+
 Write-Host "[1/7] Checking clean configuration baselines"
 & (Join-Path $PSScriptRoot "test_config_baselines.ps1")
 

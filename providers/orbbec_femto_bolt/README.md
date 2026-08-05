@@ -1,6 +1,11 @@
-# Orbbec Femto Bolt Resource Provider 0.4.0
+# Orbbec Femto Bolt Resource Provider
 
 This replaceable package exposes the camera's complete practical sensory data plane through the Resource Provider Manager and World State Fabric while preserving explicit operator start and stop control.
+
+`manifest.json` is authoritative for Provider identity, version, advertised
+capabilities, streams, transport routes, and readiness metadata. This README
+explains how to install and operate the package; it does not duplicate the
+complete manifest inventory.
 
 ## Default sensory profile
 
@@ -40,18 +45,20 @@ It carries provider-written alignment metadata, including custom valid-region
 information. Discovery goes through the Fabric, while all large RGB-D payloads
 remain in shared memory.
 
-## Release status
+## Hardware qualification
 
-Version 0.4.0 is a source-level spatial-convention migration. Version 0.1.6
-remains the last hardware-confirmed rollback baseline recorded by this
-document. The current native paths, shared-memory layout, optical metadata,
-IR, aligned depth, point cloud, and calibration extensions must be built and
-verified on the target Windows/Femto Bolt machine before they are used as a
-safety-relevant perception source.
+Build and verify the native paths, shared-memory layout, optical metadata, IR,
+aligned depth, point cloud, and calibration extensions on the target Windows
+and Femto Bolt installation before treating them as safety-relevant
+perception. [Validation](VALIDATION.md) owns the current software-versus-live
+evidence boundary; [Changelog](CHANGELOG.md) owns release history.
 
 ## Install or replace
 
-Stop the workspace, delete only `providers\orbbec_femto_bolt`, then extract the ZIP into `C:\Projects\testing_physical_ai`.
+Stop the workspace, replace only `providers\orbbec_femto_bolt`, and preserve
+the rest of the repository plus machine-local `config`. The package path must
+remain `providers\orbbec_femto_bolt`; no fixed absolute workspace path is
+required.
 
 Use Developer PowerShell for Visual Studio 2022:
 
@@ -59,7 +66,11 @@ Use Developer PowerShell for Visual Studio 2022:
 .\providers\orbbec_femto_bolt\scripts\setup.ps1
 ```
 
-The source package does not include the complete Orbbec development SDK. Setup locates SDK 2.8.6, builds CameraHost, copies the runtime DLL and extension tree, validates depth dependencies, installs the Python package, and updates only the camera entry in `config\providers.json`.
+The source package does not include the complete Orbbec development SDK. Setup
+locates the supported SDK installation, builds CameraHost, copies the required
+runtime DLL and extension tree, validates depth dependencies, installs the
+Python package, and updates only the camera entry in
+`config\providers.json`. See [SDK requirements and distribution](docs/SDK_REQUIREMENTS.md).
 
 ## Run and verify
 
@@ -73,9 +84,13 @@ Verification writes RGB, native depth, IR, color-aligned depth, point-cloud PLY,
 
 Frame metadata may require a separate Administrator registration step. See `docs\WINDOWS_FRAME_METADATA_SETUP.md`.
 
-See `docs\FULL_CAPABILITY_PROFILE.md` for streams, coordinate frames, readiness, flags, and intentionally separate device-control functions.
+The manifest and Provider status are the current source for advertised streams,
+coordinate metadata, readiness, and transport flags. State-changing device
+functions remain deliberately outside the active interface; their intended
+boundaries are summarized in
+[SDK requirements and distribution](docs/SDK_REQUIREMENTS.md#deliberately-excluded-device-control-scope).
 
-## v0.3 device calibration and transforms
+## Device calibration and transforms
 
 On first sighting of a valid Femto Bolt serial, the Provider creates a device-bound accelerometer calibration under `config/calibration/devices/orbbec/femto-bolt/<serial>/imu-accelerometer.json`. The initial `UNCALIBRATED` correction is identity scale and zero offset. The Provider applies the effective correction to canonical accelerometer observations and publishes its revision.
 
@@ -91,3 +106,28 @@ With the workspace running and the camera Provider `HOT`, launch:
 ```
 
 The local GUI captures two seconds of raw accelerometer samples in six strong axis orientations, solves diagonal scale and offset, backs up the previous device-specific JSON, writes the new `CUSTOM_CALIBRATED` revision, and requests live Provider reload. See `docs/ACCELEROMETER_CALIBRATION_GUI.md`.
+
+## Documentation
+
+Human and installation-agent entry points:
+
+- [SDK requirements and distribution](docs/SDK_REQUIREMENTS.md) — build and
+  runtime dependencies, vendor references, redistribution policy, and deferred
+  device-control scope.
+- [Windows frame-metadata setup](docs/WINDOWS_FRAME_METADATA_SETUP.md) — the
+  separate Administrator registration step when frame metadata is needed.
+- [Accelerometer calibration GUI](docs/ACCELEROMETER_CALIBRATION_GUI.md) —
+  attended six-position calibration and recovery.
+- [Validation](VALIDATION.md) — stopped coverage and live checks still
+  required on the installed device.
+
+Coder and coding-agent references:
+
+- [CameraHost](native_host/README.md) — native process ownership,
+  shared-memory layout, and BufferRef behavior.
+- [`manifest.json`](manifest.json) — authoritative capabilities, streams,
+  route descriptors, version, and readiness metadata.
+
+History:
+
+- [Changelog](CHANGELOG.md) — release history; not a current setup guide.

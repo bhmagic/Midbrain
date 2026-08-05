@@ -1,4 +1,4 @@
-# CameraHost 0.2.0
+# CameraHost native process
 
 `CameraHost.exe` is the only process that opens the Orbbec Femto Bolt. It owns the SDK pipelines and publishes high-volume payloads into Windows named shared memory. Python, Skills, and UI consumers use BufferRefs and do not reopen the camera.
 

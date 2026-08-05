@@ -16,13 +16,15 @@ joints 1-3 and 3.0 rad/s for joints 4-6, with MIT gains of 120/8 and 18/2
 respectively. Those values describe the official controller configuration;
 they are not, by themselves, validated autonomous whole-arm operating speeds.
 
-The requested Midbrain `0.1.21` motor-envelope configuration deliberately
+The current requested Midbrain motor-envelope configuration deliberately
 overrides the latter application value: it retains 5.0 rad/s for the three
 DM-J4340P joints and selects 10.0 rad/s for the three arm DM-J4310 joints and
 the gripper. At 24 V, 5.0 rad/s is below the DM-J4340P 52 rpm no-load
 characteristic but above its 36 rpm rated characteristic; 10.0 rad/s is below
 the DM-J4310 120 rpm rated characteristic. This is a configured command cap,
-not evidence of continuous-duty whole-arm qualification.
+not evidence of continuous-duty whole-arm qualification. The active
+machine-local model and Provider telemetry are authoritative for an installed
+arm; this configured envelope is not release-version identity.
 
 The official hardware repository was at commit
 `e326367bf1bc925f32484d30c5239e3e812065d4` during the same recheck. The

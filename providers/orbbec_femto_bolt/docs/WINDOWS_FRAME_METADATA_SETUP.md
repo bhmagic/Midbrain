@@ -31,4 +31,4 @@ Frame metadata is capability-specific and stream-specific. A camera can remain h
 - `metadata_mask`: bit mask of available SDK metadata fields.
 - `frame_metadata`: name-to-integer-value dictionary containing only available fields.
 - `global_timestamp_us`: host-domain global timestamp when supported and enabled.
-- `flags`: provider transport flags documented in `FULL_CAPABILITY_PROFILE.md`.
+- `flags`: Provider transport flags published with the active route descriptor.

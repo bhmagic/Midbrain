@@ -27,7 +27,7 @@ https://github.com/NVlabs/FoundationPose
 The Provider does **not** vendor the NVLabs FoundationPose source, CUDA
 libraries, PyTorch, nvdiffrast, PyTorch3D, or other native dependencies.
 
-The v0.2.4 offline distribution **does bundle** the two official model-based
+The offline distribution **does bundle** the two official model-based
 FoundationPose checkpoint sets required by the Provider. They are kept under
 `third_party/nvlabs_foundationpose_weights` with a provenance note and exact
 SHA-256 manifest.

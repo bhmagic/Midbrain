@@ -1,4 +1,4 @@
-# Local VIO Resource Provider v0.3.0
+# Local VIO Resource Provider
 
 The default backend is an inertial-first RGB-D visual-inertial estimator. Every ordered accelerometer and gyroscope sample propagates a 15-state error-state filter containing orientation, position, velocity, gyroscope bias, accelerometer bias, and covariance. Camera observations are correction measurements rather than the primary motion clock.
 
@@ -71,11 +71,12 @@ If native depth and IR resolutions differ, depth is resized with nearest-neighbo
 - Long visual outages still allow inertial drift, especially in position.
 - Hardware accuracy must be measured against a recorded trajectory or external reference.
 
+## Stationary initialization
 
-
-### v0.2.2 sample-rate-independent startup
-
-Startup no longer assumes that 80 IMU samples fit inside 1.5 seconds. The initializer selects the newest 80 accelerometer and 80 gyroscope samples before the common IMU timestamp and accepts them when their span is no more than five seconds. This supports the Femto Bolt at 50 Hz, where 80 samples require about 1.58 seconds. Status includes the selected window counts and inferred sample rates.
+The initializer selects a fixed-count accelerometer and gyroscope window in a
+common IMU timestamp domain. It does not assume that the window fits inside a
+fixed wall-clock interval. Provider status reports the selected sample counts,
+inferred rates, timestamp skew, and any initialization blocker.
 
 Stationary initialization can use either the global motion-inhibit gate or a
 short-lived `attest_fixed_rig_stationary` Provider request. The latter is
@@ -83,6 +84,9 @@ accepted only after explicit operator confirmation that the camera and IMU are
 rigidly fixed and stationary. It is bounded to 120 seconds, does not reset the
 VIO epoch, and does not revoke or interfere with an arm-controller lease.
 
-### v0.2.1 startup timestamp fix
+## Documentation
 
-Initialization uses a common IMU timestamp window and prefers SDK system timestamps consistently across video, accelerometer, and gyroscope inputs. The status stream exposes IMU history counts, timestamp skew, and an explicit initialization blocker.
+- [Validation](VALIDATION.md) — stopped checks and remaining live/deployment
+  qualification; for operators, installers, and reviewers.
+- [Changelog](CHANGELOG.md) — release history and migration notes; for
+  maintainers and coding agents investigating a behavior change.

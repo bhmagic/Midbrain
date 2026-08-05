@@ -7,10 +7,11 @@ initial VLM localization, converts the result to metric RGB-D geometry, and
 installs a bounded hard-mount tool calibration before requiring explicit operator
 takeover for motion.
 
-This prototype remains local and is excluded from normal agent discovery while
-its general calibration, perception, registration, controller, audit, and
-authorization responsibilities are extracted. See `CHANGELOG.md` for the
-current separation status. A dedicated axial slicing Skill is future work.
+This prototype is archived and excluded from normal Agent discovery. Its
+general calibration, perception, registration, controller, audit, and
+authorization responsibilities now belong to maintained components. Use Git
+history for the former task plan and changelog; do not restore this package as
+an active Skill.
 
 After the human approves the first-cut approach, the Skill does not perform
 coordinate or VLM checks between later cuts. Integrated preview and controller

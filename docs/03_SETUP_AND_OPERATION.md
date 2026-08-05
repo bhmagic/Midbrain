@@ -1,82 +1,62 @@
 # Setup and Operation
 
-## Target environment
+This is the canonical operator path for the current Windows reference system.
+Component development and physical qualification require the additional
+instructions beside each Provider.
 
-The complete hardware path is designed for Windows 10/11 with Developer PowerShell for Visual Studio 2022.
+## Requirements
 
-Required tools and hardware:
+The complete camera and VIO path targets Windows 10/11 and requires:
 
-- Visual Studio 2022 Build Tools with C++ workload
-- Rust stable MSVC toolchain with `cargo`, `rustfmt`, and `clippy`
-- Python 3.11
-- CMake
-- Orbbec SDK 2.8.6 development files
-- Orbbec Femto Bolt
+- Developer PowerShell for Visual Studio 2022 with the C++ workload;
+- stable Rust MSVC with `cargo` and `rustfmt`;
+- Python 3.11;
+- CMake;
+- Orbbec SDK 2.8.6 development and runtime files; and
+- an Orbbec Femto Bolt.
 
-Optional FoundationPose operation additionally requires:
+The optional reBot arm path also requires the supported seven-motor assembly,
+reviewed machine-local calibration, Windows serial access, and
+`motorbridge>=0.4.9`. The Xbox-compatible controller is needed only for the
+manual Integrated development GUI.
 
-- NVIDIA CUDA-capable hardware and a compatible CUDA/PyTorch environment
-- The upstream NVLabs FoundationPose runtime
-- Git LFS for the two published checkpoint files
-- SAM2 and an OpenAI API key only when using the assisted GUI initialization path
+The optional FoundationPose route requires an NVIDIA/CUDA/PyTorch environment,
+the pinned upstream runtime, Git LFS checkpoints, and any separately installed
+initialization dependencies. Its third-party license restrictions apply.
 
-Optional reBot arm operation additionally requires:
+The Orbbec SDK, MotorBridge, upstream FoundationPose runtime, virtual
+environments, API keys, and measured device calibration are not distributed as
+ordinary repository source.
 
-- The supported reBot/Damiao seven-motor assembly and its reviewed local calibration
-- A Windows serial connection and `motorbridge>=0.4.9`
-- An Xbox-compatible controller only for the manual Integrated hardware-test GUI
+## Workspace and local state
 
-The Orbbec SDK is not redistributed in this repository.
+The scripts support any normal writable workspace path. In examples,
+`<MIDBRAIN_ROOT>` means the repository root; do not copy a developer-specific
+absolute path into configuration or documentation.
 
-## Workspace location
-
-The scripts support other paths, but the established workspace is:
-
-`C:\Projects\testing_physical_ai`
-
-Do not place API keys or device calibration in tracked source files. The setup scripts create or preserve the local `config` directory.
+Machine-local state belongs under `config` and ignored component runtime
+directories. Do not commit API keys, signing secrets, serial identities,
+measured calibration, captures, logs, SQLite runtime records, or active
+Provider configuration.
 
 ## First setup
 
-Open Developer PowerShell:
+Open Developer PowerShell in the repository root:
 
 ```powershell
-cd C:\Projects\Midbrain_git_migration
 Set-ExecutionPolicy -Scope Process Bypass
 .\platform_core\scripts\setup_workspace.ps1
 ```
 
-The setup sequence:
+The setup builds Manager and Fabric, creates component-owned Python
+environments, builds CameraHost when its SDK paths are available, installs the
+core Providers and Skills, and creates missing local configuration from blank
+examples without overwriting existing files.
 
-1. Builds the Rust Manager and Fabric in release mode.
-2. Creates `providers/orbbec_femto_bolt/.venv` and installs the Orbbec support package.
-3. Builds CameraHost unless `-SkipCameraBuild` is supplied.
-4. Creates `providers/local_vio/.venv` and installs the Local VIO Provider.
-5. Creates a private `.venv` for each Python Skill in the core workspace.
-6. Creates `test_agent/.venv` for the Test Agent and OpenAI Agents SDK.
-7. Creates missing local configuration from examples without overwriting existing machine-local files.
+There is no repository-root Python environment. Each Python process launches
+from the environment owned by its component.
 
-There is no repository-root Python environment. A component may install local
-editable dependencies into its own environment, but launch scripts always use
-the environment owned by the process they start.
-
-The workspace setup does not install FoundationPose or build the upstream
-NVLabs CUDA runtime. Install its assets/backend, then set up the Stationary
-Alignment parent. This prepares the retained finite route but does not make it
-the default or an automatic fallback:
-
-```powershell
-git lfs pull
-.\providers\foundation_pose\scripts\setup.ps1
-.\skills\stationary_world_arm_alignment\scripts\setup.ps1
-```
-
-The Provider setup preserves the compatibility runtime and seeds model assets.
-The Stationary setup installs the finite FoundationPose Skill runtime into the
-parent Skill environment. Neither command compiles the complete upstream
-FoundationPose runtime.
-
-Set up the two reBot arm Providers independently so each owns its own `.venv`:
+Set up the arm Providers separately:
 
 ```powershell
 .\providers\rebot_arm_dm\scripts\setup.ps1 -WithMotorBridge
@@ -85,245 +65,139 @@ Set up the two reBot arm Providers independently so each owns its own `.venv`:
 .\providers\rebot_arm_integrated\scripts\register.ps1
 ```
 
-The setup commands create the two private environments and seed missing active configuration from the checked-in clean templates. The registration commands add or update the two entries in local `config\providers.json`. The repository includes factory/unverified arm templates, but it does not include an operator's active measured calibration, active controller tuning, or either virtual environment.
-
-To set explicit SDK paths:
+Set up the retained FoundationPose paths only when required:
 
 ```powershell
-.\platform_core\scripts\setup_workspace.ps1 `
-  -OrbbecIncludeDir "C:\Program Files\OrbbecSDK 2.8.6\include" `
-  -OrbbecLibrary "C:\Program Files\OrbbecSDK 2.8.6\lib\OrbbecSDK.lib" `
-  -OrbbecBinDir "C:\Program Files\OrbbecSDK 2.8.6\bin"
+git lfs pull
+.\providers\foundation_pose\scripts\setup.ps1
+.\skills\stationary_world_arm_alignment\scripts\setup.ps1
 ```
 
-## Start and enter Midbrain
+These commands make the explicit finite initializer and compatibility Provider
+available. They do not make FoundationPose the default alignment path or an
+automatic fallback.
 
-For normal Windows operation, double-click `Start Midbrain.cmd` from the
-workspace root. It starts Manager, Fabric, and the idle Agent UI service, then
-opens the main Midbrain portal at `http://127.0.0.1:7001/`.
+## Start Midbrain
 
-The portal is the primary interaction surface. Opening it does not activate a
-Provider, execute a Skill, or authorize physical motion. Providers remain
-`COLD` until an operator or approved Agent workflow requests them.
+For normal operation, double-click `Start Midbrain.cmd`. It starts Manager,
+Fabric, and the idle Agent UI, then opens:
 
-Use the PowerShell launcher for automation, recovery, or development:
+`http://127.0.0.1:7001/`
+
+The portal is observation-first. Opening it does not activate hardware,
+execute a Skill, reset a spatial epoch, or authorize motion. Providers remain
+`COLD` until a guarded operator or Agent workflow requests them.
+
+For automation or recovery:
 
 ```powershell
 .\platform_core\scripts\run_workspace.ps1
 ```
 
-Options:
+Useful options include `-NoBrowser`, `-StartAgentUi`, `-CoreOnly`, and
+`-AllowProviderAutoStart`. Normal desktop startup deliberately ignores old
+machine-local `auto_start: true` entries unless that last option is supplied.
 
-- `-NoBrowser`: start without opening the portal.
-- `-StartAgentUi`: start the regular and developer views on port 8000.
-- `-AllowProviderAutoStart`: explicitly honor Provider `auto_start` entries.
-- `-CoreOnly`: compatibility alias for Manager + Fabric only; it cannot be
-  combined with `-StartAgentUi`.
+## Use the portal
 
-`Start Midbrain.cmd` supplies `-StartAgentUi`. The direct PowerShell default
-does not. Neither path honors Provider auto-start without the explicit flag.
+Check Manager and Fabric before relying on component state. Provider cards
+distinguish:
 
-## Operate from the main portal
+- process liveness;
+- `COLD`, `WARM`, and `HOT` residency;
+- component health;
+- per-capability readiness;
+- observation freshness and source identity; and
+- active work.
 
-Use the portal in this order:
+A running or `HOT` Provider can still be unready, unhealthy, stale, or missing
+an optional capability. Open its observation page before entering a
+development UI.
 
-1. Confirm the Manager and Fabric summaries are live.
-2. Read Provider and Skill cards before starting anything. Process liveness,
-   residency, readiness, data freshness, and active work are separate signals.
-3. Open a component's read-only observation page for its manifest,
-   capabilities, streams, latest state, and recent error details.
-4. Enter a component development UI only through its guarded link. Acknowledge
-   that administrative controls can overstep the Agent.
-5. If the component is stopped, review the activation request and confirm only
-   when the hardware and work area are ready.
-6. Open the regular Agent for ordinary tasks. Use its developer view when the
-   same run needs additional Provider, Skill, replay, or event diagnostics.
-7. Use **Shut down Midbrain** when finished. It invokes
-   `platform_core\scripts\stop_workspace.ps1` through the guarded portal flow.
+Development UIs may expose administrative or physical controls beyond an
+ordinary Agent workflow. The portal presents a warning and guarded activation
+step before opening them. Finite-Skill development links may start an
+inspection host; they do not execute the Skill itself.
 
-The portal links have distinct authority:
+## Use the Agent
 
-| Portal link | Purpose and side effects |
-|---|---|
-| Provider/Skill observation | Read-only state and diagnostics; does not activate or execute. |
-| Development UI | Requires overstepping acknowledgement; may request bounded activation before opening. |
-| Regular Agent | Curated typed Skills and bounded session-policy authorization. |
-| Developer view | Same autonomous Agent behavior with additional read-only diagnostics. |
-| Agent Run Journal | Read-only retained normalized events; no run or robot authority. |
-| Shut down Midbrain | Runs the safety-ordered workspace stop after confirmation. |
+The regular and developer pages are two projections of one backend-owned
+autonomous Agent runtime. The developer view adds diagnostics; it does not add
+authority or bypass controller checks.
 
-See [Midbrain Main GUI Portal](04_MAIN_GUI_PORTAL.md) for the complete operator
-workflow and recovery guidance.
+For a supported physical action, the intended boundary is:
 
-## Agent interaction from the portal
+1. inspect current Manager, Provider, and Fabric state;
+2. make required Providers ready through lifecycle policy;
+3. collect coherent evidence;
+4. produce a nonphysical controller preview;
+5. resolve policy or a development authorization for that exact preview;
+6. execute through the controller's guarded commit path; and
+7. report success only from bounded controller completion and required
+   post-action evidence.
 
-The single Agent, from either browser view, may inspect current runtime state and propose Provider
-lifecycle changes. An operation outside the active session policy presents a
-plain-language development confirmation naming the Provider, requested state,
-and hardware consequence.
+Closing an SSE connection or browser tab does not cancel a backend run or prove
+the outcome of a physical action. Reopen the Agent page or run journal to
+inspect retained state.
 
-For supported relative arm motion, the Agent should:
+FoundationPose is available to the regular Agent only for this complete
+operator request:
 
-1. Inspect current runtime state, even if an earlier conversation reported the
-   controllers running.
-2. Request policy authorization for Basic to reach `HOT`.
-3. Request policy authorization for Integrated to reach `HOT`.
-4. Produce a nonphysical IK preview from the latest measured pose.
-5. Evaluate session policy for execution of that exact preview and present a
-   development approval only when the policy does not resolve it.
-6. Wait for the bounded controller result and report success only when physical
-   completion is confirmed.
+`Use FoundationPose to establish the stationary world-to-arm-base transform.`
 
-Repeated relative commands are cumulative from the latest measured pose. The
-Agent does not convert them into absolute world-coordinate requests. Safe-home
-is a separate policy-gated Basic Controller operation.
+Generic alignment requests must not silently load it. The movement-based
+replacement is still an active design; see
+[Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
 
-Both Agent pages support per-run Agent model, reasoning-effort, and configured
-visual-backend selection. Terra with medium reasoning is the balanced default.
-A stronger model can improve interpretation but cannot replace controller
-validation, approval, fencing, collision checks, or physical safety controls.
-Both prompt panels start the same backend-owned autonomous run path and observe
-it through the same replayable SSE contract. The sole execution contract is
-`POST /api/streaming-runs` plus its status, SSE-events, and decision routes.
-The synchronous `/api/run` path and `/api/dev/...` execution aliases are not
-available.
+## Stop safely
 
-Each run appears as a separate user/Agent turn in a bounded scrollable history
-owned by the current Manager boot session.
-Expand **Execution summary** on a turn to inspect public model reasoning-summary
-text plus safe Agent, tool, approval, and retry lifecycle updates. Raw private
-reasoning and tool payloads are not shown. The regular and developer pages read
-the same robot-local SQLite projection and periodically synchronize, so both
-show the same transcript when open together and a reopened tab restores the
-same Manager-boot session. There is no browser clear-history action.
-
-The prompt panels can attach one JPEG, PNG, or WebP image up to 8 MiB. Selection
-creates only a browser-local preview; starting a run uploads and validates the
-image, then sends its bounded Midbrain attachment ID in the run request. The
-selected Agent model receives the prompt and image together. Uploaded images
-are not robot observations and do not carry capture time, calibration, depth,
-spatial-frame, or physical-action authority. Robotics-ER Skills continue to
-capture the live bot camera independently.
-
-Visual inference automatically retries a classified transient failure on the
-same read-only backend before using the next configured backend. The default
-is two attempts per backend with a 0.25-second backoff, controlled by
-`PHASE4_VLM_ATTEMPTS_PER_BACKEND` and `PHASE4_VLM_RETRY_BACKOFF_S`.
-Authentication, invalid-model, and other non-transient failures are not
-repeated. This policy does not retry a complete Agent task or robot action.
-
-For a visual Skill that produces annotations, the Agent page shows the exact
-retained camera image used for inference. Overlay visibility and color are
-browser controls. Multiple annotations receive distinct colors and expose
-independent labeled swatches; **Reset colors** restores the deterministic
-palette. **Copy annotated** and **Download annotated** create a flattened PNG
-with those colors without changing the source evidence. SVG and flattened
-exports use the same compact medium-weight labels and translucent black halo.
-Channel buttons appear
-only for channels supplied by that evidence record. The present pointing and
-scene Skills publish RGB only; do not interpret the absence of a depth button
-as a camera-depth failure.
-
-After a cold dependency requests `HOT`, the Agent lifecycle tool waits up to 20
-seconds for a fresh Manager report showing that the Provider is `HOT` and
-ready. `HOT` is the correct dependency action even when the process is stopped,
-because Manager starts it as part of the transition. If the model instead
-chooses `START` with an exact `required_capability`, that call uses the same
-wait rather than returning at process creation. The lifecycle tool also waits
-for the capability to become available from the same Provider. Only then does
-the model resume the original finite Skill. This interval is configured by
-`PROVIDER_HOT_READINESS_TIMEOUT_S`.
-
-A plain `START` with a null capability remains process-only. If `START` with a
-required capability times out because a Provider remains `WARM`, the result
-supplies an exact `HOT` continuation instead of telling the model to retry the
-finite Skill against an unready dependency.
-
-The visual capture boundary then independently waits up to 12 seconds for the
-first readable RGB `BufferRef`, configured by
-`CAMERA_FIRST_FRAME_TIMEOUT_S`. The second check covers the narrow data-plane
-race after control-plane readiness and recycled shared-memory slots. If that
-bounded capture attempt times out, the finite visual Skill retries only the
-RGB capture by default, controlled by `CAMERA_SKILL_CAPTURE_ATTEMPTS` (`1..3`)
-and `CAMERA_SKILL_RETRY_BACKOFF_S` (`0..5`). Camera binding is retained, VLM
-inference waits for a usable frame, and no physical action is submitted. A
-camera that exhausts those bounded attempts fails visibly rather than waiting
-indefinitely or requiring a second user request.
-
-## Direct endpoints for development and recovery
-
-Use these when the portal is unavailable or when developing a component:
-
-| Service | URL |
-|---|---|
-| Midbrain main portal | `http://127.0.0.1:7001/` |
-| Manager health/control | `http://127.0.0.1:7001/v1` |
-| Fabric health/state | `http://127.0.0.1:7002` |
-| Camera Provider control | `http://127.0.0.1:7101` |
-| Local VIO Provider control | `http://127.0.0.1:7102` |
-| FoundationPose Provider control | `http://127.0.0.1:7103` |
-| reBot Arm DM Basic control | `http://127.0.0.1:8791` |
-| reBot Arm Integrated control/GUI | `http://127.0.0.1:8793` |
-| Regular Agent UI | `http://127.0.0.1:8000/` |
-| Autonomous Agent developer view | `http://127.0.0.1:8000/dev` |
-| Agent Run Journal | `http://127.0.0.1:8000/dev/run-journal` |
-| Calibration GUI | `http://127.0.0.1:8111` |
-
-## Status and stop
+Use **Shut down Midbrain** in the portal. When the browser is unavailable, run
+`Stop Midbrain.cmd` or:
 
 ```powershell
-.\platform_core\scripts\check_status.ps1
 .\platform_core\scripts\stop_workspace.ps1
 ```
 
-Runtime logs are written under `platform_core\logs` and are intentionally ignored by Git.
+The shutdown path orders safety-critical Providers, requests their defined safe
+states, and requires acknowledgements. Do not close terminal windows or kill
+processes as a substitute for safe arm shutdown. Independent emergency stop
+remains outside this software path.
 
-## reBot arm discovery and test operation
-
-When Integrated is HOT and ready, Manager `GET /v1/capabilities` advertises usable MIT one-shot/continuous and limited POS_VEL one-shot. Provider `GET http://127.0.0.1:8793/v1/capabilities` maps the discoverable capabilities and GUI operations to their HTTP or Fabric invocation.
-
-POS_VEL one-shot is labeled limited to paths at or below 20 cm with no payload or high external load. POS_VEL continuous and arm POS_TOR one-shot remain experimental/unstable GUI tests and are intentionally absent from Manager capability discovery.
-
-The Agent flow stages target/settings through Fabric stream
-`robot_arm.primary.integrated.command`, binds authorization to one exact
-unexpired preview, and then requests the Integrated one-shot commit. Manager
-authority, Basic fencing, Integrated limits, and terminal completion evidence
-remain enforced. The separate manual hardware-test GUI retains its documented
-Engage + Xbox LB development release. Use the Provider's documented
-`stop_physical_gui_test.ps1` path for authoritative termination of that manual
-GUI session.
-
-## Forced VIO reinitialization
-
-Use **Force reinitialize origin** in the Test Agent while the camera is stable. A reset creates a new Local VIO session epoch and world frame. The viewer suspends new insertion, switches epoch, clears old-epoch points, reopens shared-memory readers, and resumes capture when the new pose and RGB-D data are available.
-
-Expected progression:
-
-`SUSPENDED_FOR_REINITIALIZATION → WAITING_FOR_NEW_SESSION_FRAME → CAPTURING`
-
-## Clear visualization only
-
-Use **Clear point cloud** to remove accumulated display points without resetting VIO or changing the current coordinate epoch.
-
-## FoundationPose compatibility operator workflow
-
-The normal Agent invokes FoundationPose only when the operator's complete
-request is exactly `Use FoundationPose to establish the stationary
-world-to-arm-base transform.` The bounded Skill releases its backend
-automatically. Generic requests such as “establish both axes” do not start it.
-Use the legacy tracking GUI only for compatibility diagnostics or guarded route
-comparison:
+## Status and recovery
 
 ```powershell
-.\providers\foundation_pose\scripts\run_tracking_gui.ps1
+.\platform_core\scripts\check_status.ps1
 ```
 
-Keep the arm still during initialization. Freeze a suitable RGB-D frame, request and review the Base and Gripper boxes and positive points, generate the cropped SAM2 masks, inspect the refined results, and submit tracking only when both masks cover the intended rigid surfaces without unrelated geometry.
+| Result | Response |
+|---|---|
+| Manager or Fabric unavailable | Run the bounded stop path, then start the workspace once. |
+| Provider `COLD` | Request it through the portal or Agent only when needed. |
+| Provider live but unready | Inspect its observation page and latest structured error. |
+| Observation stale | Check the producing Provider, boot identity, dependency state, and source cadence. |
+| Preview created | No movement has occurred; review the exact target, scene, limits, and evidence. |
+| Completion unconfirmed | Treat the action as unsuccessful and inspect measured state before another request. |
+| Development page unreachable | Use component observation and logs; process liveness does not guarantee a UI. |
+| Arm endpoint reachable after Manager loss | Use the documented safety path; do not force-kill load-bearing control. |
 
-The tested Base refinement uses median Lab color distance 30 followed by radius-2 dilation. The tested neon-green Gripper-root refinement uses a median RGB seed with 10% per-channel drift followed by radius-2 dilation. These are empirical defaults, not universal segmentation guarantees.
+Direct development endpoints are documented by Manager and each component.
+The main stable local endpoints are Manager/portal `7001`, Fabric `7002`, and
+Agent UI `8000`. Treat all of them as loopback-only development interfaces.
 
-Base tracking is selectable up to 10 Hz. The experimental Gripper selector exposes rates up to 60 Hz, but actual throughput remains bounded by inference and hardware load; raising the requested rate did not correct the observed Gripper stability problem. Use the lowest stable rate that supplies timely measurements.
+## Forced spatial reinitialization
 
-After a compatibility job, stop every owned session and send
-`release_resources`, or transition the Provider to `WARM`. Both paths unload
-the backend; the request is rejected while any session is still active.
+Reinitializing space cognition creates a new VIO epoch. It revokes alignments
+and observations bound to the previous epoch and requires stationary evidence.
+It is not a routine readiness check. Use the non-resetting world-readiness path
+when the existing epoch is valid.
+
+Clearing the point-cloud display removes visualization state only; it does not
+reset VIO or change the world frame.
+
+## Next references
+
+- [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md)
+- [Validation](06_VALIDATION.md)
+- [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md)
+- [reBot Basic safety](../providers/rebot_arm_dm/docs/SAFETY.md)
+- [reBot Integrated safety](../providers/rebot_arm_integrated/docs/SAFETY.md)

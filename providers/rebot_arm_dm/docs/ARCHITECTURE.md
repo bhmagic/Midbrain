@@ -6,9 +6,12 @@ The Basic Controller is the sole owner of the motor device. It contains no deskt
 
 The calibration application is a separate client. It owns the temporary desktop plane, simplified collision bodies, calibration trajectories, and user workspace confirmation.
 
-## Hard safety rule: MIT `kp`
+## Safety authority
 
-For load-bearing MIT control, low spring stiffness is forbidden. The minimum permitted `kp` is the supplied tested default for each joint: 120 for joints 1–3, 18 for joints 4–6, and 8 for the gripper. `kd` is velocity damping and may be lower. This rule is enforced in configuration validation and command validation.
+Basic enforces load-bearing stiffness, damping, joint, rate, effort, tracking,
+lease, deadline, gravity-support, and safe-home rules locally. The canonical
+operator explanation and failure boundary are in [Safety behavior](SAFETY.md);
+higher-level Providers must not restate or weaken those limits.
 
 ## Control states
 
@@ -31,7 +34,10 @@ For load-bearing MIT control, low spring stiffness is forbidden. The minimum per
 
 ## Automatic calibration boundary
 
-Automatic calibration uses only `POSITION_VELOCITY_LIMITED`. Every request contains all seven joints so no uncommanded joint falls back to MIT during a test. Six joints hold the captured pose and the selected joint moves. The final captured-pose hold remains active during regression and file output.
+Automatic calibration uses only `POSITION_VELOCITY_LIMITED` and includes all
+seven joints in every request, preventing an uncommanded joint from falling
+back to another mode. The attended sequence and fitted model are defined in
+[Automatic friction calibration](CALIBRATION.md).
 
 ## Timing
 
@@ -39,4 +45,7 @@ The current physical-test local loop is 50 Hz to reduce serial load after a USB 
 
 ## Graceful-stop continuity
 
-`SAFE_HOLD_GRAVITY_FLOAT -> SAFE_HOME -> motor disable` is one continuous powered sequence. Safe-home clamps `kp` to the same load-bearing floor used by gravity-float, captures measured position before changing the target, and keeps gravity support active through the powered settle interval. Only a second forced termination request may bypass this sequence.
+Normal termination is one continuous powered sequence from gravity support to
+safe-home and then motor disable. The exact operator-visible invariant and the
+limits of non-graceful failure handling are owned by
+[Safety behavior](SAFETY.md).

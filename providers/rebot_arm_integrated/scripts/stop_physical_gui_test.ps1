@@ -1,11 +1,15 @@
 param(
-    [string]$ProjectRoot = "C:\Projects\testing_physical_ai",
+    [string]$ProjectRoot = "",
     [string]$BasicUrl = "http://127.0.0.1:8791",
     [string]$IntegratedUrl = "http://127.0.0.1:8793",
     [switch]$StopCore
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $ProjectRoot) {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+}
 
 function Test-Endpoint {
     param([string]$Url)
