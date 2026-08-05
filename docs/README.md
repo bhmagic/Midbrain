@@ -33,7 +33,6 @@ Detailed framework contracts remain under [`contracts`](../contracts). Component
 - [`providers/rebot_arm_integrated/docs`](../providers/rebot_arm_integrated/docs)
 - [`skills/stationary_world_arm_alignment`](../skills/stationary_world_arm_alignment/README.md)
 - [`test_agent/docs`](../test_agent/docs)
-- [Next gripper-alignment iteration handoff](reference/project_notes/NEXT_ITERATION_GRIPPER_ALIGNMENT_HANDOFF_20260805.md)
 
 Earlier component-first tutorials are retained under
 [`docs/archive`](archive/README.md). Earlier planning, research, and handover

@@ -14,8 +14,8 @@
 - Retained FoundationPose but removed it as an implicit generic alignment
   route. Its regular Agent invocation now requires the exact documented
   operator sentence.
-- Recorded the next gripper-motion alignment implementation and handoff in
-  document 13 and the 2026-08-05 project note.
+- Recorded the next gripper-motion alignment implementation, non-regression
+  constraints, and handoff in canonical document 13.
 
 ## Test Agent v0.4.2 — Streaming Agent workspace checkpoint
 

@@ -9,10 +9,10 @@
 - Retain FoundationPose as a finite initializer and compatibility route but
   remove it as the regular Agent's implicit generic alignment fallback. Its
   Agent-facing path now requires the documented exact operator request.
-- Add the implementation-ready gripper-motion arm-root alignment plan and the
-  2026-08-05 next-iteration handoff. Preserve general point clouds at distance
-  and reserve dense, overlapping spheres for selected workpieces at very close
-  range.
+- Add one canonical implementation-ready gripper-motion arm-root alignment
+  plan, including next-iteration handoff constraints and required negative
+  tests. Preserve general point clouds at distance and reserve dense,
+  overlapping spheres for selected workpieces at very close range.
 - Refresh the public README, canonical documentation index, executive
   overview, setup guide, and security guide for the Test Agent v0.4.9
   checkpoint. Document the single regular/developer runtime, canonical

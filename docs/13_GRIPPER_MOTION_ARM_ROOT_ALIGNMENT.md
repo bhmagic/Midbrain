@@ -168,6 +168,11 @@ they are fast, general, and do not require a brittle object model. Existing
 20 mm gripper-ROI and 60 mm arm-base-ROI spheres are coarse environment
 geometry, not contact geometry.
 
+Semantic authority remains with the user or upstream task. Do not hard-code the
+black mat, table, or every visible object as an obstacle. A VLM/SAM2 workflow
+may locate and refine only the objects described by that authority; it must not
+invent a broader blocking policy.
+
 When the selected workpiece is very close, refine only that workpiece into a
 denser, possibly overlapping sphere set derived from its point cloud or
 surface. Preserve its object identity, uncertainty, and `WORKPIECE` role.
@@ -196,7 +201,35 @@ poor registration geometry, or a generic axis request. Its finite lifecycle,
 candidate review, activation checks, and separate compatibility Provider remain
 unchanged after explicit invocation.
 
+## Required negative tests
+
+Before repeated hardware fitting, synthetic tests must inject each common
+alignment failure and require either a specific rejection or an obviously large
+visualized residual:
+
+- RGB optical X/Y convention confused with world or arm-base axes;
+- `world_from_base` confused with `base_from_world`, including multiplication
+  order;
+- quaternion component ordering or active/passive rotation confusion;
+- timestamp mismatch across RGB-D, VIO, FK, and controller arrival;
+- camera and FK observations bound to visually similar but physically
+  different gripper landmarks;
+- collinear, nearly collinear, or nearly duplicated calibration positions;
+- a VIO epoch, camera boot/calibration, arm boot, or control-frame change inside
+  one observation set;
+- many noisy samples that conceal a systematic axis swap or sign error;
+- arm occlusion of the table mask or obstacle spillover onto the workpiece;
+- activation of a new transform without retained rollback evidence.
+
+Passing a low aggregate RMS value is insufficient when one of these systematic
+failures is present.
+
 ## Implementation order for the next iteration
+
+Begin with the versioned Fabric contracts and a pure solver. Feed the accepted
+two-point record plus synthetic third points into it before connecting new
+physical motion. Only after the fit artifact clearly shows the expected axes
+should a candidate be offered to Manager for motion-usable activation.
 
 1. Define the Fabric schemas for gripper correspondences, observation sets,
    fit candidates, and activation lineage.
