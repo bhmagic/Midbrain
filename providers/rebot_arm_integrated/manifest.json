@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "manager_ids": ["robot_arm.primary.integrated"],
   "ui": {
@@ -25,10 +25,12 @@
     "robot_arm.integrated.menu_engage_gate",
     "robot.motion.arm.integrated.mit.one_shot",
     "robot.motion.arm.integrated.mit.continuous",
+    "robot.motion.arm.integrated.pos_vel.one_shot",
     "robot.motion.arm.integrated.pos_vel.one_shot_limited",
     "robot.motion.arm.integrated.plan.direct.nonphysical",
     "robot.motion.arm.integrated.plan.transit_path.shadow",
     "robot.motion.arm.integrated.transit.authorized_staged",
+    "robot.motion.arm.integrated.idle_profile.leased",
     "robot_arm.integrated.provider_local_control_audit",
     "robot_arm.integrated.manager_authority_shadow",
     "robot_arm.integrated.manager_shutdown_shadow_client",
@@ -40,8 +42,10 @@
     "robot_arm.integrated.payload_gravity_model",
     "robot_arm.integrated.integrated_owned_smoothing",
     "robot_arm.integrated.auto_float_after_one_shot",
-    "robot_arm.integrated.twenty_cm_commit_clamp",
+    "robot_arm.integrated.free_space_one_point_two_meter_request_envelope",
     "robot_arm.integrated.runtime_kp_multiplier",
+    "robot_arm.integrated.leased_compliant_idle_hold",
+    "robot_arm.integrated.leased_position_lock",
     "robot_arm.integrated.runtime_duration",
     "robot_arm.integrated.measured_commanded_joint_telemetry",
     "robot_arm.integrated.safe_terminate",
@@ -103,8 +107,8 @@
     "one_shot": "LB_RISING_EDGE_SOLVE_AND_STREAM_THEN_FLOAT",
     "hold_lb": "RECEDING_HORIZON_REPLAN_WHILE_HELD_RELEASE_TO_FLOAT",
     "trajectory": "INTEGRATED_OWNED_50HZ_MIT_OR_10HZ_LATCHED_POS_VEL_POS_TOR_ENDPOINT",
-    "maximum_translation_per_commit_m": 0.2,
-    "default_execution_mode": "IMPEDANCE"
+    "maximum_translation_per_commit_m": 1.2,
+    "default_execution_mode": "POSITION_VELOCITY_LIMITED"
   },
   "ik": {
     "position": "SELECTABLE_3DOF_POSITION_IK",
@@ -115,10 +119,11 @@
   "limitations": [
     "Physical hardware validation is required; this release is software-tested only",
     "Controller-owned path-plan remains nonphysical; physical path-commit requires an exact unexpired preview, a signed short-lived one-time authorization assertion, current scene and workcell context, and a fresh fenced Basic lease",
-    "TRANSIT_SPEED ONE_SHOT is limited to paths at or below 20 cm with no payload or high external load; stability beyond those constraints is not established",
+    "Free-space TRANSIT_SPEED uses the lower of controller policy, Basic POS_SPEED caps, and each motor's configured VMAX; contact work remains separately limited",
     "TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental and unstable and are excluded from Manager capability discovery",
     "Cartesian wrench budgets are mapped to joint limits, but measured Cartesian force estimation remains absent; CONTACT_WORK monitors joint-torque residuals",
-    "Manager control-authority leases and shutdown plans remain advisory shadow interfaces during Phase 2; physical enforcement remains the fenced provider-local Basic lease and existing safe-termination helper"
+    "Manager control-authority leases and shutdown plans remain advisory shadow interfaces during Phase 2; physical enforcement remains the fenced provider-local Basic lease and existing safe-termination helper",
+    "Leased idle profiles are provider-local physical holds: COMPLIANT_HOLD accepts 2x-4x configured Kp, POSITION_LOCK uses POS_VEL, and every lease expiry or release returns to verified gravity float"
   ],
   "midbrain_conformance": {
     "runtime_compatibility": "AUDITED_AGAINST_MAIN_E226A09",
@@ -131,17 +136,17 @@
   "execution_backends": {
     "IMPEDANCE": {
       "required_capability": "robot_arm.control.impedance",
-      "default": true,
+      "default": false,
       "one_shot_maturity": "USABLE",
       "continuous_maturity": "USABLE",
       "discoverable": true
     },
     "POSITION_VELOCITY_LIMITED": {
       "required_capability": "robot_arm.control.position_velocity_limited",
-      "default": false,
-      "one_shot_maturity": "LIMITED",
+      "default": true,
+      "one_shot_maturity": "USABLE",
       "one_shot_constraints": {
-        "maximum_path_length_m": 0.2,
+        "maximum_path_length_m": 1.2,
         "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD"
       },
       "continuous_maturity": "EXPERIMENTAL_UNSTABLE",
@@ -166,6 +171,7 @@
     "advertised_motion_capabilities": [
       "robot.motion.arm.integrated.mit.one_shot",
       "robot.motion.arm.integrated.mit.continuous",
+      "robot.motion.arm.integrated.pos_vel.one_shot",
       "robot.motion.arm.integrated.pos_vel.one_shot_limited",
       "robot.motion.arm.integrated.plan.direct.nonphysical",
       "robot.motion.arm.integrated.plan.transit_path.shadow",

@@ -1,0 +1,26 @@
+{
+  "id": "perception.sam2_scene_tracker",
+  "display_name": "HOT SAM2 User-Described Scene Tracker",
+  "dependencies": ["camera.femto_bolt", "robot_arm.rebot_dm"],
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/sam2_scene_tracker/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/sam2_scene_tracker/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/sam2_scene_tracker/config_templates/tracker.default.json",
+    "--manager-url",
+    "${MANAGER_URL}",
+    "--fabric-url",
+    "${FABRIC_URL}",
+    "--control-port",
+    "7105"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:7105",
+  "auto_start": true,
+  "graceful_stop_timeout_ms": 10000,
+  "force_kill_on_stop_timeout": true,
+  "heartbeat_timeout_ms": 15000,
+  "env": {
+    "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}"
+  }
+}

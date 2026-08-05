@@ -1410,6 +1410,11 @@ class FemtoBoltProvider:
                 "route_publish_error": self.route_publish_error,
                 "configured_features": self._configured_features(),
                 "calibration_revision": self.calibration_revision,
+                "canonical_device_id": (
+                    self.accelerometer_calibration.canonical_device_id
+                    if self.accelerometer_calibration is not None
+                    else None
+                ),
                 "accelerometer_calibration": (
                     {
                         "status": self.accelerometer_calibration.status,

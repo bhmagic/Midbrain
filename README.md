@@ -19,7 +19,7 @@ The long-term goal is to provide a reusable foundation for robotic systems that 
 
 > **Project status:** Midbrain is under active development. The current repository demonstrates the architecture through an RGB-D and IMU-based spatial cognition stack, policy-enforced control authority, integrated arm motion planning, and one backend-owned OpenAI Agents SDK runtime projected into regular and developer views. It is not yet a production-certified robotics control system or a hardened remote operator console.
 
-The current Test Agent v0.4.2 checkpoint is recorded in the [Changelog](CHANGELOG.md), [Version History](docs/11_VERSION_HISTORY_AND_DECISIONS.md), and [Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md). It separates SDK-specific execution from versioned Midbrain events, makes the regular and developer pages views of the same autonomous runtime, and retains the existing Manager, finite-Skill, authorization, lease, and controller boundaries.
+The current Test Agent v0.4.9 checkpoint is recorded in the [Changelog](CHANGELOG.md), [Version History](docs/11_VERSION_HISTORY_AND_DECISIONS.md), and [Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md). It adds Fabric-regulated semantic scenes, a reusable no-contact approach loop, full-destination POS_SPEED motion, before/after arm-root evidence, and the explicit-only FoundationPose boundary while retaining the Manager, finite-Skill, authorization, lease, and controller boundaries.
 
 Agent runs now use only the canonical `/api/streaming-runs` family. A
 backend-owned run continues when an SSE browser connection closes. Both Agent
@@ -236,6 +236,7 @@ The first integrated Midbrain reference stack focuses on local spatial cognition
 | Contracts                  | `contracts`                                                                | Framework-neutral Provider, Fabric, Skill, calibration, VIO, and safety contracts                          |
 | Orbbec Femto Bolt Provider | `providers/orbbec_femto_bolt`                                              | Brand-specific RGB, depth, infrared, point-cloud, IMU, calibration, identity, and static-transform support |
 | Local VIO Provider         | `providers/local_vio`                                                      | Brand-neutral camera-plus-IMU pose estimation and dynamic body transforms                                  |
+| HOT Arm Scene Compiler Provider | `providers/arm_scene_compiler`                                        | Continuously compiles Fabric-hosted point clouds, current arm self-filter geometry, and semantic assertions into the canonical short-lived Integrated sphere scene |
 | FoundationPose finite Skill | `skills/foundation_pose_object_localization`                              | Bounded CAD-based 6D pose estimation with explicit estimator and GPU-resource cleanup                       |
 | FoundationPose compatibility Provider | `providers/foundation_pose`                                      | Legacy session/stream compatibility and guarded route comparison during migration                           |
 | reBot Arm DM Basic Provider | `providers/rebot_arm_dm`                                                  | Hardware-facing seven-motor DM controller with gravity-float, safe-home, fenced leases, payload gravity compensation, and validated motor-command limits |
@@ -254,8 +255,10 @@ The Local VIO Provider consumes ordered IMU history and synchronized camera obse
 The finite FoundationPose Skill consumes synchronized RGB-D observations,
 target CAD models, and explicit reviewed masks inside a bounded parent
 workflow. The compatibility Provider preserves the former independent
-tracking/session interface, but it is not the default Stationary Alignment
-route and can explicitly release its GPU runtime after a job.
+tracking/session interface. Neither route is an automatic Stationary Alignment
+fallback. The regular Agent starts the finite FoundationPose initializer only
+for the exact operator request `Use FoundationPose to establish the stationary
+world-to-arm-base transform.` and releases its GPU runtime after the job.
 
 The canonical sanitized reBot B601-DM FoundationPose profile is published under [`providers/foundation_pose/defaults/rebot_b601_dm`](providers/foundation_pose/defaults/rebot_b601_dm). An identical runtime/restore copy is also published at [`config/foundation_pose`](config/foundation_pose), the registry location used by the supplied Manager configuration. Both contain retained STEP/OBJ source, prepared centered meshes, portable metadata, provenance, licenses, and the following reusable multi-view CAD atlases. Active calibration, local registry changes, caches, and camera captures remain excluded.
 
@@ -263,10 +266,11 @@ The canonical sanitized reBot B601-DM FoundationPose profile is published under 
 | --- | --- |
 | [![reBot base CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Base_reference_atlas.png) | [![reBot gripper CAD reference atlas](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png)](providers/foundation_pose/defaults/rebot_b601_dm/references/Gripper_reference_atlas.png) |
 
-The Stationary World-Space Arm Finder requests camera, VIO, and arm-pose
-Providers on demand and invokes the finite FoundationPose Skill only for modes
-that need it. Every estimator attempt releases its sessions and GPU resources
-before returning. The legacy Provider route remains explicit-only; when used,
+After that exact invocation, the Stationary World-Space Arm Finder requests
+camera, VIO, and arm-pose Providers on demand and invokes the finite
+FoundationPose Skill. Generic axis requests do not start it. Every estimator
+attempt releases its sessions and GPU resources before returning. The legacy
+Provider route remains explicit-only; when used,
 the parent stops its sessions, requests resource release, and stops the
 Provider when no foreign sessions remain. The alignment publishes
 world-to-VIO and world-to-arm-base transforms, source diagnostics, and reviewed
@@ -510,7 +514,8 @@ order; optional hardware and CUDA Providers retain their separate setup
 commands.
 
 Install FoundationPose assets and the compatibility backend library, then set
-up Stationary Alignment. The alignment uses the finite Skill route by default:
+up Stationary Alignment. This prepares the explicit finite route; it does not
+make FoundationPose a default or automatic fallback:
 
 ```powershell
 git lfs pull
@@ -578,7 +583,7 @@ The [Stationary World-Space Arm Finder](skills/stationary_world_arm_alignment/RE
 * `foundation_base_vlm_gripper`: FoundationPose base plus a VLM RGB-D foremost-beak point.
 * `vlm_gripper_only`: a later VLM RGB-D translation adjustment that locks the prior rotation and does not start FoundationPose.
 
-Every schema-version-2 result repeats its mode contract and labels gripper evidence as either `FOUNDATIONPOSE_GRIPPER_POSE` at the gripper model origin or `VLM_RGBD_BEAK` at the foremost-beak mean. These positions are not directly comparable until calibrated tool geometry is applied.
+Every schema-version-3 result repeats its mode contract and labels gripper evidence as either `FOUNDATIONPOSE_GRIPPER_POSE` at the gripper model origin or `VLM_RGBD_BEAK` at the foremost-beak mean. These positions are not directly comparable until calibrated tool geometry is applied. The ordinary movement-based successor and its implementation order are defined in the [Gripper-Motion Arm-Root Alignment Plan](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
 
 ---
 

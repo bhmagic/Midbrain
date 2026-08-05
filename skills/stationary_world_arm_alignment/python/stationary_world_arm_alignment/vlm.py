@@ -492,40 +492,53 @@ class GripperVision:
                     },
                 ]
             )
-        try:
-            response = await self.http.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "reasoning": {"effort": "low"},
-                    "input": [{"role": "user", "content": content}],
-                    "text": {
-                        "format": {
-                            "type": "json_schema",
-                            "name": "stationary_world_arm_observations",
-                            "strict": True,
-                            "schema": _schema(),
-                        }
-                    },
-                    "max_output_tokens": 2048,
-                    "store": False,
-                },
-            )
-        except httpx.ConnectError as error:
-            raise RuntimeError(
-                "OpenAI vision endpoint is unreachable; check outbound network access."
-            ) from error
-        if response.is_error:
+        result: dict[str, Any] | None = None
+        last_decode_error: json.JSONDecodeError | None = None
+        for _response_attempt in range(2):
             try:
-                detail = response.json().get("error", {}).get("message")
-            except Exception:
-                detail = None
+                response = await self.http.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "reasoning": {"effort": "low"},
+                        "input": [{"role": "user", "content": content}],
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": "stationary_world_arm_observations",
+                                "strict": True,
+                                "schema": _schema(),
+                            }
+                        },
+                        "max_output_tokens": 2048,
+                        "store": False,
+                    },
+                )
+            except httpx.ConnectError as error:
+                raise RuntimeError(
+                    "OpenAI vision endpoint is unreachable; check outbound "
+                    "network access."
+                ) from error
+            if response.is_error:
+                try:
+                    detail = response.json().get("error", {}).get("message")
+                except Exception:
+                    detail = None
+                raise RuntimeError(
+                    f"OpenAI vision request failed ({response.status_code}): "
+                    f"{detail or response.reason_phrase}"
+                )
+            try:
+                result = json.loads(extract_output_text(response.json()))
+                break
+            except json.JSONDecodeError as error:
+                last_decode_error = error
+        if result is None:
             raise RuntimeError(
-                f"OpenAI vision request failed ({response.status_code}): "
-                f"{detail or response.reason_phrase}"
-            )
-        result = json.loads(extract_output_text(response.json()))
+                "OpenAI gripper localization returned malformed structured "
+                "JSON twice"
+            ) from last_decode_error
         if not result["gripper"]["visible"]:
             raise RuntimeError("the gripper must be visible for beak localization")
         if require_base and not result["base"]["visible"]:
@@ -557,42 +570,55 @@ class GripperVision:
                 "detail": "original",
             },
         ]
-        try:
-            response = await self.http.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "model": self.model,
-                    "reasoning": {"effort": "low"},
-                    "input": [{"role": "user", "content": content}],
-                    "text": {
-                        "format": {
-                            "type": "json_schema",
-                            "name": "foundation_pose_base_axis_review",
-                            "strict": True,
-                            "schema": _base_axis_review_schema(),
-                        }
-                    },
-                    "max_output_tokens": 1024,
-                    "store": False,
-                },
-            )
-        except httpx.ConnectError as error:
-            raise RuntimeError(
-                "OpenAI vision endpoint is unreachable during base pose validation."
-            ) from error
-        if response.is_error:
+        result: dict[str, Any] | None = None
+        last_decode_error: json.JSONDecodeError | None = None
+        for _response_attempt in range(2):
             try:
-                detail = response.json().get("error", {}).get("message")
-            except Exception:
-                detail = None
+                response = await self.http.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.model,
+                        "reasoning": {"effort": "low"},
+                        "input": [{"role": "user", "content": content}],
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": "foundation_pose_base_axis_review",
+                                "strict": True,
+                                "schema": _base_axis_review_schema(),
+                            }
+                        },
+                        "max_output_tokens": 1024,
+                        "store": False,
+                    },
+                )
+            except httpx.ConnectError as error:
+                raise RuntimeError(
+                    "OpenAI vision endpoint is unreachable during base pose "
+                    "validation."
+                ) from error
+            if response.is_error:
+                try:
+                    detail = response.json().get("error", {}).get("message")
+                except Exception:
+                    detail = None
+                raise RuntimeError(
+                    f"OpenAI base pose validation failed "
+                    f"({response.status_code}): "
+                    f"{detail or response.reason_phrase}"
+                )
+            try:
+                result = json.loads(extract_output_text(response.json()))
+                break
+            except json.JSONDecodeError as error:
+                last_decode_error = error
+        if result is None:
             raise RuntimeError(
-                f"OpenAI base pose validation failed ({response.status_code}): "
-                f"{detail or response.reason_phrase}"
-            )
-        return validate_base_axis_review_result(
-            json.loads(extract_output_text(response.json()))
-        )
+                "OpenAI base pose validation returned malformed structured "
+                "JSON twice"
+            ) from last_decode_error
+        return validate_base_axis_review_result(result)
 
     async def close(self) -> None:
         await self.http.aclose()

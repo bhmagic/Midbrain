@@ -56,17 +56,84 @@ class VisualEvidenceStore:
         model: str,
         source_skill: str,
     ) -> dict[str, Any]:
-        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-            raise ValueError(f"unsupported visual evidence media type: {media_type}")
-        if int(width) <= 0 or int(height) <= 0:
-            raise ValueError("visual evidence dimensions must be positive")
-        evidence_id = uuid4().hex
-        channel = StoredVisualChannel(
-            data=bytes(image_bytes),
-            media_type=media_type,
-            width=int(width),
-            height=int(height),
+        return await self.register_channels(
+            channels=[
+                {
+                    "id": "rgb",
+                    "label": "RGB",
+                    "image_bytes": image_bytes,
+                    "media_type": media_type,
+                    "width": width,
+                    "height": height,
+                }
+            ],
+            default_channel="rgb",
+            title=title,
+            annotations=annotations,
+            confidence=confidence,
+            model=model,
+            source_skill=source_skill,
         )
+
+    async def register_channels(
+        self,
+        *,
+        channels: list[dict[str, Any]],
+        default_channel: str,
+        title: str,
+        annotations: list[dict[str, Any]],
+        confidence: str,
+        model: str,
+        source_skill: str,
+    ) -> dict[str, Any]:
+        """Register switchable image channels in one annotation space."""
+
+        if not 1 <= len(channels) <= 8:
+            raise ValueError("visual evidence requires between one and eight channels")
+        evidence_id = uuid4().hex
+        stored_channels: dict[str, StoredVisualChannel] = {}
+        channel_metadata: list[dict[str, Any]] = []
+        for candidate in channels:
+            channel_id = str(candidate.get("id") or "")
+            if _SAFE_ID.fullmatch(channel_id) is None:
+                raise ValueError("visual evidence channel id is invalid")
+            if channel_id in stored_channels:
+                raise ValueError("visual evidence channel ids must be unique")
+            media_type = str(candidate.get("media_type") or "")
+            if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise ValueError(
+                    f"unsupported visual evidence media type: {media_type}"
+                )
+            width = int(candidate.get("width") or 0)
+            height = int(candidate.get("height") or 0)
+            if width <= 0 or height <= 0:
+                raise ValueError("visual evidence dimensions must be positive")
+            image_bytes = bytes(candidate.get("image_bytes") or b"")
+            if not image_bytes:
+                raise ValueError("visual evidence channel data must not be empty")
+            stored_channels[channel_id] = StoredVisualChannel(
+                data=image_bytes,
+                media_type=media_type,
+                width=width,
+                height=height,
+            )
+            channel_metadata.append(
+                {
+                    "id": channel_id,
+                    "label": str(candidate.get("label") or channel_id)[:40],
+                    "url": (
+                        f"/api/visual-evidence/{evidence_id}/channels/"
+                        f"{channel_id}"
+                    ),
+                    "media_type": media_type,
+                    "width": width,
+                    "height": height,
+                    "sha256": hashlib.sha256(image_bytes).hexdigest(),
+                }
+            )
+        selected_default = str(default_channel)
+        if selected_default not in stored_channels:
+            raise ValueError("default visual evidence channel is unavailable")
         async with self._lock:
             self._prune_locked()
             while len(self._items) >= self.maximum_items:
@@ -79,27 +146,15 @@ class VisualEvidenceStore:
                 self._items.pop(oldest_id, None)
             self._items[evidence_id] = _StoredVisualEvidence(
                 created_monotonic=time.monotonic(),
-                channels={"rgb": channel},
+                channels=stored_channels,
             )
         return {
             "schema": VISUAL_EVIDENCE_SCHEMA,
             "schema_version": VISUAL_EVIDENCE_SCHEMA_VERSION,
             "evidence_id": evidence_id,
             "title": str(title)[:200],
-            "default_channel": "rgb",
-            "channels": [
-                {
-                    "id": "rgb",
-                    "label": "RGB",
-                    "url": (
-                        f"/api/visual-evidence/{evidence_id}/channels/rgb"
-                    ),
-                    "media_type": media_type,
-                    "width": int(width),
-                    "height": int(height),
-                    "sha256": hashlib.sha256(image_bytes).hexdigest(),
-                }
-            ],
+            "default_channel": selected_default,
+            "channels": channel_metadata,
             "annotation_space": {
                 "units": "normalized",
                 "origin": "top_left",

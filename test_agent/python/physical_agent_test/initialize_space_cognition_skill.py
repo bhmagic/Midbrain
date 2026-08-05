@@ -60,6 +60,111 @@ class InitializeSpaceCognitionSkill:
         self.timeout_s = timeout_s
         self._lock = asyncio.Lock()
 
+    async def ensure_tracking(self) -> dict[str, Any]:
+        """Establish a usable current world epoch without resetting its origin."""
+
+        async with self._lock:
+            skill_id = str(uuid.uuid4())
+            inhibit_owner = f"skill:{skill_id}"
+            selected = {
+                "head_camera": self.camera_provider_id,
+                "head_depth": self.camera_provider_id,
+                "head_imu": self.camera_provider_id,
+                "local_vio": self.vio_provider_id,
+            }
+            started_at_us = int(time.time() * 1_000_000)
+            inhibit_status: dict[str, Any] | None = None
+            await self._publish_status(
+                skill_id,
+                "RUNNING",
+                "ensure_current_world_tracking",
+                selected,
+                started_at_us=started_at_us,
+                details={
+                    "operation": "ENSURE_EXISTING_EPOCH",
+                    "epoch_reset_allowed": False,
+                    "workcell_calibration_revocation_allowed": False,
+                },
+            )
+            try:
+                await self.manager.set_hot(self.camera_provider_id)
+                await self._wait_for_streams(
+                    [
+                        "camera.rgb.frame_ref",
+                        "camera.depth_aligned_to_rgb.frame_ref",
+                        "camera.imu.accel",
+                        "camera.imu.gyro",
+                        "camera.calibration",
+                        "camera.device_info",
+                    ]
+                )
+                await self.manager.set_hot(self.vio_provider_id)
+
+                tracking = await self._current_tracking_context()
+                stationary_gate = "EXISTING_TRACKING_EPOCH"
+                if tracking is None:
+                    inhibit_status = await self.manager.acquire_motion_inhibit(
+                        owner_id=inhibit_owner,
+                        reason=(
+                            "stationary gravity initialization for current "
+                            "Local VIO world epoch"
+                        ),
+                        related_skill_id=skill_id,
+                    )
+                    await self._wait_for_vio_motion_inhibit()
+                    tracking = await self._wait_for_tracking_context(
+                        expected_epoch=None
+                    )
+                    stationary_gate = "GLOBAL_MOTION_INHIBIT"
+
+                result = {
+                    "skill_id": skill_id,
+                    "operation": "ENSURE_EXISTING_EPOCH",
+                    **tracking,
+                    "selected_providers": selected,
+                    "stationary_gate": stationary_gate,
+                    "motion_inhibit": inhibit_status,
+                    "global_motion_inhibit_acquired": (
+                        inhibit_status is not None
+                    ),
+                    "epoch_reset_performed": False,
+                    "workcell_calibrations_revoked": False,
+                    "physical_motion_submitted": False,
+                }
+                await self._publish_status(
+                    skill_id,
+                    "SUCCEEDED",
+                    "current_world_tracking_ready",
+                    selected,
+                    started_at_us=started_at_us,
+                    details=result,
+                    result=result,
+                )
+                return {"status": "tracking_ready", "result": result}
+            except Exception as error:
+                await self._publish_status(
+                    skill_id,
+                    "FAILED",
+                    "ensure_current_world_tracking",
+                    selected,
+                    started_at_us=started_at_us,
+                    details={
+                        "operation": "ENSURE_EXISTING_EPOCH",
+                        "epoch_reset_performed": False,
+                        "workcell_calibrations_revoked": False,
+                        "error": str(error),
+                    },
+                )
+                raise
+            finally:
+                if inhibit_status is not None:
+                    try:
+                        await self.manager.release_motion_inhibit(
+                            owner_id=inhibit_owner
+                        )
+                    except Exception:
+                        pass
+
     async def verify_tracking(
         self,
         *,
@@ -214,10 +319,19 @@ class InitializeSpaceCognitionSkill:
                 and existing_data.get("state") == "SUCCEEDED"
                 and existing_data.get("session_epoch")
             ):
-                return {
-                    "status": "already_initialized",
-                    "result": existing_data.get("result"),
-                }
+                current = await self._current_tracking_context()
+                existing_result = existing_data.get("result") or {}
+                if (
+                    current is not None
+                    and current["session_epoch"]
+                    == str(existing_data.get("session_epoch") or "")
+                    and current["session_epoch"]
+                    == str(existing_result.get("session_epoch") or "")
+                ):
+                    return {
+                        "status": "already_initialized",
+                        "result": existing_result,
+                    }
 
             skill_id = str(uuid.uuid4())
             inhibit_owner = f"skill:{skill_id}"
@@ -547,6 +661,81 @@ class InitializeSpaceCognitionSkill:
                 return last_status
             await asyncio.sleep(0.1)
         raise TimeoutError(f"VIO did not reach TRACKING: {last_status}")
+
+    async def _wait_for_tracking_context(
+        self,
+        *,
+        expected_epoch: str | None,
+    ) -> dict[str, Any]:
+        deadline = asyncio.get_running_loop().time() + self.timeout_s
+        last_status: dict[str, Any] = {}
+        while asyncio.get_running_loop().time() < deadline:
+            context = await self._current_tracking_context()
+            if context is not None:
+                if (
+                    expected_epoch is None
+                    or context["session_epoch"] == expected_epoch
+                ):
+                    return context
+            observation = await self.fabric.latest_optional(
+                "localization.vio.status"
+            )
+            last_status = (observation or {}).get("data") or {}
+            await asyncio.sleep(0.1)
+        raise TimeoutError(
+            "VIO did not publish a current TRACKING body pose: "
+            f"{last_status}"
+        )
+
+    async def _current_tracking_context(self) -> dict[str, Any] | None:
+        status_observation, pose_observation = await asyncio.gather(
+            self.fabric.latest_optional("localization.vio.status"),
+            self.fabric.latest_optional("localization.body.pose"),
+        )
+        if not self._observation_is_current(status_observation):
+            return None
+        if not self._observation_is_current(pose_observation):
+            return None
+        status = (status_observation or {}).get("data") or {}
+        pose = (pose_observation or {}).get("data") or {}
+        if status.get("tracking_state") != "TRACKING":
+            return None
+        if (
+            status.get("convention_id") != WORLD_CONVENTION_ID
+            or pose.get("convention_id") != WORLD_CONVENTION_ID
+        ):
+            return None
+        session_epoch = str(status.get("session_epoch") or "")
+        world_frame = str(status.get("world_frame") or "")
+        if not session_epoch or not world_frame:
+            return None
+        if str(pose.get("session_epoch") or "") != session_epoch:
+            return None
+        if str(pose.get("world_frame") or "") != world_frame:
+            return None
+        return {
+            "session_epoch": session_epoch,
+            "world_frame": world_frame,
+            "body_frame": str(pose.get("body_frame") or "body_base"),
+            "tracking_state": "TRACKING",
+            "convention_id": WORLD_CONVENTION_ID,
+            "body_position_m": pose.get("position_m"),
+        }
+
+    @staticmethod
+    def _observation_is_current(
+        observation: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(observation, dict):
+            return False
+        if observation.get("valid") is False:
+            return False
+        observed_at_us = int(observation.get("observed_at_us") or 0)
+        freshness_ms = observation.get("freshness_ms")
+        if observed_at_us <= 0 or freshness_ms is None:
+            return observed_at_us > 0
+        maximum_age_us = max(0.0, float(freshness_ms)) * 1000.0
+        return time.time() * 1_000_000 - observed_at_us <= maximum_age_us
 
     async def _publish_status(
         self,

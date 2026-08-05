@@ -8,6 +8,9 @@ if (-not (Test-Path $python)) { throw "Run test_agent\scripts\setup.ps1 first." 
 $env:PHYSICAL_AGENT_ROOT = $workspace
 Import-EnvFile (Join-Path $workspace "config\system.env")
 Import-EnvFile (Join-Path $workspace "config\api_keys.env")
+$processPath = $env:Path
+[Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+[Environment]::SetEnvironmentVariable("Path", $processPath, "Process")
 New-Item -ItemType Directory -Force -Path (Join-Path $agent "logs"), (Join-Path $agent "run") | Out-Null
 & (Join-Path $PSScriptRoot "stop.ps1") -Quiet
 $process = Start-Process -FilePath $python `
@@ -15,11 +18,20 @@ $process = Start-Process -FilePath $python `
     -WorkingDirectory $workspace `
     -RedirectStandardOutput (Join-Path $agent "logs\ui.out.log") `
     -RedirectStandardError (Join-Path $agent "logs\ui.err.log") `
+    -WindowStyle Hidden `
     -PassThru
-@{ ui = $process.Id } | ConvertTo-Json | Set-Content (Join-Path $agent "run\pid.json")
 $deadline=(Get-Date).AddSeconds(30)
 do {
     try { $health=Invoke-RestMethod "http://127.0.0.1:8000/health" -TimeoutSec 2; if ($health.status -eq "ok") { break } } catch { Start-Sleep -Milliseconds 300 }
 } while ((Get-Date) -lt $deadline)
+$listenerPid = Get-VerifiedAgentUiListenerProcessId
+if ($null -eq $listenerPid) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "Test-agent UI reported no verified TCP listener on port 8000."
+}
+@{
+    ui = $listenerPid
+    launcher = $process.Id
+} | ConvertTo-Json | Set-Content (Join-Path $agent "run\pid.json")
 Write-Host "Test UI: http://127.0.0.1:8000"
 if (-not $NoBrowser) { Start-Process "http://127.0.0.1:8000" }

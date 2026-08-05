@@ -41,6 +41,48 @@ def map_pixel_between_grids(
     return mapped_y, mapped_x
 
 
+def normalized_1000_point_to_pixel(
+    point_yx: list[int] | tuple[int, int],
+    target_grid: tuple[int, int],
+) -> tuple[int, int]:
+    """Map a VLM normalized 0..1000 point onto a native pixel grid."""
+
+    height, width = (int(target_grid[0]), int(target_grid[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError("target_grid must be positive")
+    if len(point_yx) != 2:
+        raise ValueError("normalized point must contain [y, x]")
+    y, x = (int(point_yx[0]), int(point_yx[1]))
+    if not 0 <= y <= 1000 or not 0 <= x <= 1000:
+        raise ValueError("normalized point coordinates must be within 0..1000")
+    return (
+        int(round(y * (height - 1) / 1000.0)),
+        int(round(x * (width - 1) / 1000.0)),
+    )
+
+
+def normalized_1000_box_to_pixels(
+    box_yxyx: list[int] | tuple[int, int, int, int],
+    target_grid: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Map a normalized box to half-open native pixel bounds."""
+
+    height, width = (int(target_grid[0]), int(target_grid[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError("target_grid must be positive")
+    if len(box_yxyx) != 4:
+        raise ValueError("normalized box must contain [y0, x0, y1, x1]")
+    y0, x0, y1, x1 = (int(value) for value in box_yxyx)
+    if any(not 0 <= value <= 1000 for value in (y0, x0, y1, x1)):
+        raise ValueError("normalized box coordinates must be within 0..1000")
+    return (
+        max(0, min(height - 1, int(np.floor(y0 * height / 1000.0)))),
+        max(0, min(width - 1, int(np.floor(x0 * width / 1000.0)))),
+        max(1, min(height, int(np.ceil(y1 * height / 1000.0)))),
+        max(1, min(width, int(np.ceil(x1 * width / 1000.0)))),
+    )
+
+
 def select_depth_sample(
     depth_m: np.ndarray,
     pixel_yx: tuple[float, float],

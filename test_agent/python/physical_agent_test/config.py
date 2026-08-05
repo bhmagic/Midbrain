@@ -51,6 +51,10 @@ class Settings:
         "INTEGRATED_CONTROLLER_URL",
         "http://127.0.0.1:8793",
     )
+    sam2_scene_tracker_url: str = os.getenv(
+        "SAM2_SCENE_TRACKER_URL",
+        "http://127.0.0.1:7105",
+    )
     integrated_preview_timeout_s: float = float(
         os.getenv("INTEGRATED_PREVIEW_TIMEOUT_S", "5")
     )
@@ -107,7 +111,7 @@ class Settings:
         os.getenv("CAMERA_SKILL_RETRY_BACKOFF_S", "0.25")
     )
     provider_hot_readiness_timeout_s: float = float(
-        os.getenv("PROVIDER_HOT_READINESS_TIMEOUT_S", "20")
+        os.getenv("PROVIDER_HOT_READINESS_TIMEOUT_S", "45")
     )
     local_vio_provider_id: str = os.getenv("LOCAL_VIO_PROVIDER_ID", "localization.local_vio")
     space_cognition_timeout_s: float = float(os.getenv("SPACE_COGNITION_TIMEOUT_S", "45"))
@@ -117,7 +121,7 @@ class Settings:
     point_cloud_hz: float = float(os.getenv("POINT_CLOUD_HZ", "5"))
     point_cloud_max_points: int = int(os.getenv("POINT_CLOUD_MAX_POINTS", "180000"))
     phase4_agent_run_timeout_s: float = float(
-        os.getenv("PHASE4_AGENT_RUN_TIMEOUT_S", "90")
+        os.getenv("PHASE4_AGENT_RUN_TIMEOUT_S", "300")
     )
     stationary_calibration_timeout_s: float = float(
         os.getenv("STATIONARY_CALIBRATION_TIMEOUT_S", "600")
@@ -151,6 +155,10 @@ class Settings:
             (
                 "identify_pointed_object,"
                 "analyze_visual_scene,"
+                "establish_world_axis,"
+                "locate_item,"
+                "locate_effector_front,"
+                "plan_no_contact_item_approach,"
                 "verify_rgbd_image_alignment,"
                 "reinitialize_space_cognition"
             ),
@@ -163,6 +171,12 @@ class Settings:
         path = self.package_root / "screenshots"
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def scene_policy_state_path(self) -> Path:
+        path = self.package_root / "run"
+        path.mkdir(parents=True, exist_ok=True)
+        return path / "scene_segmentation_policy.v1.json"
 
     @property
     def replay_bundle_dir(self) -> Path:

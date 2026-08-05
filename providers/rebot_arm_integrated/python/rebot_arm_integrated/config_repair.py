@@ -9,7 +9,7 @@ import json
 from .modes import SUPPORTED_EXECUTION_MODES, normalize_execution_mode
 
 
-MANAGED_POLICY_REVISION = 1
+MANAGED_POLICY_REVISION = 6
 LEGACY_ENDPOINT_JOINT_DELTA_RAD = (0.80, 0.80, 0.80, 1.00, 1.00, 1.00)
 
 
@@ -62,8 +62,8 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("trajectory.send_rate_hz must be in [20, 200]")
     maximum = float(config["trajectory"]["maximum_translation_per_commit_m"])
     minimum = float(config["trajectory"].get("minimum_translation_per_commit_m", 0.0005))
-    if maximum <= 0.0 or maximum > 0.20 + 1e-12:
-        raise ValueError("trajectory.maximum_translation_per_commit_m must be in (0, 0.20]")
+    if maximum <= 0.0 or maximum > 1.20 + 1e-12:
+        raise ValueError("trajectory.maximum_translation_per_commit_m must be in (0, 1.20]")
     if minimum < 0.0 or minimum >= maximum:
         raise ValueError("trajectory.minimum_translation_per_commit_m must be non-negative and below the maximum")
     link_radii = config["trajectory"]["link_radii_m"]
@@ -73,6 +73,25 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("trajectory.preview_sample_count must be at least 3")
     if int(config["trajectory"].get("arrival_stable_samples", 10)) < 2:
         raise ValueError("trajectory.arrival_stable_samples must be at least 2")
+    if float(
+        config["trajectory"].get("one_shot_arrival_settle_timeout_s", 0.0)
+    ) <= 0.0:
+        raise ValueError(
+            "trajectory.one_shot_arrival_settle_timeout_s must be positive"
+        )
+    settle_kp_multiplier = float(
+        config["trajectory"].get(
+            "one_shot_arrival_settle_kp_multiplier",
+            1.0,
+        )
+    )
+    if not 1.0 <= settle_kp_multiplier <= float(
+        config["runtime_limits"]["kp_multiplier_max"]
+    ):
+        raise ValueError(
+            "trajectory.one_shot_arrival_settle_kp_multiplier must be "
+            "between 1 and runtime_limits.kp_multiplier_max"
+        )
     if int(
         config["trajectory"].get(
             "intermediate_arrival_stable_samples",
@@ -151,6 +170,8 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("teleop.translation_rate_m_s must be positive")
     if float(config["teleop"]["rotation_rate_rad_s"]) <= 0.0:
         raise ValueError("teleop.rotation_rate_rad_s must be positive")
+    if not isinstance(config["workspace"].get("enforce_cartesian_bounds"), bool):
+        raise ValueError("workspace.enforce_cartesian_bounds must be boolean")
     gripper = config["gripper"]
     if str(gripper["mode"]).upper() not in {"MIT", "POS_TOR"}:
         raise ValueError("gripper.mode must be MIT or POS_TOR")
@@ -234,10 +255,6 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("planning.transit_clearance_margin_m must be positive")
     if float(planning["singularity_escape_lateral_m"]) <= 0.0:
         raise ValueError("planning.singularity_escape_lateral_m must be positive")
-    if not 0.0 < float(planning["cartesian_speed_min_m_s"]) <= float(
-        planning["cartesian_speed_max_m_s"]
-    ):
-        raise ValueError("planning Cartesian speed limits are invalid")
     endpoint_delta = planning["maximum_endpoint_joint_delta_rad"]
     if not isinstance(endpoint_delta, list) or len(endpoint_delta) != 6 or any(float(value) <= 0.0 for value in endpoint_delta):
         raise ValueError("planning.maximum_endpoint_joint_delta_rad must contain six positive values")
@@ -259,9 +276,22 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         )
     if not 0.0 < float(
         planning["maximum_transit_joint_velocity_rad_s"]
-    ) <= 0.25:
+    ) <= 20.0:
         raise ValueError(
-            "planning.maximum_transit_joint_velocity_rad_s must be in (0, 0.25]"
+            "planning.maximum_transit_joint_velocity_rad_s must be in (0, 20]"
+        )
+    authentication_threshold = float(
+        planning["joint_speed_authentication_threshold_rad_s"]
+    )
+    hard_limit = float(planning["joint_speed_hard_limit_rad_s"])
+    if not 0.0 < authentication_threshold < hard_limit <= 20.0:
+        raise ValueError(
+            "planning joint-speed policy must satisfy 0 < authentication "
+            "threshold < hard limit <= 20 rad/s"
+        )
+    if not 0.02 <= float(planning["transit_stage_min_duration_s"]) <= 0.25:
+        raise ValueError(
+            "planning.transit_stage_min_duration_s must be in [0.02, 0.25]"
         )
     if float(planning["maximum_transit_start_joint_drift_rad"]) <= 0.0:
         raise ValueError(
@@ -274,6 +304,10 @@ def validate_controller_config(config: dict[str, Any]) -> None:
     if not 1000 <= int(planning["transit_preview_ttl_ms"]) <= 30000:
         raise ValueError(
             "planning.transit_preview_ttl_ms must be in [1000, 30000]"
+        )
+    if not 0.1 <= float(planning["shadow_planning_time_budget_s"]) <= 3.0:
+        raise ValueError(
+            "planning.shadow_planning_time_budget_s must be in [0.1, 3.0]"
         )
     fabric_input = config["fabric_input"]
     if not str(fabric_input["stream"]).strip():
@@ -289,6 +323,28 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("scene_input stream and schema must be non-empty")
     if int(scene_input["poll_ms"]) < 20 or int(scene_input["maximum_spheres"]) <= 0:
         raise ValueError("scene_input polling and sphere limits are invalid")
+    if not isinstance(
+        scene_input["ignore_pushable_for_collision_planning"], bool
+    ):
+        raise ValueError(
+            "scene_input.ignore_pushable_for_collision_planning must be boolean"
+        )
+    idle_profiles = config["idle_profiles"]
+    lease_min_ms = int(idle_profiles["lease_min_ms"])
+    lease_max_ms = int(idle_profiles["lease_max_ms"])
+    lease_default_ms = int(idle_profiles["lease_default_ms"])
+    if not 100 <= lease_min_ms <= lease_default_ms <= lease_max_ms <= 60_000:
+        raise ValueError("idle profile lease limits are invalid")
+    compliant_min = float(idle_profiles["compliant_kp_multiplier_min"])
+    compliant_max = float(idle_profiles["compliant_kp_multiplier_max"])
+    if not 1.0 <= compliant_min <= compliant_max <= float(
+        config["runtime_limits"]["kp_multiplier_max"]
+    ):
+        raise ValueError("idle compliant Kp multiplier limits are invalid")
+    if not 2.0 <= float(idle_profiles["keepalive_hz"]) <= 50.0:
+        raise ValueError("idle profile keepalive_hz must be in [2, 50]")
+    if float(idle_profiles["position_lock_velocity_limit_rad_s"]) <= 0.0:
+        raise ValueError("idle position-lock velocity limit must be positive")
     control_audit = config["control_audit"]
     if str(control_audit["mode"]) not in {"SHADOW_BEST_EFFORT", "STRICT_LOCAL"}:
         raise ValueError("control_audit.mode is unsupported")
@@ -327,7 +383,7 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
         if key in active:
             preserved[key] = active[key]
     if active.get("schema") == defaults.get("schema"):
-        for key in ("trajectory", "runtime", "runtime_limits", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "manager_authority", "control_audit", "fabric_input", "scene_input"):
+        for key in ("trajectory", "runtime", "runtime_limits", "idle_profiles", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "manager_authority", "control_audit", "fabric_input", "scene_input"):
             if isinstance(active.get(key), dict):
                 preserved[key] = active[key]
     if isinstance(active.get("platform"), dict):
@@ -353,6 +409,53 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
     ):
         merged["planning"]["maximum_endpoint_joint_delta_rad"] = copy.deepcopy(
             defaults["planning"]["maximum_endpoint_joint_delta_rad"]
+        )
+    if active_policy_revision < default_policy_revision:
+        merged["trajectory"]["maximum_translation_per_commit_m"] = float(
+            defaults["trajectory"]["maximum_translation_per_commit_m"]
+        )
+        merged["runtime"]["execution_mode"] = str(
+            defaults["runtime"]["execution_mode"]
+        )
+        merged["planning"]["maximum_transit_joint_velocity_rad_s"] = float(
+            defaults["planning"]["maximum_transit_joint_velocity_rad_s"]
+        )
+        merged["runtime_limits"]["duration_min_s"] = float(
+            defaults["runtime_limits"]["duration_min_s"]
+        )
+        merged["runtime_limits"]["duration_max_s"] = float(
+            defaults["runtime_limits"]["duration_max_s"]
+        )
+        merged["planning"]["maximum_total_joint_travel_rad"] = float(
+            defaults["planning"]["maximum_total_joint_travel_rad"]
+        )
+        merged["planning"]["maximum_endpoint_joint_delta_rad"] = copy.deepcopy(
+            defaults["planning"]["maximum_endpoint_joint_delta_rad"]
+        )
+        merged["planning"][
+            "maximum_transit_endpoint_joint_delta_rad"
+        ] = copy.deepcopy(
+            defaults["planning"][
+                "maximum_transit_endpoint_joint_delta_rad"
+            ]
+        )
+        merged["planning"]["maximum_transit_total_joint_travel_rad"] = float(
+            defaults["planning"][
+                "maximum_transit_total_joint_travel_rad"
+            ]
+        )
+        merged["planning"][
+            "joint_speed_authentication_threshold_rad_s"
+        ] = float(
+            defaults["planning"][
+                "joint_speed_authentication_threshold_rad_s"
+            ]
+        )
+        merged["planning"]["joint_speed_hard_limit_rad_s"] = float(
+            defaults["planning"]["joint_speed_hard_limit_rad_s"]
+        )
+        merged["workspace"]["enforce_cartesian_bounds"] = bool(
+            defaults["workspace"]["enforce_cartesian_bounds"]
         )
     validate_controller_config(merged)
     canonical = json.dumps(merged, indent=2) + "\n"

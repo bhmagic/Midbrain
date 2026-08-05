@@ -17,19 +17,20 @@ from physical_agent_test.world_point_cloud import (
 )
 
 
-def _activation_observation(*, expiry_us: int = 2_000_000) -> dict:
+def _activation_observation() -> dict:
     return {
         "schema": "physical_agent.workcell_calibration_activation",
         "schema_version": 1,
         "stream": CALIBRATION_ACTIVATION_STREAM,
         "provider_id": "manager.workcell_calibration",
         "calibration_revision": "alignment-1",
-        "expires_at_us": expiry_us,
+        "expires_at_us": None,
         "valid": True,
         "data": {
             "activation_id": "activation-1",
             "calibration_revision": "alignment-1",
-            "expires_at_us": expiry_us,
+            "expires_at_us": None,
+            "validity_policy": "MOUNTED_IDENTITY_TRACKING_GATED_V1",
             "state": "ACTIVE",
             "motion_usable": True,
             "session_epoch": "epoch-1",
@@ -166,13 +167,16 @@ class WorldPointCloudLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transform.calibration_revision, "alignment-1")
         self.assertEqual(transform.activation_id, "activation-1")
 
-    async def test_reviewed_stationary_camera_transform_rejects_stale_or_mismatched(
+    async def test_reviewed_stationary_camera_transform_rejects_invalid_or_mismatched(
         self,
     ) -> None:
-        expired = _activation_observation(expiry_us=999_999)
+        legacy_timed = _activation_observation()
+        legacy_timed["expires_at_us"] = 999_999
+        legacy_timed["data"]["expires_at_us"] = 999_999
+        legacy_timed["data"].pop("validity_policy")
         self.assertIsNone(
             _reviewed_stationary_camera_transform(
-                expired,
+                legacy_timed,
                 session_epoch="epoch-1",
                 vio_world_frame="local_vio/epoch-1",
                 now_us=1_000_000,
@@ -266,21 +270,23 @@ class WorldPointCloudLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_uses_reviewed_reference_and_invalid_activation_falls_back(
         self,
     ) -> None:
-        expired = _activation_observation(expiry_us=1)
-        revoked = _activation_observation(expiry_us=9_999_999_999_999_999)
+        invalidated = _activation_observation()
+        invalidated["data"]["state"] = "INVALIDATED"
+        invalidated["data"]["motion_usable"] = False
+        revoked = _activation_observation()
         revoked["data"]["state"] = "REVOKED"
         revoked["data"]["motion_usable"] = False
-        mismatched = _activation_observation(expiry_us=9_999_999_999_999_999)
+        mismatched = _activation_observation()
         mismatched["data"]["session_epoch"] = "epoch-old"
 
         for label, invalid_activation in (
-            ("expired", expired),
+            ("invalidated", invalidated),
             ("revoked", revoked),
             ("session mismatch", mismatched),
         ):
             with self.subTest(label=label):
                 fabric = _CaptureFabric(
-                    _activation_observation(expiry_us=9_999_999_999_999_999)
+                    _activation_observation()
                 )
                 accumulator = WorldPointCloudAccumulator(
                     fabric,

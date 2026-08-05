@@ -13,8 +13,11 @@ world-frame truth. A parent such as Stationary Alignment must establish any
 world alignment and publish it under its own authority.
 
 The former `perception.object_pose.foundation_pose` Provider remains available
-as a compatibility route. It is not the default Stationary Alignment route and
-is never selected as an automatic fallback.
+as a compatibility route. Neither it nor the finite Skill is a default
+Stationary Alignment route, and neither is selected as an automatic fallback.
+The regular Agent summons the finite initializer only for the exact operator
+request `Use FoundationPose to establish the stationary world-to-arm-base
+transform.`
 
 ## Published targets
 
@@ -124,7 +127,8 @@ The bounded `skills/stationary_world_arm_alignment` Skill implements this
 boundary. It:
 
 1. Acquires motion inhibit and verifies that the arm and camera are stationary.
-2. Invokes the finite FoundationPose Skill for required modes and collects a
+2. After the exact invocation above, invokes the finite FoundationPose Skill
+   for the selected mode and collects a
    time window of Base/Gripper measurements with synchronized timestamps and
    quality metadata.
 3. Rejects warm-up, lost-track, outlier, and stale samples.

@@ -1,0 +1,25 @@
+{
+  "id": "world_model.arm_scene_compiler",
+  "display_name": "HOT Arm Semantic Scene Compiler",
+  "dependencies": ["perception.sam2_scene_tracker", "robot_arm.rebot_dm"],
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/arm_scene_compiler/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/arm_scene_compiler/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/arm_scene_compiler/config_templates/scene_compiler.default.json",
+    "--manager-url",
+    "${MANAGER_URL}",
+    "--fabric-url",
+    "${FABRIC_URL}",
+    "--control-port",
+    "7104"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:7104",
+  "auto_start": true,
+  "graceful_stop_timeout_ms": 5000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {
+    "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}"
+  }
+}

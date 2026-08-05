@@ -1,6 +1,7 @@
 {
   "id": "perception.object_pose.foundation_pose",
   "display_name": "FoundationPose CAD Object Pose Provider",
+  "dependencies": ["camera.femto_bolt"],
   "command": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/.venv/Scripts/python.exe",
   "args": [
     "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/provider.py",
@@ -25,7 +26,7 @@
   "control_url": "http://127.0.0.1:7103",
   "auto_start": false,
   "graceful_stop_timeout_ms": 10000,
-  "heartbeat_timeout_ms": 3500,
+  "heartbeat_timeout_ms": 180000,
   "env": {
     "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}",
     "FOUNDATIONPOSE_ROOT": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/nvlabs/FoundationPose"

@@ -168,7 +168,7 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
                         ),
                     }
                 }
-            if stream == "camera.rgbd.data_routes":
+            if stream in {"camera.rgbd.data_routes", "camera.device_info"}:
                 return None
             if stream == "camera.rgbd.bundle":
                 self.bundle_requests += 1
@@ -221,6 +221,18 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
     captured = asyncio.run(
         RgbdCapture(fabric, "camera").capture(attempts=2, retry_delay_s=0)
     )
+    first_capture_requests = list(fabric.requests)
+    vio_request_count = sum(
+        stream in {"localization.body.pose", "localization.vio.status"}
+        for stream in fabric.requests
+    )
+    mounted_capture = asyncio.run(
+        RgbdCapture(fabric, "camera").capture(
+            attempts=1,
+            retry_delay_s=0,
+            require_vio=False,
+        )
+    )
 
     assert captured.frame_number == 2
     assert captured.calibration_revision == "test"
@@ -229,13 +241,193 @@ def test_capture_reloads_a_fresh_bundle_after_buffer_expiry(monkeypatch) -> None
     assert captured.observations["capture"] == {
         "copy_attempt": 2,
         "transient_buffer_error_count": 1,
+        "vio_required": True,
+        "buffer_ref_source": "FABRIC_SYNCHRONIZED_BUNDLE",
+        "copied_at_us": captured.observations["capture"]["copied_at_us"],
+        "rgb_frame_number": 2,
+        "aligned_depth_frame_number": 2,
+        "synchronization_delta_us": 0,
     }
-    assert fabric.bundle_requests == 2
+    assert mounted_capture.session_epoch is None
+    assert mounted_capture.world_frame is None
+    assert mounted_capture.observations["capture"]["vio_required"] is False
+    assert sum(
+        stream in {"localization.body.pose", "localization.vio.status"}
+        for stream in fabric.requests
+    ) == vio_request_count
+    assert fabric.bundle_requests == 3
     assert fabric.requests[:3] == [
         "camera.calibration",
-        "localization.body.pose",
-        "localization.vio.status",
+        "camera.rgbd.data_routes",
+        "camera.device_info",
     ]
+    assert first_capture_requests.index("localization.body.pose") > max(
+        index
+        for index, stream in enumerate(first_capture_requests)
+        if stream == "camera.rgbd.bundle"
+    )
+    assert first_capture_requests.index("localization.vio.status") > max(
+        index
+        for index, stream in enumerate(first_capture_requests)
+        if stream == "camera.rgbd.bundle"
+    )
+
+
+def test_capture_falls_back_to_latest_local_synchronized_pair(
+    monkeypatch,
+) -> None:
+    class FakeFabric:
+        async def latest_optional(self, stream: str) -> dict | None:
+            if stream == "camera.calibration":
+                return {
+                    "calibration_revision": "test",
+                    "data": {
+                        "rgb_intrinsic": {
+                            "fx": 100.0,
+                            "fy": 100.0,
+                            "cx": 0.0,
+                            "cy": 0.0,
+                        },
+                        "coordinate_conventions": {
+                            "color": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            )
+                        },
+                    },
+                }
+            if stream in {
+                "camera.rgbd.data_routes",
+                "camera.device_info",
+            }:
+                return None
+            if stream == "camera.rgbd.bundle":
+                common = {
+                    "mapping_name": "camera-test",
+                    "generation": 1,
+                    "width": 1,
+                    "height": 1,
+                    "frame_number": 1,
+                    "global_timestamp_us": 100,
+                }
+                return {
+                    "observed_at_us": 100,
+                    "data": {
+                        "max_delta_us": 1_000,
+                        "coordinate_conventions": {
+                            "rgb": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                            "aligned_depth": (
+                                "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+                            ),
+                        },
+                        "rgb": {**common, "format_name": "RGB"},
+                        "depth_aligned_to_rgb": {
+                            **common,
+                            "format_name": "Y16",
+                            "depth_value_scale_mm": 1.0,
+                        },
+                    },
+                }
+            raise AssertionError(stream)
+
+    class FakeRef:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def to_dict(self) -> dict:
+            return dict(self.payload)
+
+    class FakeReader:
+        def open(self):
+            return self
+
+        def close(self) -> None:
+            return None
+
+        def refresh(self) -> None:
+            return None
+
+        def recent_refs(self, stream_kind: int, *, attempts: int):
+            if stream_kind == camera_module.STREAM_COLOR:
+                return [
+                    FakeRef(
+                        {
+                            "mapping_name": "camera-test",
+                            "generation": 10,
+                            "width": 1,
+                            "height": 1,
+                            "frame_number": 10,
+                            "global_timestamp_us": 2_000,
+                            "format_name": "RGB",
+                        }
+                    )
+                ]
+            if stream_kind == camera_module.STREAM_ALIGNED_DEPTH:
+                return [
+                    FakeRef(
+                        {
+                            "mapping_name": "camera-test",
+                            "generation": 11,
+                            "width": 1,
+                            "height": 1,
+                            "frame_number": 10,
+                            "global_timestamp_us": 2_100,
+                            "format_name": "Y16",
+                            "depth_value_scale_mm": 1.0,
+                        }
+                    )
+                ]
+            return []
+
+        def read_ref(self, reference: dict) -> bytes:
+            if reference["generation"] == 1:
+                raise RuntimeError(
+                    "BufferRef has expired or the slot was recycled"
+                )
+            if reference["format_name"] == "RGB":
+                return bytes([4, 5, 6])
+            return bytes([232, 3])
+
+    monkeypatch.setattr(
+        camera_module,
+        "CameraSharedMemory",
+        lambda _: FakeReader(),
+    )
+
+    captured = asyncio.run(
+        RgbdCapture(FakeFabric(), "camera").capture(
+            attempts=1,
+            retry_delay_s=0,
+            require_vio=False,
+        )
+    )
+
+    assert captured.frame_number == 10
+    assert captured.timestamp_us == 2_000
+    assert captured.rgb.tolist() == [[[4, 5, 6]]]
+    assert captured.depth_m[0, 0] == pytest.approx(1.0)
+    assert captured.observations["capture"] == {
+        "copy_attempt": 1,
+        "transient_buffer_error_count": 1,
+        "vio_required": False,
+        "buffer_ref_source": "LOCAL_MAPPING_SYNCHRONIZED_FALLBACK",
+        "copied_at_us": captured.observations["capture"]["copied_at_us"],
+        "rgb_frame_number": 10,
+        "aligned_depth_frame_number": 10,
+        "synchronization_delta_us": 100,
+    }
+    effective_bundle = captured.observations["bundle"]
+    assert effective_bundle["observed_at_us"] == 2_100
+    assert effective_bundle["fabric_bundle_observed_at_us"] == 100
+    assert effective_bundle["capture_source"] == (
+        "LOCAL_MAPPING_SYNCHRONIZED_FALLBACK"
+    )
+    assert effective_bundle["data"]["rgb"]["generation"] == 10
+    assert (
+        effective_bundle["data"]["depth_aligned_to_rgb"]["generation"]
+        == 11
+    )
 
 
 def test_capture_does_not_mislabel_decode_errors_as_buffer_expiry(

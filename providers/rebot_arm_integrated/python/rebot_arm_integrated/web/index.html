@@ -17,7 +17,7 @@
     </header>
 
     <section class="warning">
-      <strong>Hardware maturity:</strong> PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED/POS_VEL ONE_SHOT is limited to paths at or below 20 cm with no payload or high external load. TRANSIT_SPEED HOLD_LB and CONTACT_WORK/POS_TOR ONE_SHOT remain experimental and unstable, are available only for operator GUI testing, and are excluded from upstream capability discovery.
+      <strong>Hardware maturity:</strong> PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED/POS_VEL ONE_SHOT is usable for IK-valid free-space requests up to 1.2 m, subject to actual arm reach and joint/scene limits. TRANSIT_SPEED HOLD_LB and CONTACT_WORK/POS_TOR ONE_SHOT remain experimental and unstable, are available only for operator GUI testing, and are excluded from upstream capability discovery.
     </section>
 
     <section class="grid two">
@@ -43,7 +43,7 @@
         <label>Execution backend
           <select id="executionMode">
             <option value="PRESS_MIT">PRESS_MIT — usable (ONE_SHOT + HOLD_LB)</option>
-            <option value="TRANSIT_SPEED">TRANSIT_SPEED — limited ONE_SHOT; continuous experimental</option>
+            <option value="TRANSIT_SPEED">TRANSIT_SPEED — ordinary ONE_SHOT; continuous experimental</option>
             <option value="CONTACT_WORK">CONTACT_WORK — experimental / unstable POS_TOR</option>
           </select>
         </label>
@@ -59,7 +59,7 @@
             <option value="POSE_6DOF">6-DoF pose</option>
           </select>
         </label>
-        <label>One-shot duration (s)<input id="duration" type="number" min="0.25" max="8" step="0.05"></label>
+        <label>One-shot duration (s)<input id="duration" type="number" min="0.05" max="60" step="0.05"></label>
         <label>Hold-LB replan interval (s)<input id="replanInterval" type="number" min="0.05" max="1" step="0.01"></label>
         <label>Kp multiplier<input id="kpMultiplier" type="number" min="1" max="10" step="0.1"></label>
         <div class="buttonRow">
@@ -102,7 +102,7 @@
         <div class="kv"><span>Calculated POS_TOR ratios</span><strong id="contactRatios">—</strong></div>
         <div class="kv"><span>Live torque residual Nm</span><strong id="contactResidual">—</strong></div>
         <p id="contactStatus" class="muted"></p>
-        <p class="muted">Discovery status: PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED ONE_SHOT is limited to paths ≤20 cm with no payload or high external load. TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental/unstable GUI tests and are not advertised to upstream capability discovery.</p>
+        <p class="muted">Discovery status: PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED ONE_SHOT is usable for IK-valid free-space requests up to 1.2 m. TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental/unstable GUI tests and are not advertised to upstream capability discovery.</p>
         <p class="muted">For CONTACT_WORK, capture the floating torque baseline as one command, then separately Engage and use LB for force execution; LB does not recapture automatically. TRANSIT_SPEED ONE_SHOT returns to float after stable arrival. HOLD_LB release requests float.</p>
       </article>
     </section>
@@ -199,7 +199,7 @@
         <div class="kv"><span>Last committed</span><strong id="committedControl">—</strong></div>
         <div class="kv"><span>Position residual</span><strong id="positionResidual">—</strong></div>
         <div class="kv"><span>Orientation residual</span><strong id="orientationResidual">—</strong></div>
-        <div class="kv"><span>20 cm envelope</span><strong id="clampStatus">—</strong></div>
+        <div class="kv"><span>1.2 m request envelope</span><strong id="clampStatus">—</strong></div>
         <div class="kv"><span>Segment duration</span><strong id="trajectoryDuration">—</strong></div>
         <div class="kv"><span>Progress</span><strong id="trajectoryProgress">—</strong></div>
         <div class="kv"><span>Frames sent / skipped</span><strong id="trajectoryFrames">—</strong></div>

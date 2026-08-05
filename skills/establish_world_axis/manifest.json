@@ -1,0 +1,60 @@
+{
+  "skill_type": "establish_world_axis",
+  "version": "0.1.0",
+  "display_name": "Establish Current World Axis",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "establish_world_axis",
+    "description": "Ensure the current Local VIO world epoch has a fresh TRACKING body pose without locating the arm base or resetting the world origin. The operation may start the RGB-D camera and Local VIO and may hold a bounded global motion inhibit while stationary IMU samples are collected.",
+    "when_to_use": [
+      "The operator asks to establish, inspect, or use the current world axes without locating the arm base.",
+      "A spatial Skill needs a fresh Local VIO body pose and the current epoch is not yet TRACKING.",
+      "Camera and VIO startup alone leaves stationary initialization gated."
+    ],
+    "when_not_to_use": [
+      "The operator explicitly asks for a new origin, re-zero, or epoch reset; use reinitialize_space_cognition.",
+      "The task requires the world-to-arm-base relationship; use stationary workcell calibration.",
+      "The camera rig cannot remain stationary during the bounded initialization interval."
+    ],
+    "side_effects": [
+      "May start the configured camera and Local VIO Providers.",
+      "May acquire and release a bounded global motion-inhibit lease.",
+      "Does not reset the VIO epoch, revoke workcell calibrations, or submit physical motion."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "localization.vio.read",
+      "motion.inhibit"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.initialize_space_cognition.ensure_tracking.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.imu.accel",
+    "camera.imu.gyro",
+    "localization.vio.body_pose"
+  ],
+  "published_streams": [
+    "skills.initialize_space_cognition.status"
+  ],
+  "epoch_contract": {
+    "creates_new_epoch": false,
+    "requires_current_tracking_pose": true,
+    "active_workcell_calibrations_unchanged": true
+  }
+}

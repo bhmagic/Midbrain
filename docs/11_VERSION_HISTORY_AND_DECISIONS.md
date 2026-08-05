@@ -1,5 +1,22 @@
 # Version History and Engineering Decisions
 
+## Test Agent v0.4.9 — Spatial-autonomy checkpoint
+
+- Added user/upstream-described semantic obstacle/workpiece policy, SAM2 mask
+  tracking and VLM review, Fabric-regulated scene compilation, arm self-filter
+  geometry, and switchable RGB/depth/mask/sphere visualization.
+- Added the reusable no-contact item-approach composition and full-destination
+  Integrated POS_SPEED execution with bounded observation and preview retries.
+- Added before/after RGB-D and FK gripper correspondence collection. The
+  accepted 0.25 m functional test correctly retained a two-point candidate and
+  requested another non-collinear movement instead of claiming six-degree-of-
+  freedom alignment.
+- Retained FoundationPose but removed it as an implicit generic alignment
+  route. Its regular Agent invocation now requires the exact documented
+  operator sentence.
+- Recorded the next gripper-motion alignment implementation and handoff in
+  document 13 and the 2026-08-05 project note.
+
 ## Test Agent v0.4.2 — Streaming Agent workspace checkpoint
 
 - Replaced separate regular/developer execution behavior with one autonomous
@@ -149,6 +166,16 @@ Local VIO v0.2.2 and Test Agent v0.2.9.
 
 ## Decisions to preserve
 
+- Retain FoundationPose as an explicit slow initializer and diagnostic route,
+  but never start it from generic axis language or as an automatic failure
+  fallback. The regular Agent-facing invocation is the exact sentence `Use
+  FoundationPose to establish the stationary world-to-arm-base transform.`
+- Develop ordinary stationary arm-root alignment from at least three
+  non-collinear controller/FK and RGB-D gripper point correspondences, with
+  Fabric-hosted evidence and Manager-owned activation/rollback.
+- Keep point clouds as the general far-field geometry representation. Increase
+  density and allow overlapping spheres only for a selected workpiece at very
+  close range rather than densifying the entire scene.
 - Keep Manager, Fabric, Resource Provider, Skill, Observation, Capability, and BufferRef terminology.
 - Keep large payloads outside Fabric.
 - Keep Fabric passive and fast: it timestamps and transports state, while each consuming Skill decides whether evidence is fresh enough for its own workload.

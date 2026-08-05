@@ -2,8 +2,19 @@
 
 ## Unreleased
 
+- Complete the spatial-autonomy groundwork through Test Agent v0.4.9:
+  user-described semantic scenes, SAM2/VLM-reviewed obstacle geometry,
+  Fabric-regulated scene spheres, a reusable full-destination no-contact
+  approach loop, POS_SPEED motion, and before/after RGB-D/FK arm-root evidence.
+- Retain FoundationPose as a finite initializer and compatibility route but
+  remove it as the regular Agent's implicit generic alignment fallback. Its
+  Agent-facing path now requires the documented exact operator request.
+- Add the implementation-ready gripper-motion arm-root alignment plan and the
+  2026-08-05 next-iteration handoff. Preserve general point clouds at distance
+  and reserve dense, overlapping spheres for selected workpieces at very close
+  range.
 - Refresh the public README, canonical documentation index, executive
-  overview, setup guide, and security guide for the Test Agent v0.4.2
+  overview, setup guide, and security guide for the Test Agent v0.4.9
   checkpoint. Document the single regular/developer runtime, canonical
   streaming API, shared Manager-session chat, visual evidence, run journal,
   Robotics-ER 2.0 default, current arm authorization path, local trust

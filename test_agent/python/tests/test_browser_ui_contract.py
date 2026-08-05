@@ -333,6 +333,39 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('className = "chat-event-details"', history)
         self.assertIn('className = "chat-event-record"', history)
 
+    def test_world_viewer_exposes_semantic_annotation_layer(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('@app.get("/api/world-annotations")', app)
+        self.assertIn("item_locator_skill.last_metric_result", app)
+        self.assertIn('"LAST_TRUSTED_METRIC_ITEM_RESULT"', app)
+        self.assertIn('id="annotationStats"', app)
+        self.assertIn('id="showAnnotations"', app)
+        self.assertIn('id="showKeepOut"', app)
+        self.assertIn('id="showPushable"', app)
+        self.assertIn('id="showWorkObject"', app)
+        self.assertIn('id="showGripper"', app)
+        self.assertIn('"type": "GRIPPER"', app)
+        self.assertIn('"FABRIC_TRANSFORM"', app)
+        self.assertIn("_frame_transform_to_world", app)
+        self.assertIn(
+            "VIO_WORLD_WITH_INDEPENDENT_ARM_CONTROL_EPOCH",
+            app,
+        )
+        self.assertIn("annotationVisibilityControls", app)
+        self.assertIn("rebuildWorldAnnotationBuffers", app)
+        self.assertIn("refreshWorldAnnotations", app)
+        self.assertIn('sphere.get("sphere_id")', app)
+        self.assertIn('"visualization_limit": 240', app)
+        self.assertIn("scene display ${displayedSceneCount}/${sourceSceneCount}", app)
+        self.assertIn(
+            "Only user-declared KEEP_OUT geometry is blocking",
+            app,
+        )
+
     def test_both_agent_surfaces_expose_model_controls(self) -> None:
         root = Path(__file__).resolve().parents[3]
         regular = (
@@ -657,14 +690,14 @@ class BrowserUiContractTests(unittest.TestCase):
             'type="checkbox" checked',
             regular,
         )
-        self.assertIn('value="35"', regular)
-        self.assertIn('max="0.5"', regular)
-        self.assertIn('value="0.5"', regular)
+        self.assertIn('value="120"', regular)
+        self.assertIn('id="maxAutoSpeedMps" type="hidden" value="5"', regular)
+        self.assertIn('value="5"', regular)
         self.assertIn(
             'midbrain.regularAgent.sessionAuthorization.v4',
             regular,
         )
-        self.assertIn('max="100"', regular)
+        self.assertIn('max="120"', regular)
         self.assertIn("auto_authorize_provider_activation", regular)
         self.assertIn("auto_authorize_relative_motion", regular)
         self.assertIn("max_auto_speed_m_s", regular)
@@ -729,10 +762,9 @@ class BrowserUiContractTests(unittest.TestCase):
             app,
         )
         self.assertIn('id="maxAutoMoveCm"', app)
-        self.assertIn('value="35"', app)
+        self.assertIn('value="120"', app)
         self.assertIn('id="maxAutoSpeedMps"', app)
-        self.assertIn('max="0.5"', app)
-        self.assertIn('value="0.5"', app)
+        self.assertIn('value="5"', app)
         self.assertIn(
             "midbrain.developerAgent.sessionAuthorization.v1",
             app,
@@ -954,6 +986,18 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn('.join("stop_workspace.ps1")', manager_ui)
         self.assertNotIn('.join("stop_workspace_delayed.ps1")', manager_ui)
+
+    def test_runtime_status_exposes_scene_policy_restore_diagnostics(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"scene_policy_restore": {', app)
+        self.assertIn('"result": scene_policy_restore_result', app)
+        self.assertIn('"error": scene_policy_restore_error', app)
 
 
 if __name__ == "__main__":

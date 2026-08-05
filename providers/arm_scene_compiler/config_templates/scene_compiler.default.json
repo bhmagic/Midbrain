@@ -1,0 +1,38 @@
+{
+  "arm_base_frame": "rebot_arm_base",
+  "point_cloud_streams": [
+    "robot_arm.scene.point_cloud",
+    "camera.point_cloud.xyz.frame_ref"
+  ],
+  "ingest_unclaimed_point_cloud": false,
+  "publish_unclaimed_pushable_geometry": false,
+  "semantic_assertion_streams": [
+    "robot_arm.scene.tracked_semantic_assertions",
+    "robot_arm.scene.semantic_assertions"
+  ],
+  "required_semantic_coverage_streams": [
+    "robot_arm.scene.tracked_semantic_assertions"
+  ],
+  "link_frames": [
+    "rebot_arm_base",
+    "link1",
+    "link2",
+    "link3",
+    "link4",
+    "link5",
+    "link6",
+    "rebot_arm_tool"
+  ],
+  "segment_radii_m": [0.07, 0.065, 0.06, 0.05, 0.045, 0.04, 0.035],
+  "self_filter_spacing_m": 0.025,
+  "self_filter_transform_workers": 8,
+  "self_filter_margin_m": 0.01,
+  "point_cloud_max_age_ms": 1000,
+  "buffer_ref_read_attempts": 4,
+  "semantic_assertion_max_age_ms": 10000,
+  "maximum_transform_extrapolation_us": 750000,
+  "maximum_source_points": 120000,
+  "maximum_spheres": 20000,
+  "scene_freshness_ms": 10000,
+  "poll_interval_s": 0.05
+}

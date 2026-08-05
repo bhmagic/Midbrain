@@ -9,6 +9,12 @@ from typing import Any
 import numpy as np
 
 
+SUPPORTED_MOUNTED_WORKCELL_POLICIES = {
+    "MOUNTED_IDENTITY_TRACKING_GATED_V1",
+    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2",
+}
+
+
 def _canonical_sha256(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -40,18 +46,33 @@ def _normalized_plan_request(proposal: dict[str, Any]) -> dict[str, Any]:
         speed = float(request.get("requested_speed_m_s", 0.05))
     except (TypeError, ValueError):
         return {}
-    return {
-        "target": {
-            "position_m": copy.deepcopy(target.get("position_m")),
-            "rpy_rad": copy.deepcopy(target.get("rpy_rad")),
-        },
+    position = target.get("position_m")
+    delta = target.get("position_delta_m")
+    if (position is None) == (delta is None):
+        return {}
+    normalized_target = {
+        **(
+            {"position_m": copy.deepcopy(position)}
+            if position is not None
+            else {"position_delta_m": copy.deepcopy(delta)}
+        ),
+        "rpy_rad": copy.deepcopy(target.get("rpy_rad")),
+    }
+    normalized = {
+        "target": normalized_target,
         "requested_speed_m_s": speed,
         "allowed_contact_object_ids": sorted(str(value) for value in allowed),
         "permit_pushable_contact": bool(
             request.get("permit_pushable_contact", False)
         ),
+        "final_state": str(
+            request.get("final_state", "FIXED")
+        ).strip().upper(),
         "request_context": copy.deepcopy(context),
     }
+    if request.get("ik_mode") is not None:
+        normalized["ik_mode"] = str(request["ik_mode"]).strip().upper()
+    return normalized
 
 
 def _preview_validation_issues(
@@ -151,17 +172,38 @@ def _preview_validation_issues(
     if contract.get("request_context_issues") not in ([], ()):
         issues.append("PREVIEW_CONTEXT_HAS_ISSUES")
 
-    scene_revision = request_context.get("scene_revision")
+    final_state = expected_request.get("final_state")
     if (
-        not str(scene_revision or "").strip()
-        or contract.get("scene_revision") != scene_revision
-        or preview.get("scene_revision") != scene_revision
+        final_state not in {"FLOAT", "FIXED", "WAIT_FOR_NEXT"}
+        or preview.get("final_state") != final_state
+    ):
+        issues.append("PREVIEW_FINAL_STATE_MISMATCH")
+
+    requested_scene_revision = request_context.get("scene_revision")
+    controller_scene_revision = contract.get("scene_revision")
+    if (
+        not str(requested_scene_revision or "").strip()
+        or not str(controller_scene_revision or "").strip()
+        or preview.get("scene_revision") != controller_scene_revision
     ):
         issues.append("PREVIEW_SCENE_REVISION_MISMATCH")
-    for field in (
-        "workcell_transform_expires_at_us",
-        "observation_expires_at_us",
-    ):
+    elif controller_scene_revision != requested_scene_revision:
+        adaptation = contract.get("scene_revision_adaptation")
+        expected_adaptation = {
+            "policy": "CONTROLLER_NEWEST_ACCEPTED_SCENE_USED",
+            "requested_scene_revision": requested_scene_revision,
+            "controller_scene_revision": controller_scene_revision,
+            "commit_policy": (
+                "REVALIDATE_STORED_WAYPOINTS_AGAINST_NEWEST_SCENE"
+            ),
+        }
+        if adaptation != expected_adaptation:
+            issues.append("PREVIEW_SCENE_REVISION_ADAPTATION_INVALID")
+    if request_context.get(
+        "workcell_transform_validity_policy"
+    ) not in SUPPORTED_MOUNTED_WORKCELL_POLICIES:
+        issues.append("PREVIEW_CONTEXT_WORKCELL_VALIDITY_POLICY_INVALID")
+    for field in ("observation_expires_at_us",):
         try:
             if int(request_context.get(field)) <= now:
                 issues.append(f"PREVIEW_CONTEXT_EXPIRED:{field}")
@@ -204,6 +246,9 @@ def _preview_authority(preview: dict[str, Any]) -> dict[str, Any]:
         "issued_at_us": contract.get("issued_at_us"),
         "expires_at_us": contract.get("expires_at_us"),
         "scene_revision": contract.get("scene_revision"),
+        "final_state": (contract.get("normalized_request") or {}).get(
+            "final_state"
+        ),
         "lease_snapshot": copy.deepcopy(contract.get("lease_snapshot")),
     }
 
@@ -279,6 +324,7 @@ def build_observation_motion_proposal(
             "requested_speed_m_s": 0.05,
             "allowed_contact_object_ids": [],
             "permit_pushable_contact": False,
+            "final_state": "FIXED",
             "request_context": copy.deepcopy(preview_context),
             "execute": False,
             "physical_motion_authorized": False,

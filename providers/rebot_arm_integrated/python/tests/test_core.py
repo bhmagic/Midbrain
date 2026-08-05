@@ -25,6 +25,8 @@ from rebot_arm_integrated.controller import (
     IK_POSITION_3DOF,
     INTERACTION_HOLD_LB,
     INTERACTION_ONE_SHOT,
+    IDLE_COMPLIANT_HOLD,
+    IDLE_POSITION_LOCK,
     MODE_MIT,
     PlanningRejected,
     IntegratedController,
@@ -161,6 +163,9 @@ def prepared_controller(*, short_trajectory: bool = False) -> tuple[IntegratedCo
     if short_trajectory:
         config["runtime"]["duration_s"] = 0.25
         config["trajectory"]["send_rate_hz"] = 100.0
+        config["trajectory"]["one_shot_arrival_settle_timeout_s"] = 0.05
+        # Unit tests do not run the controller's Basic state polling thread.
+        config["max_basic_state_age_ms"] = 1000
     basic = FakeBasic()
     controller = IntegratedController(config, basic)
     controller.enter_hot()
@@ -178,13 +183,18 @@ def wait_until(predicate, timeout=1.5):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_default_config_is_valid_and_uses_twenty_cm_envelope(self):
+    def test_default_config_is_valid_and_separates_free_and_contact_envelopes(self):
         config = load_config()
         validate_controller_config(config)
         self.assertEqual(config["schema_version"], 3)
-        self.assertEqual(config["trajectory"]["maximum_translation_per_commit_m"], 0.20)
+        self.assertEqual(config["trajectory"]["maximum_translation_per_commit_m"], 1.20)
         self.assertEqual(config["contact"]["maximum_translation_m"], 0.20)
         self.assertEqual(config["contact"]["budget_mode"], "JOINT_6")
+        self.assertTrue(
+            config["scene_input"][
+                "ignore_pushable_for_collision_planning"
+            ]
+        )
         self.assertEqual(
             config["contact"]["task_torque_budget_nm"],
             [2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
@@ -203,6 +213,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             config["trajectory"]["intermediate_arrival_stable_samples"],
             2,
+        )
+        self.assertEqual(
+            config["trajectory"]["one_shot_arrival_settle_timeout_s"],
+            1.5,
+        )
+        self.assertEqual(
+            config["trajectory"][
+                "one_shot_arrival_settle_kp_multiplier"
+            ],
+            2.0,
         )
         self.assertEqual(
             config["trajectory"]["authorized_stage_timeout_min_s"],
@@ -225,7 +245,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(result.config["basic_controller_url"], "http://x")
             self.assertEqual(result.config["schema_version"], 3)
 
-    def test_config_repair_migrates_only_legacy_default_endpoint_limits(self):
+    def test_config_repair_migrates_motion_policy_to_operational_joint_spans(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "config_templates").mkdir()
@@ -250,12 +270,32 @@ class ConfigTests(unittest.TestCase):
             result = ensure_controller_config(root, active_path)
 
             self.assertTrue(result.repaired)
-            self.assertEqual(result.config["managed_policy_revision"], 1)
+            self.assertEqual(result.config["managed_policy_revision"], 6)
+            self.assertFalse(
+                result.config["workspace"]["enforce_cartesian_bounds"]
+            )
+            self.assertEqual(
+                result.config["planning"][
+                    "maximum_transit_joint_velocity_rad_s"
+                ],
+                20.0,
+            )
             self.assertEqual(
                 result.config["planning"][
                     "maximum_endpoint_joint_delta_rad"
                 ],
-                [0.80, 0.80, 0.85, 1.00, 1.00, 1.00],
+                [
+                    4.5378560552,
+                    5.9341194568,
+                    5.9341194568,
+                    2.6179938780,
+                    2.6179938780,
+                    2.6179938780,
+                ],
+            )
+            self.assertEqual(
+                result.config["planning"]["maximum_total_joint_travel_rad"],
+                1000.0,
             )
 
             custom = copy.deepcopy(active)
@@ -274,7 +314,14 @@ class ConfigTests(unittest.TestCase):
                 custom_result.config["planning"][
                     "maximum_endpoint_joint_delta_rad"
                 ],
-                [0.75, 0.75, 0.82, 0.95, 0.95, 0.95],
+                [
+                    4.5378560552,
+                    5.9341194568,
+                    5.9341194568,
+                    2.6179938780,
+                    2.6179938780,
+                    2.6179938780,
+                ],
             )
 
 
@@ -411,6 +458,47 @@ class SafeTerminationTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_transit_delta_resolves_from_fresh_measured_controlled_frame(self):
+        controller, _ = prepared_controller()
+        with controller.lock:
+            measured_q = controller._measured_positions_locked()[:6].copy()
+            origin = controller.kinematics.controlled_frame(
+                measured_q,
+                controller._tool_to_control_locked(),
+            )
+
+        result = controller.preview_transit_path(
+            target_delta_m=[0.01, 0.0, 0.0],
+            target_rpy_rad=None,
+            requested_speed_m_s=0.03,
+        )
+
+        self.assertEqual(
+            result["target_resolution"],
+            "MEASURED_CONTROLLED_FRAME_PLUS_RELATIVE_DELTA",
+        )
+        self.assertEqual(result["requested_target_delta_m"], [0.01, 0.0, 0.0])
+        self.assertAlmostEqual(
+            result["target"]["position_m"][0],
+            float(origin[0, 3]) + 0.01,
+        )
+
+    def test_default_scene_policy_keeps_pushable_geometry_non_blocking(self):
+        controller, _ = prepared_controller()
+        with controller.lock:
+            self.assertTrue(
+                controller._pushable_contact_is_permitted_locked(False)
+            )
+            controller.config["scene_input"][
+                "ignore_pushable_for_collision_planning"
+            ] = False
+            self.assertFalse(
+                controller._pushable_contact_is_permitted_locked(False)
+            )
+            self.assertTrue(
+                controller._pushable_contact_is_permitted_locked(True)
+            )
+
     def test_gripper_rb_open_release_latches_mit_endpoint_without_float(self):
         controller, basic = prepared_controller()
         controller.set_engaged(True)
@@ -565,8 +653,11 @@ class ControllerTests(unittest.TestCase):
         controller, _ = prepared_controller()
         state = controller.snapshot()
         self.assertEqual(state["control_mode"], CONTROL_MODE)
-        self.assertEqual(state["execution_mode"], PRESS_MIT)
-        self.assertEqual(state["basic_execution_mode"], MODE_MIT)
+        self.assertEqual(state["execution_mode"], TRANSIT_SPEED)
+        self.assertEqual(
+            state["basic_execution_mode"],
+            "POSITION_VELOCITY_LIMITED",
+        )
         self.assertEqual(
             state["safety"]["physically_enabled_execution_modes"],
             [PRESS_MIT, TRANSIT_SPEED, CONTACT_WORK],
@@ -578,6 +669,9 @@ class ControllerTests(unittest.TestCase):
         readiness = state["capability_readiness"]
         self.assertTrue(readiness["robot.motion.arm.integrated.mit.one_shot"])
         self.assertTrue(readiness["robot.motion.arm.integrated.mit.continuous"])
+        self.assertTrue(
+            readiness["robot.motion.arm.integrated.pos_vel.one_shot"]
+        )
         self.assertTrue(
             readiness["robot.motion.arm.integrated.pos_vel.one_shot_limited"]
         )
@@ -591,13 +685,21 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertEqual(
             state["capability_profiles"][
-                "robot.motion.arm.integrated.pos_vel.one_shot_limited"
+                "robot.motion.arm.integrated.pos_vel.one_shot"
             ]["constraints"],
             {
-                "maximum_path_length_m": 0.2,
+                "maximum_path_length_m": 1.2,
                 "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
-                "stability_beyond_constraints": "NOT_ESTABLISHED",
+                "effective_joint_speed_policy": (
+                    "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
+                ),
             },
+        )
+        self.assertEqual(
+            state["capability_profiles"][
+                "robot.motion.arm.integrated.pos_vel.one_shot_limited"
+            ]["replacement"],
+            "robot.motion.arm.integrated.pos_vel.one_shot",
         )
         self.assertFalse(
             state["non_discoverable_experiments"]["TRANSIT_SPEED_HOLD_LB"][
@@ -616,6 +718,7 @@ class ControllerTests(unittest.TestCase):
         catalog = service.capability_catalog()
         names = {item["capability"] for item in catalog["capabilities"]}
         self.assertIn("robot.motion.arm.integrated.mit.one_shot", names)
+        self.assertIn("robot.motion.arm.integrated.pos_vel.one_shot", names)
         self.assertIn(
             "robot.motion.arm.integrated.pos_vel.one_shot_limited",
             names,
@@ -646,7 +749,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(result["physical_motion_authorized"])
         self.assertEqual(basic.commands, [])
 
-    def test_twenty_cm_up_preserving_safe_home_orientation_is_previewable(self):
+    def test_twenty_five_cm_up_preserving_safe_home_orientation_is_previewable(self):
         controller, basic = prepared_controller()
         basic._state["positions_rad"][:6] = [0.0] * 6
         controller.set_runtime_settings({"ik_mode": IK_POSE_6DOF})
@@ -657,13 +760,13 @@ class ControllerTests(unittest.TestCase):
                 controller._tool_to_control_locked(),
             )
             controller.staged_target = origin.copy()
-            controller.staged_target[2, 3] += 0.20
+            controller.staged_target[2, 3] += 0.25
 
         preview = controller.preview_staged_target()
 
         self.assertTrue(preview["planning_valid"])
         self.assertEqual(preview["ik_mode"], IK_POSE_6DOF)
-        self.assertGreater(preview["endpoint_joint_delta_rad"][2], 0.80)
+        self.assertGreater(preview["endpoint_joint_delta_rad"][2], 1.0)
         self.assertLessEqual(
             preview["endpoint_joint_delta_rad"][2],
             preview["endpoint_joint_delta_limit_rad"][2],
@@ -815,6 +918,37 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(basic.float_count, float_count)
         self.assertEqual(basic.commands, [])
 
+    def test_transit_path_preview_stops_at_shadow_planning_time_budget(self):
+        controller, basic = prepared_controller()
+        controller.config["planning"]["shadow_planning_time_budget_s"] = 0.001
+        target = controller.staged_target[:3, 3].copy()
+        target[1] += 0.01
+        original_solve = controller._solve_target_locked
+
+        def slow_solve(*args, **kwargs):
+            time.sleep(0.01)
+            return original_solve(*args, **kwargs)
+
+        with patch.object(
+            controller,
+            "_solve_target_locked",
+            side_effect=slow_solve,
+        ):
+            result = controller.preview_transit_path(
+                target_position_m=target.tolist(),
+                target_rpy_rad=None,
+                requested_speed_m_s=0.05,
+            )
+
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertTrue(result["planning_timed_out"])
+        self.assertEqual(len(result["candidate_evaluations"]), 1)
+        self.assertIn(
+            "SHADOW_PLANNING_TIME_BUDGET_EXCEEDED",
+            result["selected_plan"]["planning_reasons"],
+        )
+        self.assertEqual(basic.commands, [])
+
     def test_transit_path_preview_lazily_loads_model_in_initial_warm_state(self):
         config = load_config()
         basic = FakeBasic()
@@ -893,6 +1027,14 @@ class ControllerTests(unittest.TestCase):
             return result
 
         basic.command = follow_endpoint  # type: ignore[method-assign]
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-authorized-2",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test-refresh-before-commit",
+        )
         result = controller.execute_authorized_transit(
             plan_id="plan-authorized-1",
             preview_sha256="preview-sha",
@@ -914,9 +1056,26 @@ class ControllerTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "EXECUTING")
+        self.assertEqual(
+            result["preview_scene_revision"],
+            "scene-authorized-1",
+        )
+        self.assertEqual(
+            result["commit_scene_revision"],
+            "scene-authorized-2",
+        )
+        self.assertTrue(result["scene_revision_advanced"])
         self.assertLessEqual(
             result["maximum_joint_velocity_rad_s"],
-            0.25,
+            10.0,
+        )
+        self.assertTrue(
+            np.allclose(
+                result["joint_speed_policy"]["joint_rate_caps_rad_s"],
+                [5.0, 5.0, 5.0, 10.0, 10.0, 10.0],
+                rtol=0.0,
+                atol=1e-12,
+            )
         )
         self.assertTrue(
             wait_until(
@@ -932,15 +1091,119 @@ class ControllerTests(unittest.TestCase):
         for envelope in basic.commands:
             for command in envelope:
                 if command["joint_index"] < 6:
+                    self.assertEqual(command["mode"], "IMPEDANCE")
                     self.assertLessEqual(
-                        command["values"]["velocity_limit_rad_s"],
+                        command["values"]["target_rate_limit_rad_s"],
                         0.25,
                     )
+                    self.assertGreater(command["values"]["kp"], 0.0)
+                    self.assertIn(
+                        "feedforward_torque_nm",
+                        command["values"],
+                    )
+        summary = controller.snapshot()["planning"]["authorized_transit"]
+        self.assertEqual(summary["arm_command_mode"], "IMPEDANCE")
+        self.assertEqual(summary["minimum_kp_multiplier"], 1.0)
+        self.assertEqual(
+            summary["gravity_feedforward_owner"],
+            "ROBOT_ARM_BASIC_CALIBRATED_ARM_AND_DECLARED_PAYLOAD",
+        )
         floats_before_release = basic.float_count
         released = controller.release_authorized_transit()
         self.assertEqual(released["status"], "gravity_float")
         self.assertIsNone(controller.authorized_transit)
         self.assertGreater(basic.float_count, floats_before_release)
+
+    def test_wait_for_next_chains_without_intermediate_float_then_floats(self):
+        controller, basic = prepared_controller()
+        controller.stage_scene(
+            {
+                "scene_revision": "scene-chain-1",
+                "frame_id": "rebot_arm_base",
+                "spheres": [],
+            },
+            source="test",
+        )
+        original_command = basic.command
+
+        def follow_endpoint(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = 0.0
+            return result
+
+        basic.command = follow_endpoint  # type: ignore[method-assign]
+        q_start = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        q_first = q_start.copy()
+        q_first[0] += 0.01
+        first = controller.execute_authorized_transit(
+            plan_id="plan-chain-1",
+            preview_sha256="preview-chain-1",
+            request_sha256="request-chain-1",
+            q_waypoints_rad=[q_start.tolist(), q_first.tolist()],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-chain-1",
+            final_state="WAIT_FOR_NEXT",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-chain-1",
+                "decision_id": "decision-chain-1",
+                "resolved_by": "operator",
+            },
+        )
+        self.assertEqual(first["final_state"], "WAIT_FOR_NEXT")
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status
+                    == "WAITING_NEXT"
+                ),
+                timeout=2.0,
+            )
+        )
+        float_count_during_wait = basic.float_count
+
+        q_second = q_first.copy()
+        q_second[1] -= 0.01
+        second = controller.execute_authorized_transit(
+            plan_id="plan-chain-2",
+            preview_sha256="preview-chain-2",
+            request_sha256="request-chain-2",
+            q_waypoints_rad=[q_first.tolist(), q_second.tolist()],
+            requested_speed_m_s=0.05,
+            scene_revision="scene-chain-1",
+            final_state="FLOAT",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-chain-2",
+                "decision_id": "decision-chain-2",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertEqual(second["chained_from_plan_id"], "plan-chain-1")
+        self.assertEqual(basic.float_count, float_count_during_wait)
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is None
+                    and controller.last_authorized_transit is not None
+                    and controller.last_authorized_transit["status"]
+                    == "COMPLETED_FLOAT"
+                ),
+                timeout=3.0,
+            )
+        )
+        self.assertGreater(basic.float_count, float_count_during_wait)
+        self.assertTrue(controller.snapshot()["safety"]["float_confirmed"])
 
     def test_gripper_can_join_authorized_final_hold_without_float(self):
         controller, basic = prepared_controller()
@@ -1478,6 +1741,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_one_shot_lb_rising_edge_moves_once_and_returns_to_float(self):
         controller, basic = prepared_controller(short_trajectory=True)
+        controller.set_runtime_settings({"execution_mode": PRESS_MIT})
         controller.set_engaged(True)
         with controller.lock:
             controller.staged_target[0, 3] += 0.0015
@@ -1492,21 +1756,34 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: controller.trajectory is None))
         self.assertGreater(len(basic.commands), 3)
         self.assertGreater(basic.float_count, 0)
+        base_gains = controller._gain_profile_locked(1.0)
+        settle_gains = controller._gain_profile_locked(2.0)
+        self.assertTrue(
+            any(
+                frame
+                and frame[0]["values"]["kp"]
+                == settle_gains[0]["effective_kp"]
+                and frame[0]["values"]["kp"]
+                > base_gains[0]["effective_kp"]
+                for frame in basic.commands
+            )
+        )
         completed = controller.last_completed_trajectory
         self.assertIsNotNone(completed)
         assert completed is not None
         self.assertEqual(
             completed["completion_outcome"],
-            "DEADLINE_SNAPSHOT_WITHIN_TOLERANCE_AND_FLOATED",
+            "ARRIVAL_CONFIRMED_AND_FLOATED",
         )
-        self.assertFalse(completed["completion_success"])
-        self.assertFalse(completed["target_arrival_confirmed"])
+        self.assertTrue(completed["completion_success"])
+        self.assertTrue(completed["target_arrival_confirmed"])
         self.assertTrue(completed["arrival_duration_confirmed"])
         self.assertTrue(completed["deadline_joint_within_tolerance"])
         self.assertIsNotNone(completed["deadline_position_residual_m"])
 
     def test_one_shot_deadline_reports_incomplete_when_arm_does_not_follow(self):
         controller, basic = prepared_controller(short_trajectory=True)
+        controller.set_runtime_settings({"execution_mode": PRESS_MIT})
         controller.set_engaged(True)
         with controller.lock:
             controller.staged_target[2, 3] += 0.02
@@ -1531,21 +1808,42 @@ class ControllerTests(unittest.TestCase):
 
     def test_rejected_optional_preview_does_not_veto_operator_commit(self):
         controller, _ = prepared_controller(short_trajectory=True)
+        controller.set_runtime_settings({"execution_mode": PRESS_MIT})
         controller.set_engaged(True)
         with controller.lock:
             origin = controller.kinematics.controlled_frame(controller._measured_positions_locked()[:6], controller._tool_to_control_locked())
             controller.staged_target = origin.copy()
-            controller.staged_target[0, 3] += 0.40
+            controller.staged_target[1, 3] += 0.005
+            target_point = controller.staged_target[:3, 3].tolist()
+        controller.stage_scene(
+            {
+                "scene_revision": "optional-diagnostic-collision",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": "diagnostic-only",
+                        "object_id": "diagnostic-only",
+                        "center_m": target_point,
+                        "radius_m": 0.05,
+                        "type": "KEEP_OUT",
+                    }
+                ],
+            },
+            source="test",
+        )
         preview = controller.preview_staged_target()
-        self.assertTrue(preview["target_clamped"])
         self.assertFalse(preview["planning_valid"])
-        self.assertTrue(any("joint travel" in reason for reason in preview["planning_reasons"]))
+        self.assertIn(
+            "candidate path intersects a non-permitted semantic object",
+            preview["planning_reasons"],
+        )
         controller.update_input({"lb": True})
         controller._tick()
         self.assertIsNotNone(controller.last_committed_target)
 
     def test_all_motion_commands_are_impedance(self):
         controller, basic = prepared_controller(short_trajectory=True)
+        controller.set_runtime_settings({"execution_mode": PRESS_MIT})
         controller.set_engaged(True)
         with controller.lock:
             controller.staged_target[1, 3] += 0.005
@@ -1567,6 +1865,7 @@ class ControllerTests(unittest.TestCase):
         basic._state["positions_rad"][3] = joint4_low - 0.08
         controller = IntegratedController(config, basic)
         controller.enter_hot()
+        controller.set_runtime_settings({"execution_mode": PRESS_MIT})
         controller.update_platform_status(
             True,
             True,
@@ -1660,6 +1959,97 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             controller.set_runtime_settings({"kp_multiplier": 2.0})
         controller.update_input({"lb": False})
+
+    def test_leased_compliant_idle_hold_uses_requested_multiplier(self):
+        controller, basic = prepared_controller()
+        result = controller.set_idle_profile(
+            {
+                "profile": IDLE_COMPLIANT_HOLD,
+                "holder": "skill.test",
+                "lease_duration_ms": 3000,
+                "kp_multiplier": 3.0,
+            }
+        )
+
+        self.assertEqual(result["profile"], IDLE_COMPLIANT_HOLD)
+        controller._service_idle_profile(time.monotonic())
+        self.assertEqual(len(basic.commands), 1)
+        commands = basic.commands[-1]
+        self.assertTrue(
+            all(command["mode"] == "IMPEDANCE" for command in commands[:6])
+        )
+        base_gains = controller._gain_profile_locked(1.0)
+        held_gains = [
+            command["values"]["kp"] for command in commands[:6]
+        ]
+        self.assertEqual(
+            held_gains,
+            [
+                controller._gain_profile_locked(3.0)[index]["effective_kp"]
+                for index in range(6)
+            ],
+        )
+        self.assertTrue(
+            all(
+                held >= base["effective_kp"]
+                for held, base in zip(held_gains, base_gains)
+            )
+        )
+        renewed = controller.renew_idle_profile(
+            {
+                "profile_lease_id": result["profile_lease_id"],
+                "holder": "skill.test",
+                "lease_duration_ms": 3000,
+            }
+        )
+        self.assertGreater(renewed["expires_in_ms"], 0)
+        controller.release_idle_profile(
+            {
+                "profile_lease_id": result["profile_lease_id"],
+                "holder": "skill.test",
+            }
+        )
+        self.assertEqual(
+            controller.idle_profile_snapshot()["profile"],
+            "GRAVITY_FLOAT",
+        )
+
+    def test_leased_position_lock_sends_pos_vel_and_expires_to_float(self):
+        controller, basic = prepared_controller()
+        result = controller.set_idle_profile(
+            {
+                "profile": IDLE_POSITION_LOCK,
+                "holder": "skill.test",
+                "lease_duration_ms": 3000,
+            }
+        )
+
+        controller._service_idle_profile(time.monotonic())
+        self.assertEqual(len(basic.commands), 1)
+        self.assertTrue(
+            all(
+                command["mode"] == "POSITION_VELOCITY_LIMITED"
+                for command in basic.commands[-1][:6]
+            )
+        )
+        float_count = basic.float_count
+        with controller.lock:
+            controller.idle_profile_expires_monotonic = time.monotonic() - 1.0
+        controller._service_idle_profile(time.monotonic())
+        self.assertGreater(basic.float_count, float_count)
+        self.assertEqual(controller.control_state, "TARGET_EDIT")
+        self.assertEqual(
+            controller.idle_profile_snapshot()["profile"],
+            "GRAVITY_FLOAT",
+        )
+        with self.assertRaises(PermissionError):
+            controller.renew_idle_profile(
+                {
+                    "profile_lease_id": result["profile_lease_id"],
+                    "holder": "skill.test",
+                    "lease_duration_ms": 3000,
+                }
+            )
 
     def test_rejected_hold_replan_keeps_last_valid_plan_without_forcing_float(self):
         controller, basic = prepared_controller(short_trajectory=True)

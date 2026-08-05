@@ -6,6 +6,7 @@ import copy
 import math
 import threading
 import time
+import uuid
 
 import numpy as np
 
@@ -27,6 +28,7 @@ from .planning import (
     build_transit_frame_candidates,
     build_waypoint_preview,
     controller_owned_duration,
+    joint_speed_policy_schedule,
     solve_cartesian_continuity,
     solve_cartesian_continuity_adaptive,
 )
@@ -41,6 +43,22 @@ IK_POSITION_3DOF = "POSITION_3DOF"
 IK_POSE_6DOF = "POSE_6DOF"
 SUPPORTED_INTERACTIONS = {INTERACTION_ONE_SHOT, INTERACTION_HOLD_LB}
 SUPPORTED_IK_MODES = {IK_POSITION_3DOF, IK_POSE_6DOF}
+IDLE_GRAVITY_FLOAT = "GRAVITY_FLOAT"
+IDLE_COMPLIANT_HOLD = "COMPLIANT_HOLD"
+IDLE_POSITION_LOCK = "POSITION_LOCK"
+SUPPORTED_IDLE_PROFILES = {
+    IDLE_GRAVITY_FLOAT,
+    IDLE_COMPLIANT_HOLD,
+    IDLE_POSITION_LOCK,
+}
+FINAL_STATE_FLOAT = "FLOAT"
+FINAL_STATE_FIXED = "FIXED"
+FINAL_STATE_WAIT_FOR_NEXT = "WAIT_FOR_NEXT"
+SUPPORTED_FINAL_STATES = {
+    FINAL_STATE_FLOAT,
+    FINAL_STATE_FIXED,
+    FINAL_STATE_WAIT_FOR_NEXT,
+}
 GRIPPER_MIT = "MIT"
 GRIPPER_POS_TOR = "POS_TOR"
 GRIPPER_OPEN = "OPEN"
@@ -109,7 +127,9 @@ class AuthorizedTransitExecution:
     assertion_id: str
     decision_id: str
     resolved_by: str
+    preview_scene_revision: str
     scene_revision: str
+    final_state: str
     q_waypoints: tuple[np.ndarray, ...]
     stage_durations_s: tuple[float, ...]
     started_monotonic: float
@@ -286,6 +306,16 @@ class IntegratedController:
         self.float_failure_count = 0
         self.last_float_confirmed = 0.0
         self.last_float_reason: str | None = None
+        self.idle_profile = IDLE_GRAVITY_FLOAT
+        self.idle_profile_lease_id: str | None = None
+        self.idle_profile_holder: str | None = None
+        self.idle_profile_expires_monotonic = 0.0
+        self.idle_profile_q: np.ndarray | None = None
+        self.idle_profile_kp_multiplier: float | None = None
+        self.idle_profile_endpoint: LatchedEndpointCommand | None = None
+        self.idle_profile_last_send_monotonic = 0.0
+        self.idle_profile_command_count = 0
+        self.idle_profile_last_error: str | None = None
 
         self.manager_registered = False
         self.fabric_ready = False
@@ -342,8 +372,11 @@ class IntegratedController:
             if (
                 self.trajectory is not None
                 or self.authorized_transit is not None
+                or self.idle_profile != IDLE_GRAVITY_FLOAT
             ):
-                raise RuntimeError("runtime settings cannot change during active motion")
+                raise RuntimeError(
+                    "runtime settings cannot change during active motion or idle hold"
+                )
             if "interaction_mode" in payload:
                 value = str(payload["interaction_mode"]).strip().upper()
                 if value not in SUPPORTED_INTERACTIONS:
@@ -736,6 +769,15 @@ class IntegratedController:
                 "scene": scene.snapshot(),
             }
 
+    def _pushable_contact_is_permitted_locked(self, requested: bool) -> bool:
+        """Keep PUSHABLE geometry non-blocking when the scene policy requests it."""
+        return bool(requested) or bool(
+            self.config["scene_input"].get(
+                "ignore_pushable_for_collision_planning",
+                False,
+            )
+        )
+
     def preview_staged_target(
         self,
         *,
@@ -776,7 +818,9 @@ class IntegratedController:
                     link_radii_m=self.config["trajectory"]["link_radii_m"],
                     sample_count=int(self.config["trajectory"]["preview_sample_count"]),
                     allowed_contact_object_ids=set(allowed_contact_object_ids or set()),
-                    permit_pushable_contact=bool(permit_pushable_contact),
+                    permit_pushable_contact=self._pushable_contact_is_permitted_locked(
+                        permit_pushable_contact
+                    ),
                 )
                 planning_reasons: list[str] = []
                 scene_required = self.execution_mode in {
@@ -832,6 +876,31 @@ class IntegratedController:
                     planning_reasons.append("IK continuity path contains a large joint jump")
                 endpoint_limits = np.asarray(planning_config["maximum_endpoint_joint_delta_rad"], dtype=float)
                 endpoint_delta = np.abs(continuity.q_waypoints[-1] - continuity.q_waypoints[0])
+                requested_joint_speeds = (
+                    1.5 * endpoint_delta / max(float(self.duration_s), 1e-9)
+                )
+                effective_joint_speeds = (
+                    1.5 * endpoint_delta / max(float(duration), 1e-9)
+                )
+                requested_peak_joint_speed = float(
+                    np.max(requested_joint_speeds)
+                )
+                effective_peak_joint_speed = float(
+                    np.max(effective_joint_speeds)
+                )
+                authentication_threshold = float(
+                    planning_config[
+                        "joint_speed_authentication_threshold_rad_s"
+                    ]
+                )
+                hard_joint_speed_limit = float(
+                    planning_config["joint_speed_hard_limit_rad_s"]
+                )
+                if requested_peak_joint_speed >= hard_joint_speed_limit:
+                    planning_reasons.append(
+                        "requested trajectory reaches or exceeds the "
+                        "20 rad/s per-joint hard limit"
+                    )
                 if np.any(endpoint_delta > endpoint_limits):
                     joints = ", ".join(str(index + 1) for index in np.flatnonzero(endpoint_delta > endpoint_limits))
                     planning_reasons.append(f"IK endpoint requires excessive joint travel on joints {joints}")
@@ -876,6 +945,32 @@ class IntegratedController:
                     "cartesian_continuity": continuity.snapshot(),
                     "endpoint_joint_delta_rad": endpoint_delta.tolist(),
                     "endpoint_joint_delta_limit_rad": endpoint_limits.tolist(),
+                    "joint_speed_policy": {
+                        "requested_peak_by_joint_rad_s": (
+                            requested_joint_speeds.tolist()
+                        ),
+                        "effective_peak_by_joint_rad_s": (
+                            effective_joint_speeds.tolist()
+                        ),
+                        "requested_peak_joint_speed_rad_s": (
+                            requested_peak_joint_speed
+                        ),
+                        "effective_peak_joint_speed_rad_s": (
+                            effective_peak_joint_speed
+                        ),
+                        "authentication_threshold_rad_s": (
+                            authentication_threshold
+                        ),
+                        "hard_limit_rad_s": hard_joint_speed_limit,
+                        "authentication_required": (
+                            requested_peak_joint_speed
+                            > authentication_threshold
+                        ),
+                        "hard_limit_exceeded": (
+                            requested_peak_joint_speed
+                            >= hard_joint_speed_limit
+                        ),
+                    },
                     "planning_valid": not planning_reasons,
                     "planning_reasons": planning_reasons,
                     "physical_execution_enabled": not physical_reasons,
@@ -897,9 +992,11 @@ class IntegratedController:
     def preview_transit_path(
         self,
         *,
-        target_position_m: list[float],
+        target_position_m: list[float] | None = None,
+        target_delta_m: list[float] | None = None,
         target_rpy_rad: list[float] | None,
         requested_speed_m_s: float,
+        ik_mode: str | None = None,
         allowed_contact_object_ids: set[str] | None = None,
         permit_pushable_contact: bool = False,
     ) -> dict[str, Any]:
@@ -923,12 +1020,50 @@ class IntegratedController:
                 raise RuntimeError(
                     "controller must be WARM or HOT before transit path planning"
                 )
+            effective_ik_mode = (
+                self.ik_mode
+                if ik_mode is None
+                else str(ik_mode).strip().upper()
+            )
+            if effective_ik_mode not in SUPPORTED_IK_MODES:
+                raise ValueError(
+                    f"unsupported transit IK mode {effective_ik_mode}"
+                )
             q_start = self._measured_positions_locked()[:6].copy()
             origin = self.kinematics.controlled_frame(
                 q_start,
                 self._tool_to_control_locked(),
             )
-            position = np.asarray(target_position_m, dtype=float)
+            if (target_position_m is None) == (target_delta_m is None):
+                raise ValueError(
+                    "provide exactly one of target_position_m or target_delta_m"
+                )
+            target_resolution = "ABSOLUTE_ARM_BASE_POSITION"
+            requested_delta: np.ndarray | None = None
+            if target_delta_m is not None:
+                requested_delta = np.asarray(target_delta_m, dtype=float)
+                if (
+                    requested_delta.shape != (3,)
+                    or not np.all(np.isfinite(requested_delta))
+                ):
+                    raise ValueError(
+                        "target_delta_m must contain three finite values"
+                    )
+                maximum_delta_m = float(
+                    self.config["trajectory"][
+                        "maximum_translation_per_commit_m"
+                    ]
+                )
+                if float(np.linalg.norm(requested_delta)) > maximum_delta_m:
+                    raise ValueError(
+                        "target_delta_m exceeds maximum translation per commit"
+                    )
+                position = origin[:3, 3] + requested_delta
+                target_resolution = (
+                    "MEASURED_CONTROLLED_FRAME_PLUS_RELATIVE_DELTA"
+                )
+            else:
+                position = np.asarray(target_position_m, dtype=float)
             if position.shape != (3,) or not np.all(np.isfinite(position)):
                 raise ValueError("target_position_m must contain three finite values")
             self._assert_workspace_target_locked(position)
@@ -941,6 +1076,27 @@ class IntegratedController:
                 goal[:3, :3] = rpy_matrix(rpy)
 
             planning_config = self.config["planning"]
+            planning_started = time.monotonic()
+            planning_time_budget_s = float(
+                planning_config["shadow_planning_time_budget_s"]
+            )
+            planning_deadline = planning_started + planning_time_budget_s
+
+            def solve_with_deadline(
+                seed: np.ndarray,
+                target: np.ndarray,
+            ) -> Any:
+                if time.monotonic() >= planning_deadline:
+                    raise TimeoutError("SHADOW_PLANNING_TIME_BUDGET_EXCEEDED")
+                result = self._solve_target_locked(
+                    seed,
+                    target,
+                    ik_mode=effective_ik_mode,
+                )
+                if time.monotonic() >= planning_deadline:
+                    raise TimeoutError("SHADOW_PLANNING_TIME_BUDGET_EXCEEDED")
+                return result
+
             candidates = build_transit_frame_candidates(
                 origin,
                 goal,
@@ -953,8 +1109,13 @@ class IntegratedController:
                 ),
             )
             evaluated: list[dict[str, Any]] = []
+            planning_timed_out = False
             for strategy, cartesian_frames in candidates:
                 try:
+                    if time.monotonic() >= planning_deadline:
+                        raise TimeoutError(
+                            "SHADOW_PLANNING_TIME_BUDGET_EXCEEDED"
+                        )
                     q_waypoints: list[np.ndarray] = [q_start.copy()]
                     q_cursor = q_start.copy()
                     frame_cursor = origin.copy()
@@ -980,7 +1141,7 @@ class IntegratedController:
                             q_cursor,
                             frame_cursor,
                             frame,
-                            self._solve_target_locked,
+                            solve_with_deadline,
                             initial_waypoint_count=per_leg_waypoints,
                             maximum_waypoint_count=int(
                                 planning_config[
@@ -993,6 +1154,10 @@ class IntegratedController:
                                 ]
                             ),
                         )
+                        if time.monotonic() >= planning_deadline:
+                            raise TimeoutError(
+                                "SHADOW_PLANNING_TIME_BUDGET_EXCEEDED"
+                            )
                         q_waypoints.extend(
                             waypoint.copy()
                             for waypoint in continuity.q_waypoints[1:]
@@ -1019,17 +1184,43 @@ class IntegratedController:
                         )
                         final_iterations = continuity.final_iterations
 
+                    transit_joint_caps = np.minimum(
+                        self._provider_pos_vel_caps_locked(),
+                        float(
+                            planning_config[
+                                "maximum_transit_joint_velocity_rad_s"
+                            ]
+                        ),
+                    )
+                    controlled_positions = [
+                        self.kinematics.controlled_frame(
+                            waypoint,
+                            self._tool_to_control_locked(),
+                        )[:3, 3]
+                        for waypoint in q_waypoints
+                    ]
+                    speed_policy = joint_speed_policy_schedule(
+                        q_waypoints,
+                        controlled_positions,
+                        requested_speed_m_s,
+                        transit_joint_caps,
+                        minimum_stage_duration_s=float(
+                            planning_config["transit_stage_min_duration_s"]
+                        ),
+                        authentication_threshold_rad_s=float(
+                            planning_config[
+                                "joint_speed_authentication_threshold_rad_s"
+                            ]
+                        ),
+                        hard_limit_rad_s=float(
+                            planning_config["joint_speed_hard_limit_rad_s"]
+                        ),
+                    )
                     duration = controller_owned_duration(
                         q_waypoints,
                         path_length,
                         requested_speed_m_s,
-                        self._provider_rate_caps_locked(),
-                        speed_min_m_s=float(
-                            planning_config["cartesian_speed_min_m_s"]
-                        ),
-                        speed_max_m_s=float(
-                            planning_config["cartesian_speed_max_m_s"]
-                        ),
+                        transit_joint_caps,
                         minimum_duration_s=float(
                             self.config["runtime_limits"]["duration_min_s"]
                         ),
@@ -1047,9 +1238,16 @@ class IntegratedController:
                         allowed_contact_object_ids=set(
                             allowed_contact_object_ids or set()
                         ),
-                        permit_pushable_contact=bool(permit_pushable_contact),
+                        permit_pushable_contact=self._pushable_contact_is_permitted_locked(
+                            permit_pushable_contact
+                        ),
                     )
                     reasons: list[str] = []
+                    if speed_policy["hard_limit_exceeded"]:
+                        reasons.append(
+                            "requested trajectory reaches or exceeds the "
+                            "20 rad/s per-joint hard limit"
+                        )
                     if not preview.collision_free:
                         reasons.append(
                             "candidate path intersects a non-permitted semantic object"
@@ -1068,7 +1266,7 @@ class IntegratedController:
                             )
                         )
                         or (
-                            self.ik_mode == IK_POSE_6DOF
+                            effective_ik_mode == IK_POSE_6DOF
                             and orientation_motion >= 1e-4
                         )
                     )
@@ -1085,6 +1283,7 @@ class IntegratedController:
                         self._ik_residual_reasons_locked(
                             final_position_residual,
                             final_orientation_residual,
+                            ik_mode=effective_ik_mode,
                         )
                     )
                     if maximum_joint_step > float(
@@ -1139,6 +1338,7 @@ class IntegratedController:
                             "final_iterations": final_iterations,
                             "speed_schedule": {
                                 **duration,
+                                "joint_speed_policy": speed_policy,
                                 "maximum_execution_segment_duration_s": (
                                     maximum_segment_duration
                                 ),
@@ -1163,6 +1363,9 @@ class IntegratedController:
                             "error": str(error),
                         }
                     )
+                    if isinstance(error, TimeoutError):
+                        planning_timed_out = True
+                        break
 
             selected = next(
                 (
@@ -1195,7 +1398,19 @@ class IntegratedController:
                 "selected_plan": copy.deepcopy(selected),
                 "candidate_evaluations": copy.deepcopy(evaluated),
                 "target": self._frame_payload(goal),
+                "target_resolution": target_resolution,
+                "requested_target_delta_m": (
+                    None
+                    if requested_delta is None
+                    else requested_delta.tolist()
+                ),
+                "ik_mode": effective_ik_mode,
                 "scene_revision": None if self.scene is None else self.scene.revision,
+                "planning_time_budget_s": planning_time_budget_s,
+                "planning_elapsed_ms": (
+                    time.monotonic() - planning_started
+                ) * 1000.0,
+                "planning_timed_out": planning_timed_out,
             }
             self.shadow_transit_plan_count += 1
             self.last_shadow_transit_plan = copy.deepcopy(result)
@@ -1214,14 +1429,32 @@ class IntegratedController:
         q_waypoints_rad: list[list[float]],
         requested_speed_m_s: float,
         scene_revision: str,
+        final_state: str = FINAL_STATE_FIXED,
         allowed_contact_object_ids: set[str] | None,
         permit_pushable_contact: bool,
         authorization_claims: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute one exact reviewed waypoint path and hold its final endpoint."""
+        """Execute one exact reviewed waypoint path with a bound final state."""
+
+        normalized_final_state = str(final_state or "").strip().upper()
+        if normalized_final_state not in SUPPORTED_FINAL_STATES:
+            raise ValueError(
+                "final_state must be FLOAT, FIXED, or WAIT_FOR_NEXT"
+            )
+
+        with self.lock:
+            chained_from = (
+                self.authorized_transit
+                if self.authorized_transit is not None
+                and self.authorized_transit.status == "WAITING_NEXT"
+                else None
+            )
 
         self._ensure_runtime_lease()
-        if not self._request_float_once("authorized transit preflight"):
+        if (
+            chained_from is None
+            and not self._request_float_once("authorized transit preflight")
+        ):
             raise RuntimeError(
                 "Basic Controller gravity-float could not be verified"
             )
@@ -1236,7 +1469,10 @@ class IntegratedController:
                     raise RuntimeError(
                         "controller must be HOT before authorized transit"
                     )
-                if self.trajectory is not None or self.authorized_transit is not None:
+                if self.trajectory is not None or (
+                    self.authorized_transit is not None
+                    and self.authorized_transit is not chained_from
+                ):
                     raise RuntimeError("another arm trajectory is already active")
                 if self._desired_gripper_action_locked() is not None:
                     raise RuntimeError(
@@ -1257,11 +1493,6 @@ class IntegratedController:
                     raise PermissionError(
                         "semantic scene is stale at authorized transit commit"
                     )
-                if self.scene.revision != str(scene_revision):
-                    raise PermissionError(
-                        "semantic scene changed after transit preview"
-                    )
-
                 q_waypoints = tuple(
                     np.asarray(waypoint, dtype=float)
                     for waypoint in q_waypoints_rad
@@ -1342,29 +1573,11 @@ class IntegratedController:
                         ]
                     ),
                 )
-                minimum_duration = float(
-                    self.config["runtime_limits"]["duration_min_s"]
-                )
                 requested_speed = float(requested_speed_m_s)
-                if not np.isfinite(requested_speed):
+                if not np.isfinite(requested_speed) or requested_speed <= 0.0:
                     raise ValueError(
-                        "requested_speed_m_s must be finite"
+                        "requested_speed_m_s must be positive and finite"
                     )
-                effective_cartesian_speed = float(
-                    np.clip(
-                        requested_speed,
-                        float(
-                            self.config["planning"][
-                                "cartesian_speed_min_m_s"
-                            ]
-                        ),
-                        float(
-                            self.config["planning"][
-                                "cartesian_speed_max_m_s"
-                            ]
-                        ),
-                    )
-                )
                 controlled_positions = [
                     self.kinematics.controlled_frame(
                         waypoint,
@@ -1372,26 +1585,35 @@ class IntegratedController:
                     )[:3, 3]
                     for waypoint in q_waypoints
                 ]
+                speed_policy = joint_speed_policy_schedule(
+                    q_waypoints,
+                    controlled_positions,
+                    requested_speed,
+                    joint_caps,
+                    minimum_stage_duration_s=float(
+                        self.config["planning"][
+                            "transit_stage_min_duration_s"
+                        ]
+                    ),
+                    authentication_threshold_rad_s=float(
+                        self.config["planning"][
+                            "joint_speed_authentication_threshold_rad_s"
+                        ]
+                    ),
+                    hard_limit_rad_s=float(
+                        self.config["planning"][
+                            "joint_speed_hard_limit_rad_s"
+                        ]
+                    ),
+                )
+                if speed_policy["hard_limit_exceeded"]:
+                    raise PlanningRejected(
+                        "requested trajectory would require a joint speed at "
+                        "or above the 20 rad/s hard limit"
+                    )
                 stage_durations = tuple(
-                    max(
-                        minimum_duration,
-                        float(
-                            np.max(
-                                1.5
-                                * delta
-                                / np.maximum(joint_caps, 1e-6)
-                            )
-                        ),
-                        float(
-                            np.linalg.norm(goal_position - start_position)
-                            / effective_cartesian_speed
-                        ),
-                    )
-                    for delta, start_position, goal_position in zip(
-                        deltas,
-                        controlled_positions[:-1],
-                        controlled_positions[1:],
-                    )
+                    float(value)
+                    for value in speed_policy["effective_stage_durations_s"]
                 )
                 total_duration = sum(stage_durations)
                 maximum_duration = float(
@@ -1424,7 +1646,7 @@ class IntegratedController:
                     allowed_contact_object_ids=set(
                         allowed_contact_object_ids or set()
                     ),
-                    permit_pushable_contact=bool(
+                    permit_pushable_contact=self._pushable_contact_is_permitted_locked(
                         permit_pushable_contact
                     ),
                 )
@@ -1433,6 +1655,7 @@ class IntegratedController:
                         "authorized transit became colliding during commit "
                         "revalidation"
                     )
+                commit_scene_revision = self.scene.revision
 
                 assertion_id = str(
                     authorization_claims.get("assertion_id") or ""
@@ -1454,7 +1677,9 @@ class IntegratedController:
                     assertion_id=assertion_id,
                     decision_id=decision_id,
                     resolved_by=resolved_by,
-                    scene_revision=str(scene_revision),
+                    preview_scene_revision=str(scene_revision),
+                    scene_revision=commit_scene_revision,
+                    final_state=normalized_final_state,
                     q_waypoints=tuple(
                         waypoint.copy() for waypoint in q_waypoints
                     ),
@@ -1463,6 +1688,12 @@ class IntegratedController:
                     stage_started_monotonic=now,
                     last_feedback_monotonic=now,
                 )
+                if chained_from is not None:
+                    chained_from.status = "CHAINED_TO_NEXT"
+                    chained_from.error = None
+                    self.last_authorized_transit = (
+                        self._authorized_transit_summary_locked(chained_from)
+                    )
                 self.authorized_transit = execution
                 self.authorized_transit_count += 1
                 self.goal_q = q_waypoints[-1].copy()
@@ -1474,7 +1705,12 @@ class IntegratedController:
                 self.fault_reason = None
                 self.last_error = None
                 self.health = "HEALTHY"
-            self._start_authorized_transit_thread()
+            if (
+                chained_from is None
+                or self.authorized_transit_thread is None
+                or not self.authorized_transit_thread.is_alive()
+            ):
+                self._start_authorized_transit_thread()
             return {
                 "status": "EXECUTING",
                 "plan_id": plan_id,
@@ -1486,11 +1722,25 @@ class IntegratedController:
                 "maximum_joint_velocity_rad_s": float(
                     np.max(joint_caps)
                 ),
-                "effective_cartesian_speed_m_s": (
-                    effective_cartesian_speed
+                "requested_cartesian_speed_m_s": requested_speed,
+                "joint_speed_policy": speed_policy,
+                "final_state": normalized_final_state,
+                "completion_behavior": {
+                    FINAL_STATE_FLOAT: "FLOAT_AFTER_MEASURED_ARRIVAL",
+                    FINAL_STATE_FIXED: (
+                        "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                    ),
+                    FINAL_STATE_WAIT_FOR_NEXT: (
+                        "HOLD_FINAL_ENDPOINT_FOR_BOUNDED_CHAIN_WAIT"
+                    ),
+                }[normalized_final_state],
+                "chained_from_plan_id": (
+                    None if chained_from is None else chained_from.plan_id
                 ),
-                "completion_behavior": (
-                    "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                "preview_scene_revision": str(scene_revision),
+                "commit_scene_revision": commit_scene_revision,
+                "scene_revision_advanced": (
+                    commit_scene_revision != str(scene_revision)
                 ),
                 "physical_motion_authorized": True,
             }
@@ -1861,9 +2111,174 @@ class IntegratedController:
                 "requires_engage": True,
             }
 
+    def _clear_idle_profile_locked(self, reason: str) -> None:
+        self.idle_profile = IDLE_GRAVITY_FLOAT
+        self.idle_profile_lease_id = None
+        self.idle_profile_holder = None
+        self.idle_profile_expires_monotonic = 0.0
+        self.idle_profile_q = None
+        self.idle_profile_kp_multiplier = None
+        self.idle_profile_endpoint = None
+        self.idle_profile_last_send_monotonic = 0.0
+        self.idle_profile_last_error = reason
+
+    def _idle_profile_snapshot_locked(self) -> dict[str, Any]:
+        expires_in_ms = (
+            max(
+                0,
+                int(
+                    (self.idle_profile_expires_monotonic - time.monotonic())
+                    * 1000.0
+                ),
+            )
+            if self.idle_profile_lease_id is not None
+            else 0
+        )
+        return {
+            "profile": self.idle_profile,
+            "profile_lease_id": self.idle_profile_lease_id,
+            "holder": self.idle_profile_holder,
+            "expires_in_ms": expires_in_ms,
+            "captured_joint_position_rad": (
+                None
+                if self.idle_profile_q is None
+                else self.idle_profile_q.tolist()
+            ),
+            "kp_multiplier": self.idle_profile_kp_multiplier,
+            "command_count": self.idle_profile_command_count,
+            "last_error": self.idle_profile_last_error,
+            "expiry_behavior": "GRAVITY_FLOAT",
+        }
+
+    def set_idle_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile = str(payload.get("profile") or "").strip().upper()
+        if profile not in SUPPORTED_IDLE_PROFILES:
+            raise ValueError(f"unsupported idle profile {profile!r}")
+        if profile == IDLE_GRAVITY_FLOAT:
+            return {
+                **self.request_float(),
+                "idle_profile": self.idle_profile_snapshot(),
+            }
+        holder = str(payload.get("holder") or "").strip()
+        if not holder:
+            raise ValueError("idle hold profiles require holder")
+        settings = self.config["idle_profiles"]
+        duration_ms = int(
+            payload.get("lease_duration_ms", settings["lease_default_ms"])
+        )
+        if not int(settings["lease_min_ms"]) <= duration_ms <= int(
+            settings["lease_max_ms"]
+        ):
+            raise ValueError("idle profile lease_duration_ms is outside limits")
+        kp_multiplier: float | None = None
+        if profile == IDLE_COMPLIANT_HOLD:
+            kp_multiplier = float(payload.get("kp_multiplier", 2.0))
+            if not float(
+                settings["compliant_kp_multiplier_min"]
+            ) <= kp_multiplier <= float(
+                settings["compliant_kp_multiplier_max"]
+            ):
+                raise ValueError(
+                    "compliant hold kp_multiplier is outside the configured range"
+                )
+        elif payload.get("kp_multiplier") is not None:
+            raise ValueError("kp_multiplier is only valid for COMPLIANT_HOLD")
+
+        now = time.monotonic()
+        with self.lock:
+            if self.residency != "HOT" or not self.ready:
+                raise RuntimeError("Integrated Controller must be HOT and ready")
+            if self.trajectory is not None or self.authorized_transit is not None:
+                raise RuntimeError("idle profile cannot change during active motion")
+            if self.gripper_active_action is not None:
+                raise RuntimeError("idle profile cannot change during gripper hold")
+            if (
+                self.idle_profile_lease_id is not None
+                and self.idle_profile_expires_monotonic > now
+                and self.idle_profile_holder != holder
+            ):
+                raise PermissionError(
+                    "another holder owns the active idle profile lease"
+                )
+            self._assert_motion_prerequisites_locked(now)
+            q = self._measured_positions_locked()[:6].copy()
+            endpoint = None
+            if profile == IDLE_POSITION_LOCK:
+                limit = float(settings["position_lock_velocity_limit_rad_s"])
+                velocity_limits = np.minimum(
+                    self._provider_pos_vel_caps_locked(),
+                    np.full(6, limit, dtype=float),
+                )
+                endpoint = LatchedEndpointCommand.create(
+                    "POSITION_VELOCITY_LIMITED",
+                    q,
+                    q,
+                    velocity_limits,
+                    keepalive_period_s=1.0
+                    / float(settings["keepalive_hz"]),
+                )
+            self.idle_profile = profile
+            self.idle_profile_lease_id = str(uuid.uuid4())
+            self.idle_profile_holder = holder
+            self.idle_profile_expires_monotonic = now + duration_ms / 1000.0
+            self.idle_profile_q = q
+            self.idle_profile_kp_multiplier = kp_multiplier
+            self.idle_profile_endpoint = endpoint
+            self.idle_profile_last_send_monotonic = 0.0
+            self.idle_profile_last_error = None
+            self.float_confirmed = False
+            self.control_state = f"IDLE_{profile}_LEASED"
+            return self._idle_profile_snapshot_locked()
+
+    def renew_idle_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        lease_id = str(payload.get("profile_lease_id") or "").strip()
+        holder = str(payload.get("holder") or "").strip()
+        settings = self.config["idle_profiles"]
+        duration_ms = int(
+            payload.get("lease_duration_ms", settings["lease_default_ms"])
+        )
+        if not int(settings["lease_min_ms"]) <= duration_ms <= int(
+            settings["lease_max_ms"]
+        ):
+            raise ValueError("idle profile lease_duration_ms is outside limits")
+        with self.lock:
+            if (
+                not lease_id
+                or lease_id != self.idle_profile_lease_id
+                or holder != self.idle_profile_holder
+                or self.idle_profile == IDLE_GRAVITY_FLOAT
+            ):
+                raise PermissionError("idle profile lease is stale or mismatched")
+            if time.monotonic() >= self.idle_profile_expires_monotonic:
+                raise PermissionError("idle profile lease already expired")
+            self.idle_profile_expires_monotonic = (
+                time.monotonic() + duration_ms / 1000.0
+            )
+            return self._idle_profile_snapshot_locked()
+
+    def release_idle_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        lease_id = str(payload.get("profile_lease_id") or "").strip()
+        holder = str(payload.get("holder") or "").strip()
+        with self.lock:
+            if (
+                not lease_id
+                or lease_id != self.idle_profile_lease_id
+                or holder != self.idle_profile_holder
+            ):
+                raise PermissionError("idle profile lease is stale or mismatched")
+        return {
+            **self.request_float(),
+            "released_profile_lease_id": lease_id,
+        }
+
+    def idle_profile_snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            return self._idle_profile_snapshot_locked()
+
     def request_float(self) -> dict[str, Any]:
         self._cancel_active_trajectory("operator float", request_float=True)
         with self.lock:
+            self._clear_idle_profile_locked("explicit gravity float")
             self.engaged = False
             self.commit_requested = False
             self.replan_requested = False
@@ -1931,10 +2346,82 @@ class IntegratedController:
                 plan.last_replan_monotonic = now
                 replan = True
         self._service_gripper(now)
+        self._service_idle_profile(now)
         if commit:
             self._commit_staged_target()
         elif replan:
             self._replan_continuous()
+
+    def _service_idle_profile(self, now: float) -> None:
+        should_float = False
+        commands: list[dict[str, Any]] | None = None
+        endpoint: LatchedEndpointCommand | None = None
+        with self.lock:
+            if self.idle_profile == IDLE_GRAVITY_FLOAT:
+                return
+            if now >= self.idle_profile_expires_monotonic:
+                self._clear_idle_profile_locked("idle profile lease expired")
+                should_float = True
+            elif self.trajectory is not None or self.authorized_transit is not None:
+                self._clear_idle_profile_locked("motion superseded idle profile")
+                should_float = True
+            else:
+                self._assert_motion_prerequisites_locked(now)
+                if self.idle_profile == IDLE_COMPLIANT_HOLD:
+                    period_s = 1.0 / float(
+                        self.config["idle_profiles"]["keepalive_hz"]
+                    )
+                    if (
+                        now - self.idle_profile_last_send_monotonic
+                        >= period_s
+                    ):
+                        if self.idle_profile_q is None:
+                            raise RuntimeError("idle compliant hold target is missing")
+                        commands = self._build_commands_locked(
+                            self.idle_profile_q,
+                            np.zeros(6, dtype=float),
+                            kp_multiplier=self.idle_profile_kp_multiplier,
+                        )
+                elif self.idle_profile == IDLE_POSITION_LOCK:
+                    endpoint = self.idle_profile_endpoint
+                    if endpoint is None:
+                        raise RuntimeError("idle position-lock endpoint is missing")
+                    if endpoint.should_send(now):
+                        commands = endpoint.commands()
+        if should_float:
+            float_ok = self._request_float_once("idle profile lease ended")
+            with self.lock:
+                self.engaged = False
+                self.control_state = (
+                    "TARGET_EDIT"
+                    if float_ok and self.residency == "HOT"
+                    else "IDLE_FLOAT"
+                    if float_ok
+                    else "IDLE_PROFILE_FLOAT_UNCONFIRMED"
+                )
+            return
+        if commands is None:
+            return
+        try:
+            with self.command_gate_lock:
+                self.basic.command(
+                    commands,
+                    int(self.config["command_timeout_ms"]),
+                )
+            sent_at = time.monotonic()
+            with self.lock:
+                if endpoint is not None:
+                    endpoint.mark_sent(sent_at)
+                self.idle_profile_last_send_monotonic = sent_at
+                self.idle_profile_command_count += 1
+                self.idle_profile_last_error = None
+                self.control_state = f"IDLE_{self.idle_profile}_ACTIVE"
+        except Exception as exc:
+            with self.lock:
+                self._clear_idle_profile_locked(
+                    f"idle profile command failed: {exc}"
+                )
+            self._request_float_once(f"idle profile command failed: {exc}")
 
     def _integrate_staged_target_locked(self, now: float) -> None:
         if self.staged_target is None:
@@ -1951,9 +2438,10 @@ class IntegratedController:
         candidate = self.staged_target.copy()
         candidate[:3, 3] += delta
         workspace = self.config["workspace"]
-        candidate[0, 3] = float(np.clip(candidate[0, 3], -float(workspace["abs_x_max_m"]), float(workspace["abs_x_max_m"])))
-        candidate[1, 3] = float(np.clip(candidate[1, 3], -float(workspace["abs_y_max_m"]), float(workspace["abs_y_max_m"])))
-        candidate[2, 3] = float(np.clip(candidate[2, 3], float(workspace["z_min_m"]), float(workspace["z_max_m"])))
+        if bool(workspace.get("enforce_cartesian_bounds", True)):
+            candidate[0, 3] = float(np.clip(candidate[0, 3], -float(workspace["abs_x_max_m"]), float(workspace["abs_x_max_m"])))
+            candidate[1, 3] = float(np.clip(candidate[1, 3], -float(workspace["abs_y_max_m"]), float(workspace["abs_y_max_m"])))
+            candidate[2, 3] = float(np.clip(candidate[2, 3], float(workspace["z_min_m"]), float(workspace["z_max_m"])))
         if self.ik_mode == IK_POSE_6DOF:
             rotation_rate = float(self.config["teleop"]["rotation_rate_rad_s"])
             incremental = np.array([self.input.roll, self.input.pitch, self.input.yaw], dtype=float) * rotation_rate * dt
@@ -1976,10 +2464,19 @@ class IntegratedController:
         self._assert_workspace_target_locked(output[:3, 3])
         return output, clamped
 
-    def _solve_target_locked(self, q_seed: np.ndarray, target: np.ndarray):
+    def _solve_target_locked(
+        self,
+        q_seed: np.ndarray,
+        target: np.ndarray,
+        *,
+        ik_mode: str | None = None,
+    ):
         if self.kinematics is None:
             raise RuntimeError("kinematics unavailable")
-        pose_mode = self.ik_mode == IK_POSE_6DOF
+        effective_mode = self.ik_mode if ik_mode is None else str(ik_mode).upper()
+        if effective_mode not in SUPPORTED_IK_MODES:
+            raise ValueError(f"unsupported IK mode {effective_mode}")
+        pose_mode = effective_mode == IK_POSE_6DOF
         result = self.kinematics.solve_weighted_pose(
             q_seed,
             target,
@@ -2150,6 +2647,22 @@ class IntegratedController:
                     result.orientation_residual_rad,
                 )
                 q_goal = result.q_goal.copy()
+                requested_peak_joint_speed = float(
+                    np.max(
+                        1.5
+                        * np.abs(q_goal - q_start)
+                        / max(float(self.duration_s), 1e-9)
+                    )
+                )
+                if requested_peak_joint_speed >= float(
+                    self.config["planning"][
+                        "joint_speed_hard_limit_rad_s"
+                    ]
+                ):
+                    raise PlanningRejected(
+                        "requested trajectory would require a joint speed at "
+                        "or above the 20 rad/s hard limit"
+                    )
                 duration = (
                     self._continuous_horizon_locked(q_start, q_goal)
                     if self.interaction_mode == INTERACTION_HOLD_LB
@@ -2437,7 +2950,9 @@ class IntegratedController:
             "assertion_id": execution.assertion_id,
             "decision_id": execution.decision_id,
             "resolved_by": execution.resolved_by,
+            "preview_scene_revision": execution.preview_scene_revision,
             "scene_revision": execution.scene_revision,
+            "final_state": execution.final_state,
             "status": execution.status,
             "stage_count": len(execution.stage_durations_s),
             "current_stage_index": execution.current_stage_index,
@@ -2471,7 +2986,20 @@ class IntegratedController:
                 )
             ),
             "completion_behavior": (
-                "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                {
+                    FINAL_STATE_FLOAT: "FLOAT_AFTER_MEASURED_ARRIVAL",
+                    FINAL_STATE_FIXED: (
+                        "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
+                    ),
+                    FINAL_STATE_WAIT_FOR_NEXT: (
+                        "HOLD_FINAL_ENDPOINT_FOR_BOUNDED_CHAIN_WAIT"
+                    ),
+                }[execution.final_state]
+            ),
+            "arm_command_mode": MODE_MIT,
+            "minimum_kp_multiplier": 1.0,
+            "gravity_feedforward_owner": (
+                "ROBOT_ARM_BASIC_CALIBRATED_ARM_AND_DECLARED_PAYLOAD"
             ),
             "current_stage_expected_duration_s": (
                 execution.stage_expected_duration_s
@@ -2502,7 +3030,7 @@ class IntegratedController:
         }
 
     def _authorized_transit_loop(self) -> None:
-        """Advance exact POS_VEL waypoints and retain the final endpoint."""
+        """Advance exact POS_SPEED waypoints and retain the endpoint."""
 
         poll_period = 1.0 / max(
             float(self.config["basic_state_rate_hz"]),
@@ -2570,6 +3098,7 @@ class IntegratedController:
                 next_tick = now + poll_period
                 state = self.basic.state()
                 commands = None
+                auto_float_reason: str | None = None
                 execution: AuthorizedTransitExecution | None = None
                 with self.lock:
                     execution = self.authorized_transit
@@ -2753,15 +3282,48 @@ class IntegratedController:
                                 "EXECUTING_AUTHORIZED_TRANSIT"
                             )
                             continue
-                        execution.status = "HOLDING_FINAL"
                         execution.final_hold_started_monotonic = now
                         self.commanded_q = endpoint.q_goal.copy()
                         self.commanded_qd = np.zeros(6, dtype=float)
-                        self.control_state = (
-                            "HOLDING_AUTHORIZED_TRANSIT_ENDPOINT"
-                        )
+                        if execution.final_state == FINAL_STATE_FLOAT:
+                            execution.status = "COMPLETING_FLOAT"
+                            self.control_state = (
+                                "COMPLETING_AUTHORIZED_TRANSIT_FLOAT"
+                            )
+                            auto_float_reason = (
+                                "authorized transit completed with FLOAT"
+                            )
+                        elif execution.final_state == FINAL_STATE_FIXED:
+                            execution.status = "HOLDING_FINAL"
+                            self.control_state = (
+                                "HOLDING_AUTHORIZED_TRANSIT_ENDPOINT"
+                            )
+                        else:
+                            execution.status = "WAITING_NEXT"
+                            self.control_state = (
+                                "WAITING_FOR_NEXT_AUTHORIZED_TRANSIT"
+                            )
                         self.health = "HEALTHY"
                         self.last_error = None
+
+                    if (
+                        execution.status == "WAITING_NEXT"
+                        and execution.final_hold_started_monotonic is not None
+                        and now - execution.final_hold_started_monotonic
+                        >= float(
+                            self.config["planning"].get(
+                                "wait_for_next_timeout_s",
+                                30.0,
+                            )
+                        )
+                    ):
+                        execution.status = "COMPLETING_FLOAT"
+                        self.control_state = (
+                            "COMPLETING_CHAIN_WAIT_TIMEOUT_FLOAT"
+                        )
+                        auto_float_reason = (
+                            "authorized transit WAIT_FOR_NEXT expired"
+                        )
 
                     if execution.status == "EXECUTING":
                         timeout = execution.stage_timeout_s
@@ -2793,12 +3355,47 @@ class IntegratedController:
                                 f"maximum velocity "
                                 f"{max_velocity:.5f} rad/s)"
                             )
-                    if endpoint.should_send(now):
-                        commands = self._append_latched_gripper_locked(
-                            endpoint.commands()
+                    if auto_float_reason is None and endpoint.should_send(now):
+                        commands = self._build_commands_locked(
+                            endpoint.q_goal,
+                            np.zeros(6, dtype=float),
+                            kp_multiplier=max(1.0, self.kp_multiplier),
+                            target_rate_limits_rad_s=(
+                                endpoint.velocity_limits_rad_s
+                            ),
                         )
                         execution.frames_attempted += 1
 
+                if auto_float_reason is not None and execution is not None:
+                    float_ok = self._request_float_once(auto_float_reason)
+                    with self.lock:
+                        if self.authorized_transit is execution:
+                            execution.status = (
+                                "COMPLETED_FLOAT"
+                                if float_ok
+                                else "FAILED"
+                            )
+                            execution.error = (
+                                None
+                                if float_ok
+                                else "gravity float was not confirmed"
+                            )
+                            self.last_authorized_transit = (
+                                self._authorized_transit_summary_locked(
+                                    execution
+                                )
+                            )
+                            self.authorized_transit = None
+                            self.engaged = False
+                            self.control_state = (
+                                "TARGET_EDIT"
+                                if float_ok and self.residency == "HOT"
+                                else "FAULT_FLOAT"
+                            )
+                            if not float_ok:
+                                self.health = "DEGRADED"
+                                self.last_error = execution.error
+                    return
                 if commands is None or execution is None:
                     continue
                 send_started = time.monotonic()
@@ -2808,7 +3405,7 @@ class IntegratedController:
                             self.authorized_transit is not execution
                             or not self._platform_ready_locked()
                         ):
-                            return
+                            continue
                     self.basic.command(
                         commands,
                         int(self.config["command_timeout_ms"]),
@@ -2816,7 +3413,7 @@ class IntegratedController:
                 sent_at = time.monotonic()
                 with self.lock:
                     if self.authorized_transit is not execution:
-                        return
+                        continue
                     endpoint.mark_sent(sent_at)
                     execution.frames_sent += 1
                     latency_ms = (sent_at - send_started) * 1000.0
@@ -3231,6 +3828,8 @@ class IntegratedController:
         max_gap = float(self.config["trajectory"]["maximum_command_gap_ms"]) / 1000.0
         next_tick = time.monotonic()
         first_frame = True
+        terminal_stable_samples = 0
+        terminal_started_monotonic: float | None = None
         try:
             while not self.stop_event.is_set():
                 with self.lock:
@@ -3300,7 +3899,27 @@ class IntegratedController:
                     self.last_tracking_error_rad = tracking
                     self.max_tracking_error_rad = max(self.max_tracking_error_rad, tracking)
                     plan.frames_attempted += 1
-                    commands = self._build_commands_locked(q_command, qd_command)
+                    terminal_settle = (
+                        plan.interaction_mode == INTERACTION_ONE_SHOT
+                        and progress >= 1.0
+                    )
+                    commands = self._build_commands_locked(
+                        q_command,
+                        qd_command,
+                        kp_multiplier=(
+                            max(
+                                self.kp_multiplier,
+                                float(
+                                    self.config["trajectory"].get(
+                                        "one_shot_arrival_settle_kp_multiplier",
+                                        1.0,
+                                    )
+                                ),
+                            )
+                            if terminal_settle
+                            else None
+                        ),
+                    )
 
                 started = time.monotonic()
                 with self.command_gate_lock:
@@ -3320,10 +3939,34 @@ class IntegratedController:
                     self.last_command_latency_ms = latency_ms
                     self.max_command_latency_ms = max(self.max_command_latency_ms, latency_ms)
                     self.last_command_sent_monotonic = sent_at
-                    one_shot_done = plan.interaction_mode == INTERACTION_ONE_SHOT and progress >= 1.0
-                    if one_shot_done:
+                    at_one_shot_endpoint = (
+                        plan.interaction_mode == INTERACTION_ONE_SHOT
+                        and progress >= 1.0
+                    )
+                    if at_one_shot_endpoint:
                         plan.final_frame_sent = True
-                        break
+                        if terminal_started_monotonic is None:
+                            terminal_started_monotonic = sent_at
+                        arrived = self._observe_trajectory_arrival_locked(plan)
+                        terminal_stable_samples = (
+                            terminal_stable_samples + 1 if arrived else 0
+                        )
+                        required_stable_samples = int(
+                            self.config["trajectory"].get(
+                                "arrival_stable_samples", 10
+                            )
+                        )
+                        settle_timeout_s = float(
+                            self.config["trajectory"].get(
+                                "one_shot_arrival_settle_timeout_s", 1.5
+                            )
+                        )
+                        if (
+                            terminal_stable_samples >= required_stable_samples
+                            or sent_at - terminal_started_monotonic
+                            >= settle_timeout_s
+                        ):
+                            break
                 first_frame = False
 
             with self.lock:
@@ -3406,6 +4049,68 @@ class IntegratedController:
             )
         )
 
+    def _observe_trajectory_arrival_locked(self, plan: TrajectoryPlan) -> bool:
+        """Evaluate a held one-shot endpoint without releasing impedance."""
+        measured_q = self._measured_positions_locked()[:6].copy()
+        measured_qd = self._measured_velocities_locked()[:6].copy()
+        position_tolerance = np.asarray(
+            self.config["trajectory"]["arrival_position_tolerance_rad"],
+            dtype=float,
+        )
+        velocity_tolerance = np.asarray(
+            self.config["trajectory"]["arrival_velocity_tolerance_rad_s"],
+            dtype=float,
+        )
+        plan.arrival_joint_confirmed = bool(
+            np.all(np.abs(measured_q - plan.q_goal) <= position_tolerance)
+            and np.all(np.abs(measured_qd) <= velocity_tolerance)
+        )
+        plan.arrival_duration_confirmed = bool(
+            time.monotonic() - plan.segment_started_monotonic >= plan.duration_s
+        )
+        if self.kinematics is None:
+            plan.arrival_cartesian_confirmed = False
+            return False
+        measured_control = self.kinematics.controlled_frame(
+            measured_q,
+            self._tool_to_control_locked(),
+        )
+        plan.arrival_position_residual_m = float(
+            np.linalg.norm(
+                measured_control[:3, 3] - plan.controlled_goal[:3, 3]
+            )
+        )
+        plan.arrival_orientation_residual_rad = float(
+            np.linalg.norm(
+                rotation_vector(
+                    plan.controlled_goal[:3, :3]
+                    @ measured_control[:3, :3].T
+                )
+            )
+        )
+        plan.arrival_cartesian_confirmed = bool(
+            plan.arrival_position_residual_m
+            <= float(
+                self.config["trajectory"][
+                    "arrival_cartesian_position_tolerance_m"
+                ]
+            )
+            and (
+                plan.ik_mode != IK_POSE_6DOF
+                or plan.arrival_orientation_residual_rad
+                <= float(
+                    self.config["trajectory"][
+                        "arrival_cartesian_orientation_tolerance_rad"
+                    ]
+                )
+            )
+        )
+        return bool(
+            plan.arrival_joint_confirmed
+            and plan.arrival_cartesian_confirmed
+            and plan.arrival_duration_confirmed
+        )
+
     def _plan_summary_locked(self, plan: TrajectoryPlan, float_ok: bool) -> dict[str, Any]:
         target_arrival_confirmed = bool(
             plan.arrival_joint_confirmed
@@ -3476,7 +4181,16 @@ class IntegratedController:
     # ------------------------------------------------------------------
     # MIT command generation
     # ------------------------------------------------------------------
-    def _gain_profile_locked(self) -> list[dict[str, Any]]:
+    def _gain_profile_locked(
+        self,
+        kp_multiplier: float | None = None,
+    ) -> list[dict[str, Any]]:
+        multiplier = (
+            self.kp_multiplier
+            if kp_multiplier is None
+            else float(kp_multiplier)
+        )
+
         profile: list[dict[str, Any]] = []
         for index in range(6):
             joint = self.basic_model["joints"][index]
@@ -3485,14 +4199,14 @@ class IntegratedController:
             motor_limits = dict(joint.get("motor_limits", {}))
             base_kp = float(defaults.get("kp", 0.0))
             base_kd = float(defaults.get("kd", 0.0))
-            requested_kp = base_kp * self.kp_multiplier
+            requested_kp = base_kp * multiplier
             protocol = motor_limits.get("mit_kp_protocol_range", [0.0, float("inf")])
             protocol_cap = float(protocol[1]) if len(protocol) >= 2 else float("inf")
             provider_cap = float(caps.get("max_kp", protocol_cap))
             kp_cap = min(provider_cap, protocol_cap)
             kp_floor = float(caps.get("min_kp", base_kp))
             effective_kp = float(np.clip(requested_kp, kp_floor, kp_cap))
-            requested_kd = base_kd * math.sqrt(max(self.kp_multiplier, 0.0))
+            requested_kd = base_kd * math.sqrt(max(multiplier, 0.0))
             kd_cap = float(caps.get("max_kd", base_kd))
             effective_kd = float(np.clip(requested_kd, 0.0, kd_cap))
             profile.append({
@@ -3512,9 +4226,33 @@ class IntegratedController:
             })
         return profile
 
-    def _build_commands_locked(self, q_target: np.ndarray, qd_target: np.ndarray) -> list[dict[str, Any]]:
-        gains = self._gain_profile_locked()
-        rates = self._provider_rate_caps_locked()
+    def _build_commands_locked(
+        self,
+        q_target: np.ndarray,
+        qd_target: np.ndarray,
+        *,
+        kp_multiplier: float | None = None,
+        target_rate_limits_rad_s: np.ndarray | None = None,
+    ) -> list[dict[str, Any]]:
+        gains = self._gain_profile_locked(kp_multiplier)
+        provider_rates = self._provider_rate_caps_locked()
+        if target_rate_limits_rad_s is None:
+            rates = provider_rates
+        else:
+            requested_rates = np.asarray(
+                target_rate_limits_rad_s,
+                dtype=float,
+            )
+            if (
+                requested_rates.shape != (6,)
+                or not np.all(np.isfinite(requested_rates))
+                or np.any(requested_rates <= 0.0)
+            ):
+                raise ValueError(
+                    "target_rate_limits_rad_s must contain six positive "
+                    "finite values"
+                )
+            rates = np.minimum(requested_rates, provider_rates)
         commands = []
         for index, gain in enumerate(gains):
             commands.append({
@@ -3893,6 +4631,10 @@ class IntegratedController:
     def _assert_workspace_target_locked(self, target: np.ndarray) -> None:
         workspace = self.config["workspace"]
         x, y, z = (float(value) for value in target)
+        if not all(np.isfinite(value) for value in (x, y, z)):
+            raise RuntimeError("Cartesian target contains a non-finite value")
+        if not bool(workspace.get("enforce_cartesian_bounds", True)):
+            return
         if abs(x) > float(workspace["abs_x_max_m"]):
             raise RuntimeError(f"target X {x:.4f} m is outside the configured workspace")
         if abs(y) > float(workspace["abs_y_max_m"]):
@@ -3923,6 +4665,10 @@ class IntegratedController:
             self.hybrid_policy = None
             self.commit_requested = False
             self.replan_requested = False
+            if request_float and self.idle_profile != IDLE_GRAVITY_FLOAT:
+                self._clear_idle_profile_locked(
+                    f"idle profile ended: {reason}"
+                )
             self.commanded_qd = np.zeros(6, dtype=float) if self.commanded_qd is not None else None
             if self.residency == "HOT":
                 self.control_state = "TARGET_EDIT"
@@ -4247,6 +4993,7 @@ class IntegratedController:
             capability_readiness = {
                 "robot.motion.arm.integrated.mit.one_shot": discovery_ready,
                 "robot.motion.arm.integrated.mit.continuous": discovery_ready,
+                "robot.motion.arm.integrated.pos_vel.one_shot": discovery_ready,
                 "robot.motion.arm.integrated.pos_vel.one_shot_limited": discovery_ready,
                 "robot.motion.arm.integrated.target_staging": discovery_ready,
                 "robot.motion.arm.integrated.runtime_settings": discovery_ready,
@@ -4265,6 +5012,9 @@ class IntegratedController:
                 "robot.motion.arm.integrated.gripper.mit": discovery_ready,
                 "robot.motion.arm.integrated.gripper.pos_tor": discovery_ready,
                 "robot.motion.arm.integrated.gravity_float": discovery_ready,
+                "robot.motion.arm.integrated.idle_profile.leased": (
+                    discovery_ready
+                ),
                 "robot.motion.arm.integrated.safe_terminate": discovery_ready,
             }
             return {
@@ -4282,6 +5032,7 @@ class IntegratedController:
                 "ready": self.ready,
                 "engaged": self.engaged,
                 "control_state": self.control_state,
+                "idle_profile": self._idle_profile_snapshot_locked(),
                 "fault_reason": self.fault_reason,
                 "last_error": self.last_error,
                 "basic_connected": bool(state),
@@ -4300,15 +5051,33 @@ class IntegratedController:
                         "interaction_mode": INTERACTION_HOLD_LB,
                         "discoverable": True,
                     },
-                    "robot.motion.arm.integrated.pos_vel.one_shot_limited": {
-                        "maturity": "LIMITED",
+                    "robot.motion.arm.integrated.pos_vel.one_shot": {
+                        "maturity": "USABLE",
                         "execution_mode": TRANSIT_SPEED,
                         "interaction_mode": INTERACTION_ONE_SHOT,
                         "discoverable": True,
                         "constraints": {
-                            "maximum_path_length_m": 0.2,
+                            "maximum_path_length_m": 1.2,
                             "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
-                            "stability_beyond_constraints": "NOT_ESTABLISHED",
+                            "effective_joint_speed_policy": (
+                                "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
+                            ),
+                        },
+                    },
+                    "robot.motion.arm.integrated.pos_vel.one_shot_limited": {
+                        "maturity": "DEPRECATED_ALIAS",
+                        "replacement": (
+                            "robot.motion.arm.integrated.pos_vel.one_shot"
+                        ),
+                        "execution_mode": TRANSIT_SPEED,
+                        "interaction_mode": INTERACTION_ONE_SHOT,
+                        "discoverable": True,
+                        "constraints": {
+                            "maximum_path_length_m": 1.2,
+                            "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
+                            "effective_joint_speed_policy": (
+                                "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
+                            ),
                         },
                     },
                     "robot.motion.arm.integrated.plan.direct.nonphysical": {
@@ -4352,6 +5121,28 @@ class IntegratedController:
                         "completion_behavior": (
                             "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
                         ),
+                        "discoverable": True,
+                    },
+                    "robot.motion.arm.integrated.idle_profile.leased": {
+                        "maturity": "USABLE",
+                        "profiles": [
+                            IDLE_GRAVITY_FLOAT,
+                            IDLE_COMPLIANT_HOLD,
+                            IDLE_POSITION_LOCK,
+                        ],
+                        "compliant_kp_multiplier_range": [
+                            float(
+                                self.config["idle_profiles"][
+                                    "compliant_kp_multiplier_min"
+                                ]
+                            ),
+                            float(
+                                self.config["idle_profiles"][
+                                    "compliant_kp_multiplier_max"
+                                ]
+                            ),
+                        ],
+                        "expiry_behavior": IDLE_GRAVITY_FLOAT,
                         "discoverable": True,
                     },
                 },

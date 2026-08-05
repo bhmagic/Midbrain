@@ -7,13 +7,14 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "analyze_visual_scene",
-    "description": "Answer a bounded visual question from one current RGB camera frame through the configured vision-language router. Use this read-only Skill when visible evidence is sufficient; it reports backend provenance and uncertainty and does not infer depth or move the robot.",
+    "description": "Answer a bounded RGB-only visual question from one current camera frame through the configured vision-language router. Use this read-only Skill only when visible appearance is sufficient. It cannot satisfy requests to locate, measure, or report an item in 3D, metric, depth, world, camera, or robot coordinates; those requests require locate_item.",
     "when_to_use": [
       "The user asks a visual question about the current camera scene.",
       "A finite Skill needs one routed VLM interpretation with backend provenance."
     ],
     "when_not_to_use": [
       "The task requires metric depth, a registered 3D point, continuous tracking, or physical motion.",
+      "The user asks to locate, measure, position, or identify an object in 3D, depth, metric, world-frame, camera-frame, or robot-frame coordinates; use locate_item even when the request also asks what the object is.",
       "Deterministic geometry or a non-VLM sensor can answer more reliably."
     ],
     "side_effects": [

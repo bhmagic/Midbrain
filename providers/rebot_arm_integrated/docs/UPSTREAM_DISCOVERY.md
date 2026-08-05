@@ -9,7 +9,8 @@ The Integrated provider registers its control URL with the Midbrain Manager. Its
 | `robot.motion.arm.integrated.mit.one_shot` | USABLE | Operator Engage + LB remains required |
 | `robot.motion.arm.integrated.mit.continuous` | USABLE | Operator Engage + held LB remains required |
 | `robot.motion.arm.integrated.plan.direct.nonphysical` | SHADOW | Direct stage and preview; cannot authorize motion |
-| `robot.motion.arm.integrated.pos_vel.one_shot_limited` | LIMITED | Path ≤20 cm; no payload or high external load |
+| `robot.motion.arm.integrated.pos_vel.one_shot` | USABLE | IK-valid free-space request up to 1.2 m; actual reach, scene, and joint limits apply |
+| `robot.motion.arm.integrated.pos_vel.one_shot_limited` | DEPRECATED ALIAS | Compatibility alias for `robot.motion.arm.integrated.pos_vel.one_shot` |
 
 `TRANSIT_SPEED`/POS_VEL `HOLD_LB` and arm `CONTACT_WORK`/POS_TOR `ONE_SHOT` are experimental and unstable. They remain available in the local test GUI but are deliberately omitted from Manager `capability_readiness`.
 

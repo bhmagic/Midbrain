@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-observe-pointed-object"
+version = "0.2.2"
+description = "Metric and degraded-evidence item localization for Midbrain"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3",
+  "midbrain-spatial-registration-rgbd>=0.2,<0.3"
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["observe_pointed_object*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

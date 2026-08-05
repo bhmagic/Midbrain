@@ -370,7 +370,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
                 return [
                     {
                         "capability": (
-                            "robot.motion.arm.integrated.mit.one_shot"
+                            "robot.motion.arm.integrated.pos_vel.one_shot"
                         ),
                         "provider_id": "robot_arm.primary.integrated",
                         "available": True,
@@ -412,7 +412,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["readiness"]["capability_advertised"])
         self.assertIsNone(result["readiness"]["capability_ready"])
         self.assertIn(
-            "robot.motion.arm.integrated.mit.one_shot",
+            "robot.motion.arm.integrated.pos_vel.one_shot",
             result["readiness"]["advertised_capabilities"],
         )
         self.assertIn("advisory model guess", result["agent_instruction"])

@@ -48,7 +48,9 @@ from .gemini_pointing_skill import (
 from .initialize_space_cognition_skill import InitializeSpaceCognitionSkill
 from .integrated_client import IntegratedControllerClient
 from .integrated_motion_adapter import IntegratedRelativeMotionAdapter
+from .item_locator_adapter import MetricItemLocatorAdapter
 from .manager_client import ManagerClient
+from .no_contact_approach import NoContactItemApproachAdapter
 from .observation_motion import (
     attach_controller_preview,
     build_observation_motion_proposal,
@@ -165,6 +167,17 @@ rgbd_alignment_skill = RgbdAlignmentValidationSkill(
     manager=manager,
     policy=phase4_policy,
 )
+from .semantic_scene_inspector import SemanticSceneInspector
+from .semantic_assertion_publisher import SemanticAssertionPublisher
+from .scene_segmentation_policy_publisher import (
+    SceneSegmentationPolicyPublisher,
+)
+
+
+async def _ensure_current_world_tracking() -> dict[str, Any]:
+    return await space_cognition_skill.ensure_tracking()
+
+
 spatial_registration_skill = SpatialRegistrationSkillAdapter(
     RgbdCapture(fabric, settings.head_camera_frame),
     fabric,
@@ -172,11 +185,40 @@ spatial_registration_skill = SpatialRegistrationSkillAdapter(
     fallback_camera_provider_id=settings.head_camera_provider_id,
     binding_mode=settings.phase5_spatial_binding_mode,
     generic_route_mode=settings.phase5_spatial_generic_route_mode,
+    mounted_static_target_frames={settings.arm_base_frame},
+    readiness_ensurer=_ensure_current_world_tracking,
+)
+semantic_assertion_publisher = SemanticAssertionPublisher(fabric)
+scene_segmentation_policy_publisher = SceneSegmentationPolicyPublisher(
+    fabric,
+    state_path=settings.scene_policy_state_path,
+)
+semantic_scene_inspector = SemanticSceneInspector(
+    fabric,
+    tracker_base_url=settings.sam2_scene_tracker_url,
+    visual_evidence_store=visual_evidence_store,
+)
+item_locator_skill = MetricItemLocatorAdapter(
+    spatial_registration_skill,
+    agent_vlm_router,
+    evidence_dir=settings.screenshot_dir,
+    semantic_assertion_publisher=semantic_assertion_publisher,
+    visual_evidence_store=visual_evidence_store,
 )
 effector_front_skill = EffectorFrontSkillAdapter(
     spatial_registration_skill,
     agent_vlm_router,
     evidence_dir=settings.screenshot_dir,
+    arm_tool_frame=settings.arm_tool_frame,
+    visual_evidence_store=visual_evidence_store,
+)
+no_contact_approach_skill = NoContactItemApproachAdapter(
+    item_locator_skill,
+    effector_front_skill,
+    scene_inspector=semantic_scene_inspector,
+    manager=manager,
+    integrated=integrated,
+    authorization_store=authorization_store,
 )
 tool_registration_skill = ToolControlFrameSkillAdapter(
     spatial_registration_skill,
@@ -217,8 +259,6 @@ world_point_cloud = WorldPointCloudAccumulator(
     update_hz=settings.point_cloud_hz,
     max_points=settings.point_cloud_max_points,
 )
-
-
 async def _reinitialize_space_cognition(reason: str) -> dict[str, Any]:
     await world_point_cloud.begin_reinitialization()
     try:
@@ -340,13 +380,18 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         visual_scene_skill=visual_scene_skill,
         rgbd_alignment_skill=rgbd_alignment_skill,
         spatial_registration_skill=spatial_registration_skill,
+        item_locator_skill=item_locator_skill,
         effector_front_skill=effector_front_skill,
+        no_contact_approach_skill=no_contact_approach_skill,
+        semantic_scene_inspector=semantic_scene_inspector,
+        scene_policy_publisher=scene_segmentation_policy_publisher,
         tool_registration_skill=tool_registration_skill,
         stationary_calibration_skill=stationary_calibration_agent_adapter,
         manager=manager,
         provider_lifecycle_control=True,
         integrated_motion_skill=integrated_motion_agent_adapter,
         basic_safe_home_skill=basic_safe_home_agent_adapter,
+        space_cognition_establisher=_ensure_current_world_tracking,
         space_cognition_reinitializer=_reinitialize_space_cognition,
         session=SQLiteSession(
             (
@@ -415,6 +460,8 @@ auto_initialization_task: asyncio.Task[None] | None = None
 auto_initialization_error: str | None = None
 auto_initialization_state = "NOT_STARTED"
 auto_initialization_result: dict[str, Any] | None = None
+scene_policy_restore_result: dict[str, Any] | None = None
+scene_policy_restore_error: str | None = None
 
 
 async def _auto_initialize() -> None:
@@ -439,6 +486,7 @@ async def lifespan(_app: FastAPI):
     global auto_initialization_task, auto_initialization_state
     global midbrain_session_id, midbrain_session_source
     global midbrain_session_identity_checked_at
+    global scene_policy_restore_result, scene_policy_restore_error
     try:
         manager_identity = await asyncio.wait_for(
             manager.health(),
@@ -452,6 +500,14 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
     await agent_run_journal.start(session_id=midbrain_session_id)
+    try:
+        scene_policy_restore_result = (
+            await scene_segmentation_policy_publisher.restore_policy()
+        )
+        scene_policy_restore_error = None
+    except Exception as error:
+        scene_policy_restore_result = None
+        scene_policy_restore_error = str(error)
     await world_point_cloud.start()
     if settings.auto_initialize_space_cognition:
         auto_initialization_task = asyncio.create_task(
@@ -479,11 +535,11 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Physical Agent Test Scaffold",
-    version="0.4.2",
+    version="0.4.9",
     lifespan=lifespan,
 )
 
-MAX_SESSION_AUTO_SPEED_M_S = 0.5
+DEFAULT_SESSION_AUTO_SPEED_M_S = 5.0
 
 
 class PromptRequest(BaseModel):
@@ -506,16 +562,47 @@ class PromptRequest(BaseModel):
     auto_authorize_provider_activation: bool = False
     auto_authorize_provider_stop: bool = False
     auto_authorize_relative_motion: bool = False
-    max_auto_move_cm: float = Field(default=35.0, ge=0.1, le=100.0)
+    max_auto_move_cm: float = Field(default=120.0, ge=0.1, le=120.0)
     max_auto_speed_m_s: float = Field(
-        default=MAX_SESSION_AUTO_SPEED_M_S,
+        default=DEFAULT_SESSION_AUTO_SPEED_M_S,
         gt=0.0,
-        le=MAX_SESSION_AUTO_SPEED_M_S,
     )
     auto_authorize_stationary_calibration: bool = False
     auto_authorize_stationary_activation: bool = False
     auto_authorize_safe_home: bool = False
     auto_authorize_space_reinitialization: bool = False
+
+
+class ItemLocationRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    target_frame: str = Field(
+        default="CURRENT_WORLD",
+        min_length=1,
+        max_length=200,
+    )
+    object_id: str | None = Field(default=None, max_length=200)
+    contact_policy: str = Field(
+        default="WORKPIECE_CONTACT_ALLOWED",
+        pattern=r"^(WORKPIECE_CONTACT_ALLOWED|NO_CONTACT)$",
+    )
+    depth_requirement: str = Field(
+        default="PREFER_METRIC",
+        pattern=r"^(PREFER_METRIC|REQUIRE_METRIC|ALLOW_BEARING)$",
+    )
+    task_plane: dict[str, Any] | None = None
+
+
+class RgbdPointRegistrationRequest(BaseModel):
+    pixel_yx: list[float] = Field(min_length=2, max_length=2)
+    target_frame: str = Field(
+        default="CURRENT_WORLD",
+        min_length=1,
+        max_length=200,
+    )
+    depth_policy: str = Field(
+        default="ROBUST_MEDIAN",
+        pattern=r"^(ROBUST_MEDIAN|CLOSEST_TO_CAMERA|NEAREST_VALID_PIXEL)$",
+    )
 
 
 class AgentAttachmentUpload(BaseModel):
@@ -623,12 +710,11 @@ class DeveloperApprovalDecision(BaseModel):
     max_auto_move_cm: float | None = Field(
         default=None,
         ge=0.1,
-        le=100.0,
+        le=120.0,
     )
     max_auto_speed_m_s: float | None = Field(
         default=None,
         gt=0.0,
-        le=MAX_SESSION_AUTO_SPEED_M_S,
     )
 
 
@@ -758,22 +844,10 @@ def _validate_automatic_agent_approval(
         return
     if decision.approval_mode == "AUTO_BOUNDED_RELATIVE_MOTION":
         maximum_cm = decision.max_auto_move_cm
-        maximum_speed_m_s = decision.max_auto_speed_m_s
         if maximum_cm is None or not math.isfinite(maximum_cm):
             raise HTTPException(
                 status_code=422,
                 detail="bounded motion authorization requires a finite cm limit",
-            )
-        if (
-            maximum_speed_m_s is None
-            or not math.isfinite(maximum_speed_m_s)
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "bounded motion authorization requires a finite nominal "
-                    "speed limit"
-                ),
             )
         eligible = all(
             approval.get("tool_name")
@@ -781,7 +855,10 @@ def _validate_automatic_agent_approval(
             and relative_motion_within_authorization(
                 _approval_arguments(approval),
                 max_auto_move_cm=maximum_cm,
-                max_auto_speed_m_s=maximum_speed_m_s,
+                max_auto_speed_m_s=(
+                    decision.max_auto_speed_m_s
+                    or DEFAULT_SESSION_AUTO_SPEED_M_S
+                ),
             )
             for approval in approvals
         )
@@ -791,8 +868,8 @@ def _validate_automatic_agent_approval(
                 detail=(
                     "The requested operation is not an exact Integrated "
                     "relative-pose preview within the browser-authorized "
-                    f"{maximum_cm:g} cm and {maximum_speed_m_s:g} m/s "
-                    "nominal-speed limits and the fixed 45-degree "
+                    f"{maximum_cm:g} cm limit, the 10/20 rad/s per-joint "
+                    "authentication policy, and the fixed 45-degree "
                     "controlled-frame-yaw limit."
                 ),
             )
@@ -824,7 +901,7 @@ def _validate_automatic_agent_approval(
                 detail=(
                     "The session calibration-activation authorization "
                     "permits only exact stationary candidate review and "
-                    "bounded activation; physical motion and other protected "
+                    "mounted-rig activation; physical motion and protected "
                     "operations still require their own decision."
                 ),
             )
@@ -1219,6 +1296,11 @@ async def status() -> dict[str, Any]:
         "midbrain_session_id": midbrain_session_id,
         "midbrain_session_source": midbrain_session_source,
         "agent_run_journal": agent_run_journal.health_snapshot(),
+        "scene_policy_restore": {
+            "state_path": str(settings.scene_policy_state_path),
+            "result": scene_policy_restore_result,
+            "error": scene_policy_restore_error,
+        },
         "stationary_calibration_timeout_s": (
             settings.stationary_calibration_timeout_s
         ),
@@ -1392,13 +1474,15 @@ async def spatial_axes() -> dict[str, Any]:
                 "path": [],
             }
         try:
-            transform = await fabric.transform(
-                from_frame=frame_id,
-                to_frame=world_frame,
+            transform = await _frame_transform_to_world(
+                source_frame=frame_id,
+                world_frame=world_frame,
+                session_epoch=session_epoch,
                 at_us=observed_at_us,
                 max_extrapolation_us=500_000,
-                session_epoch=session_epoch,
             )
+            if transform is None:
+                raise RuntimeError("world-frame identity was not handled")
             return {
                 "frame_id": frame_id,
                 "short_label": label,
@@ -1522,6 +1606,45 @@ async def spatial_axes() -> dict[str, Any]:
             "applies_only_when_explicit": True,
         },
     }
+
+
+@app.post("/api/spatial/items/locate")
+async def locate_item_metric(
+    request: ItemLocationRequest,
+) -> dict[str, Any]:
+    """Invoke the typed metric locator without conversational tool routing."""
+
+    try:
+        return await item_locator_skill.run(
+            question=request.question,
+            target_frame=request.target_frame,
+            object_id=request.object_id,
+            contact_policy=request.contact_policy,
+            depth_requirement=request.depth_requirement,
+            task_plane=request.task_plane,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (RuntimeError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/spatial/register-rgbd-point")
+async def register_rgbd_point_metric(
+    request: RgbdPointRegistrationRequest,
+) -> dict[str, Any]:
+    """Register one supplied RGB pixel through current synchronized depth."""
+
+    try:
+        return await spatial_registration_skill.run(
+            pixel_yx=request.pixel_yx,
+            target_frame=request.target_frame,
+            depth_policy=request.depth_policy,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (RuntimeError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/phase4/policy")
@@ -1895,6 +2018,384 @@ async def world_point_cloud_snapshot() -> Response:
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+def _transform_annotation_center(
+    center_m: list[Any],
+    transform: dict[str, Any] | None,
+) -> list[float]:
+    center = [float(value) for value in center_m]
+    if len(center) != 3 or not all(math.isfinite(value) for value in center):
+        raise ValueError("annotation center must contain three finite values")
+    if transform is None:
+        return center
+    translation = [float(value) for value in transform["translation_m"]]
+    rotation = rotation_matrix(transform["rotation_xyzw"])
+    return [
+        translation[row]
+        + sum(rotation[row][column] * center[column] for column in range(3))
+        for row in range(3)
+    ]
+
+
+def _compose_fabric_transforms(
+    outer: dict[str, Any],
+    inner: dict[str, Any],
+) -> dict[str, Any]:
+    """Compose target-from-middle with middle-from-source."""
+
+    inner_translation = [float(value) for value in inner["translation_m"]]
+    outer_translation = [float(value) for value in outer["translation_m"]]
+    outer_rotation = rotation_matrix(outer["rotation_xyzw"])
+    translation = [
+        outer_translation[row]
+        + sum(
+            outer_rotation[row][column] * inner_translation[column]
+            for column in range(3)
+        )
+        for row in range(3)
+    ]
+    x2, y2, z2, w2 = [float(value) for value in outer["rotation_xyzw"]]
+    x1, y1, z1, w1 = [float(value) for value in inner["rotation_xyzw"]]
+    quaternion = [
+        w2 * x1 + x2 * w1 + y2 * z1 - z2 * y1,
+        w2 * y1 - x2 * z1 + y2 * w1 + z2 * x1,
+        w2 * z1 + x2 * y1 - y2 * x1 + z2 * w1,
+        w2 * w1 - x2 * x1 - y2 * y1 - z2 * z1,
+    ]
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    if norm <= 1e-12:
+        raise ValueError("composed transform quaternion has zero norm")
+    return {
+        "from_frame": inner.get("from_frame"),
+        "to_frame": outer.get("to_frame"),
+        "at_us": outer.get("at_us") or inner.get("at_us"),
+        "translation_m": translation,
+        "rotation_xyzw": [value / norm for value in quaternion],
+        "path": [
+            *(inner.get("path") or []),
+            *(outer.get("path") or []),
+        ],
+        "epoch_composition": "VIO_WORLD_WITH_INDEPENDENT_ARM_CONTROL_EPOCH",
+    }
+
+
+async def _frame_transform_to_world(
+    *,
+    source_frame: str,
+    world_frame: str,
+    session_epoch: str,
+    at_us: int,
+    max_extrapolation_us: int,
+) -> dict[str, Any] | None:
+    if source_frame == world_frame:
+        return None
+    arm_frames = {
+        settings.arm_base_frame,
+        settings.arm_tool_frame,
+        *(f"link{index}" for index in range(1, 7)),
+    }
+    if source_frame not in arm_frames:
+        return await fabric.transform(
+            from_frame=source_frame,
+            to_frame=world_frame,
+            at_us=at_us,
+            max_extrapolation_us=max_extrapolation_us,
+            session_epoch=session_epoch,
+        )
+    world_from_arm_base = await fabric.transform(
+        from_frame=settings.arm_base_frame,
+        to_frame=world_frame,
+        at_us=at_us,
+        max_extrapolation_us=max_extrapolation_us,
+        session_epoch=session_epoch,
+    )
+    if source_frame == settings.arm_base_frame:
+        return world_from_arm_base
+    arm_base_from_source = await fabric.transform(
+        from_frame=source_frame,
+        to_frame=settings.arm_base_frame,
+        at_us=at_us,
+        max_extrapolation_us=max_extrapolation_us,
+        session_epoch=None,
+    )
+    return _compose_fabric_transforms(
+        world_from_arm_base,
+        arm_base_from_source,
+    )
+
+
+async def _annotation_frame_transform(
+    *,
+    source_frame: str,
+    world_frame: str,
+    session_epoch: str,
+    at_us: int,
+) -> dict[str, Any] | None:
+    if source_frame == world_frame:
+        return None
+    if source_frame.startswith("local_vio/"):
+        raise RuntimeError(
+            "annotation belongs to a different Local VIO world epoch"
+        )
+    return await _frame_transform_to_world(
+        source_frame=source_frame,
+        world_frame=world_frame,
+        session_epoch=session_epoch,
+        at_us=at_us,
+        max_extrapolation_us=750_000,
+    )
+
+
+@app.get("/api/world-annotations")
+async def world_annotations() -> dict[str, Any]:
+    """Project semantic spheres, the last item, and the gripper into the viewer."""
+
+    point_cloud_status = await world_point_cloud.status()
+    world_frame = str(point_cloud_status.get("world_frame") or "")
+    session_epoch = str(point_cloud_status.get("session_epoch") or "")
+    if not world_frame or not session_epoch:
+        raise HTTPException(
+            status_code=409,
+            detail="world point-cloud epoch is not established",
+        )
+    now_us = time.time_ns() // 1000
+    markers: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    scene_metadata: dict[str, Any] = {"status": "NO_SCENE"}
+    gripper_metadata: dict[str, Any] = {
+        "status": "UNAVAILABLE",
+        "frame_id": settings.arm_tool_frame,
+    }
+
+    vio_observation = await fabric.latest_optional("localization.vio.status")
+    vio_data = (
+        vio_observation.get("data")
+        if isinstance(vio_observation, dict)
+        else None
+    )
+    if isinstance(vio_data, dict):
+        vio_epoch = str(vio_data.get("session_epoch") or "")
+        gripper_at_us = int(vio_observation.get("observed_at_us") or 0)
+        if vio_epoch != session_epoch:
+            warnings.append(
+                "gripper marker VIO epoch does not match the point-cloud epoch"
+            )
+        elif gripper_at_us <= 0:
+            warnings.append("gripper marker has no VIO observation timestamp")
+        else:
+            try:
+                gripper_transform = await _frame_transform_to_world(
+                    source_frame=settings.arm_tool_frame,
+                    world_frame=world_frame,
+                    session_epoch=session_epoch,
+                    at_us=gripper_at_us,
+                    max_extrapolation_us=750_000,
+                )
+                if gripper_transform is None:
+                    raise RuntimeError("gripper transform resolved as identity")
+                markers["robot-gripper-tool"] = {
+                    "marker_id": "robot-gripper-tool",
+                    "label": "gripper / tool frame",
+                    "center_m": [
+                        float(value)
+                        for value in gripper_transform["translation_m"]
+                    ],
+                    "radius_m": 0.025,
+                    "type": "GRIPPER",
+                    "roi_scope": None,
+                    "semantic_source": "ROBOT_KINEMATIC_TRANSFORM",
+                    "source": "FABRIC_TRANSFORM",
+                    "stale": False,
+                    "show_label": True,
+                    "observed_at_us": gripper_at_us,
+                }
+                gripper_metadata = {
+                    "status": "CURRENT",
+                    "frame_id": settings.arm_tool_frame,
+                    "observed_at_us": gripper_at_us,
+                    "transform_path": gripper_transform.get("path") or [],
+                }
+            except Exception as error:
+                gripper_metadata = {
+                    "status": "UNAVAILABLE",
+                    "frame_id": settings.arm_tool_frame,
+                    "error": str(error),
+                }
+                warnings.append(f"gripper marker unavailable: {error}")
+
+    scene = await fabric.latest_optional("robot_arm.primary.integrated.scene")
+    if isinstance(scene, dict):
+        data = scene.get("data")
+        data = data if isinstance(data, dict) else {}
+        source_frame = str(data.get("frame_id") or "")
+        spheres = data.get("spheres")
+        spheres = spheres if isinstance(spheres, list) else []
+        expires_at_us = int(scene.get("expires_at_us") or 0)
+        scene_stale = expires_at_us > 0 and expires_at_us <= now_us
+        scene_metadata = {
+            "status": "STALE" if scene_stale else "CURRENT",
+            "scene_revision": data.get("scene_revision"),
+            "source_frame": source_frame,
+            "sphere_count": len(spheres),
+            "expires_at_us": expires_at_us or None,
+        }
+        try:
+            transform = await _annotation_frame_transform(
+                source_frame=source_frame,
+                world_frame=world_frame,
+                session_epoch=session_epoch,
+                at_us=now_us,
+            )
+            semantic = [
+                value
+                for value in spheres
+                if isinstance(value, dict)
+                and str(value.get("type") or "KEEP_OUT") != "KEEP_OUT"
+            ]
+            keep_out = [
+                value
+                for value in spheres
+                if isinstance(value, dict)
+                and str(value.get("type") or "KEEP_OUT") == "KEEP_OUT"
+            ]
+            # The controller consumes the complete scene. The viewer uses a
+            # deterministic reduced layer so dense table coverage remains
+            # legible and inexpensive to evaluate interactively.
+            keep_out_limit = max(0, 240 - len(semantic))
+            keep_out_step = max(
+                1,
+                math.ceil(len(keep_out) / max(1, keep_out_limit)),
+            )
+            displayed_keep_out = keep_out[::keep_out_step][
+                :keep_out_limit
+            ]
+            selected = [
+                *semantic,
+                *displayed_keep_out,
+            ]
+            scene_metadata.update(
+                {
+                    "displayed_sphere_count": len(selected),
+                    "displayed_keep_out_count": len(displayed_keep_out),
+                    "keep_out_display_stride": keep_out_step,
+                    "visualization_limit": 240,
+                    "visualization_reduced": len(selected) < len(spheres),
+                }
+            )
+            for sphere in selected:
+                marker_id = str(
+                    sphere.get("sphere_id")
+                    or sphere.get("object_id")
+                    or f"scene-sphere-{len(markers)}"
+                )
+                radius_m = float(sphere.get("radius_m") or 0.0)
+                if not math.isfinite(radius_m) or radius_m <= 0.0:
+                    continue
+                markers[marker_id] = {
+                    "marker_id": marker_id,
+                    "label": str(
+                        sphere.get("object_id") or marker_id
+                    ),
+                    "center_m": _transform_annotation_center(
+                        list(sphere.get("center_m") or []),
+                        transform,
+                    ),
+                    "radius_m": radius_m,
+                    "type": str(sphere.get("type") or "KEEP_OUT"),
+                    "roi_scope": sphere.get("roi_scope"),
+                    "semantic_source": sphere.get("semantic_source"),
+                    "source": "ARM_SCENE_COMPILER",
+                    "stale": scene_stale,
+                    "show_label": sphere in semantic,
+                }
+        except Exception as error:
+            warnings.append(f"compiled scene projection unavailable: {error}")
+
+    item = item_locator_skill.last_metric_result
+    if isinstance(item, dict) and item.get("eligible_for_control_math") is True:
+        location = item.get("location")
+        location = location if isinstance(location, dict) else {}
+        object_id = str(item.get("object_id") or "last-metric-item")
+        source_frame = str(item.get("target_frame") or "")
+        capture = item.get("camera_capture")
+        capture = capture if isinstance(capture, dict) else {}
+        item_epoch = str(capture.get("session_epoch") or "").strip()
+        if item_epoch.lower() in {"none", "null"}:
+            item_epoch = ""
+        if item_epoch and item_epoch != session_epoch:
+            warnings.append(
+                "last trusted metric item belongs to a different VIO epoch"
+            )
+            item = None
+    if isinstance(item, dict) and item.get("eligible_for_control_math") is True:
+        location = item.get("location")
+        location = location if isinstance(location, dict) else {}
+        object_id = str(item.get("object_id") or "last-metric-item")
+        source_frame = str(item.get("target_frame") or "")
+        try:
+            transform = await _annotation_frame_transform(
+                source_frame=source_frame,
+                world_frame=world_frame,
+                session_epoch=session_epoch,
+                at_us=now_us,
+            )
+            volume = item.get("volume_hint")
+            volume = volume if isinstance(volume, dict) else {}
+            radius_m = max(
+                float(location.get("uncertainty_radius_m") or 0.0),
+                float(
+                    volume.get("representative_sphere_radius_m")
+                    or volume.get("raw_sphere_radius_m")
+                    or 0.0
+                ),
+                0.005,
+            )
+            item_observed_at_us = int(item.get("observed_at_us") or 0)
+            item_age_ms = (
+                None
+                if item_observed_at_us <= 0
+                else max(0.0, (now_us - item_observed_at_us) / 1000.0)
+            )
+            markers[object_id] = {
+                "marker_id": object_id,
+                "label": str(item.get("item_label") or object_id),
+                "center_m": _transform_annotation_center(
+                    list(
+                        volume.get("estimated_centroid_target_m")
+                        or location.get("target_point_m")
+                        or []
+                    ),
+                    transform,
+                ),
+                "radius_m": radius_m,
+                "type": "WORK_OBJECT",
+                "roi_scope": None,
+                "semantic_source": "METRIC_ITEM_LOCATOR",
+                "source": "LAST_TRUSTED_METRIC_ITEM_RESULT",
+                "stale": item_age_ms is None or item_age_ms > 60_000.0,
+                "show_label": True,
+                "observed_at_us": item.get("observed_at_us"),
+                "age_ms": item_age_ms,
+                "uncertainty_radius_m": location.get(
+                    "uncertainty_radius_m"
+                ),
+            }
+        except Exception as error:
+            warnings.append(f"last metric item projection unavailable: {error}")
+
+    return {
+        "schema": "physical_agent.world_annotation_snapshot",
+        "schema_version": 1,
+        "world_frame": world_frame,
+        "session_epoch": session_epoch,
+        "observed_at_us": now_us,
+        "scene": scene_metadata,
+        "gripper": gripper_metadata,
+        "marker_count": len(markers),
+        "markers": list(markers.values()),
+        "warnings": warnings,
+    }
 
 
 @app.post("/api/world-point-cloud/clear")
@@ -2588,6 +3089,7 @@ PAGE = r"""
     #cloud { display: block; width: 100%; height: 100%; cursor: grab; }
     #cloud:active { cursor: grabbing; }
     .viewer-overlay { position: absolute; left: 10px; top: 10px; background: rgba(5,5,5,.78); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+    .annotation-overlay { position: absolute; right: 10px; top: 50px; max-width: 48%; background: rgba(5,5,5,.78); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; text-align: right; }
     .gravity-overlay { position: absolute; right: 10px; top: 10px; background: rgba(5,5,5,.82); padding: 7px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; text-align: right; white-space: pre-line; }
     .axis-overlay { position: absolute; left: 10px; bottom: 10px; display: grid; grid-template-columns: auto auto; gap: 3px 9px; background: rgba(5,5,5,.82); padding: 8px 10px; border-radius: 6px; font-size: 12px; pointer-events: none; }
     .axis-overlay strong { font-variant-numeric: tabular-nums; }
@@ -2599,6 +3101,15 @@ PAGE = r"""
     .axis-toolbar button { margin: 0; }
     .axis-toolbar .controls { margin: 0 0 0 auto; }
     .axis-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(245px, 1fr)); gap: 7px; margin: 0 0 10px; }
+    .annotation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 10px; border: 1px solid var(--mb-border); border-radius: 8px; padding: 8px 10px; background: #101010; }
+    .annotation-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--mb-secondary); font-size: 11px; white-space: nowrap; }
+    .annotation-toggle input { margin: 0; accent-color: var(--mb-accent); }
+    .annotation-swatch { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(255,255,255,.24); }
+    .annotation-swatch.keep-out { background: #ff3d3d; }
+    .annotation-swatch.pushable { background: #f259e0; }
+    .annotation-swatch.work-object { background: #ffb82e; }
+    .annotation-swatch.gripper { background: #33e6ff; }
+    .annotation-legend-note { margin-left: auto; color: var(--mb-muted); font-size: 10px; }
     .axis-item { border: 1px solid var(--mb-border); border-radius: 8px; background: #101010; padding: 7px 9px; min-width: 0; }
     .axis-item.unavailable { opacity: .58; }
     .axis-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -2609,6 +3120,7 @@ PAGE = r"""
     .axis-item details pre { margin: 5px 0 0; min-height: 0; max-height: 160px; padding: 8px; font-size: 10px; }
     .frame-label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
     .frame-label { position: absolute; transform: translate(6px, -50%); padding: 2px 5px; border-radius: 4px; background: rgba(5,5,5,.84); color: #f2f2f2; font-size: 10px; white-space: nowrap; border: 1px solid rgba(255,255,255,.18); }
+    .annotation-label { color: #ffd166; border-color: rgba(255,209,102,.55); }
     .screen-axis-overlay { position: absolute; right: 10px; bottom: 10px; width: 184px; height: 116px; border-radius: 8px; background: rgba(5,5,5,.88); border: 1px solid rgba(255,255,255,.18); pointer-events: none; }
     .screen-axis-overlay svg { width: 100%; height: 100%; }
     .screen-axis-overlay text { fill: #d7d7d7; font: 10px system-ui, sans-serif; }
@@ -2725,10 +3237,10 @@ PAGE = r"""
           <label class="authorization-toggle">
             <input id="autoApproveMoves" type="checkbox" checked>
             Auto-authorize each exact relative arm pose preview: translation up to
-            <input id="maxAutoMoveCm" type="number" min="0.1" max="100" step="0.1" value="35" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
-            cm at a nominal average speed up to
-            <input id="maxAutoSpeedMps" type="number" min="0.001" max="0.5" step="0.001" value="0.5" inputmode="decimal" aria-label="Maximum automatically authorized nominal speed in meters per second">
-            m/s; controlled-frame yaw up to 45°
+            <input id="maxAutoMoveCm" type="number" min="0.1" max="120" step="0.1" value="120" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
+            <input id="maxAutoSpeedMps" type="hidden" value="5">
+            cm; per-joint speed asks above 10 rad/s and hard-stops at 20 rad/s;
+            controlled-frame yaw up to 45°
           </label>
           <label class="authorization-toggle">
             <input id="autoApproveCalibration" type="checkbox" checked>
@@ -2794,9 +3306,18 @@ PAGE = r"""
           <span class="controls" id="axisStatus">Loading local coordinate frames…</span>
         </div>
         <div class="axis-controls" id="axisControls" aria-label="Spatial frame visibility"></div>
+        <div class="annotation-controls" aria-label="World annotation visibility and color legend">
+          <label class="annotation-toggle"><input id="showAnnotations" type="checkbox" checked>Show markers</label>
+          <label class="annotation-toggle"><input id="showKeepOut" type="checkbox" checked><span class="annotation-swatch keep-out"></span>Obstacle / keep-out</label>
+          <label class="annotation-toggle"><input id="showPushable" type="checkbox" checked><span class="annotation-swatch pushable"></span>Pushable</label>
+          <label class="annotation-toggle"><input id="showWorkObject" type="checkbox" checked><span class="annotation-swatch work-object"></span>Work object</label>
+          <label class="annotation-toggle"><input id="showGripper" type="checkbox" checked><span class="annotation-swatch gripper"></span>Gripper</label>
+          <span class="annotation-legend-note">Only user-declared KEEP_OUT geometry is blocking; unclaimed visible geometry is ignored PUSHABLE telemetry.</span>
+        </div>
         <div class="viewer-wrap">
           <canvas id="cloud"></canvas>
           <div class="viewer-overlay" id="cloudStats">Waiting for pose and RGB-D…</div>
+          <div class="annotation-overlay" id="annotationStats">Waiting for semantic annotations…</div>
           <div class="gravity-overlay" id="gravityStatus">↓ World gravity · -Z</div>
           <div class="frame-label-layer" id="frameLabels" aria-hidden="true"></div>
           <div class="screen-axis-overlay" id="screenAxisOverlay" hidden aria-label="2D screen-space axes">
@@ -2820,7 +3341,7 @@ PAGE = r"""
             <strong class="world-down">-Z</strong><span>gravity / down</span>
           </div>
         </div>
-        <p class="controls">Orthographic world view. Drag to orbit; Shift-drag, middle-drag, or right-drag to pan; use the wheel to zoom. Frame checkboxes control live local XYZ triads: red +X, green +Y, blue +Z. Orange remains gravity/down (-Z), cyan is the camera frustum, and point-cloud samples fade over 10 seconds.</p>
+        <p class="controls">Orthographic world view. Drag to orbit; Shift-drag, middle-drag, or right-drag to pan; use the wheel to zoom. Frame checkboxes control live local XYZ triads: red +X, green +Y, blue +Z. Orange remains gravity/down (-Z), cyan is the camera frustum, and point-cloud samples fade over 10 seconds. Marker colors and visibility are controlled by the legend above.</p>
       </section>
       <section class="card" id="spaceCognitionLinkPanel">
         <div class="role-kicker">Point-cloud recovery</div>
@@ -3002,6 +3523,11 @@ const resetViewButton = document.getElementById('resetView');
 const fitAxesButton = document.getElementById('fitAxes');
 const axisControls = document.getElementById('axisControls');
 const axisStatus = document.getElementById('axisStatus');
+const showAnnotations = document.getElementById('showAnnotations');
+const showKeepOut = document.getElementById('showKeepOut');
+const showPushable = document.getElementById('showPushable');
+const showWorkObject = document.getElementById('showWorkObject');
+const showGripper = document.getElementById('showGripper');
 const frameLabels = document.getElementById('frameLabels');
 const screenAxisOverlay = document.getElementById('screenAxisOverlay');
 const authorizationDialog = document.getElementById('authorizationDialog');
@@ -3193,11 +3719,13 @@ function loadAgentAuthorizationPreferences() {
   const savedMaximum = Number(saved.maxAutoMoveCm);
   maxAutoMoveCm.value =
     Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
-    savedMaximum <= 100 ? String(savedMaximum) : '35';
+    savedMaximum <= 120 ? String(savedMaximum) : '120';
   const savedMaximumSpeed = Number(saved.maxAutoSpeedMps);
   maxAutoSpeedMps.value =
     Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0 &&
-    savedMaximumSpeed <= 0.5 ? String(savedMaximumSpeed) : '0.5';
+    Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0
+      ? String(savedMaximumSpeed)
+      : '5';
   updateAgentAuthorizationTicker();
 }
 
@@ -3215,19 +3743,20 @@ function agentAuthorizationPreferences() {
     autoApproveSpaceReinitialization:
       autoApproveSpaceReinitialization.checked,
     maxAutoMoveCm:
-      Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
+      Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 120
         ? maximum
-        : 35,
+        : 120,
     maxAutoSpeedMps:
       Number.isFinite(maximumSpeed) && maximumSpeed > 0 &&
-      maximumSpeed <= 0.5 ? maximumSpeed : 0.5
+      Number.isFinite(maximumSpeed) && maximumSpeed > 0
+        ? maximumSpeed
+        : 5
   };
 }
 
 function updateAgentAuthorizationTicker() {
   const preferences = agentAuthorizationPreferences();
   maxAutoMoveCm.disabled = !preferences.autoApproveMoves;
-  maxAutoSpeedMps.disabled = !preferences.autoApproveMoves;
   const providerState = preferences.autoApproveProviders
     ? 'Provider activation AUTO'
     : 'Provider activation asks';
@@ -3235,8 +3764,8 @@ function updateAgentAuthorizationTicker() {
     ? 'Provider stop AUTO'
     : 'Provider stop asks';
   const motionState = preferences.autoApproveMoves
-    ? 'relative arm pose AUTO <= ' + preferences.maxAutoMoveCm + ' cm, <= ' +
-      preferences.maxAutoSpeedMps + ' m/s nominal average; ' +
+    ? 'relative arm pose AUTO <= ' + preferences.maxAutoMoveCm + ' cm; ' +
+      'joint speed asks >10 rad/s and hard-stops >=20 rad/s; ' +
       'controlled-frame yaw AUTO <= 45°'
     : 'physical motion asks';
   const calibrationState = preferences.autoApproveCalibration
@@ -3335,8 +3864,7 @@ function automaticDeveloperApprovalDecision(approvals) {
       const boundedTranslation =
         Number.isFinite(distanceM) && distanceM > 0 &&
         distanceM * 100 <= preferences.maxAutoMoveCm + 1e-9 &&
-        Number.isFinite(plannedSpeedMps) && plannedSpeedMps > 0 &&
-        plannedSpeedMps <= preferences.maxAutoSpeedMps + 1e-9;
+        Number.isFinite(plannedSpeedMps) && plannedSpeedMps > 0;
       const boundedYaw = hasYaw && Number.isFinite(yawDegrees) &&
         Math.abs(yawDegrees) > 1e-9 &&
         Math.abs(yawDegrees) <= 45 + 1e-9 &&
@@ -4097,8 +4625,13 @@ let dragX = 0;
 let dragY = 0;
 let spatialAxisSnapshot = null;
 let dynamicAxisFrames = [];
+let worldAnnotationGroups = [];
+let worldAnnotationMarkers = [];
+let worldAnnotationSnapshotMarkers = [];
+let worldAnnotationSnapshot = null;
 let axisUiSignature = '';
 const AXIS_VISIBILITY_KEY = 'midbrain.spatial-axis-visibility.v2';
+const ANNOTATION_VISIBILITY_KEY = 'midbrain.world-annotation-visibility.v1';
 const axisVisibility = new Map();
 try {
   const storedVisibility = JSON.parse(localStorage.getItem(AXIS_VISIBILITY_KEY) || '{}');
@@ -4107,6 +4640,47 @@ try {
   }
 } catch (_error) {
   localStorage.removeItem(AXIS_VISIBILITY_KEY);
+}
+const annotationVisibilityControls = {
+  ALL: showAnnotations,
+  KEEP_OUT: showKeepOut,
+  PUSHABLE: showPushable,
+  WORK_OBJECT: showWorkObject,
+  GRIPPER: showGripper
+};
+try {
+  const storedVisibility = JSON.parse(
+    localStorage.getItem(ANNOTATION_VISIBILITY_KEY) || '{}'
+  );
+  for (const [type, control] of Object.entries(annotationVisibilityControls)) {
+    if (typeof storedVisibility[type] === 'boolean') {
+      control.checked = storedVisibility[type];
+    }
+  }
+} catch (_error) {
+  localStorage.removeItem(ANNOTATION_VISIBILITY_KEY);
+}
+
+function annotationIsVisible(marker) {
+  if (!showAnnotations.checked) return false;
+  const control = annotationVisibilityControls[String(marker.type || '')];
+  return control ? control.checked : true;
+}
+
+function updateAnnotationVisibility() {
+  const state = Object.fromEntries(
+    Object.entries(annotationVisibilityControls).map(
+      ([type, control]) => [type, control.checked]
+    )
+  );
+  localStorage.setItem(ANNOTATION_VISIBILITY_KEY, JSON.stringify(state));
+  for (const control of [
+    showKeepOut, showPushable, showWorkObject, showGripper
+  ]) {
+    control.disabled = !showAnnotations.checked;
+  }
+  rebuildWorldAnnotationBuffers(worldAnnotationSnapshotMarkers);
+  updateAnnotationStats();
 }
 
 function shader(type, source) {
@@ -4273,6 +4847,96 @@ function syncFrameLabels(frames) {
     }
     node.textContent = frame.short_label || frame.frame_id;
   }
+}
+
+const annotationLabelNodes = new Map();
+function syncAnnotationLabels(markers) {
+  const labeled = markers.filter(marker => marker.show_label);
+  const activeIds = new Set(labeled.map(marker => marker.marker_id));
+  for (const [markerId, node] of annotationLabelNodes.entries()) {
+    if (!activeIds.has(markerId)) {
+      node.remove();
+      annotationLabelNodes.delete(markerId);
+    }
+  }
+  for (const marker of labeled) {
+    let node = annotationLabelNodes.get(marker.marker_id);
+    if (!node) {
+      node = document.createElement('span');
+      node.className = 'frame-label annotation-label';
+      frameLabels.append(node);
+      annotationLabelNodes.set(marker.marker_id, node);
+    }
+    node.textContent = marker.label + ' · ' + marker.type;
+    node.title = JSON.stringify(marker, null, 2);
+  }
+}
+
+function sphereLineVertices(center, radius, segments) {
+  const values = [];
+  for (const [axisA, axisB] of [[0, 1], [0, 2], [1, 2]]) {
+    for (let index = 0; index < segments; index += 1) {
+      const first = 2 * Math.PI * index / segments;
+      const second = 2 * Math.PI * (index + 1) / segments;
+      for (const angle of [first, second]) {
+        const point = [...center];
+        point[axisA] += Math.cos(angle) * radius;
+        point[axisB] += Math.sin(angle) * radius;
+        values.push(...point);
+      }
+    }
+  }
+  const crossRadius = Math.max(radius, 0.012);
+  values.push(
+    center[0] - crossRadius, center[1], center[2], center[0] + crossRadius, center[1], center[2],
+    center[0], center[1] - crossRadius, center[2], center[0], center[1] + crossRadius, center[2],
+    center[0], center[1], center[2] - crossRadius, center[0], center[1], center[2] + crossRadius
+  );
+  return values;
+}
+
+function rebuildWorldAnnotationBuffers(markers) {
+  if (!gl) return;
+  for (const group of worldAnnotationGroups) gl.deleteBuffer(group.buffer);
+  worldAnnotationGroups = [];
+  worldAnnotationSnapshotMarkers = markers.filter(marker =>
+    Array.isArray(marker.center_m) && marker.center_m.length === 3 &&
+    marker.center_m.every(value => Number.isFinite(Number(value))) &&
+    Number(marker.radius_m) > 0
+  ).map(marker => ({
+    ...marker,
+    center_m: marker.center_m.map(Number),
+    radius_m: Number(marker.radius_m)
+  }));
+  worldAnnotationMarkers = worldAnnotationSnapshotMarkers.filter(
+    annotationIsVisible
+  );
+  const styles = {
+    WORK_OBJECT: [1.0, 0.72, 0.18, 0.96],
+    PUSHABLE: [0.95, 0.35, 0.88, 0.92],
+    KEEP_OUT: [1.0, 0.24, 0.24, 0.40],
+    GRIPPER: [0.20, 0.90, 1.0, 1.0]
+  };
+  for (const type of ['KEEP_OUT', 'PUSHABLE', 'WORK_OBJECT', 'GRIPPER']) {
+    const values = [];
+    for (const marker of worldAnnotationMarkers.filter(item => item.type === type)) {
+      values.push(...sphereLineVertices(
+        marker.center_m,
+        marker.radius_m,
+        type === 'KEEP_OUT' ? 10 : 22
+      ));
+    }
+    if (!values.length) continue;
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.DYNAMIC_DRAW);
+    worldAnnotationGroups.push({
+      buffer,
+      vertexCount: values.length / 3,
+      color: styles[type]
+    });
+  }
+  syncAnnotationLabels(worldAnnotationMarkers);
 }
 
 function rebuildDynamicAxisBuffers(frames) {
@@ -4477,6 +5141,19 @@ function updateFrameLabelPositions(projection, view) {
     node.style.left = ((ndc[0] * 0.5 + 0.5) * canvas.clientWidth).toFixed(1) + 'px';
     node.style.top = ((1 - (ndc[1] * 0.5 + 0.5)) * canvas.clientHeight).toFixed(1) + 'px';
   }
+  for (const marker of worldAnnotationMarkers) {
+    const node = annotationLabelNodes.get(marker.marker_id);
+    if (!node) continue;
+    const cameraPoint = transformMat4(view, [...marker.center_m, 1]);
+    const clip = transformMat4(projection, cameraPoint);
+    const w = clip[3] || 1;
+    const ndc = [clip[0] / w, clip[1] / w, clip[2] / w];
+    const outside = ndc[0] < -1.05 || ndc[0] > 1.05 || ndc[1] < -1.05 || ndc[1] > 1.05 || ndc[2] < -1 || ndc[2] > 1;
+    node.hidden = outside;
+    if (outside) continue;
+    node.style.left = ((ndc[0] * 0.5 + 0.5) * canvas.clientWidth).toFixed(1) + 'px';
+    node.style.top = ((1 - (ndc[1] * 0.5 + 0.5)) * canvas.clientHeight).toFixed(1) + 'px';
+  }
 }
 
 function resizeCanvas() {
@@ -4535,6 +5212,12 @@ function renderCloud() {
   gl.uniformMatrix4fv(gl.getUniformLocation(lineProgram, 'uView'), false, view);
   const linePosition = gl.getAttribLocation(lineProgram, 'aPosition');
   gl.enableVertexAttribArray(linePosition);
+  for (const group of worldAnnotationGroups) {
+    gl.uniform4fv(gl.getUniformLocation(lineProgram, 'uColor'), group.color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, group.buffer);
+    gl.vertexAttribPointer(linePosition, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, group.vertexCount);
+  }
   for (const frame of dynamicAxisFrames) {
     if (!axisIsVisible(frame)) continue;
     for (let index = 0; index < frame.axes.length; index += 1) {
@@ -4584,11 +5267,63 @@ async function refreshCloud() {
   }
 }
 
+async function refreshWorldAnnotations() {
+  const annotationStats = document.getElementById('annotationStats');
+  try {
+    const response = await fetch('/api/world-annotations?t=' + Date.now(), {cache: 'no-store'});
+    if (!response.ok) throw new Error(await response.text());
+    const snapshot = await response.json();
+    worldAnnotationSnapshot = snapshot;
+    const markers = Array.isArray(snapshot.markers) ? snapshot.markers : [];
+    rebuildWorldAnnotationBuffers(markers);
+    updateAnnotationStats();
+  } catch (error) {
+    annotationStats.textContent = 'Semantic annotations: ' + error;
+  }
+}
+
+function updateAnnotationStats() {
+  const annotationStats = document.getElementById('annotationStats');
+  if (!worldAnnotationSnapshot) return;
+  const counts = worldAnnotationSnapshotMarkers.reduce((result, marker) => {
+    const key = String(marker.type || 'UNKNOWN');
+    result[key] = (result[key] || 0) + 1;
+    return result;
+  }, {});
+  const summary = Object.entries(counts)
+    .map(([key, count]) => `${count} ${key}`)
+    .join(' · ');
+  const sceneStatus = String(
+    worldAnnotationSnapshot.scene?.status || 'NO_SCENE'
+  );
+  const gripperStatus = String(
+    worldAnnotationSnapshot.gripper?.status || 'UNAVAILABLE'
+  );
+  const sourceSceneCount = Number(
+    worldAnnotationSnapshot.scene?.sphere_count || 0
+  );
+  const displayedSceneCount = Number(
+    worldAnnotationSnapshot.scene?.displayed_sphere_count || 0
+  );
+  const sceneDisplay = sourceSceneCount > 0
+    ? ` · scene display ${displayedSceneCount}/${sourceSceneCount}`
+    : '';
+  annotationStats.textContent =
+    `${worldAnnotationMarkers.length}/${worldAnnotationSnapshotMarkers.length} visible` +
+    ` · ${summary || 'none'}${sceneDisplay} · scene ${sceneStatus} · gripper ${gripperStatus}`;
+}
+
 function fitVisibleAxes() {
   const points = [];
   for (const frame of dynamicAxisFrames) {
     if (!axisIsVisible(frame)) continue;
     points.push(frame.origin, ...frame.axes.map(axis => axis.endpoint));
+  }
+  for (const marker of worldAnnotationMarkers) {
+    points.push(
+      marker.center_m.map(value => value - marker.radius_m),
+      marker.center_m.map(value => value + marker.radius_m)
+    );
   }
   if (!points.length) return;
   const minimum = [...points[0]];
@@ -4649,12 +5384,17 @@ resetViewButton.addEventListener('click', () => {
   target = [0, 0, 1.5];
 });
 fitAxesButton.addEventListener('click', fitVisibleAxes);
+for (const control of Object.values(annotationVisibilityControls)) {
+  control.addEventListener('change', updateAnnotationVisibility);
+}
+updateAnnotationVisibility();
 
 loadChatSession();
 refreshStatus();
 if (!focusedUtilityPage) refreshReplayProvenance();
 renderCloud();
 refreshCloud();
+refreshWorldAnnotations();
 refreshSpatialAxes();
 setInterval(refreshStatus, 2500);
 if (!focusedUtilityPage) {
@@ -4664,6 +5404,7 @@ if (!focusedUtilityPage) {
   refreshAuthorization();
 }
 setInterval(refreshCloud, 300);
+setInterval(refreshWorldAnnotations, 1500);
 setInterval(refreshSpatialAxes, 1500);
 </script>
 </body>

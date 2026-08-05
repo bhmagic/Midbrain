@@ -6,11 +6,15 @@ from typing import Any
 
 import numpy as np
 
-from spatial_registration_rgbd import deproject_pixel, transform_point
+from spatial_registration_rgbd import (
+    deproject_pixel,
+    normalized_1000_point_to_pixel,
+    transform_point,
+)
 
 
 EFFECTOR_FRONT_VLM_SCHEMA = "physical_agent.effector_front_landmark_vlm"
-EFFECTOR_FRONT_VLM_SCHEMA_VERSION = 1
+EFFECTOR_FRONT_VLM_SCHEMA_VERSION = 2
 
 _CONFIGURATIONS = {
     "BARE_GRIPPER",
@@ -34,7 +38,7 @@ _SURFACES = {
     "EFFECTOR_BODY",
     "OTHER_RIGID_FRONT",
 }
-_TOP_LEVEL_FIELDS = {
+_TOP_LEVEL_FIELDS_V1 = {
     "schema",
     "schema_version",
     "scene_suitable",
@@ -44,7 +48,22 @@ _TOP_LEVEL_FIELDS = {
     "depth_fallback_reason",
     "front_points",
 }
-_PROVENANCE_FIELDS = {"backend_id", "model", "request_id"}
+_TOP_LEVEL_FIELDS_V2 = {
+    *_TOP_LEVEL_FIELDS_V1,
+    "coordinate_space",
+}
+_PROVENANCE_FIELDS = {
+    "backend_id",
+    "model",
+    "request_id",
+    "source_coordinate_space",
+    "source_front_points",
+    "coordinate_conversion",
+}
+_VLM_COORDINATE_SPACES = {
+    "NORMALIZED_0_1000",
+    "REGISTERED_DEPTH_PIXELS",
+}
 _POINT_FIELDS = {
     "point_id",
     "registered_depth_pixel_yx",
@@ -89,17 +108,31 @@ def validate_effector_front_vlm_result(
     *,
     registered_depth_grid: tuple[int, int],
 ) -> dict[str, Any]:
-    if (
-        not isinstance(value, dict)
-        or set(value) - _PROVENANCE_FIELDS != _TOP_LEVEL_FIELDS
-    ):
+    if not isinstance(value, dict):
         raise RuntimeError(
             "effector-front VLM fields do not match the required schema"
         )
-    if value["schema"] != EFFECTOR_FRONT_VLM_SCHEMA:
+    if value.get("schema") != EFFECTOR_FRONT_VLM_SCHEMA:
         raise RuntimeError("effector-front VLM schema is invalid")
-    if value["schema_version"] != EFFECTOR_FRONT_VLM_SCHEMA_VERSION:
+    schema_version = value.get("schema_version")
+    expected_fields = (
+        _TOP_LEVEL_FIELDS_V1
+        if schema_version == 1
+        else _TOP_LEVEL_FIELDS_V2
+    )
+    if set(value) - _PROVENANCE_FIELDS != expected_fields:
+        raise RuntimeError(
+            "effector-front VLM fields do not match the required schema"
+        )
+    if schema_version not in {1, EFFECTOR_FRONT_VLM_SCHEMA_VERSION}:
         raise RuntimeError("effector-front VLM schema version is unsupported")
+    coordinate_space = (
+        "REGISTERED_DEPTH_PIXELS"
+        if schema_version == 1
+        else str(value.get("coordinate_space") or "").upper()
+    )
+    if coordinate_space not in _VLM_COORDINATE_SPACES:
+        raise RuntimeError("effector-front VLM coordinate space is unsupported")
     if not isinstance(value["scene_suitable"], bool):
         raise RuntimeError("scene_suitable must be boolean")
     if not isinstance(value["reason"], str) or not value["reason"].strip():
@@ -144,7 +177,16 @@ def validate_effector_front_vlm_result(
             raise RuntimeError(
                 "registered_depth_pixel_yx must contain two integers"
             )
-        y, x = int(pixel[0]), int(pixel[1])
+        if coordinate_space == "NORMALIZED_0_1000":
+            try:
+                y, x = normalized_1000_point_to_pixel(
+                    pixel,
+                    (height, width),
+                )
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
+        else:
+            y, x = int(pixel[0]), int(pixel[1])
         if not (0 <= y < height and 0 <= x < width):
             raise RuntimeError(
                 "effector-front pixel is outside the registered-depth grid"
@@ -222,6 +264,7 @@ def validate_effector_front_vlm_result(
     normalized = {
         "schema": EFFECTOR_FRONT_VLM_SCHEMA,
         "schema_version": EFFECTOR_FRONT_VLM_SCHEMA_VERSION,
+        "coordinate_space": "REGISTERED_DEPTH_PIXELS",
         "scene_suitable": value["scene_suitable"],
         "reason": value["reason"].strip(),
         "effector_configuration": configuration,
@@ -229,6 +272,22 @@ def validate_effector_front_vlm_result(
         "depth_fallback_reason": fallback_reason,
         "front_points": normalized_points,
     }
+    normalized["source_coordinate_space"] = str(
+        value.get("source_coordinate_space") or coordinate_space
+    )
+    normalized["source_front_points"] = value.get(
+        "source_front_points",
+        points,
+    )
+    normalized["coordinate_conversion"] = value.get(
+        "coordinate_conversion",
+        {
+            "source_space": coordinate_space,
+            "target_space": "REGISTERED_DEPTH_PIXELS",
+            "target_grid": [height, width],
+            "pixel_policy": "ROUND_OVER_SIZE_MINUS_ONE",
+        },
+    )
     normalized.update(
         {
             key: value[key]

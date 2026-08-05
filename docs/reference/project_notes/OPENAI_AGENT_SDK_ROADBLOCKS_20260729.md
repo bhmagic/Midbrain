@@ -392,6 +392,12 @@ Mitigation:
 
 ### 14. Calibration candidate and activation lifetimes were too short for debugging
 
+Historical note: the five-minute Manager activation cap described below was
+removed on 2026-08-03. Accepted mounted calibrations now have no wall-clock
+expiry and are instead gated by camera/VIO identity, calibration revision,
+VIO epoch/convention, tracking health, revocation, and supersession. Candidate,
+observation, preview, authorization, and signed-assertion TTLs remain bounded.
+
 Symptom:
 
 - A reviewed candidate remained valid for 15 minutes, but repeated integration

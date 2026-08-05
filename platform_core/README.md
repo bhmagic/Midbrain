@@ -87,6 +87,12 @@ The core does not contain or overwrite `config`.
 
 The Fabric now exposes `/v1/schemas`, `/v1/transforms`, and timestamped `/v1/transform` composition. The Manager now forwards provider-specific requests and coordinates whole-robot motion-inhibit leases. The supplied provider configuration includes the Femto Bolt and Local VIO providers.
 
+Provider entries may declare provider-ID `dependencies`. A Manager HOT request
+resolves the complete graph, rejects cycles or unknown IDs, and transitions
+dependencies before the requested Provider. This lets camera/arm consumers
+become autonomous without Skills directly starting or polling their data
+Providers.
+
 Manager is the enforcement boundary that turns an exact reviewed stationary
 alignment candidate into a bounded motion-usable workcell activation. It
 checks current camera and VIO identity before publication, permits only one

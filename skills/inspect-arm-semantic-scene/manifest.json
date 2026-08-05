@@ -1,0 +1,49 @@
+{
+  "skill_type": "inspect_arm_semantic_scene",
+  "version": "0.1.0",
+  "display_name": "Inspect Arm Semantic Sphere Scene",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "inspect_arm_semantic_scene",
+    "description": "Inspect the latest Fabric-hosted semantic sphere scene produced for the integrated arm controller. Reports freshness, ROI policies, obstacle/work-object/pushable counts, producer identity, depth fallback mode, and optionally a bounded list of spheres. This Skill never starts hardware and never authorizes motion.",
+    "when_to_use": [
+      "The operator asks whether semantic sphere marking is running or ready to test.",
+      "An agent needs to verify that the integrated controller has a fresh environment scene.",
+      "A test needs the current gripper/base ROI policies, sphere classes, or depth fallback state."
+    ],
+    "when_not_to_use": [
+      "A new point cloud or semantic classification must be produced; publish an upstream Fabric observation or activate the scene compiler Provider.",
+      "Physical movement is requested; this inspection does not plan or authorize motion."
+    ],
+    "side_effects": [],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "LOW",
+    "required_permissions": ["world_state.read"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "include_spheres": {
+          "type": "boolean",
+          "description": "Include a bounded raw sphere list in addition to the summary."
+        },
+        "maximum_spheres": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum raw spheres returned when include_spheres is true."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "test_agent.inspect_arm_semantic_scene.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": ["world_model.arm.semantic_scene"],
+  "published_streams": []
+}

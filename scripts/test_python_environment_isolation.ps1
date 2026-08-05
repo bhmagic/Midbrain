@@ -4,6 +4,8 @@ Set-StrictMode -Version Latest
 $workspace = Split-Path $PSScriptRoot -Parent
 $requiredSetupScripts = @(
     "providers\foundation_pose\scripts\setup.ps1",
+    "providers\arm_scene_compiler\scripts\setup.ps1",
+    "providers\sam2_scene_tracker\scripts\setup.ps1",
     "providers\local_vio\scripts\setup.ps1",
     "providers\orbbec_femto_bolt\scripts\setup.ps1",
     "providers\rebot_arm_dm\scripts\setup.ps1",

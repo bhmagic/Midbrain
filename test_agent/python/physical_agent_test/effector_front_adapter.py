@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from locate_effector_front import (
     resolve_effector_front_reference,
 )
 
+from .item_locator_adapter import build_item_locator_visual_channels
 from .phase4_policy import report_operation_progress
 from .spatial_registration_adapter import (
     CAMERA_OPTICAL_CONVENTION_ID,
@@ -20,9 +23,164 @@ from .spatial_registration_adapter import (
     SpatialRegistrationSkillAdapter,
 )
 from .vlm_router import VisionLanguageRouter
+from .visual_evidence import VisualEvidenceStore
 
 
 EFFECTOR_FRONT_TEMPORAL_POLICY_ID = "locate-effector-front.input-time.v1"
+DEFAULT_MAXIMUM_ARM_RADIUS_M = 1.2
+DEFAULT_MAXIMUM_CONTROLLER_VISUAL_SEPARATION_M = 0.15
+
+
+def apply_controller_consistency_policy(
+    resolved: dict[str, Any],
+    *,
+    controller_reference: dict[str, Any] | None,
+    maximum_arm_radius_m: float = DEFAULT_MAXIMUM_ARM_RADIUS_M,
+    maximum_controller_visual_separation_m: float = (
+        DEFAULT_MAXIMUM_CONTROLLER_VISUAL_SEPARATION_M
+    ),
+) -> dict[str, Any]:
+    """Reject impossible visual points and retain optional FK diagnostics."""
+
+    result = dict(resolved)
+    reference = result.get("control_reference")
+    target_point = np.asarray(
+        (reference or {}).get("target_point_m"),
+        dtype=np.float64,
+    )
+    reasons = list(result.get("quality_reasons") or [])
+    checks: dict[str, Any] = {
+        "policy": "ARM_RADIUS_REQUIRED_CONTROLLER_FK_ADVISORY_V2",
+        "maximum_arm_radius_m": float(maximum_arm_radius_m),
+        "maximum_controller_visual_separation_m": float(
+            maximum_controller_visual_separation_m
+        ),
+        "controller_reference": controller_reference,
+    }
+    rejected = False
+    if controller_reference is None:
+        reasons.append("CONTROLLER_FK_REFERENCE_UNAVAILABLE")
+    if target_point.shape != (3,) or not np.all(np.isfinite(target_point)):
+        reasons.append("EFFECTOR_CONTROL_REFERENCE_INVALID")
+        rejected = True
+    else:
+        radius_m = float(np.linalg.norm(target_point))
+        checks["visual_reference_radius_from_arm_base_m"] = radius_m
+        if radius_m > float(maximum_arm_radius_m):
+            reasons.append("EFFECTOR_OUTSIDE_CONFIGURED_ARM_RADIUS")
+            rejected = True
+
+        controller_target = np.asarray(
+            (controller_reference or {}).get("target_point_m"),
+            dtype=np.float64,
+        )
+        if (
+            controller_reference is not None
+            and controller_target.shape == (3,)
+            and np.all(np.isfinite(controller_target))
+        ):
+            separation_m = float(
+                np.linalg.norm(target_point - controller_target)
+            )
+            checks["controller_visual_separation_m"] = separation_m
+            if separation_m > float(
+                maximum_controller_visual_separation_m
+            ):
+                reasons.append("EFFECTOR_DISAGREES_WITH_CONTROLLER_FK")
+                rejected = True
+
+    checks["decision"] = (
+        "REJECT"
+        if rejected
+        else "ACCEPT_DEGRADED_NO_CONTROLLER_FK"
+        if controller_reference is None
+        else "ACCEPT"
+    )
+    result["controller_consistency"] = checks
+    if rejected:
+        result["status"] = "CONTROLLER_CONSISTENCY_REJECTED"
+        result["eligible_for_control_math"] = False
+        result["motion_usable"] = False
+        result["quality_reasons"] = list(dict.fromkeys(reasons))
+    elif controller_reference is None:
+        try:
+            existing_uncertainty = float(
+                result.get("uncertainty_radius_m") or 0.0
+            )
+        except (TypeError, ValueError):
+            existing_uncertainty = 0.0
+        result["uncertainty_radius_m"] = max(
+            0.04,
+            existing_uncertainty,
+        )
+        result["quality_reasons"] = list(dict.fromkeys(reasons))
+        result["control_math_policy"] = (
+            "BOUNDED_VISUAL_EFFECTOR_WITHOUT_CONTROLLER_FK"
+        )
+    return result
+
+
+def build_controller_fk_effector_fallback(
+    *,
+    controller_reference: dict[str, Any],
+    vlm_result: dict[str, Any],
+    observed_at_us: int,
+    source_frame: str,
+    target_frame: str,
+    calibration_revision: str | None,
+    route_provenance: dict[str, Any],
+    maximum_arm_radius_m: float,
+    uncertainty_radius_m: float = 0.04,
+) -> dict[str, Any]:
+    """Use current controller FK when the visible effector has no exact depth."""
+
+    point = np.asarray(
+        controller_reference.get("target_point_m"),
+        dtype=np.float64,
+    )
+    if point.shape != (3,) or not np.all(np.isfinite(point)):
+        raise RuntimeError("controller FK fallback has no finite tool point")
+    if float(np.linalg.norm(point)) > float(maximum_arm_radius_m):
+        raise RuntimeError("controller FK fallback is outside the arm radius")
+    uncertainty = float(uncertainty_radius_m)
+    if not math.isfinite(uncertainty) or uncertainty <= 0.0:
+        raise ValueError("controller FK fallback uncertainty must be positive")
+    return {
+        "schema": "physical_agent.effector_front_reference",
+        "schema_version": 1,
+        "status": "CONTROLLER_FK_REFERENCE_READY",
+        "eligible_for_control_math": True,
+        "motion_usable": False,
+        "publishes_control_frame": False,
+        "specialized_action_point": False,
+        "observed_at_us": int(observed_at_us),
+        "source_frame": str(source_frame),
+        "target_frame": str(target_frame),
+        "calibration_revision": calibration_revision,
+        "effector_configuration": str(
+            vlm_result.get("effector_configuration") or "UNCERTAIN"
+        ),
+        "front_geometry": "CONTROLLER_TOOL_FRAME_POINT",
+        "depth_fallback_reason": "EXACT_EFFECTOR_DEPTH_UNAVAILABLE",
+        "front_points": [],
+        "control_reference": {
+            "method": "CURRENT_CONTROLLER_FORWARD_KINEMATICS",
+            "target_point_m": point.tolist(),
+            "pair_separation_m": None,
+        },
+        "uncertainty_radius_m": uncertainty,
+        "quality_reasons": [],
+        "quality_warnings": [
+            "VISUAL_EFFECTOR_DEPTH_UNAVAILABLE_USING_CONTROLLER_FK"
+        ],
+        "visual_measurement_usable": False,
+        "controller_consistency": {
+            "decision": "CONTROLLER_FK_FALLBACK",
+            "source": controller_reference.get("source"),
+        },
+        "vlm_reason": str(vlm_result.get("reason") or ""),
+        "data_route": dict(route_provenance),
+    }
 
 
 def build_effector_front_evidence(
@@ -32,7 +190,7 @@ def build_effector_front_evidence(
     valid_region: dict[str, Any] | None,
     maximum_panel_width: int | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
-    """Build one lossless VLM image whose coordinates use the depth grid."""
+    """Build one depth-validity RGB view in normalized VLM coordinates."""
 
     color = np.asarray(rgb)
     depth = np.asarray(registered_depth_m, dtype=np.float64)
@@ -68,18 +226,6 @@ def build_effector_front_evidence(
             & (yy < y0 + region_height)
         )
 
-    depth_gray = np.zeros((depth_height, depth_width), dtype=np.uint8)
-    valid_values = depth[valid]
-    if valid_values.size:
-        near = float(np.percentile(valid_values, 2))
-        far = float(np.percentile(valid_values, 98))
-        span = max(far - near, 1e-6)
-        normalized = np.clip((depth - near) / span, 0.0, 1.0)
-        depth_gray[valid] = np.asarray(
-            240.0 - normalized[valid] * 185.0,
-            dtype=np.uint8,
-        )
-    depth_panel = np.repeat(depth_gray[:, :, None], 3, axis=2)
     overlay = rgb_on_depth.copy()
     overlay[~valid] = np.asarray(
         overlay[~valid].astype(np.float32) * 0.12,
@@ -93,87 +239,23 @@ def build_effector_front_evidence(
         if maximum_panel_width is None
         else min(1.0, float(maximum_panel_width) / depth_width)
     )
-    panel_width = max(1, int(round(depth_width * display_scale)))
-    panel_height = max(1, int(round(depth_height * display_scale)))
-
-    def resize_panel(panel: np.ndarray, interpolation: int) -> np.ndarray:
-        return cv2.resize(
-            panel,
-            (panel_width, panel_height),
-            interpolation=interpolation,
-        )
-
-    panels = [
-        resize_panel(rgb_on_depth, cv2.INTER_AREA),
-        resize_panel(depth_panel, cv2.INTER_NEAREST),
-        resize_panel(overlay, cv2.INTER_AREA),
-    ]
-    label_height = 54
-    canvas = np.full(
-        (panel_height + label_height, panel_width * 3, 3),
-        10,
-        dtype=np.uint8,
+    image_width = max(1, int(round(depth_width * display_scale)))
+    image_height = max(1, int(round(depth_height * display_scale)))
+    evidence_image = cv2.resize(
+        overlay,
+        (image_width, image_height),
+        interpolation=cv2.INTER_AREA,
     )
-    for index, panel in enumerate(panels):
-        canvas[
-            label_height : label_height + panel_height,
-            index * panel_width : (index + 1) * panel_width,
-        ] = panel
-    labels = (
-        "RGB ON DEPTH GRID",
-        "REGISTERED DEPTH",
-        "RGB WITH VALID DEPTH",
-    )
-    for index, label in enumerate(labels):
-        cv2.putText(
-            canvas,
-            label,
-            (index * panel_width + 10, 33),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (245, 245, 245),
-            1,
-            cv2.LINE_AA,
-        )
-    if valid_region:
-        x0 = int(round(int(valid_region.get("x") or 0) * display_scale))
-        y0 = int(round(int(valid_region.get("y") or 0) * display_scale))
-        x1 = int(
-            round(
-                (
-                    int(valid_region.get("x") or 0)
-                    + int(valid_region.get("width") or depth_width)
-                )
-                * display_scale
-            )
-        )
-        y1 = int(
-            round(
-                (
-                    int(valid_region.get("y") or 0)
-                    + int(valid_region.get("height") or depth_height)
-                )
-                * display_scale
-            )
-        )
-        for panel_index in (1, 2):
-            offset = panel_index * panel_width
-            cv2.rectangle(
-                canvas,
-                (offset + x0, label_height + y0),
-                (offset + x1 - 1, label_height + y1 - 1),
-                (245, 245, 245),
-                2,
-            )
     ok, encoded = cv2.imencode(
         ".png",
-        cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR),
+        cv2.cvtColor(evidence_image, cv2.COLOR_RGB2BGR),
         [cv2.IMWRITE_PNG_COMPRESSION, 3],
     )
     if not ok:
         raise RuntimeError("could not encode effector-front RGB-D evidence")
     return encoded.tobytes(), {
-        "composite_layout": list(labels),
+        "image_layout": "SINGLE_RGB_WITH_INVALID_DEPTH_DIMMED",
+        "image_grid": [int(image_height), int(image_width)],
         "rgb_source_grid": [int(color.shape[0]), int(color.shape[1])],
         "registered_depth_grid": [depth_height, depth_width],
         "rgb_resampled_to_registered_depth_grid": (
@@ -181,7 +263,7 @@ def build_effector_front_evidence(
         ),
         "panel_display_scale": display_scale,
         "native_depth_grid_pixels_preserved": display_scale == 1.0,
-        "coordinate_contract": "ORIGINAL_REGISTERED_DEPTH_PIXEL_YX",
+        "coordinate_contract": "NORMALIZED_0_1000_YX",
         "valid_region": valid_region,
         "valid_depth_pixels": int(np.count_nonzero(valid)),
         "valid_depth_fraction": float(np.count_nonzero(valid) / valid.size),
@@ -199,6 +281,12 @@ class EffectorFrontSkillAdapter:
         *,
         maximum_source_age_at_completion_ms: float = 60_000.0,
         evidence_dir: Path | None = None,
+        arm_tool_frame: str = "rebot_arm_tool",
+        maximum_arm_radius_m: float = DEFAULT_MAXIMUM_ARM_RADIUS_M,
+        maximum_controller_visual_separation_m: float = (
+            DEFAULT_MAXIMUM_CONTROLLER_VISUAL_SEPARATION_M
+        ),
+        visual_evidence_store: VisualEvidenceStore | None = None,
     ):
         if float(maximum_source_age_at_completion_ms) <= 0.0:
             raise ValueError(
@@ -212,18 +300,42 @@ class EffectorFrontSkillAdapter:
         self.evidence_dir = (
             evidence_dir.resolve() if evidence_dir is not None else None
         )
+        self.arm_tool_frame = str(arm_tool_frame).strip()
+        self.maximum_arm_radius_m = float(maximum_arm_radius_m)
+        self.maximum_controller_visual_separation_m = float(
+            maximum_controller_visual_separation_m
+        )
+        self.visual_evidence_store = visual_evidence_store
+        if not self.arm_tool_frame:
+            raise ValueError("arm_tool_frame must be non-empty")
+        if self.maximum_arm_radius_m <= 0.0:
+            raise ValueError("maximum_arm_radius_m must be positive")
+        if self.maximum_controller_visual_separation_m <= 0.0:
+            raise ValueError(
+                "maximum_controller_visual_separation_m must be positive"
+            )
         self.last_result: dict[str, Any] | None = None
 
-    async def run(self, *, target_frame: str) -> dict[str, Any]:
+    async def run(
+        self,
+        *,
+        target_frame: str,
+        spatial_context: Any | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(target_frame, str) or not target_frame.strip():
             raise ValueError("target_frame must be non-empty")
         requested_target = target_frame.strip()
         skill_id = f"locate-effector-front-{uuid4()}"
-        context = await self.spatial.prepare_context(
-            target_frame=requested_target,
-            skill_id=skill_id,
-        )
+        context = spatial_context
+        if context is None:
+            context = await self.spatial.prepare_context(
+                target_frame=requested_target,
+                skill_id=skill_id,
+            )
+        elif str(getattr(context, "target_frame", "")) != requested_target:
+            raise ValueError("shared spatial context target frame changed")
         frame = context.frame
+        controller_reference = await self._controller_reference(context)
 
         report_operation_progress("BUILD_EFFECTOR_FRONT_RGBD_EVIDENCE")
         image_bytes, evidence = build_effector_front_evidence(
@@ -252,6 +364,7 @@ class EffectorFrontSkillAdapter:
             prompt=self._prompt(
                 depth_height=int(frame.depth_m.shape[0]),
                 depth_width=int(frame.depth_m.shape[1]),
+                controller_reference=controller_reference,
             ),
         )
         vlm_result = parse_effector_front_vlm_result(
@@ -260,11 +373,6 @@ class EffectorFrontSkillAdapter:
                 int(value) for value in frame.depth_m.shape
             ),
         )
-        if not vlm_result["scene_suitable"]:
-            raise RuntimeError(
-                "effector-front VLM rejected the scene: "
-                + vlm_result["reason"]
-            )
 
         report_operation_progress("REVALIDATE_EFFECTOR_FRONT_CAMERA_BINDING")
         current_binding = await self.spatial.revalidate_context_binding(
@@ -283,23 +391,94 @@ class EffectorFrontSkillAdapter:
             )
 
         report_operation_progress("REGISTER_EFFECTOR_FRONT_DEPTH_POINTS")
-        resolved = resolve_effector_front_reference(
-            vlm_result={
-                **vlm_result,
-                "backend_id": inference.backend_id,
-                "model": inference.model_id,
-                "request_id": skill_id,
-            },
-            registered_depth_m=frame.depth_m,
-            intrinsics=dict(frame.intrinsics),
-            target_from_camera=context.target_from_camera,
-            observed_at_us=int(frame.timestamp_us),
-            source_frame=str(frame.camera_frame),
-            target_frame=requested_target,
-            calibration_revision=frame.calibration_revision,
-            route_provenance=context.selection.as_dict(),
-            valid_region=context.valid_region,
-        )
+        try:
+            resolved = resolve_effector_front_reference(
+                vlm_result={
+                    **vlm_result,
+                    "backend_id": inference.backend_id,
+                    "model": inference.model_id,
+                    "request_id": skill_id,
+                },
+                registered_depth_m=frame.depth_m,
+                intrinsics=dict(frame.intrinsics),
+                target_from_camera=context.target_from_camera,
+                observed_at_us=int(frame.timestamp_us),
+                source_frame=str(frame.camera_frame),
+                target_frame=context.target_frame,
+                calibration_revision=frame.calibration_revision,
+                route_provenance=context.selection.as_dict(),
+                valid_region=context.valid_region,
+            )
+        except RuntimeError as error:
+            depth_limited = (
+                not vlm_result.get("scene_suitable")
+                or "no valid exact depth" in str(error)
+            )
+            if controller_reference is None or not depth_limited:
+                raise
+            resolved = build_controller_fk_effector_fallback(
+                controller_reference=controller_reference,
+                vlm_result=vlm_result,
+                observed_at_us=int(frame.timestamp_us),
+                source_frame=str(frame.camera_frame),
+                target_frame=context.target_frame,
+                calibration_revision=frame.calibration_revision,
+                route_provenance=context.selection.as_dict(),
+                maximum_arm_radius_m=self.maximum_arm_radius_m,
+            )
+        if (
+            context.target_frame == "rebot_arm_base"
+            and resolved.get("status") != "CONTROLLER_FK_REFERENCE_READY"
+        ):
+            resolved = apply_controller_consistency_policy(
+                resolved,
+                controller_reference=controller_reference,
+                maximum_arm_radius_m=self.maximum_arm_radius_m,
+                maximum_controller_visual_separation_m=(
+                    self.maximum_controller_visual_separation_m
+                ),
+            )
+            if (
+                resolved.get("status") == "CONTROLLER_CONSISTENCY_REJECTED"
+                and controller_reference is not None
+            ):
+                rejected_visual_reference = resolved
+                resolved = build_controller_fk_effector_fallback(
+                    controller_reference=controller_reference,
+                    vlm_result=vlm_result,
+                    observed_at_us=int(frame.timestamp_us),
+                    source_frame=str(frame.camera_frame),
+                    target_frame=context.target_frame,
+                    calibration_revision=frame.calibration_revision,
+                    route_provenance=context.selection.as_dict(),
+                    maximum_arm_radius_m=self.maximum_arm_radius_m,
+                )
+                resolved["depth_fallback_reason"] = (
+                    "VISUAL_EFFECTOR_INCONSISTENT_WITH_CONTROLLER_FK"
+                )
+                resolved["quality_warnings"] = [
+                    "VISUAL_EFFECTOR_INCONSISTENT_USING_CONTROLLER_FK"
+                ]
+                resolved["rejected_visual_reference"] = (
+                    rejected_visual_reference
+                )
+        visual_evidence = None
+        if self.visual_evidence_store is not None:
+            visual_evidence = await self.visual_evidence_store.register_channels(
+                channels=build_item_locator_visual_channels(
+                    frame.rgb,
+                    frame.depth_m,
+                ),
+                default_channel="rgb_depth",
+                title="Effector-front localization",
+                annotations=_effector_annotations(
+                    vlm_result,
+                    depth_grid=frame.depth_m.shape,
+                ),
+                confidence=_effector_visual_confidence(vlm_result),
+                model=inference.model_id,
+                source_skill="locate_effector_front",
+            )
         result = {
             **resolved,
             "skill_id": skill_id,
@@ -317,8 +496,21 @@ class EffectorFrontSkillAdapter:
             "source_convention_id": CAMERA_OPTICAL_CONVENTION_ID,
             "target_convention_id": WORLD_CONVENTION_ID,
             "vlm_route": inference.as_dict(),
+            "vlm_geometry": {
+                "source_coordinate_space": vlm_result.get(
+                    "source_coordinate_space"
+                ),
+                "source_front_points": vlm_result.get(
+                    "source_front_points"
+                ),
+                "registered_depth_front_points": vlm_result.get(
+                    "front_points"
+                ),
+                "conversion": vlm_result.get("coordinate_conversion"),
+            },
             "vlm_evidence": evidence,
             "evidence_image": evidence_image,
+            "visual_evidence": visual_evidence,
             "input_temporal_evidence": {
                 "policy_id": EFFECTOR_FRONT_TEMPORAL_POLICY_ID,
                 "source_observed_at_us": int(frame.timestamp_us),
@@ -333,15 +525,153 @@ class EffectorFrontSkillAdapter:
         self.last_result = result
         return result
 
+    async def _controller_reference(self, context: Any) -> dict[str, Any] | None:
+        if context.target_frame != "rebot_arm_base":
+            return None
+        frame = context.frame
+        capture_time_error: str | None = None
+
+        async def resolve(
+            at_us: int | None,
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            return await asyncio.gather(
+                self.spatial.fabric.transform(
+                    from_frame=self.arm_tool_frame,
+                    to_frame=context.target_frame,
+                    at_us=at_us,
+                    max_extrapolation_us=(
+                        self.spatial.maximum_transform_extrapolation_us
+                    ),
+                    session_epoch=None,
+                ),
+                self.spatial.fabric.transform(
+                    from_frame=self.arm_tool_frame,
+                    to_frame=str(frame.camera_frame),
+                    at_us=at_us,
+                    max_extrapolation_us=(
+                        self.spatial.maximum_transform_extrapolation_us
+                    ),
+                    session_epoch=None,
+                ),
+            )
+
+        try:
+            target_transform, camera_transform = await resolve(
+                int(frame.timestamp_us)
+            )
+            source = "CAPTURE_TIME_FABRIC_CONTROLLER_FORWARD_KINEMATICS"
+        except Exception as error:
+            capture_time_error = str(error)
+            try:
+                target_transform, camera_transform = await resolve(None)
+                source = "LATEST_FABRIC_CONTROLLER_FORWARD_KINEMATICS"
+            except Exception:
+                return None
+        target_point = np.asarray(
+            target_transform.get("translation_m"),
+            dtype=np.float64,
+        )
+        camera_point = np.asarray(
+            camera_transform.get("translation_m"),
+            dtype=np.float64,
+        )
+        if (
+            target_point.shape != (3,)
+            or camera_point.shape != (3,)
+            or not np.all(np.isfinite(target_point))
+            or not np.all(np.isfinite(camera_point))
+        ):
+            return None
+        projected_pixel_yx: list[float] | None = None
+        if camera_point[2] > 0.0:
+            intrinsics = frame.intrinsics
+            projected_pixel_yx = [
+                float(
+                    intrinsics["fy"] * camera_point[1] / camera_point[2]
+                    + intrinsics["cy"]
+                ),
+                float(
+                    intrinsics["fx"] * camera_point[0] / camera_point[2]
+                    + intrinsics["cx"]
+                ),
+            ]
+        return {
+            "source": source,
+            "arm_tool_frame": self.arm_tool_frame,
+            "target_frame": context.target_frame,
+            "target_point_m": target_point.tolist(),
+            "camera_frame": str(frame.camera_frame),
+            "camera_point_m": camera_point.tolist(),
+            "projected_registered_depth_pixel_yx": projected_pixel_yx,
+            "observed_at_us": int(frame.timestamp_us),
+            "capture_time_query_error": capture_time_error,
+            "temporal_policy": (
+                "CAPTURE_TIME_EXACT"
+                if capture_time_error is None
+                else "FABRIC_BEST_AVAILABLE_LATEST_FALLBACK"
+            ),
+        }
+
     @staticmethod
-    def _prompt(*, depth_height: int, depth_width: int) -> str:
+    def _prompt(
+        *,
+        depth_height: int,
+        depth_width: int,
+        controller_reference: dict[str, Any] | None = None,
+    ) -> str:
+        controller_guidance = ""
+        if controller_reference is not None:
+            projected = controller_reference.get(
+                "projected_registered_depth_pixel_yx"
+            )
+            normalized_prior = None
+            if isinstance(projected, list) and len(projected) == 2:
+                projected_y, projected_x = (
+                    float(projected[0]),
+                    float(projected[1]),
+                )
+                if (
+                    math.isfinite(projected_y)
+                    and math.isfinite(projected_x)
+                    and 0.0 <= projected_y < depth_height
+                    and 0.0 <= projected_x < depth_width
+                ):
+                    normalized_prior = [
+                        int(
+                            round(
+                                projected_y
+                                * 1000.0
+                                / max(1, depth_height - 1)
+                            )
+                        ),
+                        int(
+                            round(
+                                projected_x
+                                * 1000.0
+                                / max(1, depth_width - 1)
+                            )
+                        ),
+                    ]
+            controller_guidance = f"""
+Controller forward kinematics predicts the robot tool frame near normalized
+image coordinate {normalized_prior}
+at camera depth {controller_reference['camera_point_m'][2]:.3f} m. Use this as
+a bounded association prior: the visible effector front must be part of the
+same connected rigid assembly and should remain within roughly 0.4 m in 3D of
+that predicted tool frame. Reject the scene instead of selecting background or
+another gripper-like object that violates this prior.
+""".strip()
         return f"""
 Locate the general front reference of the visible robot effector assembly.
 
-The image has three panels: RGB resampled onto the registered-depth grid,
-registered depth where black means invalid, and RGB dimmed wherever registered
-depth is invalid. All returned coordinates MUST be integer [y, x] pixels on the
-ORIGINAL registered-depth grid: height={depth_height}, width={depth_width}.
+The image is one RGB view resampled onto the registered-depth grid. Pixels
+without valid registered depth are strongly dimmed. Return every point as an
+integer [y, x] coordinate in NORMALIZED_0_1000 image space, independent of the
+displayed or encoded resolution. The deterministic host maps this normalized
+space onto the registered-depth grid of height={depth_height},
+width={depth_width}.
+
+{controller_guidance}
 
 Definition:
 - "front" means most distal along the visible rigid assembly away from the
@@ -364,7 +694,8 @@ Definition:
 Return only one JSON object with exactly this schema:
 {{
   "schema": "physical_agent.effector_front_landmark_vlm",
-  "schema_version": 1,
+  "schema_version": 2,
+  "coordinate_space": "NORMALIZED_0_1000",
   "scene_suitable": true,
   "reason": "brief evidence-based reason",
   "effector_configuration": "BARE_GRIPPER|MOUNTED_TOOL|HELD_TOOL|OTHER_EFFECTOR|UNCERTAIN",
@@ -386,3 +717,58 @@ selected_surface GRIPPER_TIP. For an unsuitable scene use configuration
 UNCERTAIN, geometry UNKNOWN, fallback UNCERTAIN, and an empty front_points
 array.
 """.strip()
+
+
+def _effector_visual_confidence(vlm_result: dict[str, Any]) -> str:
+    points = vlm_result.get("front_points")
+    points = points if isinstance(points, list) else []
+    values: list[float] = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        try:
+            values.append(float(point.get("confidence")))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return "low"
+    confidence = min(values)
+    if confidence >= 0.85:
+        return "high"
+    if confidence >= 0.60:
+        return "medium"
+    return "low"
+
+
+def _effector_annotations(
+    vlm_result: dict[str, Any],
+    *,
+    depth_grid: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    height, width = (int(depth_grid[0]), int(depth_grid[1]))
+    annotations: list[dict[str, Any]] = []
+    points = vlm_result.get("front_points")
+    points = points if isinstance(points, list) else []
+    for index, point in enumerate(points):
+        if not isinstance(point, dict):
+            continue
+        pixel = point.get("registered_depth_pixel_yx")
+        if not isinstance(pixel, list) or len(pixel) != 2:
+            continue
+        y, x = (int(pixel[0]), int(pixel[1]))
+        annotations.append(
+            {
+                "id": str(point.get("point_id") or f"front-{index + 1}"),
+                "type": "point",
+                "label": str(
+                    point.get("selected_surface") or "effector front"
+                ),
+                "confidence": _effector_visual_confidence(
+                    {"front_points": [point]}
+                ),
+                "applies_to_channels": ["rgb", "depth", "rgb_depth"],
+                "x": (x + 0.5) / width,
+                "y": (y + 0.5) / height,
+            }
+        )
+    return annotations

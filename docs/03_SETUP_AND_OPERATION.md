@@ -62,7 +62,8 @@ the environment owned by the process they start.
 
 The workspace setup does not install FoundationPose or build the upstream
 NVLabs CUDA runtime. Install its assets/backend, then set up the Stationary
-Alignment parent. The finite Skill route is the default:
+Alignment parent. This prepares the retained finite route but does not make it
+the default or an automatic fallback:
 
 ```powershell
 git lfs pull
@@ -306,9 +307,12 @@ Use **Clear point cloud** to remove accumulated display points without resetting
 
 ## FoundationPose compatibility operator workflow
 
-The normal Stationary Alignment workflow invokes FoundationPose as a bounded
-Skill and releases its backend automatically. Use the legacy tracking GUI only
-for compatibility diagnostics or guarded route comparison:
+The normal Agent invokes FoundationPose only when the operator's complete
+request is exactly `Use FoundationPose to establish the stationary
+world-to-arm-base transform.` The bounded Skill releases its backend
+automatically. Generic requests such as “establish both axes” do not start it.
+Use the legacy tracking GUI only for compatibility diagnostics or guarded route
+comparison:
 
 ```powershell
 .\providers\foundation_pose\scripts\run_tracking_gui.ps1

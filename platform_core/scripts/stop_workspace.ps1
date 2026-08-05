@@ -80,6 +80,21 @@ function Stop-AdvertisedDeveloperSurfaces {
     }
 }
 
+function Get-VerifiedAgentUiListenerProcessId {
+    try {
+        $health = Invoke-RestMethod `
+            -Uri "http://127.0.0.1:8000/health" `
+            -TimeoutSec 2
+        if ([string]$health.service -ne "physical-agent-ui") {
+            return $null
+        }
+        return Get-TcpListenerProcessId -Port 8000
+    }
+    catch {
+        return $null
+    }
+}
+
 $managerReachable = $false
 $providers = @()
 try {
@@ -275,10 +290,29 @@ else {
 
 if (Test-Path $pidsFile) {
     $pids = Get-Content $pidsFile | ConvertFrom-Json
+    $uiLauncherProperty = $pids.PSObject.Properties["ui_launcher"]
+    if ($null -ne $uiLauncherProperty) {
+        Stop-PidSafely $uiLauncherProperty.Value
+    }
     Stop-PidSafely $pids.ui
     Stop-PidSafely $pids.manager
     Stop-PidSafely $pids.fabric
     Remove-Item $pidsFile -Force -ErrorAction SilentlyContinue
+}
+
+# A Windows venv launcher can exit while its system-Python child keeps the
+# socket. Verify the service identity before cleaning an untracked child.
+$agentUiListenerPid = Get-VerifiedAgentUiListenerProcessId
+if ($null -ne $agentUiListenerPid) {
+    Stop-PidSafely $agentUiListenerPid
+    Start-Sleep -Milliseconds 300
+}
+$agentUiListenerPid = Get-VerifiedAgentUiListenerProcessId
+if ($null -ne $agentUiListenerPid) {
+    throw (
+        "Verified physical-agent-ui listener PID $agentUiListenerPid " +
+        "remains on TCP port 8000 after workspace shutdown."
+    )
 }
 
 Get-ChildItem -Path (Join-Path $workspace "providers") -Filter "cleanup.ps1" -Recurse -ErrorAction SilentlyContinue |

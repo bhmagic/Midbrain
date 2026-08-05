@@ -490,8 +490,8 @@ class CoreTests(unittest.TestCase):
     def test_limit_rejection(self):
         with self.assertRaises(ValueError): self.config.validate_joint_command(0,'POSITION_VELOCITY_LIMITED',{'position_rad':100,'velocity_limit_rad_s':0.1})
 
-    def test_physical_pos_vel_caps_are_faster_but_below_configured_motor_vmax(self):
-        expected = [2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 0.5]
+    def test_physical_pos_vel_caps_match_configured_motor_vmax(self):
+        expected = [5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0]
         self.assertEqual(
             [float(value) for value in self.config.model["control"]["physical_test_pos_vel_cap_rad_s"]],
             expected,

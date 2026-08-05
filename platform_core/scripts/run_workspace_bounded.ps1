@@ -313,12 +313,17 @@ try {
             -Process $uiProcess `
             -TimeoutSeconds $StartupTimeoutSeconds |
             Out-Null
+        $uiListenerPid = Get-TcpListenerProcessId -Port 8000
+        if ($null -eq $uiListenerPid) {
+            throw "Agent UI reported no TCP listener on port 8000."
+        }
     }
 
     [ordered]@{
         fabric = $fabricProcess.Id
         manager = $managerProcess.Id
-        ui = if ($null -eq $uiProcess) { $null } else { $uiProcess.Id }
+        ui = if ($null -eq $uiProcess) { $null } else { $uiListenerPid }
+        ui_launcher = if ($null -eq $uiProcess) { $null } else { $uiProcess.Id }
     } |
         ConvertTo-Json |
         Set-Content -LiteralPath $pidsFile

@@ -752,3 +752,63 @@ def test_vio_epoch_bridge_requires_exact_stationary_camera_identity() -> None:
 
     frame.observations["route"]["boot_id"] = "restarted-camera"
     assert not AlignmentSkill._same_stationary_camera_identity(prior, frame)
+
+
+def test_vio_epoch_bridge_accepts_same_canonical_camera_after_restart() -> None:
+    prior = {
+        "candidate": {
+            "camera_provenance": {
+                "provider_id": "camera.fixed",
+                "provider_instance_id": "old-instance",
+                "boot_id": "old-boot",
+                "canonical_device_id": "camera:serial-1",
+                "calibration_revision": "camera-calibration",
+            },
+            "frame_contract": {
+                "camera_frame": "camera-optical",
+            },
+        },
+    }
+    frame = SimpleNamespace(
+        camera_frame="camera-optical",
+        calibration_revision="camera-calibration",
+        observations={
+            "route": {
+                "provider_id": "camera.fixed",
+                "provider_instance_id": "new-instance",
+                "boot_id": "new-boot",
+            },
+            "device_info": {
+                "data": {"canonical_device_id": "camera:serial-1"},
+            },
+        },
+    )
+
+    assert AlignmentSkill._same_stationary_camera_identity(prior, frame)
+    frame.observations["device_info"]["data"]["canonical_device_id"] = (
+        "camera:serial-2"
+    )
+    assert not AlignmentSkill._same_stationary_camera_identity(prior, frame)
+
+
+def test_posthoc_tool_beak_learning_uses_base_and_tool_transforms() -> None:
+    skill = object.__new__(AlignmentSkill)
+    skill.config = load_skill_config()
+    vio_from_base = translated(1.0, 2.0, 3.0)
+    base_from_tool = translated(0.2, 0.1, 0.3)
+    expected_tool_from_beak = np.asarray([0.04, -0.02, 0.05])
+    vio_beak = (
+        vio_from_base
+        @ base_from_tool
+        @ np.asarray([*expected_tool_from_beak, 1.0])
+    )[:3]
+
+    learned, diagnostics = skill._bounded_tool_beak_estimate(
+        oriented=vio_from_base,
+        base_from_tool=base_from_tool,
+        vio_beak=vio_beak,
+    )
+
+    assert learned is not None
+    assert np.allclose(learned, expected_tool_from_beak)
+    assert diagnostics["accepted_for_later_refinement"] is True

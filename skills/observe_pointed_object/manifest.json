@@ -1,73 +1,136 @@
 {
   "skill_type": "observe_pointed_object",
-  "version": "0.1.0",
-  "display_name": "Observe Pointed Object",
+  "version": "0.2.2",
+  "display_name": "Locate Visible Item",
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,
-    "discoverable": false,
-    "disabled_reason": "Phase 5 structured pointing-pixel output and the complete nonphysical execution adapter are not implemented yet.",
-    "tool_name": "observe_pointed_object_from_pose",
-    "description": "Identify the pointed object, register it in the stationary workcell, prepare a controller-owned path preview to a front or top observation pose, and request permission only at the physical-motion boundary. Phase 2 produces a nonphysical proposal and authorization record; approval does not execute motion.",
+    "discoverable": true,
+    "tool_name": "locate_item",
+    "description": "Identify and locate one visible requested item in 3D, metric, depth, world, camera, or robot coordinates using synchronized RGB-D evidence. This is the mandatory Skill whenever a request combines object identification with 3D location; do not substitute the RGB-only analyze_visual_scene tool. It returns a metric workpiece point when depth is trustworthy, a task-plane intersection when supplied, or explicit bearing-only evidence with an active-perception recommendation. A successful metric result publishes a short-lived Fabric workpiece assertion for the HOT scene compiler; it never moves the robot or treats reflective/transparent background depth as item geometry.",
     "when_to_use": [
-      "The user points at an object and asks the robot to inspect it from the front or top.",
-      "The agent can act through perception and planning without asking for intermediate human planning decisions."
+      "An Agent or Skill needs a metric item point before planning a no-contact approach.",
+      "The user asks to identify an object and locate it in 3D, metric, depth, world-frame, camera-frame, or robot-frame coordinates.",
+      "A visible reflective or transparent target needs a non-error-only degraded fallback.",
+      "A fixed-altitude request can supply a task plane for ray-plane intersection."
     ],
     "when_not_to_use": [
-      "Stationary workcell calibration is missing or stale.",
-      "The object point cannot be registered with valid RGB-D evidence.",
-      "Physical authority or controller safety state is uncertain."
+      "The target item is not visible or is ambiguous.",
+      "A full six-degree-of-freedom CAD object pose is required.",
+      "The result would be treated as motion authorization without a separate controller preview."
     ],
     "side_effects": [
-      "Reads camera, spatial, transform, and controller-preview state.",
-      "Creates a decision-specific physical-motion authorization request.",
-      "Phase 2 does not execute or authorize motion."
+      "Reads one synchronized RGB-D frame and one timestamped transform.",
+      "Calls the configured VLM once and may write a diagnostic evidence image.",
+      "A metric result publishes or refreshes a short-lived WORKPIECE assertion in Fabric; publication failure is reported without discarding the location.",
+      "Does not stage, authorize, or execute motion."
     ],
-    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "safety_class": "STATEFUL_NO_MOTION",
     "expected_latency": "MEDIUM",
     "required_permissions": [
       "camera.read",
       "world.transforms.read",
-      "robot.motion.preview",
-      "authorization.request"
+      "vlm.invoke",
+      "world_state.write"
     ],
     "input_schema": {
       "type": "object",
       "properties": {
         "question": {
           "type": "string",
-          "description": "Which pointed object to inspect."
+          "description": "Complete description of the one visible item to locate."
         },
-        "view_mode": {
+        "target_frame": {
+          "type": "string",
+          "description": "Frame in which metric point or bearing evidence is returned. Use CURRENT_WORLD for the live VIO world frame without locating the arm base; use rebot_arm_base only when an active world-to-arm relationship is actually required."
+        },
+        "object_id": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Optional upstream stable object ID."
+        },
+        "contact_policy": {
           "type": "string",
           "enum": [
-            "FRONT",
-            "TOP"
-          ]
+            "WORKPIECE_CONTACT_ALLOWED",
+            "NO_CONTACT"
+          ],
+          "default": "WORKPIECE_CONTACT_ALLOWED"
+        },
+        "depth_requirement": {
+          "type": "string",
+          "enum": [
+            "PREFER_METRIC",
+            "REQUIRE_METRIC",
+            "ALLOW_BEARING"
+          ],
+          "default": "PREFER_METRIC"
+        },
+        "task_plane": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plane_id": {"type": "string"},
+                "normal_target": {
+                  "type": "array",
+                  "items": {"type": "number"},
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "offset_m": {"type": "number"},
+                "uncertainty_m": {"type": "number", "exclusiveMinimum": 0.0}
+              },
+              "required": ["plane_id", "normal_target", "offset_m", "uncertainty_m"],
+              "additionalProperties": false
+            },
+            {"type": "null"}
+          ],
+          "default": null
         }
       },
       "required": [
         "question",
-        "view_mode"
+        "target_frame"
       ],
       "additionalProperties": false
     },
     "execution_adapter": {
-      "adapter_id": "test_agent.observe_pointed_object.v1",
-      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
-      "entrypoint": "test_agent/python/physical_agent_test/observation_motion.py"
+      "adapter_id": "skill.observe_pointed_object.locate.v2",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
     }
   },
   "required_capabilities": [
     "camera.rgb",
     "camera.depth_aligned_to_rgb",
     "world.transforms.timestamped",
-    "robot.motion.arm.integrated.plan.transit_path.shadow"
+    "perception.vision_language"
   ],
-  "result_policy": {
-    "physical_motion_authorized": false,
-    "approval_executes_action": false,
-    "controller_preview_required": true
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
   },
-  "published_streams": []
+  "result_policy": {
+    "motion_usable": false,
+    "physical_motion_authorized": false,
+    "semantic_role": "WORKPIECE",
+    "reflective_or_transparent_background_depth_allowed": false,
+    "degraded_result_is_not_collision_authority": true
+  },
+  "published_streams": [
+    "robot_arm.scene.semantic_assertions"
+  ]
 }

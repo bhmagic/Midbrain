@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+- Make `TRANSIT_SPEED`/POS_SPEED the ordinary-motion default and add canonical
+  `robot.motion.arm.integrated.pos_vel.one_shot` discovery while retaining the
+  old `_limited` name as a deprecated compatibility alias.
+- Remove the 20 cm free-space, 0.85 rad direct-motion, and small aggregate
+  travel proxies. Free-space requests now accept up to 1.2 m, direct/routed
+  endpoint bounds match each joint's complete calibrated operational span,
+  and actual reach remains governed by joint ranges, IK continuity, residuals,
+  and collision checks.
+- Replace independent Cartesian speed ceilings with requested per-joint speed
+  policy: authenticate above 10 rad/s, reject at or above 20 rad/s, and execute
+  at the lower provider/Basic/motor POS_SPEED cap (5 rad/s J1-J3 and 10 rad/s
+  J4-J6 in the requested motor-envelope configuration).
+- Remove the arbitrary Cartesian workspace box when the managed configuration
+  delegates reachability to IK, hardware joint limits, and the canonical
+  semantic scene. Retain finite-value validation and every hardware limit.
+- Raise the controller-owned transit envelope to the complete 1.2 m arm ROI.
+  Route candidates are no longer clipped back into the retired workspace box.
+- Do not require a VIO session epoch in transit preview context when the
+  active mounted-workcell policy is
+  `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2`. V1 previews remain bound to
+  their VIO/process identity, and V2 commit revalidation still requires the
+  exact reviewed transform, camera provider, and camera calibration revision.
+- Allow transit previews to resolve a bounded relative Cartesian delta from
+  Integrated's fresh measured controlled frame. Visual correction workflows
+  no longer need to invent an absolute controller-tool origin when Fabric FK
+  is temporarily unavailable.
+- Accept compiled semantic scenes for their declared 10-second freshness
+  window, matching the slower tracker/compiler pipeline instead of imposing an
+  unrelated two-second controller-side expiry.
+- Use a configurable 2x Kp terminal-settling phase for one-shot impedance
+  motion while retaining the strict 3 mm Cartesian arrival gate and Basic's
+  calibrated gravity feed-forward. This targets observed endpoint compliance
+  error before the bounded float transition instead of relabeling it success.
+- Added preview-bound `FLOAT`, `FIXED`, and bounded `WAIT_FOR_NEXT` terminal
+  states. Consecutive signed paths can chain from fresh measured joints while
+  retaining the fenced lease, at least 1x impedance, and Basic gravity
+  feed-forward; timeout or failure returns to verified gravity float.
+- Treat the continuously refreshed semantic scene as commit-time safety input
+  instead of requiring its revision to remain frozen from upstream inspection
+  through execution. Integrated plans against its newest accepted scene,
+  revalidates every exact stored waypoint against the newest scene again at
+  commit, rejects any new collision, and audits preview and commit revisions.
+
+## 0.8.3 - 2026-08-03
+
+- Execute signed controller-owned transit waypoints as explicitly rate-limited
+  impedance commands at no less than the configured 1x gain profile. Basic
+  continues to own calibrated arm and declared-payload gravity feed-forward.
+- Allow a transit preview to request POSE_6DOF IK without mutating the global
+  runtime mode, enabling exact-preview orientation preservation.
+
+## 0.8.2 - 2026-08-03
+
+- Added externally callable leased idle profiles for gravity float, 2x-4x Kp
+  compliant hold, and POS_VEL position lock.
+- Captured the measured joint endpoint when a hold begins and return to
+  gravity float on release, expiry, command failure, or motion supersession.
+- Advertised the profile surface through Manager capability discovery and the
+  test-agent Integrated client.
+
 ## 0.8.1 - 2026-07-31
 
 - Raised only joint 3's single-commit endpoint travel guard from 0.80 to

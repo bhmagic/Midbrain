@@ -63,3 +63,33 @@ function Stop-PidSafely {
         Stop-Process -Id $PidValue -Force -ErrorAction SilentlyContinue
     }
 }
+
+function Get-TcpListenerProcessId {
+    param([Parameter(Mandatory = $true)][int]$Port)
+    $connection = Get-NetTCPConnection `
+        -LocalPort $Port `
+        -State Listen `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $connection) {
+        return [int]$connection.OwningProcess
+    }
+
+    # Get-NetTCPConnection can return no rows in a non-elevated shell even
+    # while a loopback listener is healthy. Netstat remains readable and
+    # prevents a successful bounded launch from being torn down as a false
+    # negative.
+    $netstat = Join-Path $env:SystemRoot "System32\netstat.exe"
+    foreach ($line in & $netstat -ano -p tcp 2>$null) {
+        $fields = @($line.Trim() -split "\s+")
+        if (
+            $fields.Count -ge 5 -and
+            $fields[0] -eq "TCP" -and
+            $fields[1] -match (":" + $Port + "$") -and
+            $fields[3] -eq "LISTENING"
+        ) {
+            return [int]$fields[4]
+        }
+    }
+    return $null
+}

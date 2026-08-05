@@ -53,7 +53,7 @@ class Phase4Policy:
 
     @classmethod
     def from_environment(cls) -> "Phase4Policy":
-        hard_timeout = float(os.getenv("PHASE4_OPERATION_HARD_TIMEOUT_S", "90"))
+        hard_timeout = float(os.getenv("PHASE4_OPERATION_HARD_TIMEOUT_S", "300"))
         idle_timeout = float(os.getenv("PHASE4_OPERATION_IDLE_TIMEOUT_S", "30"))
         vlm_timeout = float(os.getenv("PHASE4_VLM_ATTEMPT_TIMEOUT_S", "45"))
         vlm_attempts = int(

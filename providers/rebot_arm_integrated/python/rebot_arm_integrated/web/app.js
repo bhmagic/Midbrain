@@ -301,7 +301,7 @@ function renderModel(snapshot) {
   $("committedControl").textContent = frameText(snapshot.target?.last_committed);
   $("positionResidual").textContent = snapshot.target?.position_residual_m == null ? "—" : `${num(snapshot.target.position_residual_m, 5)} m`;
   $("orientationResidual").textContent = snapshot.target?.orientation_residual_rad == null ? "—" : `${num(snapshot.target.orientation_residual_rad, 5)} rad`;
-  $("clampStatus").textContent = snapshot.target?.last_commit_clamped ? "CLAMPED TO 20 cm" : "not clamped";
+  $("clampStatus").textContent = snapshot.target?.last_commit_clamped ? "CLAMPED TO 1.2 m" : "not clamped";
   const trajectory = snapshot.trajectory || {};
   $("trajectoryDuration").textContent = trajectory.segment_duration_s == null ? "idle" : `${num(trajectory.segment_duration_s, 3)} s`;
   $("trajectoryProgress").textContent = trajectory.progress == null ? "idle" : `${(Number(trajectory.progress) * 100).toFixed(1)}%`;

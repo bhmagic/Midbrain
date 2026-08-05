@@ -95,15 +95,11 @@ def build_activation_request(
     *,
     request_id: str,
     activated_by: str,
-    duration_ms: int,
 ) -> dict[str, Any]:
-    if not 1_000 <= int(duration_ms) <= 300_000:
-        raise ValueError("activation duration must be 1000 to 300000 ms")
     return {
         "request_id": str(request_id),
         "activated_by": str(activated_by),
         "candidate": candidate,
         "review_decision": review_decision,
         "review_identity_assertion": review_identity_assertion,
-        "duration_ms": int(duration_ms),
     }

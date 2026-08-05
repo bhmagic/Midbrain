@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add Manager-owned transitive Provider HOT dependencies with deterministic
+  ordering, shared-dependency deduplication, cycle/unknown-ID rejection, and
+  returned dependency provenance. Camera/arm consumers no longer enter HOT
+  while their declared lifecycle prerequisites remain cold.
+
 - Require reviewed workcell candidates to prove one mesh-centered base
   orientation selection: raw/corrected world-up agreement, the exact
   identity/X-180/Y-180/Z-180 choice, correction count at most one, unchanged

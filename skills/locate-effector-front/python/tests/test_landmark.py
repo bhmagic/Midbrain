@@ -54,6 +54,30 @@ def resolve(value: dict, depth: np.ndarray) -> dict:
 
 
 class EffectorFrontLandmarkTests(unittest.TestCase):
+    def test_normalized_geometry_maps_to_registered_depth_pixels(self) -> None:
+        value = result()
+        value.update(
+            {
+                "schema_version": 2,
+                "coordinate_space": "NORMALIZED_0_1000",
+            }
+        )
+        value["front_points"][0]["registered_depth_pixel_yx"] = [678, 589]
+
+        parsed = parse_effector_front_vlm_result(
+            json.dumps(value),
+            registered_depth_grid=(1080, 1920),
+        )
+
+        self.assertEqual(
+            parsed["front_points"][0]["registered_depth_pixel_yx"],
+            [732, 1130],
+        )
+        self.assertEqual(
+            parsed["source_coordinate_space"],
+            "NORMALIZED_0_1000",
+        )
+
     def test_reflective_tip_can_select_distal_valid_handle_point(self) -> None:
         parsed = parse_effector_front_vlm_result(
             json.dumps(

@@ -15,7 +15,7 @@ The reviewed discovery status is:
 
 - `PRESS_MIT` with `ONE_SHOT`: **USABLE**.
 - `PRESS_MIT` with `HOLD_LB`: **USABLE**.
-- `TRANSIT_SPEED`/POS_VEL with `ONE_SHOT`: **LIMITED** to paths at or below 20 cm with no payload or high external load. Stability beyond those constraints is not established.
+- `TRANSIT_SPEED`/POS_VEL with `ONE_SHOT`: **USABLE** for IK-valid free-space motion within the 1.2 m request envelope, subject to actual arm reach, joint ranges, scene clearance, and provider/motor POS_SPEED caps. No-payload operation is the reviewed default.
 - `TRANSIT_SPEED`/POS_VEL with `HOLD_LB`: **EXPERIMENTAL / UNSTABLE**, GUI-only, and excluded from Manager capability discovery.
 - `CONTACT_WORK` arm POS_TOR with `ONE_SHOT`: **EXPERIMENTAL / UNSTABLE**, GUI-only, and excluded from Manager capability discovery.
 
@@ -41,11 +41,19 @@ IK can be `POSITION_3DOF` or `POSE_6DOF`. The controlled frame can be offset fro
 
 At calibrated safe-home the default controlled frame is approximately aligned
 with the arm base: controlled +X is arm-base/front and controlled +Z is
-arm-base/up. Preserving that orientation during a full 20 cm +Z translation
-requires approximately 0.81805 rad of joint-3 travel in the factory model.
-The single-commit joint-3 endpoint guard is therefore 0.85 rad; the other
-endpoint limits and all aggregate-travel, residual, singularity, workspace,
-collision, authority, and physical-authorization gates remain unchanged.
+arm-base/up. Preserving that orientation during a 25 cm +Z translation
+requires about 1.06 rad of joint-3 travel in the factory model. Free-space
+direct and routed transit now use each joint's complete calibrated operational
+span rather than a separate small-step displacement proxy. Actual joint ranges,
+IK continuity, residual, singularity, collision, authority, and
+physical-authorization checks remain authoritative.
+
+Ordinary motion defaults to `TRANSIT_SPEED`. Requested endpoint speed is
+translated into per-joint demand: any joint above 10 rad/s requires explicit
+authentication, while a request reaching 20 rad/s is rejected. Physical
+execution is still limited to the lower of the configured POS_SPEED cap and
+the motor VMAX (5 rad/s for J1-J3 and 10 rad/s for J4-J6 in the requested
+motor-envelope configuration).
 
 Preview, fresh physical commit, and HOLD_LB replan reject position residuals
 above the configured tolerance. `POSE_6DOF` also rejects excessive orientation
@@ -76,13 +84,20 @@ contract grants no commit authority and does not change control state.
 only the exact stored plan/request/preview digests and a
 `X-Midbrain-Authorization` assertion signed by the configured authorization
 identity. The assertion binds the controller provider, instance, boot,
-configuration, plan, scene, decision, and expiry; both the assertion and plan
-are consumed once. Commit rechecks the current scene, measured start drift,
-collision clearance, whole-path joint travel, lease, inhibit, and controller
-health before sending any endpoint. It then advances through the controller's
-exact joint waypoints only after measured stable arrival, with both Cartesian
-and per-joint speed caps. The final endpoint is intentionally held until
-`POST /v1/motion/path-release` explicitly requests verified gravity-float.
+configuration, plan, preview scene, decision, and expiry; both the assertion
+and plan are consumed once. A newer accepted compiler scene does not invalidate
+the stored path by revision alone: commit rechecks every stored waypoint
+against that newest scene and records both revisions. Commit also rechecks
+measured start drift, collision clearance, whole-path joint travel, lease,
+inhibit, and controller health before sending any endpoint. It then advances
+through the controller's exact joint waypoints only after measured stable
+arrival, with both Cartesian and per-joint speed caps. The signed request also
+binds one controller-owned `final_state`: `FLOAT` requests verified gravity
+float after measured arrival; `FIXED` holds the final endpoint until
+`POST /v1/motion/path-release`; and `WAIT_FOR_NEXT` holds the endpoint for a
+bounded 30-second chaining window. During that window a new signed path may
+start from fresh measured joints without an intermediate float or motor-mode
+transition. Expiry returns to verified gravity float.
 Errors, lease loss, inhibit, stale platform state, or stage timeout request
 gravity-float.
 

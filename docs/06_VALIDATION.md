@@ -4,6 +4,9 @@
 
 The current checkpoint includes offline tests plus operator-observed physical validation. The physical run used a real OpenAI Agents SDK model only for Skill selection. Authorization, decision validity, lease ownership, trajectory preview, execution, and audit remained deterministic server-side.
 
+This section is a historical acceptance record. Its 0.25 rad/s, 0.05 m/s,
+and small-step limits do not describe the current ordinary-motion policy.
+
 - The Agents SDK selected `execute_reviewed_observation_motion` using only a reviewed decision ID.
 - The no-contact toilet-paper standoff plan completed 40/40 stages at limits of 0.25 rad/s per joint and 0.05 m/s Cartesian speed.
 - Reported minimum clearance was 0.07943 m, terminal position error was 0.001185 m, and final standoff was approximately 0.099942 m.

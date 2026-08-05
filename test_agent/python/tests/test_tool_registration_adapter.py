@@ -91,7 +91,8 @@ class _Manager:
 
 
 class _Capture:
-    async def capture(self):
+    async def capture(self, *, require_vio: bool = True):
+        assert require_vio is True
         now_us = time.time_ns() // 1000
         identity = {
             "provider_id": CAMERA_PROVIDER,

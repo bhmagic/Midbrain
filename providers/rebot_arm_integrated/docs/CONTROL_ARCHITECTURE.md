@@ -38,7 +38,7 @@ motor commands.
 |---|---|---|---|---|
 | `PRESS_MIT` + `ONE_SHOT` | `IMPEDANCE` | Stream time-indexed setpoints and float after completion | General reviewed one-shot motion | **USABLE; advertised** |
 | `PRESS_MIT` + `HOLD_LB` | `IMPEDANCE` | Replan changed targets while LB remains held; release floats | Operator-supervised continuous target following | **USABLE; advertised** |
-| `TRANSIT_SPEED` + `ONE_SHOT` | `POSITION_VELOCITY_LIMITED` | One endpoint plus saturated velocity limits; float after stable arrival | Short unloaded transit | **LIMITED; advertised only for paths ≤20 cm with no payload/high external load** |
+| `TRANSIT_SPEED` + `ONE_SHOT` | `POSITION_VELOCITY_LIMITED` | One endpoint plus bounded velocity limits; float after stable arrival | Ordinary free-space transit | **USABLE; advertised for IK-valid requests up to 1.2 m** |
 | `TRANSIT_SPEED` + `HOLD_LB` | `POSITION_VELOCITY_LIMITED` | Replace only changed endpoints while held | Endpoint-overwrite research | **EXPERIMENTAL / UNSTABLE; not advertised** |
 | `CONTACT_WORK` + `ONE_SHOT` | `POSITION_EFFORT_LIMITED` | One-shot endpoint using a separately captured posture baseline, physical-ceiling saturation, and timed float completion independent of arrival | 6-DoF force/torque research | **EXPERIMENTAL / UNSTABLE; not advertised** |
 
@@ -46,7 +46,7 @@ motor commands.
 
 POS_VEL and POS_TOR must not receive a 100 Hz series of moving endpoints. Basic uses latest-envelope-wins ingress, and the motor protocol treats these modes as endpoint commands. Replacing endpoints before the motor settles can repeatedly restart its internal target behavior and can produce bounce or reversal. MIT is different because each frame is intentionally a cyclic spring setpoint.
 
-TRANSIT_SPEED reads Basic's dedicated physical-test POS_VEL caps (currently 2.0 rad/s for J1-J3 and 2.5 rad/s for J4-J6) and uses them consistently for duration and synchronized endpoint limits. A rejected continuous replan does not revoke the last valid endpoint: Integrated retains and refreshes the last Basic-accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`. This prevents an input-validation failure from causing an unrelated POS_VEL-to-float motor-mode transition.
+TRANSIT_SPEED reads Basic's POS_SPEED caps (currently 5 rad/s for J1-J3 and 10 rad/s for J4-J6) and uses them consistently for duration and synchronized endpoint limits. Requested Cartesian speed is converted into per-joint demand; above 10 rad/s requires explicit authentication and at or above 20 rad/s is rejected. A rejected continuous replan does not revoke the last valid endpoint: Integrated retains and refreshes the last Basic-accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`. This prevents an input-validation failure from causing an unrelated POS_VEL-to-float motor-mode transition.
 
 Motor mode changes are staged one joint per Basic control tick. Before each potentially blocking register-10 confirmation, Basic refreshes the captured-position or gravity-supported hold for every other joint. Missing register-10 confirmation receives the same bounded serial retry as Windows transport timeouts. The POS_VEL endpoint remains withheld until all requested modes are confirmed. TRANSIT_SPEED ONE_SHOT requests float only after stable measured arrival. Gravity-float is not considered confirmed while Basic reports any pending motor-mode transition, and Integrated allows up to eight seconds for the staged transition to finish.
 
@@ -54,7 +54,12 @@ The gripper input begins with a joint-7-only request at a 10 Hz provider keepali
 
 ## Planning and semantic objects
 
-Every candidate path receives an immutable preview ID, target revision, scene revision, joint start/goal, duration, sampled configurations, minimum clearance, and collision list. Any target, tool-offset, settings, or scene change invalidates the preview.
+Every candidate path receives an immutable preview ID, target revision, preview
+scene revision, joint start/goal, duration, sampled configurations, minimum
+clearance, and collision list. A target, tool-offset, or settings change
+invalidates the preview. A newer accepted compiler scene instead triggers a
+whole-path collision recheck at commit; safe stored waypoints may continue and
+the audit records both preview and commit scene revisions.
 
 `POST /v1/motion/plan` combines target staging and preview in one direct
 provider call. It remains `SHADOW_NONPHYSICAL`; singularity diagnostics and
@@ -67,7 +72,51 @@ The scene input uses base-frame spheres with stable sphere and object IDs:
 - `PUSHABLE`: avoid first; contact requires an explicit per-preview policy.
 - `WORK_OBJECT`: contact is permitted only when that object ID is explicitly named by the work request.
 
+The controller and Fabric validator now implement the canonical scene-policy
+boundary:
+
+- Accept `WORKPIECE` as the contract term and normalize it to the controller's
+  existing `WORK_OBJECT` collision-policy representation.
+- Unknown objects default to `KEEP_OUT`; a task-selected manipulation target
+  defaults to `WORKPIECE`.
+- A VLM may emit a pushability hint, but only the upstream Agent or finite Skill
+  may assert task-scoped `PUSHABLE` contact permission.
+- `WORKPIECE` is contact-eligible at the declared acting frame by default.
+  Explicit `NO_CONTACT`/standoff wording takes precedence, and non-acting link
+  contact remains prohibited.
+- Compile only geometry within 0.5 m of the measured gripper/controlled frame
+  or 1.2 m of `rebot_arm_base`. Use minimum sphere radii of 20 mm in the gripper
+  region and 60 mm elsewhere in the arm region. Inflate smaller geometry rather
+  than deleting it, and voxelize/merge redundant samples before publication.
+- The HOT `world_model.arm_scene_compiler` Provider is the single live owner.
+  It applies ROI, minimum-size, semantic-default, and current robot-self-filter
+  preconditions; merges Fabric-hosted point clouds and slower semantic
+  assertions; and publishes monotonic, short-lived canonical revisions. Camera
+  or perception Skills must not overwrite the controller scene independently.
+  A metric `locate_item` result refreshes a short-lived `WORKPIECE` assertion.
+  Empty/material-limited depth can degrade to semantic-only output only while
+  an explicit assertion remains fresh; it never implies that unobserved space
+  is clear.
+
+Fabric validates contract version 2, base frame, canonical ROI layers, exact
+minimum sphere sizes, explicit canonical type/scope, unique sphere IDs, and
+in-ROI centers before accepting a scene envelope. This is a data-plane
+contract, not collision-authority by itself; Integrated still revalidates the
+fresh exact scene at authorized commit.
+
 The optional preview diagnostic interpolates Cartesian position and orientation, solves each waypoint from the preceding joint solution, and samples the resulting joint segments against conservative link capsules. It reports low Jacobian singular values, large waypoint jumps, excessive endpoint joint displacement, and excessive aggregate joint travel. It does not block hardware execution. This is continuity analysis, not obstacle-route search.
+
+Signed transit requests select a controller-owned final state. `FLOAT` returns
+to verified gravity float, `FIXED` retains the endpoint until release, and
+`WAIT_FOR_NEXT` retains it for a bounded consecutive-motion window. The latter
+avoids a float/reacquire/mode-transition discontinuity between iterative
+corrections while preserving fresh measured-start, authorization, and scene
+revalidation for every chained path.
+
+`WAIT_FOR_NEXT` currently accepts the successor after measured arrival. A
+separate in-flight successor queue—where the next command arrives before the
+current command finishes—is still TODO and must bind the successor to the
+current plan's terminal state before permitting a seamless transition.
 
 The physical DM serial loop and Integrated MIT stream default to 50 Hz for the next operator test. Reducing only Integrated would not reduce the actual motor traffic because Basic retransmits the current seven-joint command on every internal tick. Basic therefore exposes completed/attempted command frames, feedback requests and polls, mode switches, I/O error count, and measured rates.
 
@@ -99,9 +148,9 @@ The GUI provides the same controls and exposes the selected gripper backend, mea
 
 ## Next physical release sequence
 
-1. Continue characterization of limited POS_VEL ONE_SHOT only within 20 cm and without payload or high external load.
+1. Continue characterization of POS_VEL ONE_SHOT across the reachable workspace without payload or high external load.
 2. Compare Basic hardware I/O telemetry and USB fault rate at 50 Hz against the earlier 60 Hz and 100 Hz observations.
 3. Keep POS_VEL HOLD_LB in experimental GUI testing; do not publish it as an upstream capability until stable.
 4. Keep CONTACT_WORK POS_TOR one-shot in experimental GUI testing; do not publish it as an upstream capability until baseline and force behavior are stable.
 5. Physically characterize torque signs, bias, friction, gravity-model error, and transport-loss behavior before using CONTACT_WORK for precision tasks.
-6. Add waypoint/search planning and later point-cloud preprocessing without changing the authority rules above.
+6. Physically qualify the HOT scene compiler and then add general waypoint/search planning without changing the authority rules above.

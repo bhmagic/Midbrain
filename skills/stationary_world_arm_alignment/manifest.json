@@ -1,6 +1,6 @@
 {
   "skill_type": "stationary_world_arm_alignment",
-  "version": "0.8.5",
+  "version": "0.8.9",
   "display_name": "Stationary World-Space Arm Finder",
   "ui": {
     "observation": {
@@ -21,16 +21,18 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "calibrate_stationary_workcell",
-    "description": "Calibrate a stationary workcell by locating the robot base and end effector, checking that the arm remains still, and registering the arm base into the current world frame. Use this Skill when a fixed camera and robot need a fresh or validated world-to-arm transform before spatial work.",
+    "description": "Run the retained FoundationPose stationary-workcell initializer only when the operator supplies the documented exact request: Use FoundationPose to establish the stationary world-to-arm-base transform. This long-running initializer is not an automatic or default alignment fallback.",
     "when_to_use": [
       "The camera and robot base are stationary and a world-to-arm transform is missing or stale.",
       "A downstream spatial Skill requires a validated stationary workcell frame.",
-      "The operator explicitly requests stationary workcell calibration or alignment."
+      "The operator uses the exact FoundationPose invocation documented by this Skill."
     ],
     "when_not_to_use": [
       "The camera, workcell, or robot base is moving.",
       "The task only needs an existing valid transform.",
-      "The request is for continuous real-time body or mobile-base tracking."
+      "The user asks only to establish, inspect, or report the VIO world axes and explicitly excludes the arm base; inspect the current VIO world frame instead.",
+      "The request is for continuous real-time body or mobile-base tracking.",
+      "The operator asks generically to establish or calibrate both axes without the exact FoundationPose invocation."
     ],
     "side_effects": [
       "Acquires a Manager motion-inhibit lease.",
@@ -50,7 +52,7 @@
       "properties": {
         "request": {
           "type": "string",
-          "description": "The stationary-workcell calibration request."
+          "description": "Must exactly equal: Use FoundationPose to establish the stationary world-to-arm-base transform."
         }
       },
       "required": [
@@ -150,7 +152,9 @@
   "base_pose_engine": {
     "owner": "calibrate_stationary_workcell",
     "nested_skill": "foundation_pose_object_localization",
-    "default_route": "FOUNDATIONPOSE_SKILL",
+    "default_route": "NO_AUTOMATIC_BASE_POSE_ENGINE",
+    "explicit_route": "FOUNDATIONPOSE_SKILL",
+    "exact_agent_request": "Use FoundationPose to establish the stationary world-to-arm-base transform.",
     "available_routes": [
       "FOUNDATIONPOSE_SKILL",
       "PROVIDER_COMPATIBILITY",

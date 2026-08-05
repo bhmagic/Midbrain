@@ -189,7 +189,7 @@ def _has_documented_base_z_up(candidate: Any) -> bool:
 
 
 class StationaryCalibrationActivationService:
-    """Review and briefly activate one exact persisted calibration candidate."""
+    """Review and activate one mounted, identity-gated calibration candidate."""
 
     def __init__(
         self,
@@ -199,18 +199,12 @@ class StationaryCalibrationActivationService:
         calibration_root: Path,
         review_root: Path,
         reviewer_id: str = "local-operator:regular-agent-session",
-        activation_duration_ms: int = 300_000,
     ) -> None:
-        if not 1_000 <= int(activation_duration_ms) <= 300_000:
-            raise ValueError(
-                "activation duration must be between 1000 and 300000 ms"
-            )
         self.manager = manager
         self.review_auth_secret = str(review_auth_secret)
         self.store = CalibrationStore(calibration_root)
         self.reviews = CandidateReviewService(self.store, review_root)
         self.reviewer_id = str(reviewer_id)
-        self.activation_duration_ms = int(activation_duration_ms)
 
     def latest_activation_continuation(self) -> dict[str, Any] | None:
         result = self.store.latest()
@@ -275,10 +269,27 @@ class StationaryCalibrationActivationService:
             )
         actual_digest = canonical_sha256(candidate)
         if not hmac.compare_digest(normalized_digest, actual_digest):
-            raise RuntimeError(
-                "the requested candidate digest does not match the persisted "
-                "calibration"
-            )
+            return {
+                "status": "CALIBRATION_CANDIDATE_DIGEST_REFRESH_REQUIRED",
+                "workflow_complete": False,
+                "motion_usable": False,
+                "alignment_id": normalized_alignment_id,
+                "reason_code": "CANDIDATE_DIGEST_MISMATCH",
+                "message": (
+                    "The supplied candidate digest did not match the current "
+                    "persisted calibration. No activation was attempted. "
+                    "Call the exact required_next_tool below now; do not ask "
+                    "the user to repeat the axis-establishment request."
+                ),
+                "required_next_tool": {
+                    "name": "review_and_activate_stationary_calibration",
+                    "arguments": {
+                        "alignment_id": normalized_alignment_id,
+                        "candidate_sha256": actual_digest,
+                    },
+                },
+                "physical_motion_submitted": False,
+            }
         now_us = time.time_ns() // 1000
         if int(candidate.get("expires_at_us") or 0) <= now_us:
             return self._fresh_calibration_required(
@@ -385,10 +396,11 @@ class StationaryCalibrationActivationService:
                     candidate,
                     idempotency_key=f"agent-review-{uuid.uuid4()}",
                     rationale=(
-                        "The local operator authorized review and bounded "
-                        "activation of this exact qualified stationary "
-                        "world-to-arm candidate. Manager must independently "
-                        "revalidate quality, provenance, VIO state, and age."
+                        "The local operator authorized review and activation "
+                        "of this exact qualified mounted world-to-arm "
+                        "candidate. Manager must independently revalidate "
+                        "quality, provenance, provider identity, VIO epoch, "
+                        "and tracking state."
                     ),
                 ),
                 verified_identity=verified_identity,
@@ -401,7 +413,6 @@ class StationaryCalibrationActivationService:
                 assertion,
                 request_id=f"agent-activate-{uuid.uuid4()}",
                 activated_by=self.reviewer_id,
-                duration_ms=self.activation_duration_ms,
             )
         )
         if (
@@ -433,6 +444,9 @@ class StationaryCalibrationActivationService:
                 and activation.get("state") == "ACTIVE"
                 and activation.get("motion_usable") is True
                 and activation.get("candidate_sha256") == candidate_sha256
+                and activation.get("expires_at_us") is None
+                and activation.get("validity_policy")
+                == "MOUNTED_IDENTITY_TRACKING_GATED_V1"
             ):
                 return activation
         return None
@@ -476,11 +490,17 @@ class StationaryCalibrationActivationService:
             "review_decision_id": review_decision_id,
             "activation_id": activation.get("activation_id"),
             "expires_at_us": activation.get("expires_at_us"),
+            "validity_policy": activation.get("validity_policy"),
+            "invalidation_conditions": activation.get(
+                "invalidation_conditions"
+            ),
             "motion_usable": True,
             "already_active": already_active,
             "physical_motion_submitted": False,
             "message": (
                 "The exact stationary world-to-arm calibration is reviewed, "
-                "Manager-validated, and temporarily motion-usable."
+                "Manager-validated, and motion-usable without a wall-clock "
+                "expiry while mounted-rig identity and tracking evidence "
+                "remain current."
             ),
         }

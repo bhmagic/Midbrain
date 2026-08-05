@@ -24,6 +24,12 @@ const DEFAULT_TRANSFORM_HISTORY_PER_EDGE: usize = 4096;
 const DEFAULT_SYNC_MAX_DELTA_US: u64 = 50_000;
 const DEFAULT_TRANSFORM_MAX_EXTRAPOLATION_US: u64 = 100_000;
 const TRANSFORM_SCHEMA: &str = "physical_agent.transform";
+const SEMANTIC_SPHERE_SCENE_SCHEMA: &str = "physical_agent.arm_semantic_sphere_scene";
+const ARM_POINT_CLOUD_SCHEMA: &str = "physical_agent.arm_point_cloud";
+const ARM_SEMANTIC_ASSERTIONS_SCHEMA: &str = "physical_agent.arm_semantic_assertions";
+const SEMANTIC_SCENE_CONTRACT_VERSION: u64 = 2;
+const GRIPPER_ROI_SCOPE: &str = "GRIPPER_0P5M";
+const ARM_BASE_ROI_SCOPE: &str = "ARM_BASE_1P2M";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Observation {
@@ -397,6 +403,21 @@ async fn schema_catalog() -> Json<Vec<SchemaDescriptor>> {
             version: 1,
             description: "Requested or effective whole-robot motion inhibition state.",
         },
+        SchemaDescriptor {
+            schema: SEMANTIC_SPHERE_SCENE_SCHEMA,
+            version: 1,
+            description: "Canonical arm-base semantic sphere scene with bounded ROI layers, minimum sphere radii, and explicit contact semantics.",
+        },
+        SchemaDescriptor {
+            schema: ARM_POINT_CLOUD_SCHEMA,
+            version: 1,
+            description: "Fabric-hosted point-cloud input for the HOT arm scene compiler, using inline metric XYZ or an expiring BufferRef.",
+        },
+        SchemaDescriptor {
+            schema: ARM_SEMANTIC_ASSERTIONS_SCHEMA,
+            version: 1,
+            description: "Fresh upstream obstacle, pushable, or work-object assertions merged by the HOT arm scene compiler.",
+        },
     ])
 }
 
@@ -436,6 +457,15 @@ async fn insert_observation(
     }
     if observation.schema == TRANSFORM_SCHEMA {
         validate_transform_observation(&observation)?;
+    }
+    if observation.schema == SEMANTIC_SPHERE_SCENE_SCHEMA {
+        validate_semantic_sphere_scene_observation(&observation)?;
+    }
+    if observation.schema == ARM_POINT_CLOUD_SCHEMA {
+        validate_arm_point_cloud_observation(&observation)?;
+    }
+    if observation.schema == ARM_SEMANTIC_ASSERTIONS_SCHEMA {
+        validate_arm_semantic_assertions_observation(&observation)?;
     }
     observation.received_at = Some(Utc::now());
 
@@ -550,6 +580,455 @@ fn parse_transform(observation: &Observation) -> Result<TransformData, (StatusCo
             format!("invalid physical_agent.transform payload: {error}"),
         )
     })
+}
+
+fn finite_vec3(value: Option<&Value>) -> Option<[f64; 3]> {
+    let items = value?.as_array()?;
+    if items.len() != 3 {
+        return None;
+    }
+    let point = [items[0].as_f64()?, items[1].as_f64()?, items[2].as_f64()?];
+    point.iter().all(|item| item.is_finite()).then_some(point)
+}
+
+fn semantic_roi_limits(scope: &str) -> Option<(f64, f64)> {
+    match scope {
+        GRIPPER_ROI_SCOPE => Some((0.5, 0.02)),
+        ARM_BASE_ROI_SCOPE => Some((1.2, 0.06)),
+        _ => None,
+    }
+}
+
+fn validate_arm_point_cloud_observation(
+    observation: &Observation,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if observation.schema_version != 1 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud schema_version must be 1",
+        ));
+    }
+    let data = observation.data.as_object().ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud data must be an object",
+        )
+    })?;
+    if data.get("contract_version").and_then(Value::as_u64) != Some(1) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud contract_version must be 1",
+        ));
+    }
+    let frame = observation
+        .coordinate_frame
+        .as_deref()
+        .or_else(|| data.get("coordinate_frame").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if frame.is_none() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud coordinate_frame is required",
+        ));
+    }
+    match observation.freshness_ms {
+        Some(value) if (1..=2_000).contains(&value) => {}
+        _ => {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm point-cloud freshness_ms must be between 1 and 2000",
+            ))
+        }
+    }
+    let inline = data.get("points_m").and_then(Value::as_array);
+    let buffer_ref = data.get("buffer_ref").and_then(Value::as_object);
+    if inline.is_some() == buffer_ref.is_some() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud requires exactly one of points_m or buffer_ref",
+        ));
+    }
+    if let Some(points) = inline {
+        if points.len() > 250_000
+            || points
+                .iter()
+                .any(|point| finite_vec3(Some(point)).is_none())
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm point-cloud points_m must contain at most 250000 finite XYZ points",
+            ));
+        }
+    }
+    if let Some(reference) = buffer_ref {
+        let mapping_name = reference
+            .get("mapping_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let payload_bytes = reference
+            .get("payload_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if mapping_name.is_none() || payload_bytes < 12 {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm point-cloud buffer_ref requires mapping_name and payload_bytes >= 12",
+            ));
+        }
+        if data.get("point_encoding").and_then(Value::as_str) != Some("XYZ_F32_LE") {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm point-cloud BufferRef point_encoding must be XYZ_F32_LE",
+            ));
+        }
+    }
+    if !matches!(data.get("units").and_then(Value::as_str), Some("m" | "mm")) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm point-cloud units must be m or mm",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_arm_semantic_assertions_observation(
+    observation: &Observation,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if observation.schema_version != 1 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm semantic assertions schema_version must be 1",
+        ));
+    }
+    let data = observation.data.as_object().ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "arm semantic assertions data must be an object",
+        )
+    })?;
+    if data.get("contract_version").and_then(Value::as_u64) != Some(1) {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm semantic assertions contract_version must be 1",
+        ));
+    }
+    let frame = data
+        .get("frame_id")
+        .and_then(Value::as_str)
+        .or(observation.coordinate_frame.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if frame.is_none() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm semantic assertions frame_id is required",
+        ));
+    }
+    match observation.freshness_ms {
+        Some(value) if (1..=60_000).contains(&value) => {}
+        _ => {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertions freshness_ms must be between 1 and 60000",
+            ))
+        }
+    }
+    let assertions = data
+        .get("assertions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertions requires an assertions array",
+            )
+        })?;
+    if assertions.len() > 20_000 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "arm semantic assertions exceeds 20000 spheres",
+        ));
+    }
+    let mut geometry_ids = HashSet::new();
+    for assertion in assertions {
+        let object = assertion.as_object().ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertion must be an object",
+            )
+        })?;
+        let object_id = object
+            .get("object_id")
+            .and_then(Value::as_str)
+            .or_else(|| object.get("assertion_id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    "arm semantic assertion requires object_id",
+                )
+            })?;
+        let geometry_id = object
+            .get("assertion_id")
+            .and_then(Value::as_str)
+            .or_else(|| object.get("sphere_id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(object_id);
+        if !geometry_ids.insert(geometry_id.to_string()) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertion geometry identifiers must be unique",
+            ));
+        }
+        if finite_vec3(object.get("center_m")).is_none() {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertion center_m must contain three finite values",
+            ));
+        }
+        let radius = object
+            .get("radius_m")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN);
+        if !radius.is_finite() || radius <= 0.0 {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertion radius_m must be positive and finite",
+            ));
+        }
+        let object_type = object.get("type").and_then(Value::as_str).unwrap_or("");
+        if !matches!(
+            object_type,
+            "" | "OBS"
+                | "OBSTACLE"
+                | "KEEP_OUT"
+                | "PUSHABLE"
+                | "WORKPIECE"
+                | "WORK_PIECE"
+                | "WORK_OBJECT"
+        ) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "arm semantic assertion type is unsupported",
+            ));
+        }
+        if object_type == "KEEP_OUT"
+            && object
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "KEEP_OUT arm semantic assertions require an upstream description",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_semantic_sphere_scene_observation(
+    observation: &Observation,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if observation.schema_version != 1 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "semantic sphere scene schema_version must be 1",
+        ));
+    }
+    let data = observation.data.as_object().ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "semantic sphere scene data must be an object",
+        )
+    })?;
+    if data.get("contract_version").and_then(Value::as_u64) != Some(SEMANTIC_SCENE_CONTRACT_VERSION)
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "semantic sphere scene contract_version must be 2",
+        ));
+    }
+    if data
+        .get("scene_revision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "semantic sphere scene requires scene_revision",
+        ));
+    }
+    if data.get("frame_id").and_then(Value::as_str) != Some("rebot_arm_base") {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "semantic sphere scene frame_id must be rebot_arm_base",
+        ));
+    }
+
+    let raw_layers = data
+        .get("roi_layers")
+        .and_then(Value::as_array)
+        .filter(|layers| !layers.is_empty())
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic sphere scene requires at least one ROI layer",
+            )
+        })?;
+    let mut layers: HashMap<String, ([f64; 3], f64, f64)> = HashMap::new();
+    for value in raw_layers {
+        let layer = value.as_object().ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic ROI layer must be an object",
+            )
+        })?;
+        let scope = layer
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        let (expected_radius, expected_minimum) = semantic_roi_limits(scope).ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                format!("unsupported semantic ROI scope {scope:?}"),
+            )
+        })?;
+        let center = finite_vec3(layer.get("center_m")).ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic ROI center_m must contain three finite numbers",
+            )
+        })?;
+        let radius = layer
+            .get("radius_m")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN);
+        let minimum = layer
+            .get("minimum_sphere_radius_m")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN);
+        if (radius - expected_radius).abs() > 1e-9 || (minimum - expected_minimum).abs() > 1e-9 {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("semantic ROI {scope} has non-canonical radius policy"),
+            ));
+        }
+        if scope == ARM_BASE_ROI_SCOPE && center.iter().any(|item| item.abs() > 1e-9) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "ARM_BASE_1P2M ROI center must be the arm-base origin",
+            ));
+        }
+        if layers
+            .insert(scope.to_string(), (center, radius, minimum))
+            .is_some()
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic scene ROI scopes must be unique",
+            ));
+        }
+    }
+
+    let raw_spheres = data
+        .get("spheres")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic sphere scene spheres must be an array",
+            )
+        })?;
+    let mut sphere_ids = HashSet::new();
+    for value in raw_spheres {
+        let sphere = value.as_object().ok_or_else(|| {
+            api_error(StatusCode::BAD_REQUEST, "semantic sphere must be an object")
+        })?;
+        let sphere_id = sphere
+            .get("sphere_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    "semantic sphere requires sphere_id",
+                )
+            })?;
+        if !sphere_ids.insert(sphere_id.to_string()) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic scene sphere_id values must be unique",
+            ));
+        }
+        if sphere
+            .get("object_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic sphere requires object_id",
+            ));
+        }
+        let object_type = sphere.get("type").and_then(Value::as_str).unwrap_or("");
+        if !matches!(object_type, "KEEP_OUT" | "PUSHABLE" | "WORK_OBJECT") {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic sphere type must be KEEP_OUT, PUSHABLE, or WORK_OBJECT",
+            ));
+        }
+        let scope = sphere
+            .get("roi_scope")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let (roi_center, roi_radius, minimum_radius) = layers.get(scope).ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                format!("semantic sphere references absent ROI scope {scope:?}"),
+            )
+        })?;
+        let center = finite_vec3(sphere.get("center_m")).ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "semantic sphere center_m must contain three finite numbers",
+            )
+        })?;
+        let radius = sphere
+            .get("radius_m")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN);
+        if !radius.is_finite() || radius < *minimum_radius {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("semantic sphere {sphere_id:?} is below its ROI minimum radius"),
+            ));
+        }
+        let distance = center
+            .iter()
+            .zip(roi_center.iter())
+            .map(|(left, right)| (left - right).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if distance > *roi_radius + 1e-12 {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                format!("semantic sphere {sphere_id:?} is outside its ROI"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn latest_observation(
@@ -1297,6 +1776,60 @@ mod tests {
         }
     }
 
+    fn semantic_scene_observation(data: Value) -> Observation {
+        Observation {
+            observation_id: "scene-observation".to_string(),
+            schema: SEMANTIC_SPHERE_SCENE_SCHEMA.to_string(),
+            schema_version: 1,
+            stream: "robot_arm.primary.integrated.scene".to_string(),
+            provider_id: "test.scene".to_string(),
+            provider_instance_id: "test-scene-instance".to_string(),
+            boot_id: "test-scene-boot".to_string(),
+            sequence: 1,
+            observed_at_us: current_time_us(),
+            received_at: Some(Utc::now()),
+            freshness_ms: Some(1000),
+            frame_id: Some("rebot_arm_base".to_string()),
+            coordinate_frame: Some("rebot_arm_base".to_string()),
+            calibration_revision: None,
+            clock_domain: None,
+            expires_at_us: None,
+            related_skill_id: None,
+            confidence: None,
+            valid: Some(true),
+            data,
+        }
+    }
+
+    fn semantic_assertions_observation(assertions: Value) -> Observation {
+        Observation {
+            observation_id: "assertions-observation".to_string(),
+            schema: ARM_SEMANTIC_ASSERTIONS_SCHEMA.to_string(),
+            schema_version: 1,
+            stream: "robot_arm.scene.tracked_semantic_assertions".to_string(),
+            provider_id: "perception.sam2_scene_tracker".to_string(),
+            provider_instance_id: "tracker-instance".to_string(),
+            boot_id: "tracker-boot".to_string(),
+            sequence: 1,
+            observed_at_us: current_time_us(),
+            received_at: Some(Utc::now()),
+            freshness_ms: Some(3000),
+            frame_id: Some("rebot_arm_base".to_string()),
+            coordinate_frame: Some("rebot_arm_base".to_string()),
+            calibration_revision: None,
+            clock_domain: None,
+            expires_at_us: None,
+            related_skill_id: None,
+            confidence: None,
+            valid: Some(true),
+            data: json!({
+                "contract_version": 1,
+                "frame_id": "rebot_arm_base",
+                "assertions": assertions
+            }),
+        }
+    }
+
     fn approx(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-9, "{left} != {right}");
     }
@@ -1404,6 +1937,212 @@ mod tests {
             "review_state": "CANDIDATE_REVIEW_REQUIRED"
         }));
         let error = validate_transform_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn canonical_semantic_scene_is_accepted() {
+        let observation = semantic_scene_observation(json!({
+            "contract_version": 2,
+            "scene_revision": "scene-1",
+            "frame_id": "rebot_arm_base",
+            "roi_layers": [
+                {
+                    "scope": "GRIPPER_0P5M",
+                    "center_m": [0.4, 0.0, 0.3],
+                    "radius_m": 0.5,
+                    "minimum_sphere_radius_m": 0.02
+                },
+                {
+                    "scope": "ARM_BASE_1P2M",
+                    "center_m": [0.0, 0.0, 0.0],
+                    "radius_m": 1.2,
+                    "minimum_sphere_radius_m": 0.06
+                }
+            ],
+            "spheres": [
+                {
+                    "sphere_id": "toilet-paper-1",
+                    "object_id": "toilet-paper",
+                    "center_m": [0.45, 0.0, 0.3],
+                    "radius_m": 0.05,
+                    "type": "WORK_OBJECT",
+                    "roi_scope": "GRIPPER_0P5M"
+                }
+            ]
+        }));
+
+        assert!(validate_semantic_sphere_scene_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn tracked_semantic_spheres_allow_repeated_object_with_unique_geometry_ids() {
+        let observation = semantic_assertions_observation(json!([
+            {
+                "assertion_id": "table:cell:1",
+                "sphere_id": "table:cell:1",
+                "object_id": "table",
+                "description": "the user-declared table obstacle",
+                "center_m": [0.4, -0.1, 0.05],
+                "radius_m": 0.02,
+                "type": "KEEP_OUT"
+            },
+            {
+                "assertion_id": "table:cell:2",
+                "sphere_id": "table:cell:2",
+                "object_id": "table",
+                "description": "the user-declared table obstacle",
+                "center_m": [0.4, 0.1, 0.05],
+                "radius_m": 0.02,
+                "type": "KEEP_OUT"
+            }
+        ]));
+
+        assert!(validate_arm_semantic_assertions_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn tracked_semantic_spheres_reject_duplicate_geometry_ids() {
+        let observation = semantic_assertions_observation(json!([
+            {
+                "assertion_id": "table:cell:1",
+                "object_id": "table",
+                "description": "the table",
+                "center_m": [0.4, -0.1, 0.05],
+                "radius_m": 0.02,
+                "type": "KEEP_OUT"
+            },
+            {
+                "assertion_id": "table:cell:1",
+                "object_id": "table",
+                "description": "the table",
+                "center_m": [0.4, 0.1, 0.05],
+                "radius_m": 0.02,
+                "type": "KEEP_OUT"
+            }
+        ]));
+
+        assert!(validate_arm_semantic_assertions_observation(&observation).is_err());
+    }
+
+    #[test]
+    fn keep_out_semantic_sphere_requires_description() {
+        let observation = semantic_assertions_observation(json!([
+            {
+                "assertion_id": "table:cell:1",
+                "object_id": "table",
+                "center_m": [0.4, 0.0, 0.05],
+                "radius_m": 0.02,
+                "type": "KEEP_OUT"
+            }
+        ]));
+
+        assert!(validate_arm_semantic_assertions_observation(&observation).is_err());
+    }
+
+    #[test]
+    fn semantic_scene_rejects_small_base_sphere() {
+        let observation = semantic_scene_observation(json!({
+            "contract_version": 2,
+            "scene_revision": "scene-2",
+            "frame_id": "rebot_arm_base",
+            "roi_layers": [
+                {
+                    "scope": "ARM_BASE_1P2M",
+                    "center_m": [0.0, 0.0, 0.0],
+                    "radius_m": 1.2,
+                    "minimum_sphere_radius_m": 0.06
+                }
+            ],
+            "spheres": [
+                {
+                    "sphere_id": "too-small",
+                    "object_id": "too-small",
+                    "center_m": [0.3, 0.0, 0.1],
+                    "radius_m": 0.01,
+                    "type": "KEEP_OUT",
+                    "roi_scope": "ARM_BASE_1P2M"
+                }
+            ]
+        }));
+
+        let error = validate_semantic_sphere_scene_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn canonical_arm_point_cloud_input_is_accepted() {
+        let mut observation = semantic_scene_observation(json!({
+            "contract_version": 1,
+            "units": "m",
+            "points_m": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+        }));
+        observation.schema = ARM_POINT_CLOUD_SCHEMA.to_string();
+        observation.stream = "robot_arm.scene.point_cloud".to_string();
+        observation.coordinate_frame = Some("external_depth_optical_frame".to_string());
+
+        assert!(validate_arm_point_cloud_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn arm_point_cloud_rejects_unbounded_freshness() {
+        let mut observation = semantic_scene_observation(json!({
+            "contract_version": 1,
+            "units": "m",
+            "points_m": []
+        }));
+        observation.schema = ARM_POINT_CLOUD_SCHEMA.to_string();
+        observation.coordinate_frame = Some("external_depth_optical_frame".to_string());
+        observation.freshness_ms = Some(10_000);
+
+        let error = validate_arm_point_cloud_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn canonical_arm_semantic_assertions_are_accepted() {
+        let mut observation = semantic_scene_observation(json!({
+            "contract_version": 1,
+            "frame_id": "rebot_arm_base",
+            "assertions": [
+                {
+                    "object_id": "toilet-paper",
+                    "center_m": [0.3, 0.0, 0.2],
+                    "radius_m": 0.06,
+                    "type": "WORKPIECE"
+                },
+                {
+                    "object_id": "unclassified-box",
+                    "center_m": [0.6, 0.1, 0.2],
+                    "radius_m": 0.08
+                }
+            ]
+        }));
+        observation.schema = ARM_SEMANTIC_ASSERTIONS_SCHEMA.to_string();
+        observation.stream = "robot_arm.scene.semantic_assertions".to_string();
+        observation.freshness_ms = Some(5_000);
+
+        assert!(validate_arm_semantic_assertions_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn semantic_assertions_reject_ambiguous_pushable_type() {
+        let mut observation = semantic_scene_observation(json!({
+            "contract_version": 1,
+            "frame_id": "rebot_arm_base",
+            "assertions": [
+                {
+                    "object_id": "maybe-pushable",
+                    "center_m": [0.3, 0.0, 0.2],
+                    "radius_m": 0.06,
+                    "type": "MAYBE_PUSHABLE"
+                }
+            ]
+        }));
+        observation.schema = ARM_SEMANTIC_ASSERTIONS_SCHEMA.to_string();
+        observation.freshness_ms = Some(5_000);
+
+        let error = validate_arm_semantic_assertions_observation(&observation).unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 }

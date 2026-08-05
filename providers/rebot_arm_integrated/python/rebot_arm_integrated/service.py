@@ -21,6 +21,15 @@ from .controller import IntegratedController
 from .platform import PlatformPublisher
 
 
+MOUNTED_WORKCELL_POLICY_V1 = "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+MOUNTED_WORKCELL_POLICY_V2 = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+SUPPORTED_MOUNTED_WORKCELL_POLICIES = {
+    MOUNTED_WORKCELL_POLICY_V1,
+    MOUNTED_WORKCELL_POLICY_V2,
+}
+SUPPORTED_TRANSIT_FINAL_STATES = {"FLOAT", "FIXED", "WAIT_FOR_NEXT"}
+
+
 def _optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -416,7 +425,7 @@ class IntegratedService:
             now_us = time.time_ns() // 1000
             observed_at_us = int(observation.get("observed_at_us") or 0)
             age_ms = None if observed_at_us <= 0 else max(0.0, (now_us - observed_at_us) / 1000.0)
-            allowed_age_ms = float(cfg.get("max_age_ms", 1000))
+            allowed_age_ms = float(cfg.get("max_age_ms", 2000))
             if observation.get("freshness_ms") is not None:
                 allowed_age_ms = min(allowed_age_ms, float(observation["freshness_ms"]))
             expires_at_us = int(observation.get("expires_at_us") or 0)
@@ -702,20 +711,39 @@ class IntegratedService:
         if not isinstance(target, dict):
             raise ValueError("target must be an object")
         position = target.get("position_m")
-        if not isinstance(position, list):
+        delta = target.get("position_delta_m")
+        if (position is None) == (delta is None):
+            raise ValueError(
+                "target requires exactly one of position_m or position_delta_m"
+            )
+        if position is not None and not isinstance(position, list):
             raise ValueError("target.position_m must be an array")
+        if delta is not None and not isinstance(delta, list):
+            raise ValueError("target.position_delta_m must be an array")
         orientation = target.get("rpy_rad")
         if orientation is not None and not isinstance(orientation, list):
             raise ValueError("target.rpy_rad must be an array when provided")
         allowed = body.get("allowed_contact_object_ids", [])
         if not isinstance(allowed, list):
             raise ValueError("allowed_contact_object_ids must be an array")
+        requested_ik_mode = body.get("ik_mode")
+        if requested_ik_mode is not None:
+            requested_ik_mode = str(requested_ik_mode).strip().upper()
+        final_state = str(body.get("final_state", "FIXED")).strip().upper()
+        if final_state not in SUPPORTED_TRANSIT_FINAL_STATES:
+            raise ValueError(
+                "final_state must be FLOAT, FIXED, or WAIT_FOR_NEXT"
+            )
         request_context = body.get("request_context", {})
         if not isinstance(request_context, dict):
             raise ValueError("request_context must be an object")
         normalized_request = {
             "target": {
-                "position_m": copy.deepcopy(position),
+                **(
+                    {"position_m": copy.deepcopy(position)}
+                    if position is not None
+                    else {"position_delta_m": copy.deepcopy(delta)}
+                ),
                 "rpy_rad": copy.deepcopy(orientation),
             },
             "requested_speed_m_s": float(
@@ -725,12 +753,17 @@ class IntegratedService:
             "permit_pushable_contact": bool(
                 body.get("permit_pushable_contact", False)
             ),
+            "final_state": final_state,
             "request_context": copy.deepcopy(request_context),
         }
+        if requested_ik_mode is not None:
+            normalized_request["ik_mode"] = requested_ik_mode
         planning_result = self.controller.preview_transit_path(
             target_position_m=position,
+            target_delta_m=delta,
             target_rpy_rad=orientation,
             requested_speed_m_s=normalized_request["requested_speed_m_s"],
+            ik_mode=requested_ik_mode,
             allowed_contact_object_ids={str(value) for value in allowed},
             permit_pushable_contact=normalized_request[
                 "permit_pushable_contact"
@@ -744,6 +777,9 @@ class IntegratedService:
             )
         )
         ttl_ms = max(250, min(30_000, ttl_ms))
+        workcell_policy = str(
+            request_context.get("workcell_transform_validity_policy") or ""
+        )
         required_context_fields = (
             "binding_id",
             "camera_provider_id",
@@ -751,12 +787,13 @@ class IntegratedService:
             "camera_boot_id",
             "workcell_transform_id",
             "workcell_transform_revision",
-            "workcell_transform_expires_at_us",
-            "vio_session_epoch",
+            "workcell_transform_validity_policy",
             "observation_timestamp_us",
             "observation_expires_at_us",
             "scene_revision",
         )
+        if workcell_policy == MOUNTED_WORKCELL_POLICY_V1:
+            required_context_fields += ("vio_session_epoch",)
         context_issues = [
             f"MISSING_REQUEST_CONTEXT:{field}"
             for field in required_context_fields
@@ -769,7 +806,7 @@ class IntegratedService:
             "camera_boot_id",
             "workcell_transform_id",
             "workcell_transform_revision",
-            "vio_session_epoch",
+            "workcell_transform_validity_policy",
             "scene_revision",
         ):
             if field in request_context and not str(
@@ -777,7 +814,6 @@ class IntegratedService:
             ).strip():
                 context_issues.append(f"EMPTY_REQUEST_CONTEXT:{field}")
         for field in (
-            "workcell_transform_expires_at_us",
             "observation_timestamp_us",
             "observation_expires_at_us",
         ):
@@ -790,10 +826,6 @@ class IntegratedService:
                 except (TypeError, ValueError):
                     context_issues.append(f"INVALID_REQUEST_CONTEXT:{field}")
         for field, issue in (
-            (
-                "workcell_transform_expires_at_us",
-                "WORKCELL_TRANSFORM_EXPIRED",
-            ),
             ("observation_expires_at_us", "OBSERVATION_EXPIRED"),
         ):
             try:
@@ -806,7 +838,6 @@ class IntegratedService:
                 pass
         expires_at_us = issued_at_us + ttl_ms * 1000
         for field in (
-            "workcell_transform_expires_at_us",
             "observation_expires_at_us",
         ):
             try:
@@ -816,12 +847,32 @@ class IntegratedService:
                 )
             except (KeyError, TypeError, ValueError):
                 pass
+        planning_result["final_state"] = final_state
+        if workcell_policy not in SUPPORTED_MOUNTED_WORKCELL_POLICIES:
+            context_issues.append("WORKCELL_VALIDITY_POLICY_UNSUPPORTED")
         if (
-            "scene_revision" in request_context
-            and request_context.get("scene_revision")
-            != planning_result.get("scene_revision")
+            workcell_policy == MOUNTED_WORKCELL_POLICY_V2
+            and not str(
+                request_context.get("camera_calibration_revision") or ""
+            ).strip()
         ):
-            context_issues.append("SCENE_REVISION_MISMATCH")
+            context_issues.append(
+                "MISSING_REQUEST_CONTEXT:camera_calibration_revision"
+            )
+        requested_scene_revision = request_context.get("scene_revision")
+        controller_scene_revision = planning_result.get("scene_revision")
+        scene_revision_adaptation = (
+            {
+                "policy": "CONTROLLER_NEWEST_ACCEPTED_SCENE_USED",
+                "requested_scene_revision": requested_scene_revision,
+                "controller_scene_revision": controller_scene_revision,
+                "commit_policy": (
+                    "REVALIDATE_STORED_WAYPOINTS_AGAINST_NEWEST_SCENE"
+                ),
+            }
+            if requested_scene_revision != controller_scene_revision
+            else None
+        )
 
         try:
             controller_state = self.controller.snapshot()
@@ -860,6 +911,7 @@ class IntegratedService:
             "request_context_sha256": _canonical_sha256(request_context),
             "request_context_complete": not context_issues,
             "request_context_issues": context_issues,
+            "scene_revision_adaptation": scene_revision_adaptation,
             "scene_revision": planning_result.get("scene_revision"),
             "lease_snapshot": {
                 "active": bool(lease_state.get("active")),
@@ -948,42 +1000,39 @@ class IntegratedService:
                 "exact workcell calibration activation is not current"
             )
         activation = matches[0]
-        expected_fields = {
-            "camera_provider_id": "camera_provider_id",
-            "camera_provider_instance_id": (
-                "camera_provider_instance_id"
-            ),
-            "camera_boot_id": "camera_boot_id",
-            "vio_session_epoch": "session_epoch",
-        }
+        policy = str(activation.get("validity_policy") or "")
+        expected_fields = {"camera_provider_id": "camera_provider_id"}
+        if policy == MOUNTED_WORKCELL_POLICY_V1:
+            expected_fields.update(
+                {
+                    "camera_provider_instance_id": (
+                        "camera_provider_instance_id"
+                    ),
+                    "camera_boot_id": "camera_boot_id",
+                    "vio_session_epoch": "session_epoch",
+                }
+            )
+        elif policy == MOUNTED_WORKCELL_POLICY_V2:
+            expected_fields["camera_calibration_revision"] = (
+                "camera_calibration_revision"
+            )
         identity_changed = any(
             str(activation.get(activation_field) or "")
             != str(request_context.get(context_field) or "")
             for context_field, activation_field in expected_fields.items()
         )
-        try:
-            activation_expires_at_us = int(
-                activation.get("expires_at_us")
-            )
-            requested_expires_at_us = int(
-                request_context.get(
-                    "workcell_transform_expires_at_us"
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise PermissionError(
-                "workcell calibration activation expiry is invalid"
-            ) from exc
         if (
             activation.get("state") != "ACTIVE"
             or activation.get("motion_usable") is not True
-            or activation_expires_at_us <= now_us
-            or requested_expires_at_us != activation_expires_at_us
+            or activation.get("expires_at_us") is not None
+            or policy not in SUPPORTED_MOUNTED_WORKCELL_POLICIES
+            or request_context.get("workcell_transform_validity_policy")
+            != activation.get("validity_policy")
             or identity_changed
         ):
             raise PermissionError(
-                "workcell calibration activation was revoked, expired, "
-                "or changed"
+                "workcell calibration activation was revoked, suspended, "
+                "invalidated, or changed"
             )
         return activation
 
@@ -1089,6 +1138,7 @@ class IntegratedService:
                     normalized_request["requested_speed_m_s"]
                 ),
                 scene_revision=str(contract["scene_revision"]),
+                final_state=str(normalized_request["final_state"]),
                 allowed_contact_object_ids={
                     str(value)
                     for value in normalized_request[
@@ -1422,6 +1472,11 @@ class IntegratedService:
                     "planner_owner": "ROBOT_ARM_INTEGRATED_CONTROLLER",
                     "physical_motion_authorized": False,
                     "may_switch_control_mode": False,
+                    "supported_final_states": [
+                        "FLOAT",
+                        "FIXED",
+                        "WAIT_FOR_NEXT",
+                    ],
                     "fabric_in_synchronous_path": False,
                 },
                 "authorized_staged_transit_commit": {
@@ -1437,6 +1492,12 @@ class IntegratedService:
                     "fabric_in_synchronous_path": False,
                     "local_control_audit_required": True,
                     "fabric_audit_copy": True,
+                    "wait_for_next_timeout_s": float(
+                        self.config["planning"].get(
+                            "wait_for_next_timeout_s",
+                            30.0,
+                        )
+                    ),
                 },
                 "authorized_staged_transit_release": {
                     "method": "POST",
@@ -1446,6 +1507,19 @@ class IntegratedService:
                 "contact_baseline_capture": {"method": "POST", "path": "/v1/contact-baseline"},
                 "semantic_scene_staging": {"method": "POST", "path": "/v1/scene"},
                 "gravity_float": {"method": "POST", "path": "/v1/float"},
+                "leased_idle_profile": {
+                    "method": "POST",
+                    "path": "/v1/idle-profile",
+                    "renew_path": "/v1/idle-profile/renew",
+                    "release_path": "/v1/idle-profile/release",
+                    "profiles": [
+                        "GRAVITY_FLOAT",
+                        "COMPLIANT_HOLD",
+                        "POSITION_LOCK",
+                    ],
+                    "lease_expiry_behavior": "GRAVITY_FLOAT",
+                    "caller_policy": "OPERATOR_OR_OPERATOR_SUPERVISED_SKILL",
+                },
                 "safe_terminate": {"method": "POST", "path": "/v1/safe-terminate"},
                 "manager_authority_observation": {
                     "mode": self.manager_authority_status.get("mode"),
@@ -1833,6 +1907,48 @@ class IntegratedService:
                                 body,
                                 service.controller.request_float,
                                 command_id=self.headers.get("X-Midbrain-Command-ID"),
+                            ),
+                        )
+                    if self.path == "/v1/idle-profile":
+                        return self._json(
+                            200,
+                            service._audited_control(
+                                self.path,
+                                body,
+                                lambda: service.controller.set_idle_profile(
+                                    body
+                                ),
+                                command_id=self.headers.get(
+                                    "X-Midbrain-Command-ID"
+                                ),
+                            ),
+                        )
+                    if self.path == "/v1/idle-profile/renew":
+                        return self._json(
+                            200,
+                            service._audited_control(
+                                self.path,
+                                body,
+                                lambda: service.controller.renew_idle_profile(
+                                    body
+                                ),
+                                command_id=self.headers.get(
+                                    "X-Midbrain-Command-ID"
+                                ),
+                            ),
+                        )
+                    if self.path == "/v1/idle-profile/release":
+                        return self._json(
+                            200,
+                            service._audited_control(
+                                self.path,
+                                body,
+                                lambda: service.controller.release_idle_profile(
+                                    body
+                                ),
+                                command_id=self.headers.get(
+                                    "X-Midbrain-Command-ID"
+                                ),
                             ),
                         )
                     if self.path == "/v1/safe-terminate":

@@ -142,15 +142,14 @@
         "distance_m": {
           "type": "number",
           "minimum": 0.0,
-          "maximum": 0.2,
-          "description": "Translation distance. Use exactly 0 with direction NONE for rotation-only motion; positive translations must be from 0.001 to 0.2 m."
+          "maximum": 1.2,
+          "description": "Translation distance. Use exactly 0 with direction NONE for rotation-only motion; positive free-space translations must be from 0.001 to 1.2 m."
         },
         "requested_speed_m_s": {
           "anyOf": [
             {
               "type": "number",
-              "exclusiveMinimum": 0.0,
-              "maximum": 0.2
+              "exclusiveMinimum": 0.0
             },
             {
               "type": "null"
@@ -227,10 +226,10 @@
     "explicit_world_axis_may_use_arm_mount_fallback": false,
     "reviewed_world_transform_precedes_mount_fallback": true,
     "requested_speed_semantics": "NOMINAL_AVERAGE_ENDPOINT_SPEED",
-    "requested_speed_max_m_s": 0.2,
+    "requested_speed_limit_policy": "REQUESTED_SPEED_IS_CONVERTED_TO_PER_JOINT_SPEED; AUTHENTICATE_ABOVE_10_RAD_S; HARD_REJECT_AT_OR_ABOVE_20_RAD_S",
     "trajectory_duration_range_s": [
-      0.25,
-      8.0
+      0.05,
+      60.0
     ]
   },
   "published_streams": []

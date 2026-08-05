@@ -34,11 +34,46 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
     if not args.approve:
         raise RuntimeError("explicit --approve is required")
 
+    review_service = CandidateReviewService(
+        store,
+        settings.review_root,
+    )
+    existing_decision = review_service.decision_for(str(candidate["candidate_id"]))
+    if existing_decision is not None:
+        if (
+            existing_decision.get("decision") != "APPROVE"
+            or existing_decision.get("decision_state")
+            != "APPROVED_FOR_ACTIVATION"
+            or existing_decision.get("candidate_sha256")
+            != build_candidate_review_request(
+                candidate,
+                idempotency_key=args.review_request_id,
+                rationale=args.rationale,
+            )["candidate_sha256"]
+        ):
+            raise RuntimeError(
+                "the existing final review decision is not an exact approval "
+                "for this candidate"
+            )
+        reviewer = existing_decision.get("reviewer")
+        if not isinstance(reviewer, dict):
+            raise RuntimeError("the existing review decision lacks reviewer identity")
+        reviewer_id = str(reviewer.get("reviewer_id") or "").strip()
+        issuer = str(reviewer.get("issuer") or "").strip()
+        nonce = str(reviewer.get("assertion_nonce") or "").strip()
+        if not reviewer_id or not issuer or not nonce:
+            raise RuntimeError("the existing review identity is incomplete")
+    else:
+        reviewer_id = args.reviewer_id
+        issuer = "midbrain.local.development"
+        nonce = args.nonce
+
     assertion, identity_payload = issue_review_identity_assertion(
         secret=secret,
         candidate=candidate,
-        reviewer_id=args.reviewer_id,
-        nonce=args.nonce,
+        reviewer_id=reviewer_id,
+        issuer=issuer,
+        nonce=nonce,
     )
     verifier = ExternalReviewIdentityVerifier(secret)
     verified_identity = verifier.verify(
@@ -47,27 +82,26 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         candidate_sha256=str(identity_payload["candidate_sha256"]),
         decision="APPROVE",
     )
-    review_service = CandidateReviewService(
-        store,
-        settings.review_root,
-    )
-    review_request = build_candidate_review_request(
-        candidate,
-        idempotency_key=args.review_request_id,
-        rationale=args.rationale,
-    )
-    review_decision, review_created = review_service.decide(
-        args.alignment_id,
-        review_request,
-        verified_identity=verified_identity,
-    )
+    if existing_decision is not None:
+        review_decision = existing_decision
+        review_created = False
+    else:
+        review_request = build_candidate_review_request(
+            candidate,
+            idempotency_key=args.review_request_id,
+            rationale=args.rationale,
+        )
+        review_decision, review_created = review_service.decide(
+            args.alignment_id,
+            review_request,
+            verified_identity=verified_identity,
+        )
     activation_request = build_activation_request(
         candidate,
         review_decision,
         assertion,
         request_id=args.activation_request_id,
-        activated_by=args.reviewer_id,
-        duration_ms=args.duration_ms,
+        activated_by=reviewer_id,
     )
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(
@@ -91,6 +125,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
         "activation_id": activation["activation_id"],
         "candidate_sha256": activation["candidate_sha256"],
         "expires_at_us": activation["expires_at_us"],
+        "validity_policy": activation["validity_policy"],
         "motion_usable": activation["motion_usable"],
         "review_identity_assertion_printed": False,
     }
@@ -112,11 +147,6 @@ def main() -> None:
     parser.add_argument(
         "--rationale",
         required=True,
-    )
-    parser.add_argument(
-        "--duration-ms",
-        type=int,
-        default=300_000,
     )
     parser.add_argument(
         "--review-request-id",

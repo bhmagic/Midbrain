@@ -1,0 +1,52 @@
+{
+  "provider_type": "world_model.arm_scene_compiler",
+  "version": "0.1.0",
+  "display_name": "HOT Arm Semantic Scene Compiler",
+  "manager_ids": ["world_model.arm_scene_compiler"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": [
+    "world_model.arm.semantic_scene",
+    "world_model.arm.scene.inspect"
+  ],
+  "required_capabilities": [
+    "camera.point_cloud.xyz",
+    "robot_arm.transforms.local"
+  ],
+  "optional_capabilities": [
+    "perception.semantic_assertions",
+    "world_model.external_point_cloud"
+  ],
+  "published_streams": [
+    "robot_arm.primary.integrated.scene"
+  ],
+  "consumed_streams": [
+    "camera.point_cloud.xyz.frame_ref",
+    "robot_arm.scene.point_cloud",
+    "robot_arm.scene.semantic_assertions",
+    "transform.robot_arm.local"
+  ],
+  "scene_contract": {
+    "schema": "physical_agent.arm_semantic_sphere_scene",
+    "contract_version": 2,
+    "frame_id": "rebot_arm_base",
+    "roi_layers": {
+      "GRIPPER_0P5M": {"radius_m": 0.5, "minimum_sphere_radius_m": 0.02},
+      "ARM_BASE_1P2M": {"radius_m": 1.2, "minimum_sphere_radius_m": 0.06}
+    },
+    "default_unclassified_type": "PUSHABLE",
+    "keep_out_requires_user_or_upstream_description": true,
+    "pushable_requires_explicit_upstream_type": false,
+    "workpiece_requires_explicit_upstream_type": true
+  },
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0"
+  }
+}

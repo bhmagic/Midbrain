@@ -1,0 +1,69 @@
+{
+  "provider_type": "perception.sam2_scene_tracker",
+  "version": "0.2.1",
+  "display_name": "HOT SAM2 User-Described Scene Tracker",
+  "manager_ids": ["perception.sam2_scene_tracker"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "SAM2 Scene Tracking Development",
+      "url_from_control": "/dev",
+      "availability": "PROVIDER_RUNNING"
+    }
+  },
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": [
+    "perception.scene.sam2.track",
+    "perception.scene.semantic_obstacles",
+    "perception.scene.arm_self_mask"
+  ],
+  "required_capabilities": [
+    "camera.rgbd.aligned",
+    "robot_arm.transforms.local"
+  ],
+  "optional_capabilities": [
+    "perception.scene.segmentation_policy"
+  ],
+  "published_streams": [
+    "robot_arm.scene.tracked_semantic_assertions"
+  ],
+  "consumed_streams": [
+    "camera.rgbd.bundle",
+    "robot_arm.scene.segmentation_policy",
+    "transform.robot_arm.local"
+  ],
+  "scene_contract": {
+    "schema": "physical_agent.arm_semantic_assertions",
+    "contract_version": 1,
+    "policy_contract_version": 1,
+    "tracking_rate_hz": {
+      "stationary": 0.25,
+      "baseline_or_low_confidence": 0.75,
+      "motion": 1.25
+    },
+    "vlm_refresh_rate_hz": {
+      "stationary": 0.025,
+      "motion_or_low_confidence": 0.05
+    },
+    "vlm_selection": "ORDERED_CONFIGURED_MODEL_POOL_WITH_FALLBACK",
+    "preferred_vlm_model": "gemini-robotics-er-2-preview",
+    "arm_mask_required_for_new_fusion": true,
+    "vlm_mask_quality_review_required_before_fusion": true,
+    "maximum_annotation_segmentation_review_attempts": 3,
+    "rejected_mapping_publishes_no_collision_spheres": true,
+    "arm_mask_dilation_pixels": 18,
+    "persistent_obstacles": true,
+    "duplicate_suppression": "SEMANTIC_VOXEL_NEIGHBOR_FUSION",
+    "default_unclaimed_type": "PUSHABLE",
+    "pushable_collision_geometry_published": false,
+    "keep_out_requires_user_or_upstream_description": true
+  },
+  "compatible_core": {
+    "resource_provider_manager": ">=0.3.0",
+    "world_state_fabric": ">=0.3.0"
+  }
+}

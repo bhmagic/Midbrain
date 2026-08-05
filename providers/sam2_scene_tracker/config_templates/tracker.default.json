@@ -1,0 +1,46 @@
+{
+  "policy_stream": "robot_arm.scene.segmentation_policy",
+  "output_stream": "robot_arm.scene.tracked_semantic_assertions",
+  "sam2_checkpoint": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/sam2/checkpoints/sam2.1_hiera_base_plus.pt",
+  "vlm_candidates": [
+    {
+      "backend": "google.gemini",
+      "model_env": "GEMINI_ROBOTICS_MODEL",
+      "model": "gemini-robotics-er-2-preview"
+    },
+    {
+      "backend": "openai.responses",
+      "model_env": "OPENAI_VISION_MODEL",
+      "model": "gpt-5.6-luna"
+    }
+  ],
+  "vlm_request_timeout_s": 45.0,
+  "vlm_motion_refresh_interval_s": 20.0,
+  "vlm_stationary_refresh_interval_s": 40.0,
+  "tracking_motion_interval_s": 0.8,
+  "tracking_baseline_interval_s": 1.3333333333,
+  "tracking_stationary_interval_s": 4.0,
+  "arm_state_stream": "robot_arm.joint_state",
+  "arm_motion_velocity_threshold_rad_s": 0.03,
+  "arm_motion_hold_s": 2.0,
+  "visual_motion_threshold": 0.015,
+  "visual_motion_hold_s": 2.0,
+  "sam2_low_confidence_threshold": 0.60,
+  "arm_mask_dilation_pixels": 18,
+  "mask_quality_maximum_attempts": 3,
+  "prompt_box_padding_fraction": 0.03,
+  "semantic_depth_connectivity_m": 0.035,
+  "positive_seed_search_radius_pixels": 24,
+  "depth_pixel_stride": 2,
+  "minimum_depth_m": 0.05,
+  "maximum_depth_m": 5.0,
+  "fusion_voxel_edge_m": 0.02,
+  "deduplication_radius_m": 0.016,
+  "maximum_voxels_per_object": 100000,
+  "maximum_assertions": 20000,
+  "publish_pushable_geometry": false,
+  "assertion_freshness_ms": 10000,
+  "maximum_transform_extrapolation_us": 750000,
+  "buffer_ref_read_attempts": 6,
+  "arm_tool_frame": "rebot_arm_tool"
+}

@@ -51,3 +51,9 @@ and a future authenticated field-audit store.
 
 The finite-Skill contract also defines the depth-backed general effector-front
 landmark boundary and separates it from task-specific action geometry.
+
+The Fabric-hosted arm scene policy and tracked sphere payloads are regulated by
+`schemas/arm_scene_segmentation_policy.v1.schema.json` and
+`schemas/arm_semantic_assertions.v1.schema.json`. Only described upstream
+objects may become `KEEP_OUT`; unclaimed visible geometry defaults to
+non-blocking `PUSHABLE` data.

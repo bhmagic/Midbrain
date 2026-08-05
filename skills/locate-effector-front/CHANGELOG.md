@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-08-03
+
+- Replace the three-panel VLM input with one RGB-on-depth-grid view whose
+  invalid-depth pixels are visibly dimmed.
+- Standardize VLM front points on normalized 0-1000 coordinates and convert
+  them once in host code, while retaining version 1 native-pixel inputs.
+- Register switchable RGB, registered-depth, and RGB-depth evidence channels
+  with shared effector-front annotations in the Agent UI.
+
 ## 0.2.0 — 2026-07-30
 
 - Named raw optical point components `camera_system_x`,

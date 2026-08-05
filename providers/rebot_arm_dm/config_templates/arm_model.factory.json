@@ -2,7 +2,7 @@
   "schema": "physical_agent.robot_arm_model",
   "schema_version": 1,
   "model_id": "rebot_arm_b601_dm",
-  "model_revision": "rebot-official-fixed-end-0.1.20-pos-tor-peak-and-mode-bridge",
+  "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
   "display_name": "reBot Arm B601-DM",
   "manufacturer": "Seeed Studio / reBot",
   "coordinate_convention": {
@@ -54,7 +54,7 @@
     "load_bearing_mit_kp_rule": "kp_must_be_at_least_provided_default; kd_may_be_low",
     "safe_home_transition_hold_cycles": 5,
     "safe_home_powered_settle_s": 0.25,
-    "physical_test_pos_vel_cap_rad_s": [2.0, 2.0, 2.0, 2.5, 2.5, 2.5, 0.5],
+    "physical_test_pos_vel_cap_rad_s": [5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0],
     "physical_test_pos_tor_ratio_cap": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2],
     "motor_endpoint_keepalive_hz": 10.0,
     "transient_serial_retry_count": 2,
@@ -339,7 +339,7 @@
         "configured_tmax_nm": 7,
         "manufacturer_rated_torque_nm": 3,
         "manufacturer_peak_torque_nm": 7,
-        "configured_vmax_rad_s": 3,
+        "configured_vmax_rad_s": 10,
         "mit_kp_protocol_range": [
           0,
           500
@@ -421,7 +421,7 @@
         "configured_tmax_nm": 7,
         "manufacturer_rated_torque_nm": 3,
         "manufacturer_peak_torque_nm": 7,
-        "configured_vmax_rad_s": 3,
+        "configured_vmax_rad_s": 10,
         "mit_kp_protocol_range": [
           0,
           500
@@ -503,7 +503,7 @@
         "configured_tmax_nm": 7,
         "manufacturer_rated_torque_nm": 3,
         "manufacturer_peak_torque_nm": 7,
-        "configured_vmax_rad_s": 3,
+        "configured_vmax_rad_s": 10,
         "mit_kp_protocol_range": [
           0,
           500
@@ -585,7 +585,7 @@
         "configured_tmax_nm": 7,
         "manufacturer_rated_torque_nm": 3,
         "manufacturer_peak_torque_nm": 7,
-        "configured_vmax_rad_s": 3,
+        "configured_vmax_rad_s": 10,
         "mit_kp_protocol_range": [
           0,
           500

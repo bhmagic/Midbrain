@@ -5,9 +5,11 @@ import math
 import unittest
 
 import httpx
+import numpy as np
 
 from physical_agent_test.integrated_motion_adapter import (
     IntegratedRelativeMotionAdapter,
+    _fit_rigid_correspondences,
 )
 from physical_agent_test.spatial_frames import (
     SpatialFrameResolver,
@@ -142,6 +144,7 @@ class _IntegratedClient:
         self.reject_preview = False
         self.rejected_preview_plan = None
         self.preview_duration_override_s = None
+        self.preview_joint_speed_policy = None
         self.snapshot = {
             "residency": "HOT",
             "ready": True,
@@ -237,14 +240,19 @@ class _IntegratedClient:
                 "duration_s": planned_duration_s,
             },
         }
+        preview_payload = {
+            "preview_id": "preview-1",
+            "planning_valid": True,
+            "duration_s": planned_duration_s,
+        }
+        if self.preview_joint_speed_policy is not None:
+            preview_payload["joint_speed_policy"] = copy.deepcopy(
+                self.preview_joint_speed_policy
+            )
         return {
             "status": "PLANNED",
             "plan_id": "preview-1",
-            "preview": {
-                "preview_id": "preview-1",
-                "planning_valid": True,
-                "duration_s": planned_duration_s,
-            },
+            "preview": preview_payload,
         }
 
     async def engage_staged_motion(self):
@@ -297,6 +305,81 @@ class _OfflineIntegratedClient:
 class IntegratedRelativeMotionAdapterTests(
     unittest.IsolatedAsyncioTestCase
 ):
+    def test_root_alignment_fit_requires_noncollinear_motion(self) -> None:
+        collinear = np.asarray(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.4, 0.0, 0.0]],
+            dtype=float,
+        )
+        self.assertIsNone(
+            _fit_rigid_correspondences(collinear, collinear + 0.01)
+        )
+
+    def test_root_alignment_fit_recovers_rigid_transform(self) -> None:
+        arm_points = np.asarray(
+            [
+                [0.20, 0.00, 0.30],
+                [0.50, 0.00, 0.30],
+                [0.50, 0.25, 0.30],
+                [0.35, 0.10, 0.50],
+            ],
+            dtype=float,
+        )
+        angle = math.radians(4.0)
+        rotation = np.asarray(
+            [
+                [math.cos(angle), -math.sin(angle), 0.0],
+                [math.sin(angle), math.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+        translation = np.asarray([0.01, -0.02, 0.015], dtype=float)
+        world_points = (rotation @ arm_points.T).T + translation
+
+        fit = _fit_rigid_correspondences(arm_points, world_points)
+
+        self.assertIsNotNone(fit)
+        assert fit is not None
+        recovered = fit["world_from_arm_base"]
+        self.assertTrue(np.allclose(recovered[:3, :3], rotation, atol=1e-9))
+        self.assertTrue(np.allclose(recovered[:3, 3], translation, atol=1e-9))
+        self.assertLess(fit["rms_residual_m"], 1e-9)
+
+    async def test_root_alignment_accumulates_noncollinear_motion_candidate(self) -> None:
+        adapter = _adapter(_IntegratedClient())
+        offset = np.array([0.03, -0.02, 0.01])
+
+        first = await adapter._accumulate_root_alignment(
+            world_frame="local_vio/epoch-1",
+            session_epoch="epoch-1",
+            controller_before_arm_base_m=[0.0, 0.0, 0.0],
+            controller_after_arm_base_m=[0.3, 0.0, 0.0],
+            observed_before_world_m=tuple(offset),
+            observed_after_world_m=tuple(offset + [0.3, 0.0, 0.0]),
+        )
+        second = await adapter._accumulate_root_alignment(
+            world_frame="local_vio/epoch-1",
+            session_epoch="epoch-1",
+            controller_before_arm_base_m=[0.3, 0.0, 0.0],
+            controller_after_arm_base_m=[0.3, 0.3, 0.0],
+            observed_before_world_m=tuple(offset + [0.3, 0.0, 0.0]),
+            observed_after_world_m=tuple(offset + [0.3, 0.3, 0.0]),
+        )
+
+        self.assertEqual(first["status"], "MORE_NONCOLLINEAR_MOTION_REQUIRED")
+        self.assertEqual(
+            first["recommended_next_move"]["direction"],
+            "ARM_BASE_POSITIVE_Y",
+        )
+        self.assertEqual(second["status"], "ROOT_REFINEMENT_CANDIDATE_READY")
+        self.assertTrue(
+            np.allclose(
+                second["world_from_arm_base"]["translation_m"],
+                offset,
+                atol=1e-9,
+            )
+        )
+
     async def test_up_preview_uses_world_z_then_resolves_to_arm_base(
         self,
     ) -> None:
@@ -331,6 +414,9 @@ class IntegratedRelativeMotionAdapterTests(
                     "planned_duration_s": 3.0,
                     "planned_nominal_speed_m_s": 0.2 / 3.0,
                     "timing_safety_limited": False,
+                    "requested_peak_joint_speed_rad_s": 0.0,
+                    "effective_peak_joint_speed_rad_s": 0.0,
+                    "joint_speed_authentication_required": False,
                     "target_position_m": [0.1, 0.2, 0.5],
                     "orientation_policy": "POSITION_ONLY",
                     "controlled_frame_yaw_delta_deg": None,
@@ -398,7 +484,7 @@ class IntegratedRelativeMotionAdapterTests(
     async def test_invalid_or_unrepresentable_speed_is_rejected_before_stage(
         self,
     ) -> None:
-        for speed in (0.0, -0.1, math.nan, 0.21, 0.001):
+        for speed in (0.0, -0.1, math.nan, 0.001):
             with self.subTest(speed=speed):
                 client = _IntegratedClient()
                 result = await _adapter(client).preview(
@@ -412,6 +498,59 @@ class IntegratedRelativeMotionAdapterTests(
                     "RELATIVE_MOTION_TIMING_UNSUPPORTED",
                 )
                 self.assertIsNone(client.last_preview_request)
+
+    async def test_cartesian_speed_has_no_independent_ceiling(self) -> None:
+        client = _IntegratedClient()
+
+        preview = await _adapter(client).preview(
+            direction="UP",
+            distance_m=0.1,
+            requested_speed_m_s=5.01,
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertAlmostEqual(preview["requested_duration_s"], 0.1 / 5.01)
+        self.assertEqual(
+            client.last_preview_request["command"]["settings"]["duration_s"],
+            0.05,
+        )
+
+    async def test_fast_request_uses_joint_speed_authentication_policy(self) -> None:
+        client = _IntegratedClient()
+        client.preview_joint_speed_policy = {
+            "requested_peak_joint_speed_rad_s": 9.0,
+            "effective_peak_joint_speed_rad_s": 3.0,
+            "authentication_required": False,
+            "hard_limit_exceeded": False,
+        }
+
+        preview = await _adapter(client).preview(
+            direction="UP",
+            distance_m=0.1,
+            requested_speed_m_s=2.5,
+        )
+
+        self.assertAlmostEqual(
+            preview["requested_peak_joint_speed_rad_s"],
+            11.25,
+        )
+        self.assertTrue(preview["joint_speed_authentication_required"])
+
+    async def test_fast_request_is_rejected_at_joint_hard_limit(self) -> None:
+        client = _IntegratedClient()
+        client.preview_joint_speed_policy = {
+            "requested_peak_joint_speed_rad_s": 9.0,
+            "effective_peak_joint_speed_rad_s": 3.0,
+            "authentication_required": False,
+            "hard_limit_exceeded": False,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "20 rad/s"):
+            await _adapter(client).preview(
+                direction="UP",
+                distance_m=0.1,
+                requested_speed_m_s=5.0,
+            )
 
     async def test_tampered_timing_cannot_execute_stored_preview(self) -> None:
         client = _IntegratedClient()
@@ -532,7 +671,9 @@ class IntegratedRelativeMotionAdapterTests(
             "SKIPPED_ROTATION_ONLY_NO_ORIENTATION_EVIDENCE",
         )
         command = client.last_preview_request["command"]
-        self.assertEqual(command["settings"]["execution_mode"], "PRESS_MIT")
+        self.assertEqual(
+            command["settings"]["execution_mode"], "TRANSIT_SPEED"
+        )
         self.assertEqual(command["settings"]["ik_mode"], "POSE_6DOF")
 
         result = await adapter.execute(
@@ -1088,7 +1229,7 @@ class IntegratedRelativeMotionAdapterTests(
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
                     "required_capability": (
-                        "robot.motion.arm.integrated.mit.one_shot"
+                        "robot.motion.arm.integrated.pos_vel.one_shot"
                     ),
                 },
             },
@@ -1132,21 +1273,21 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertAlmostEqual(next_preview["start_position_m"][2], 0.494)
         self.assertAlmostEqual(next_preview["target_position_m"][2], 0.694)
 
-    async def test_changed_preview_is_rejected(self) -> None:
+    async def test_changed_controller_preview_is_refreshed_before_commit(
+        self,
+    ) -> None:
         client = _IntegratedClient()
         adapter = _adapter(client)
         preview = await adapter.preview(direction="UP", distance_m=0.2)
         client.snapshot["planning"]["target_revision"] = 3
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "preview changed before approval",
-        ):
-            await adapter.execute(
-                **preview["required_next_tool"]["arguments"]
-            )
+        result = await adapter.execute(
+            **preview["required_next_tool"]["arguments"]
+        )
 
-        self.assertEqual(client.engage_count, 0)
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertTrue(result["controller_preview_refreshed"])
+        self.assertEqual(client.engage_count, 1)
 
     async def test_changed_measured_start_pose_is_rejected(self) -> None:
         client = _IntegratedClient()
@@ -1166,6 +1307,11 @@ class IntegratedRelativeMotionAdapterTests(
 
         self.assertEqual(client.engage_count, 0)
         self.assertEqual(client.trigger_count, 0)
+        observation = await adapter.observation()
+        self.assertEqual(
+            [item["preview_id"] for item in observation["pending_previews"]],
+            [preview["preview_id"]],
+        )
 
     async def test_changed_spatial_rotation_is_rejected(self) -> None:
         client = _IntegratedClient()

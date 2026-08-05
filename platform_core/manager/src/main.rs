@@ -37,6 +37,8 @@ struct ProviderFile {
 struct ProviderConfig {
     id: String,
     display_name: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
     command: String,
     #[serde(default)]
     args: Vec<String>,
@@ -384,8 +386,6 @@ struct WorkcellCalibrationActivationRequest {
     candidate: Value,
     review_decision: Value,
     review_identity_assertion: String,
-    #[serde(default = "default_workcell_activation_duration_ms")]
-    duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -406,8 +406,10 @@ struct WorkcellCalibrationActivationRecord {
     review_decision_id: String,
     activated_by: String,
     activated_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-    expires_at_us: u64,
+    expires_at: Option<DateTime<Utc>>,
+    expires_at_us: Option<u64>,
+    validity_policy: String,
+    invalidation_conditions: Vec<String>,
     state: String,
     enforcement: String,
     motion_usable: bool,
@@ -419,6 +421,7 @@ struct WorkcellCalibrationActivationRecord {
     convention_id: String,
     camera_optical_convention_id: String,
     camera_provider_id: String,
+    camera_canonical_device_id: String,
     camera_provider_instance_id: String,
     camera_boot_id: String,
     camera_calibration_revision: String,
@@ -428,10 +431,6 @@ struct WorkcellCalibrationActivationRecord {
     transforms: Value,
     reviewer: Value,
     last_transition_reason: String,
-}
-
-fn default_workcell_activation_duration_ms() -> u64 {
-    120_000
 }
 
 fn default_authority_duration_ms() -> u64 {
@@ -688,14 +687,10 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn list_workcell_calibrations(State(state): State<AppState>) -> Json<Value> {
-    let now = Utc::now();
+    let reports = state.reports.lock().await.clone();
     let mut records = state.workcell_calibrations.lock().await;
     for record in records.values_mut() {
-        if record.state == "ACTIVE" && record.expires_at <= now {
-            record.state = "EXPIRED".to_string();
-            record.motion_usable = false;
-            record.last_transition_reason = "activation lifetime expired".to_string();
-        }
+        refresh_workcell_motion_usability(record, &reports);
     }
     let mut values: Vec<WorkcellCalibrationActivationRecord> = records.values().cloned().collect();
     values.sort_by(|left, right| {
@@ -709,6 +704,72 @@ async fn list_workcell_calibrations(State(state): State<AppState>) -> Json<Value
         "identity_verification_configured": state.review_auth_secret.len() >= 32,
         "activations": values,
     }))
+}
+
+fn refresh_workcell_motion_usability(
+    record: &mut WorkcellCalibrationActivationRecord,
+    reports: &HashMap<String, ProviderReport>,
+) {
+    if record.state != "ACTIVE" {
+        record.motion_usable = false;
+        return;
+    }
+    let Some(camera) = reports.get(&record.camera_provider_id) else {
+        record.motion_usable = false;
+        record.last_transition_reason =
+            "motion suspended: camera provider report is unavailable".to_string();
+        return;
+    };
+    let current_camera_canonical_device_id = camera_report_canonical_device_id(camera);
+    if current_camera_canonical_device_id
+        .as_deref()
+        .is_some_and(|value| value != record.camera_canonical_device_id)
+    {
+        record.state = "INVALIDATED".to_string();
+        record.motion_usable = false;
+        record.last_transition_reason =
+            "activation invalidated: mounted camera canonical device changed".to_string();
+        return;
+    }
+    if camera.details["calibration_revision"] != record.camera_calibration_revision {
+        record.state = "INVALIDATED".to_string();
+        record.motion_usable = false;
+        record.last_transition_reason =
+            "activation invalidated: mounted camera calibration revision changed".to_string();
+        return;
+    }
+    if camera.expired
+        || !camera.ready
+        || camera.health != "HEALTHY"
+        || current_camera_canonical_device_id.is_none()
+    {
+        record.motion_usable = false;
+        record.last_transition_reason =
+            "motion suspended: mounted camera health or stable identity evidence is insufficient"
+                .to_string();
+        return;
+    }
+    record.motion_usable = true;
+    record.last_transition_reason =
+        "mounted calibration remains usable under canonical camera identity and calibration evidence"
+            .to_string();
+}
+
+fn camera_report_canonical_device_id(report: &ProviderReport) -> Option<String> {
+    report
+        .details
+        .get("canonical_device_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            report
+                .details
+                .get("accelerometer_calibration")
+                .and_then(|value| value.get("canonical_device_id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 async fn activate_workcell_calibration(
@@ -767,23 +828,18 @@ async fn activate_workcell_calibration(
 fn supersede_active_workcell_calibrations(
     records: &mut HashMap<String, WorkcellCalibrationActivationRecord>,
     replacement: &WorkcellCalibrationActivationRecord,
-    now: DateTime<Utc>,
+    _now: DateTime<Utc>,
 ) {
     for record in records.values_mut() {
         if record.state != "ACTIVE" {
             continue;
         }
         record.motion_usable = false;
-        if record.expires_at <= now {
-            record.state = "EXPIRED".to_string();
-            record.last_transition_reason = "activation lifetime expired".to_string();
-        } else {
-            record.state = "SUPERSEDED".to_string();
-            record.last_transition_reason = format!(
-                "superseded by newer reviewed activation {}",
-                replacement.activation_id
-            );
-        }
+        record.state = "SUPERSEDED".to_string();
+        record.last_transition_reason = format!(
+            "superseded by newer reviewed activation {}",
+            replacement.activation_id
+        );
     }
 }
 
@@ -846,9 +902,6 @@ fn build_workcell_activation_record(
     if request.request_id.trim().is_empty() || request.activated_by.trim().is_empty() {
         return Err(anyhow!("request_id and activated_by are required"));
     }
-    if !(1_000..=300_000).contains(&request.duration_ms) {
-        return Err(anyhow!("duration_ms must be between 1000 and 300000"));
-    }
     let candidate = request
         .candidate
         .as_object()
@@ -879,9 +932,6 @@ fn build_workcell_activation_record(
         .as_u64()
         .ok_or_else(|| anyhow!("candidate.expires_at_us must be a positive integer"))?;
     let now_us = now.timestamp_micros().max(0) as u64;
-    if candidate_expires_at_us <= now_us {
-        return Err(anyhow!("calibration candidate has expired"));
-    }
     let semantic_alignment = &request.candidate["quality_provenance"]["semantic_alignment"];
     let semantic_status = semantic_alignment["status"]
         .as_str()
@@ -1087,6 +1137,14 @@ fn build_workcell_activation_record(
     }
     let review_decision_id =
         require_json_string(&request.review_decision, "decision_id", "review_decision")?;
+    let review_decided_at_us = request.review_decision["decided_at_us"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("review_decision.decided_at_us must be a positive integer"))?;
+    if review_decided_at_us > candidate_expires_at_us {
+        return Err(anyhow!(
+            "calibration candidate was not reviewed before its review deadline"
+        ));
+    }
     let reviewer = &request.review_decision["reviewer"];
     for field in ["issuer", "reviewer_id", "assertion_nonce"] {
         if reviewer[field] != identity[field] {
@@ -1102,12 +1160,15 @@ fn build_workcell_activation_record(
     let camera = &request.candidate["camera_provenance"];
     let camera_provider_id =
         require_json_string(camera, "provider_id", "candidate.camera_provenance")?;
-    let camera_provider_instance_id = require_json_string(
+    let _candidate_camera_provider_instance_id = require_json_string(
         camera,
         "provider_instance_id",
         "candidate.camera_provenance",
     )?;
-    let camera_boot_id = require_json_string(camera, "boot_id", "candidate.camera_provenance")?;
+    let _candidate_camera_boot_id =
+        require_json_string(camera, "boot_id", "candidate.camera_provenance")?;
+    let camera_canonical_device_id =
+        require_json_string(camera, "canonical_device_id", "candidate.camera_provenance")?;
     let camera_calibration_revision = require_json_string(
         camera,
         "calibration_revision",
@@ -1116,14 +1177,14 @@ fn build_workcell_activation_record(
     let camera_report = reports
         .get(&camera_provider_id)
         .ok_or_else(|| anyhow!("candidate camera provider has no current Manager report"))?;
-    if camera_report.expired
-        || !camera_report.ready
-        || camera_report.health != "HEALTHY"
-        || camera_report.instance_id != camera_provider_instance_id
-        || camera_report.boot_id != camera_boot_id
-    {
+    if camera_report.expired || !camera_report.ready || camera_report.health != "HEALTHY" {
+        return Err(anyhow!("candidate camera provider health is not current"));
+    }
+    let current_camera_canonical_device_id = camera_report_canonical_device_id(camera_report)
+        .ok_or_else(|| anyhow!("current camera report lacks a canonical device identity"))?;
+    if current_camera_canonical_device_id != camera_canonical_device_id {
         return Err(anyhow!(
-            "candidate camera provider identity or health is no longer current"
+            "current mounted camera canonical device does not match the candidate"
         ));
     }
     let current_camera_calibration_revision = require_json_string(
@@ -1136,34 +1197,6 @@ fn build_workcell_activation_record(
             "current camera calibration provenance does not match the candidate"
         ));
     }
-    let vio_report = reports
-        .get(&vio_provider_id)
-        .ok_or_else(|| anyhow!("candidate VIO provider has no current Manager report"))?;
-    if vio_report.expired
-        || !vio_report.ready
-        || vio_report.health != "HEALTHY"
-        || vio_report.residency != "HOT"
-        || vio_report.instance_id != vio_provider_instance_id
-        || vio_report.boot_id != vio_boot_id
-    {
-        return Err(anyhow!(
-            "candidate VIO provider identity, health, or readiness is no longer current"
-        ));
-    }
-    if vio_report.details["session_epoch"] != session_epoch
-        || vio_report.details["world_frame"] != vio_world_frame
-        || vio_report.details["convention_id"] != convention_id
-        || vio_report.details["tracking_state"] != "TRACKING"
-    {
-        return Err(anyhow!(
-            "current VIO epoch, frame, convention, or tracking state does not match the candidate"
-        ));
-    }
-
-    let requested_expires_at_us = now_us.saturating_add(request.duration_ms.saturating_mul(1000));
-    let expires_at_us = candidate_expires_at_us.min(requested_expires_at_us);
-    let expires_at = DateTime::<Utc>::from_timestamp_micros(expires_at_us as i64)
-        .ok_or_else(|| anyhow!("activation expiration is outside the supported time range"))?;
     Ok(WorkcellCalibrationActivationRecord {
         activation_id: Uuid::new_v4().to_string(),
         request_id: request.request_id.trim().to_string(),
@@ -1174,8 +1207,15 @@ fn build_workcell_activation_record(
         review_decision_id,
         activated_by: request.activated_by.trim().to_string(),
         activated_at: now,
-        expires_at,
-        expires_at_us,
+        expires_at: None,
+        expires_at_us: None,
+        validity_policy: "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2".to_string(),
+        invalidation_conditions: vec![
+            "EXPLICIT_REVOCATION".to_string(),
+            "SUPERSEDED_BY_NEW_REVIEWED_ACTIVATION".to_string(),
+            "MOUNTED_CAMERA_CANONICAL_DEVICE_CHANGED".to_string(),
+            "CAMERA_CALIBRATION_REVISION_CHANGED".to_string(),
+        ],
         state: "ACTIVE".to_string(),
         enforcement: "ENFORCED".to_string(),
         motion_usable: true,
@@ -1187,15 +1227,16 @@ fn build_workcell_activation_record(
         convention_id,
         camera_optical_convention_id,
         camera_provider_id,
-        camera_provider_instance_id,
-        camera_boot_id,
+        camera_canonical_device_id,
+        camera_provider_instance_id: camera_report.instance_id.clone(),
+        camera_boot_id: camera_report.boot_id.clone(),
         camera_calibration_revision,
         vio_provider_id,
         vio_provider_instance_id,
         vio_boot_id,
         transforms: request.candidate["transforms"].clone(),
         reviewer: reviewer.clone(),
-        last_transition_reason: "reviewed calibration activated".to_string(),
+        last_transition_reason: "reviewed mounted calibration activated without a wall-clock expiry; VIO process freshness is historical provenance, not a mounted-transform gate".to_string(),
     })
 }
 
@@ -1570,10 +1611,10 @@ async fn publish_workcell_calibration(
     let review_state = if active { "ACCEPTED" } else { "REVOKED" };
     let activation_state = if active { "ACTIVE" } else { "REVOKED" };
     let motion_usable = active;
-    let valid_until_us = if active {
-        record.expires_at_us
+    let envelope_expires_at_us = if active {
+        None
     } else {
-        observed_at_us.saturating_add(1_000_000)
+        Some(observed_at_us.saturating_add(1_000_000))
     };
     let transform = |stream: &str, child_frame: &str, payload: &Value, offset: u64| {
         json!({
@@ -1587,7 +1628,7 @@ async fn publish_workcell_calibration(
             "observed_at_us": observed_at_us,
             "coordinate_frame": record.world_frame,
             "calibration_revision": record.calibration_revision,
-            "expires_at_us": valid_until_us,
+            "expires_at_us": envelope_expires_at_us,
             "related_skill_id": record.candidate_id,
             "valid": true,
             "data": {
@@ -1608,7 +1649,9 @@ async fn publish_workcell_calibration(
                 "candidate_sha256": record.candidate_sha256,
                 "review_decision_id": record.review_decision_id,
                 "motion_usable": motion_usable,
-                "expires_at_us": valid_until_us
+                "expires_at_us": null,
+                "validity_policy": record.validity_policy,
+                "invalidation_conditions": record.invalidation_conditions
             }
         })
     };
@@ -1642,7 +1685,7 @@ async fn publish_workcell_calibration(
             "observed_at_us": observed_at_us,
             "coordinate_frame": record.world_frame,
             "calibration_revision": record.calibration_revision,
-            "expires_at_us": valid_until_us,
+            "expires_at_us": envelope_expires_at_us,
             "related_skill_id": record.candidate_id,
             "valid": true,
             "data": record
@@ -3172,7 +3215,43 @@ async fn ensure_started(state: &AppState, id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn ensure_provider_hot(state: &AppState, id: &str) -> Result<Value> {
+fn provider_dependency_order(
+    configs: &HashMap<String, ProviderConfig>,
+    target_id: &str,
+) -> Result<Vec<String>> {
+    fn visit(
+        configs: &HashMap<String, ProviderConfig>,
+        provider_id: &str,
+        visiting: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) -> Result<()> {
+        if visited.contains(provider_id) {
+            return Ok(());
+        }
+        let provider = configs
+            .get(provider_id)
+            .ok_or_else(|| anyhow!("unknown provider dependency {provider_id}"))?;
+        if !visiting.insert(provider_id.to_string()) {
+            return Err(anyhow!("provider dependency cycle includes {provider_id}"));
+        }
+        for dependency in &provider.dependencies {
+            visit(configs, dependency, visiting, visited, order)?;
+        }
+        visiting.remove(provider_id);
+        visited.insert(provider_id.to_string());
+        order.push(provider_id.to_string());
+        Ok(())
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut order = Vec::new();
+    visit(configs, target_id, &mut visiting, &mut visited, &mut order)?;
+    Ok(order)
+}
+
+async fn ensure_single_provider_hot(state: &AppState, id: &str) -> Result<Value> {
     ensure_started(state, id).await?;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -3188,6 +3267,34 @@ async fn ensure_provider_hot(state: &AppState, id: &str) -> Result<Value> {
             Err(_) => {}
         }
         sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn ensure_provider_hot(state: &AppState, id: &str) -> Result<Value> {
+    let order = provider_dependency_order(&state.configs, id)?;
+    let mut target_result = Value::Null;
+    for provider_id in &order {
+        let result = ensure_single_provider_hot(state, provider_id).await?;
+        if provider_id == id {
+            target_result = result;
+        }
+    }
+    let dependencies = order
+        .iter()
+        .filter(|provider_id| provider_id.as_str() != id)
+        .cloned()
+        .collect::<Vec<_>>();
+    match target_result {
+        Value::Object(mut result) => {
+            result.insert("manager_hot_dependencies".to_string(), json!(dependencies));
+            Ok(Value::Object(result))
+        }
+        result => Ok(json!({
+            "provider_id": id,
+            "status": "hot",
+            "manager_hot_dependencies": dependencies,
+            "provider_result": result,
+        })),
     }
 }
 
@@ -3772,6 +3879,20 @@ mod tests {
         serde_json::from_value(value).expect("provider config should parse")
     }
 
+    fn provider_config_with_dependencies(id: &str, dependencies: &[&str]) -> ProviderConfig {
+        let mut value = json!({
+            "id": id,
+            "display_name": id,
+            "command": "example.exe",
+            "dependencies": dependencies
+        });
+        if id.contains("rebot_dm") {
+            value["safe_state_request_path"] = json!("/v1/calibration/safe-home");
+            value["safe_state_timeout_ms"] = json!(35_000);
+        }
+        serde_json::from_value(value).expect("provider config with dependencies should parse")
+    }
+
     fn provider_report(
         provider_id: &str,
         capability: &str,
@@ -3926,6 +4047,7 @@ mod tests {
                 "provider_id": "camera.femto_bolt",
                 "provider_instance_id": "camera.femto_bolt-instance",
                 "boot_id": "camera.femto_bolt-boot",
+                "canonical_device_id": "orbbec:femto-bolt:test-camera",
                 "route_id": "camera.rgbd.shared_memory.flexible.v1",
                 "calibration_revision": "camera-calibration",
                 "reference_timestamp_us": now_us - 2_000_000,
@@ -3962,7 +4084,7 @@ mod tests {
             "candidate_sha256": candidate_sha256,
             "decision": "APPROVE",
             "issued_at_us": now_us - 100_000,
-            "expires_at_us": now_us + 30_000_000,
+            "expires_at_us": now_us + 300_000_000,
             "nonce": "nonce-1"
         });
         let identity_bytes = serde_json::to_vec(&identity_payload).unwrap();
@@ -3983,12 +4105,13 @@ mod tests {
             "decision_state": "APPROVED_FOR_ACTIVATION",
             "activation_state": "NOT_ACTIVATED",
             "motion_usable": false,
+            "decided_at_us": now_us,
             "reviewer": {
                 "issuer": "test.identity",
                 "reviewer_id": "operator@example.test",
                 "assurance": "TEST_VERIFIED",
                 "assertion_nonce": "nonce-1",
-                "assertion_expires_at_us": now_us + 30_000_000
+                "assertion_expires_at_us": now_us + 300_000_000
             }
         });
         let request = WorkcellCalibrationActivationRequest {
@@ -3997,11 +4120,11 @@ mod tests {
             candidate,
             review_decision,
             review_identity_assertion: assertion,
-            duration_ms: 20_000,
         };
         let mut camera_report =
             provider_report("camera.femto_bolt", "camera.rgbd.bundle", true, true, "HOT");
         camera_report.details["calibration_revision"] = json!("camera-calibration");
+        camera_report.details["canonical_device_id"] = json!("orbbec:femto-bolt:test-camera");
         let mut vio_report = provider_report(
             "localization.local_vio",
             "localization.vio.tracking_status",
@@ -4034,6 +4157,71 @@ mod tests {
             "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
         );
         assert_eq!(base64url_decode("SGVsbG8td29ybGQ").unwrap(), b"Hello-world");
+    }
+
+    #[test]
+    fn provider_hot_dependency_order_is_transitive_and_deduplicated() {
+        let configs = HashMap::from([
+            (
+                "camera.femto_bolt".to_string(),
+                provider_config("camera.femto_bolt"),
+            ),
+            (
+                "robot_arm.rebot_dm".to_string(),
+                provider_config("robot_arm.rebot_dm"),
+            ),
+            (
+                "perception.sam2_scene_tracker".to_string(),
+                provider_config_with_dependencies(
+                    "perception.sam2_scene_tracker",
+                    &["camera.femto_bolt", "robot_arm.rebot_dm"],
+                ),
+            ),
+            (
+                "world_model.arm_scene_compiler".to_string(),
+                provider_config_with_dependencies(
+                    "world_model.arm_scene_compiler",
+                    &["perception.sam2_scene_tracker", "robot_arm.rebot_dm"],
+                ),
+            ),
+        ]);
+
+        let order = provider_dependency_order(&configs, "world_model.arm_scene_compiler")
+            .expect("valid dependency graph should resolve");
+        assert_eq!(
+            order,
+            vec![
+                "camera.femto_bolt",
+                "robot_arm.rebot_dm",
+                "perception.sam2_scene_tracker",
+                "world_model.arm_scene_compiler",
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_hot_dependency_order_rejects_cycles_and_unknown_ids() {
+        let cyclic = HashMap::from([
+            (
+                "provider.a".to_string(),
+                provider_config_with_dependencies("provider.a", &["provider.b"]),
+            ),
+            (
+                "provider.b".to_string(),
+                provider_config_with_dependencies("provider.b", &["provider.a"]),
+            ),
+        ]);
+        let cycle_error = provider_dependency_order(&cyclic, "provider.a")
+            .expect_err("dependency cycle must be rejected");
+        assert!(cycle_error.to_string().contains("dependency cycle"));
+
+        let missing = HashMap::from([(
+            "provider.a".to_string(),
+            provider_config_with_dependencies("provider.a", &["provider.missing"]),
+        )]);
+        let missing_error = provider_dependency_order(&missing, "provider.a")
+            .expect_err("unknown dependency must be rejected");
+        assert!(missing_error.to_string().contains("provider.missing"));
     }
 
     #[test]
@@ -4077,6 +4265,11 @@ mod tests {
         assert_eq!(record.camera_frame, "femto_bolt_color_optical_frame");
         assert_eq!(record.arm_base_frame, "rebot_arm_base");
         assert_eq!(record.convention_id, "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2");
+        assert_eq!(record.expires_at_us, None);
+        assert_eq!(
+            record.validity_policy,
+            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+        );
 
         let mut changed_calibration_reports = reports.clone();
         changed_calibration_reports
@@ -4093,20 +4286,21 @@ mod tests {
         .expect_err("camera calibration change must invalidate the candidate");
         assert!(error.to_string().contains("camera calibration provenance"));
 
-        let mut changed_vio_reports = reports;
-        changed_vio_reports
-            .get_mut("localization.local_vio")
-            .expect("VIO report must exist")
-            .details["session_epoch"] = json!("different-epoch");
-        let error = build_workcell_activation_record(
+        let camera_only_reports = HashMap::from([(
+            "camera.femto_bolt".to_string(),
+            reports
+                .get("camera.femto_bolt")
+                .expect("camera report must exist")
+                .clone(),
+        )]);
+        build_workcell_activation_record(
             &request,
             "request-digest".to_string(),
-            &changed_vio_reports,
+            &camera_only_reports,
             b"test-review-auth-secret-with-at-least-32-bytes",
             now,
         )
-        .expect_err("VIO epoch change must invalidate the candidate");
-        assert!(error.to_string().contains("current VIO epoch"));
+        .expect("a mounted activation must not require the historical VIO process");
     }
 
     #[test]
@@ -4140,13 +4334,12 @@ mod tests {
         let mut active = replacement.clone();
         active.activation_id = "active-before-recalibration".to_string();
         active.motion_usable = true;
-        let mut expired = replacement.clone();
-        expired.activation_id = "expired-before-recalibration".to_string();
-        expired.expires_at = now - ChronoDuration::milliseconds(1);
-        expired.motion_usable = true;
+        let mut second_active = replacement.clone();
+        second_active.activation_id = "second-active-before-recalibration".to_string();
+        second_active.motion_usable = true;
         let mut records = HashMap::from([
             (active.activation_id.clone(), active),
-            (expired.activation_id.clone(), expired),
+            (second_active.activation_id.clone(), second_active),
         ]);
 
         supersede_active_workcell_calibrations(&mut records, &replacement, now);
@@ -4159,11 +4352,76 @@ mod tests {
         assert!(superseded
             .last_transition_reason
             .contains(&replacement.activation_id));
-        let expired = records
-            .get("expired-before-recalibration")
-            .expect("the expired record should remain auditable");
-        assert_eq!(expired.state, "EXPIRED");
-        assert!(!expired.motion_usable);
+        let second = records
+            .get("second-active-before-recalibration")
+            .expect("the second prior record should remain auditable");
+        assert_eq!(second.state, "SUPERSEDED");
+        assert!(!second.motion_usable);
+    }
+
+    #[test]
+    fn mounted_activation_ignores_process_restarts_and_gates_on_stable_camera_identity() {
+        let now = Utc::now();
+        let (request, reports) = activation_fixture(now, "PASSED");
+        let mut record = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("fixture should activate");
+
+        let mut degraded = reports.clone();
+        degraded
+            .get_mut("localization.local_vio")
+            .expect("VIO report must exist")
+            .details["tracking_state"] = json!("DEGRADED");
+        refresh_workcell_motion_usability(&mut record, &degraded);
+        assert_eq!(record.state, "ACTIVE");
+        assert!(record.motion_usable);
+
+        refresh_workcell_motion_usability(&mut record, &reports);
+        assert_eq!(record.state, "ACTIVE");
+        assert!(record.motion_usable);
+
+        let mut restarted = reports.clone();
+        let camera = restarted
+            .get_mut("camera.femto_bolt")
+            .expect("camera report must exist");
+        camera.instance_id = "new-camera-instance".to_string();
+        camera.boot_id = "new-camera-boot".to_string();
+        refresh_workcell_motion_usability(&mut record, &restarted);
+        assert_eq!(record.state, "ACTIVE");
+        assert!(record.motion_usable);
+
+        restarted
+            .get_mut("camera.femto_bolt")
+            .expect("camera report must exist")
+            .details["canonical_device_id"] = json!("different-camera");
+        refresh_workcell_motion_usability(&mut record, &restarted);
+        assert_eq!(record.state, "INVALIDATED");
+        assert!(!record.motion_usable);
+    }
+
+    #[test]
+    fn reviewed_mounted_candidate_can_activate_after_its_review_deadline() {
+        let reviewed_at = Utc::now();
+        let (request, reports) = activation_fixture(reviewed_at, "PASSED");
+        let activation_time = reviewed_at + chrono::Duration::seconds(61);
+
+        let record = build_workcell_activation_record(
+            &request,
+            "request-digest".to_string(),
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            activation_time,
+        )
+        .expect("reviewed mounted evidence must not acquire a wall-clock expiry");
+
+        assert_eq!(record.state, "ACTIVE");
+        assert!(record.motion_usable);
+        assert_eq!(record.expires_at_us, None);
     }
 
     #[test]

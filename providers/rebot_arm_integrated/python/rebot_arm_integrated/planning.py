@@ -81,16 +81,28 @@ def build_transit_frame_candidates(
     if not np.all(np.isfinite(start)) or not np.all(np.isfinite(goal)):
         raise ValueError("transit frames must be finite")
 
-    z_min = float(workspace["z_min_m"])
-    z_max = float(workspace["z_max_m"])
-    y_limit = float(workspace["abs_y_max_m"])
-    clearance_z = float(
-        np.clip(
-            max(start[2, 3], goal[2, 3]) + float(clearance_margin_m),
-            z_min,
-            z_max,
-        )
+    enforce_cartesian_bounds = bool(
+        workspace.get("enforce_cartesian_bounds", True)
     )
+    if enforce_cartesian_bounds:
+        z_min = float(workspace["z_min_m"])
+        z_max = float(workspace["z_max_m"])
+        y_limit = float(workspace["abs_y_max_m"])
+        clearance_z = float(
+            np.clip(
+                max(start[2, 3], goal[2, 3]) + float(clearance_margin_m),
+                z_min,
+                z_max,
+            )
+        )
+    else:
+        clearance_z = float(
+            max(start[2, 3], goal[2, 3]) + float(clearance_margin_m)
+        )
+        y_limit = float(
+            max(abs(start[1, 3]), abs(goal[1, 3]))
+            + 2.0 * float(lateral_escape_m)
+        )
 
     def frame_at(position: np.ndarray, *, goal_orientation: bool = False) -> np.ndarray:
         output = start.copy()
@@ -163,11 +175,9 @@ def controller_owned_duration(
     requested_speed_m_s: float,
     joint_rate_caps_rad_s: Iterable[float],
     *,
-    speed_min_m_s: float,
-    speed_max_m_s: float,
     minimum_duration_s: float,
 ) -> dict[str, Any]:
-    """Choose path duration from requested Cartesian speed and provider caps."""
+    """Choose path duration from requested speed and physical joint caps."""
 
     waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
     if len(waypoints) < 2:
@@ -177,9 +187,9 @@ def controller_owned_duration(
         raise ValueError("joint waypoints and rate caps must have matching shapes")
     if not np.all(np.isfinite(caps)) or np.any(caps <= 0.0):
         raise ValueError("joint rate caps must be positive and finite")
-    effective_speed = float(
-        np.clip(float(requested_speed_m_s), speed_min_m_s, speed_max_m_s)
-    )
+    effective_speed = float(requested_speed_m_s)
+    if not np.isfinite(effective_speed) or effective_speed <= 0.0:
+        raise ValueError("requested Cartesian speed must be positive and finite")
     cartesian_duration = max(0.0, float(cartesian_path_length_m)) / effective_speed
     joint_duration = sum(
         float(np.max(1.5 * np.abs(goal - start) / caps))
@@ -198,12 +208,100 @@ def controller_owned_duration(
     return {
         "requested_speed_m_s": float(requested_speed_m_s),
         "effective_speed_m_s": effective_speed,
-        "speed_clamped": abs(effective_speed - float(requested_speed_m_s)) > 1e-12,
+        "speed_clamped": False,
         "cartesian_path_length_m": float(cartesian_path_length_m),
         "cartesian_duration_s": cartesian_duration,
         "joint_rate_duration_s": joint_duration,
         "duration_s": duration,
         "limiting_factor": limiting_factor,
+    }
+
+
+def joint_speed_policy_schedule(
+    q_waypoints: Iterable[Iterable[float]],
+    cartesian_positions_m: Iterable[Iterable[float]],
+    requested_speed_m_s: float,
+    joint_rate_caps_rad_s: Iterable[float],
+    *,
+    minimum_stage_duration_s: float,
+    authentication_threshold_rad_s: float,
+    hard_limit_rad_s: float,
+) -> dict[str, Any]:
+    """Build requested and hardware-bounded per-joint stage speeds."""
+
+    waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
+    positions = tuple(
+        np.asarray(list(item), dtype=float) for item in cartesian_positions_m
+    )
+    caps = np.asarray(list(joint_rate_caps_rad_s), dtype=float)
+    speed = float(requested_speed_m_s)
+    minimum_duration = float(minimum_stage_duration_s)
+    authentication_threshold = float(authentication_threshold_rad_s)
+    hard_limit = float(hard_limit_rad_s)
+    if len(waypoints) < 2 or len(positions) != len(waypoints):
+        raise ValueError("joint-speed scheduling requires matching waypoints and positions")
+    if any(item.shape != caps.shape for item in waypoints):
+        raise ValueError("joint waypoints and rate caps must have matching shapes")
+    if any(item.shape != (3,) for item in positions):
+        raise ValueError("Cartesian positions must contain three values")
+    if (
+        not np.all(np.isfinite(caps))
+        or np.any(caps <= 0.0)
+        or not np.isfinite(speed)
+        or speed <= 0.0
+        or not np.isfinite(minimum_duration)
+        or minimum_duration <= 0.0
+        or not 0.0 < authentication_threshold < hard_limit
+    ):
+        raise ValueError("joint-speed scheduling inputs are invalid")
+
+    requested_durations: list[float] = []
+    effective_durations: list[float] = []
+    requested_stage_speeds: list[np.ndarray] = []
+    effective_stage_speeds: list[np.ndarray] = []
+    for q_start, q_goal, p_start, p_goal in zip(
+        waypoints[:-1],
+        waypoints[1:],
+        positions[:-1],
+        positions[1:],
+    ):
+        delta = np.abs(q_goal - q_start)
+        requested_duration = max(
+            minimum_duration,
+            float(np.linalg.norm(p_goal - p_start)) / speed,
+        )
+        requested_joint_speeds = 1.5 * delta / requested_duration
+        effective_duration = max(
+            requested_duration,
+            float(np.max(1.5 * delta / np.maximum(caps, 1e-9))),
+        )
+        requested_durations.append(requested_duration)
+        effective_durations.append(effective_duration)
+        requested_stage_speeds.append(requested_joint_speeds)
+        effective_stage_speeds.append(1.5 * delta / effective_duration)
+
+    requested_by_joint = np.max(np.vstack(requested_stage_speeds), axis=0)
+    effective_by_joint = np.max(np.vstack(effective_stage_speeds), axis=0)
+    requested_peak = float(np.max(requested_by_joint))
+    effective_peak = float(np.max(effective_by_joint))
+    return {
+        "requested_stage_durations_s": requested_durations,
+        "effective_stage_durations_s": effective_durations,
+        "requested_peak_by_joint_rad_s": requested_by_joint.tolist(),
+        "effective_peak_by_joint_rad_s": effective_by_joint.tolist(),
+        "requested_peak_joint_speed_rad_s": requested_peak,
+        "effective_peak_joint_speed_rad_s": effective_peak,
+        "joint_rate_caps_rad_s": caps.tolist(),
+        "authentication_threshold_rad_s": authentication_threshold,
+        "hard_limit_rad_s": hard_limit,
+        "authentication_required": requested_peak > authentication_threshold,
+        "hard_limit_exceeded": requested_peak >= hard_limit,
+        "provider_or_motor_limited": any(
+            effective + 1e-9 < requested
+            for effective, requested in zip(
+                effective_by_joint.tolist(), requested_by_joint.tolist()
+            )
+        ),
     }
 
 
@@ -321,6 +419,7 @@ def build_waypoint_preview(
     sample_count: int = 81,
     allowed_contact_object_ids: set[str] | None = None,
     permit_pushable_contact: bool = False,
+    maximum_collision_details: int = 128,
 ) -> PlanPreview:
     waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
     if len(waypoints) < 2 or any(item.shape != (6,) or not np.all(np.isfinite(item)) for item in waypoints):
@@ -333,6 +432,7 @@ def build_waypoint_preview(
         samples.extend(segment_samples if index == 0 else segment_samples[1:])
     minimum_clearance: float | None = None
     collisions: list[dict[str, Any]] = []
+    collision_count = 0
     if scene is not None:
         for sample_index, q in enumerate(samples):
             report = configuration_clearance(
@@ -341,10 +441,15 @@ def build_waypoint_preview(
                 link_radii_m,
                 allowed_contact_object_ids=allowed_contact_object_ids,
                 permit_pushable_contact=permit_pushable_contact,
+                maximum_collision_details=max(
+                    0,
+                    int(maximum_collision_details) - len(collisions),
+                ),
             )
             clearance = report["minimum_clearance_m"]
             if clearance is not None:
                 minimum_clearance = clearance if minimum_clearance is None else min(minimum_clearance, clearance)
+            collision_count += int(report.get("collision_count") or 0)
             collisions.extend({"sample_index": sample_index, **item} for item in report["collisions"])
     return PlanPreview(
         str(uuid.uuid4()),
@@ -354,7 +459,7 @@ def build_waypoint_preview(
         samples[-1].copy(),
         tuple(samples),
         minimum_clearance,
-        not collisions,
+        collision_count == 0,
         tuple(collisions),
     )
 
@@ -370,11 +475,13 @@ def build_direct_preview(
     sample_count: int = 81,
     allowed_contact_object_ids: set[str] | None = None,
     permit_pushable_contact: bool = False,
+    maximum_collision_details: int = 128,
 ) -> PlanPreview:
     segment = QuinticJointSegment.create(q_start, q_goal, duration_s)
     samples = tuple(item[0] for item in segment.sampled(sample_count))
     minimum_clearance: float | None = None
     collisions: list[dict[str, Any]] = []
+    collision_count = 0
     if scene is not None:
         for sample_index, q in enumerate(samples):
             report = configuration_clearance(
@@ -383,12 +490,17 @@ def build_direct_preview(
                 link_radii_m,
                 allowed_contact_object_ids=allowed_contact_object_ids,
                 permit_pushable_contact=permit_pushable_contact,
+                maximum_collision_details=max(
+                    0,
+                    int(maximum_collision_details) - len(collisions),
+                ),
             )
             clearance = report["minimum_clearance_m"]
             if clearance is not None:
                 minimum_clearance = clearance if minimum_clearance is None else min(minimum_clearance, clearance)
             for collision in report["collisions"]:
                 collisions.append({"sample_index": sample_index, **collision})
+            collision_count += int(report.get("collision_count") or 0)
     return PlanPreview(
         str(uuid.uuid4()),
         None if scene is None else scene.revision,
@@ -397,6 +509,6 @@ def build_direct_preview(
         samples[-1].copy(),
         samples,
         minimum_clearance,
-        not collisions,
+        collision_count == 0,
         tuple(collisions),
     )

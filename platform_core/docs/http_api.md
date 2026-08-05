@@ -36,12 +36,19 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | POST | `/v1/providers/register` | Register one provider instance |
 | POST | `/v1/providers/heartbeat` | Refresh lifecycle, health, readiness, and capabilities |
 | POST | `/v1/providers/{id}/start` | Start the configured provider process |
-| POST | `/v1/providers/{id}/hot` | Ensure process is running and request HOT residency |
+| POST | `/v1/providers/{id}/hot` | Resolve declared dependencies in topological order, ensure each process is running, and request HOT residency |
 | POST | `/v1/providers/{id}/warm` | Request WARM residency |
 | POST | `/v1/providers/{id}/stop` | Request graceful stop; terminate on timeout only when that provider permits automatic force termination |
 | POST | `/v1/providers/{id}/kill` | Force process-tree termination |
 
 A provider heartbeat is expired after its configured `heartbeat_timeout_ms`. Expiry forces `ready=false`, marks the report `UNHEALTHY`, removes capability availability, and publishes an unavailable status observation to the Fabric.
+
+Provider configuration may declare `dependencies` as provider IDs. A HOT
+transition recursively starts and transitions those dependencies before the
+requested provider, deduplicates shared dependencies, and rejects unknown IDs
+or dependency cycles. The response retains the requested provider's result and
+adds `manager_hot_dependencies` for audit. This lifecycle dependency mechanism
+does not bypass capability binding, readiness, or request-specific data checks.
 
 The aggregation endpoints and `/observe/*` pages are read-only. Their
 developer links do not grant authority: they present an explicit overstepping
@@ -145,30 +152,41 @@ conformance-tested.
 `POST /v1/workcell-calibrations/activate` accepts the immutable version-3
 stationary-alignment candidate, its exact append-only approval record, a
 signed reviewer-identity assertion, `request_id`, `activated_by`, and a
-bounded `duration_ms` from 1000 through 300000. Manager requires
+mounted-rig validity policy. It does not accept a wall-clock activation
+lifetime. Manager requires
 `MIDBRAIN_REVIEW_AUTH_SECRET` and verifies:
 
 - candidate and approval schema/state plus exact canonical candidate SHA-256;
 - signed reviewer identity, nonce, issue/expiry, and candidate binding;
-- current camera provider/instance/boot/calibration identity and health;
-- current tracking VIO epoch/frame and observation freshness;
+- current mounted camera canonical-device/calibration identity and health;
+- historical VIO provenance used to establish the gravity-aligned stationary
+  world frame, without making a later VIO process restart a freshness gate;
 - parent-from-child world/VIO/arm-base frame semantics;
 - the exact single centered-mesh base-orientation proof: current world up,
   matching identity/X-180/Y-180/Z-180 choice, correction count zero or one,
   zero mesh-correction translation, and preserved CAD mesh center;
 - a serialized `world_from_base` quaternion whose +Z is upward and matches the
   reviewed corrected up dot product; and
-- candidate and requested activation lifetimes.
+- proof that the immutable approval decision was recorded before the
+  candidate's review deadline. A reviewed mounted calibration may be activated
+  after that deadline if its stable camera identity and calibration still match.
 
 Projected-size, confidence, bounded-error, support-plane, and residual-tilt
 values remain review evidence but are not independent Manager geometry gates.
 
-Only one activation remains `ACTIVE`. A successful newer activation publishes
+Only one activation remains `ACTIVE`. Its `expires_at_us` is null and its
+`validity_policy` is `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2`. Temporary
+camera unavailability suspends `motion_usable` without erasing the calibration;
+recovery of the same canonical camera and calibration restores it. Camera or
+VIO process instance/boot changes and a new VIO tracking epoch do not invalidate
+the mounted transform. A canonical camera-device or camera-calibration revision
+change does invalidate it. A successful newer activation publishes
 its motion-usable static transforms and then marks the prior active record
 `SUPERSEDED` and non-motion-usable without publishing a transient empty
 calibration. Reusing a `request_id` is idempotent only for byte-equivalent
-canonical content. `GET /v1/workcell-calibrations` marks elapsed records
-expired before returning them.
+canonical content. `GET /v1/workcell-calibrations` re-evaluates current
+stable camera identity, health, and calibration evidence before returning
+records.
 
 `POST /v1/workcell-calibrations/{activation_id}/revoke` requires
 `request_id`, `revoked_by`, and `reason`. It publishes a newer authoritative

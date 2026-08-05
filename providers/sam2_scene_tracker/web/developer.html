@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SAM2 Scene Tracking Development</title>
+  <link rel="stylesheet" href="/dev/developer.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">PERCEPTION PROVIDER</p>
+        <h1>SAM2 Scene Tracking</h1>
+        <p>User-described obstacle masks, arm exclusion, and persistent sphere fusion.</p>
+      </div>
+      <strong id="health" class="status">CONNECTING</strong>
+    </header>
+
+    <section class="toolbar" aria-label="Visualization mode">
+      <button type="button" data-mode="composite" class="active">Composite</button>
+      <button type="button" data-mode="rgb">RGB</button>
+      <button type="button" data-mode="depth">Aligned depth</button>
+      <span id="imageMode">Composite: red declared objects, orange arm exclusion</span>
+    </section>
+
+    <section class="viewer">
+      <img id="sceneImage" alt="Live SAM2 scene visualization">
+      <p id="imageError" hidden>No image is available yet.</p>
+    </section>
+
+    <section class="grid">
+      <article>
+        <h2>Coverage</h2>
+        <pre id="coverage">Waiting for provider status...</pre>
+      </article>
+      <article>
+        <h2>Segmentation and fusion</h2>
+        <pre id="diagnostics">Waiting for provider diagnostics...</pre>
+      </article>
+    </section>
+
+    <footer>
+      <span>Red masks are declared KEEP_OUT objects. Orange is the dilated robot-arm exclusion mask.</span>
+      <span>Unclaimed visible depth defaults to PUSHABLE and is not published as collision geometry.</span>
+    </footer>
+  </main>
+  <script src="/dev/developer.js"></script>
+</body>
+</html>

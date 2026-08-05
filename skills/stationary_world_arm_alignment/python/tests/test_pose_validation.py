@@ -281,3 +281,48 @@ def test_vlm_axis_review_sends_only_overlay_and_uses_category() -> None:
     assert observed["text"]["format"]["name"] == (
         "foundation_pose_base_axis_review"
     )
+
+
+def test_vlm_axis_review_retries_one_malformed_structured_response() -> None:
+    workspace_root = Path(__file__).resolve().parents[4]
+    request_count = 0
+    verdict = {
+        "base_x_relation_to_gripper": "TOWARD_GRIPPER",
+        "notes": "The red +X arrow points toward the gripper.",
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        text = '{"base_x_relation_to_gripper":"TOWARD_GRIPPER"' if (
+            request_count == 1
+        ) else json.dumps(verdict)
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": text}
+                        ],
+                    }
+                ]
+            },
+        )
+
+    async def run() -> None:
+        vision = GripperVision("test-key", "test-model", workspace_root)
+        await vision.http.aclose()
+        vision.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            result = await vision.validate_base_pose(
+                b"\xff\xd8\xff\xd9",
+                attempt=1,
+            )
+            assert result == verdict
+        finally:
+            await vision.close()
+
+    asyncio.run(run())
+    assert request_count == 2

@@ -1,6 +1,6 @@
 {
   "skill_type": "locate_effector_front",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "display_name": "Locate Effector Front",
   "lifecycle": "FINITE",
   "agent_discovery": {

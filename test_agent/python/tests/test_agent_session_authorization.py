@@ -17,7 +17,7 @@ os.environ.setdefault("OPENAI_API_KEY", "unit-test-placeholder")
 
 from physical_agent_test.app import (
     DeveloperApprovalDecision,
-    MAX_SESSION_AUTO_SPEED_M_S,
+    DEFAULT_SESSION_AUTO_SPEED_M_S,
     PromptRequest,
     _approval_fingerprint,
     _record_approval_decisions,
@@ -159,9 +159,11 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(request.max_auto_move_cm, 35.0)
         self.assertEqual(request.max_auto_speed_m_s, 0.5)
-        self.assertEqual(MAX_SESSION_AUTO_SPEED_M_S, 0.5)
-        with self.assertRaises(ValidationError):
-            PromptRequest(prompt="move", max_auto_speed_m_s=0.5001)
+        self.assertEqual(DEFAULT_SESSION_AUTO_SPEED_M_S, 5.0)
+        self.assertEqual(
+            PromptRequest(prompt="move", max_auto_speed_m_s=50.0).max_auto_speed_m_s,
+            50.0,
+        )
 
     def test_provider_auto_authorization_excludes_stop(self) -> None:
         decision = DeveloperApprovalDecision(
@@ -275,7 +277,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             decision,
         )
 
-        with self.assertRaisesRegex(HTTPException, "10 cm and 0.2 m/s"):
+        with self.assertRaisesRegex(HTTPException, "10 cm limit"):
             _validate_automatic_agent_approval(
                 [
                     _interruption(
@@ -285,22 +287,6 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                         '"direction":"POSITIVE_X",'
                         '"requested_speed_m_s":0.2,'
                         '"planned_nominal_speed_m_s":0.2,'
-                        '"orientation_policy":"POSITION_ONLY",'
-                        '"controlled_frame_yaw_delta_deg":null}',
-                    )
-                ],
-                decision,
-            )
-        with self.assertRaisesRegex(HTTPException, "nominal-speed limits"):
-            _validate_automatic_agent_approval(
-                [
-                    _interruption(
-                        "execute_integrated_motion_preview",
-                        '{"preview_id":"preview-3","distance_m":0.1,'
-                        '"motion_intent":"NEW_RELATIVE_MOVE",'
-                        '"direction":"POSITIVE_X",'
-                        '"requested_speed_m_s":0.2001,'
-                        '"planned_nominal_speed_m_s":0.2001,'
                         '"orientation_policy":"POSITION_ONLY",'
                         '"controlled_frame_yaw_delta_deg":null}',
                     )
@@ -371,7 +357,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                         decision,
                     )
 
-    def test_motion_auto_authorization_accepts_separate_session_speed_ceiling(
+    def test_motion_auto_authorization_uses_joint_speed_policy(
         self,
     ) -> None:
         decision = DeveloperApprovalDecision(
@@ -396,7 +382,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             decision,
         )
 
-        with self.assertRaisesRegex(HTTPException, "0.5 m/s"):
+        with self.assertRaisesRegex(HTTPException, "10/20 rad/s"):
             _validate_automatic_agent_approval(
                 [
                     _interruption(
@@ -406,6 +392,8 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                         '"direction":"POSITIVE_X","distance_m":0.2,'
                         '"requested_speed_m_s":0.5001,'
                         '"planned_nominal_speed_m_s":0.5001,'
+                        '"requested_peak_joint_speed_rad_s":10.1,'
+                        '"joint_speed_authentication_required":true,'
                         '"orientation_policy":"POSITION_ONLY",'
                         '"controlled_frame_yaw_delta_deg":null}',
                     )
@@ -517,6 +505,20 @@ class DynamicAgentApprovalPredicateTests(
             )
         )
         self.assertFalse(
+            await relative_motion_needs_approval(
+                context,
+                {
+                    "motion_intent": "NEW_RELATIVE_MOVE",
+                    "direction": "TARGET_VECTOR",
+                    "distance_m": 0.05,
+                    "planned_nominal_speed_m_s": 0.03,
+                    "orientation_policy": "PRESERVE_CURRENT",
+                    "controlled_frame_yaw_delta_deg": None,
+                },
+                "no-contact-motion-call",
+            )
+        )
+        self.assertFalse(
             await stationary_calibration_needs_approval(
                 context,
                 {"request": "establish frames"},
@@ -610,7 +612,7 @@ class DynamicAgentApprovalPredicateTests(
             )
         )
 
-    async def test_motion_predicate_uses_session_not_skill_speed_ceiling(
+    async def test_motion_predicate_uses_joint_speed_authentication_threshold(
         self,
     ) -> None:
         context = SimpleNamespace(
@@ -645,6 +647,8 @@ class DynamicAgentApprovalPredicateTests(
                     "distance_m": 0.2,
                     "requested_speed_m_s": 0.5001,
                     "planned_nominal_speed_m_s": 0.5001,
+                    "requested_peak_joint_speed_rad_s": 10.1,
+                    "joint_speed_authentication_required": True,
                     "orientation_policy": "POSITION_ONLY",
                     "controlled_frame_yaw_delta_deg": None,
                 },

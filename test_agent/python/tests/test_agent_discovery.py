@@ -8,7 +8,10 @@ import pytest
 
 pytest.importorskip("agents")
 
-from physical_agent_test.agent_driver import PrototypeAgentDriver
+from physical_agent_test.agent_driver import (
+    PrototypeAgentDriver,
+    deterministic_intent_tool_route,
+)
 from physical_agent_test.gemini_pointing_skill import PointingIdentificationSkill
 from physical_agent_test.skill_catalog import discover_agent_skills
 
@@ -24,6 +27,48 @@ class _EffectorFrontSkill:
             "target_frame": target_frame,
             "physical_action_submitted": False,
         }
+
+
+class _ItemLocatorSkill:
+    async def run(
+        self,
+        *,
+        question: str,
+        target_frame: str,
+        object_id: str | None,
+        contact_policy: str,
+        depth_requirement: str,
+        task_plane: dict[str, object] | None,
+    ) -> dict[str, object]:
+        return {
+            "question": question,
+            "target_frame": target_frame,
+            "object_id": object_id,
+            "contact_policy": contact_policy,
+            "depth_requirement": depth_requirement,
+            "task_plane": task_plane,
+            "physical_action_submitted": False,
+        }
+
+
+class _ScenePolicyPublisher:
+    async def publish_policy(self, **arguments):
+        return {
+            "status": "PUBLISHED",
+            "arguments": arguments,
+        }
+
+
+class _NoContactApproachSkill:
+    async def run(self, **arguments):
+        return {
+            **arguments,
+            "physical_motion_authorized": False,
+            "motion_submitted": False,
+        }
+
+    async def execute_preview(self, **arguments):
+        return arguments
 
 
 class _ReviewedExecutionSkill:
@@ -89,6 +134,98 @@ class _ColdBindingManager:
 
 
 class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_explicit_world_axis_only_route_excludes_arm_calibration(self) -> None:
+        route = deterministic_intent_tool_route(
+            "establish the world axis (not the arm base)"
+        )
+
+        self.assertEqual(route["route"], "WORLD_AXIS_ONLY")
+        self.assertNotIn(
+            "calibrate_stationary_workcell",
+            route["allowed_tools"],
+        )
+        self.assertIn("inspect_midbrain_runtime", route["allowed_tools"])
+        self.assertIn("establish_world_axis", route["allowed_tools"])
+        self.assertIn("tool_search", route["allowed_tools"])
+        self.assertNotIn("set_provider_residency", route["allowed_tools"])
+
+    def test_explicit_3d_item_route_excludes_rgb_only_analysis(self) -> None:
+        route = deterministic_intent_tool_route(
+            "identify the white object on the table center and 3d locate it"
+        )
+
+        self.assertEqual(route["route"], "METRIC_ITEM_LOCATION")
+        self.assertIn("locate_item", route["allowed_tools"])
+        self.assertNotIn("analyze_visual_scene", route["allowed_tools"])
+
+    def test_move_close_route_uses_composed_no_contact_planner(self) -> None:
+        route = deterministic_intent_tool_route(
+            "can you move the gripper to close to the toilet paper roll"
+        )
+
+        self.assertEqual(route["route"], "NO_CONTACT_ITEM_APPROACH")
+        self.assertIn(
+            "plan_no_contact_item_approach",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "execute_no_contact_approach_step",
+            route["allowed_tools"],
+        )
+        self.assertNotIn(
+            "preview_relative_effector_motion",
+            route["allowed_tools"],
+        )
+        self.assertIn("measured_arrival_confirmed=true", route["instruction"])
+        self.assertIn(
+            "do not report WAITING_NEXT as unconfirmed motion",
+            route["instruction"],
+        )
+
+    def test_move_above_item_with_implicit_effector_uses_approach(self) -> None:
+        route = deterministic_intent_tool_route(
+            "move the to above the toilet paper roll without changing the "
+            "height or direction"
+        )
+
+        self.assertEqual(route["route"], "NO_CONTACT_ITEM_APPROACH")
+        self.assertIn(
+            "plan_no_contact_item_approach",
+            route["allowed_tools"],
+        )
+        self.assertNotIn(
+            "configure_scene_segmentation_policy",
+            route["allowed_tools"],
+        )
+        self.assertIn("do not invent one", route["instruction"])
+
+    def test_explicit_obstacle_route_uses_declared_scene_policy(self) -> None:
+        route = deterministic_intent_tool_route(
+            "The only obstacle is the table; do not collide with it."
+        )
+
+        self.assertEqual(
+            route["route"],
+            "EXPLICIT_SCENE_SEGMENTATION_POLICY",
+        )
+        self.assertIn(
+            "configure_scene_segmentation_policy",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "inspect_arm_semantic_scene",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "perception.sam2_scene_tracker",
+            route["instruction"],
+        )
+        self.assertIn(
+            "world_model.arm_scene_compiler",
+            route["instruction"],
+        )
+        self.assertIn("SCENE_READY", route["instruction"])
+
     def test_catalog_exposes_only_discoverable_skills_by_default(self) -> None:
         workspace = Path(__file__).resolve().parents[3]
 
@@ -99,9 +236,13 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             [
                 "analyze_visual_scene",
                 "calibrate_stationary_workcell",
+                "establish_world_axis",
                 "execute_reviewed_observation_motion",
                 "identify_pointed_object",
+                "inspect_arm_semantic_scene",
                 "locate_effector_front",
+                "locate_item",
+                "plan_no_contact_item_approach",
                 "preview_relative_effector_motion",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
@@ -173,9 +314,9 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         by_name = {descriptor.tool_name: descriptor for descriptor in descriptors}
 
         self.assertNotIn("vegetable_cutting_legacy_local", by_name)
-        observation = by_name["observe_pointed_object_from_pose"]
-        self.assertFalse(observation.discoverable)
-        self.assertIn("structured pointing-pixel", observation.disabled_reason)
+        observation = by_name["locate_item"]
+        self.assertTrue(observation.discoverable)
+        self.assertIsNone(observation.disabled_reason)
         foundation = by_name["localize_known_cad_object"]
         self.assertFalse(foundation.discoverable)
         self.assertEqual(
@@ -232,6 +373,120 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(result)
         self.assertEqual(parsed["target_frame"], "stationary_world")
         self.assertFalse(parsed["physical_action_submitted"])
+
+    async def test_scene_policy_tool_publishes_exact_described_objects(
+        self,
+    ) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"identify_pointed_object"},
+            scene_policy_publisher=(
+                _ScenePolicyPublisher()  # type: ignore[arg-type]
+            ),
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+
+        result = await tools[
+            "configure_scene_segmentation_policy"
+        ].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            json.dumps(
+                {
+                    "policy_id": "table-only",
+                    "objects": [
+                        {
+                            "object_id": "table",
+                            "type": "KEEP_OUT",
+                            "description": "the complete support table",
+                        }
+                    ],
+                    "arm_description": "the complete robot arm",
+                }
+            ),
+        )
+
+        parsed = json.loads(result)
+        self.assertEqual(parsed["status"], "PUBLISHED")
+        self.assertEqual(
+            parsed["arguments"]["objects"][0]["object_id"],
+            "table",
+        )
+
+    async def test_item_locator_manifest_invokes_read_only_adapter(self) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"locate_item"},
+            item_locator_skill=_ItemLocatorSkill(),  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(driver.agent.tools[0].name, "locate_item")
+        result = await driver.agent.tools[0].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            '{"question":"locate the roll","target_frame":"rebot_arm_base"}',
+        )
+        parsed = json.loads(result)
+        self.assertEqual(parsed["target_frame"], "rebot_arm_base")
+        self.assertEqual(parsed["contact_policy"], "WORKPIECE_CONTACT_ALLOWED")
+        self.assertEqual(parsed["depth_requirement"], "PREFER_METRIC")
+        self.assertFalse(parsed["physical_action_submitted"])
+
+    async def test_no_contact_approach_manifest_invokes_planning_adapter(
+        self,
+    ) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"plan_no_contact_item_approach"},
+            no_contact_approach_skill=(
+                _NoContactApproachSkill()  # type: ignore[arg-type]
+            ),
+        )
+
+        self.assertEqual(
+            driver.agent.tools[0].name,
+            "plan_no_contact_item_approach",
+        )
+        result = await driver.agent.tools[0].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            '{"question":"approach the toilet paper"}',
+        )
+        parsed = json.loads(result)
+        self.assertEqual(parsed["requested_standoff_m"], 0.1)
+        self.assertEqual(parsed["maximum_step_m"], 1.2)
+        self.assertFalse(parsed["physical_motion_authorized"])
+        self.assertFalse(parsed["motion_submitted"])
+
+    def test_no_contact_execution_schema_accepts_only_opaque_plan_id(
+        self,
+    ) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"plan_no_contact_item_approach"},
+            no_contact_approach_skill=(
+                _NoContactApproachSkill()  # type: ignore[arg-type]
+            ),
+        )
+
+        tool = next(
+            value
+            for value in driver.agent.tools
+            if value.name == "execute_no_contact_approach_step"
+        )
+        self.assertEqual(
+            tool.params_json_schema["required"],
+            ["plan_id"],
+        )
+        self.assertEqual(
+            set(tool.params_json_schema["properties"]),
+            {"plan_id"},
+        )
 
     async def test_reviewed_execution_manifest_exposes_only_decision_id(
         self,

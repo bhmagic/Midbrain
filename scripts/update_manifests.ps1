@@ -66,7 +66,7 @@ function Test-ManifestFileExcluded {
     if ($normalized -match '(^|/)(logs?|run)/' -and -not $normalized.EndsWith('/.gitkeep')) {
         return $true
     }
-    if ($normalized -match '\.(pyc|pyo|exe|dll|lib|pdb|rar|7z)$') {
+    if ($normalized -match '\.(pyc|pyo|exe|dll|lib|pdb|rar|7z|sqlite3|sqlite3-shm|sqlite3-wal)$') {
         return $true
     }
     if ($normalized.EndsWith('/.DS_Store') -or $normalized -eq '.DS_Store') {
@@ -237,6 +237,8 @@ $componentDirectories = @(
     (Join-Path $workspace 'platform_core'),
     (Join-Path $workspace 'providers\rebot_arm_dm'),
     (Join-Path $workspace 'providers\rebot_arm_integrated'),
+    (Join-Path $workspace 'providers\arm_scene_compiler'),
+    (Join-Path $workspace 'providers\sam2_scene_tracker'),
     (Join-Path $workspace 'providers\local_vio'),
     (Join-Path $workspace 'providers\orbbec_femto_bolt'),
     (Join-Path $workspace 'test_agent')

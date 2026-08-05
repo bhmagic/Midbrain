@@ -607,6 +607,8 @@ def _reviewed_stationary_camera_transform(
         return None
     if data.get("state") != "ACTIVE" or data.get("motion_usable") is not True:
         return None
+    if data.get("validity_policy") != "MOUNTED_IDENTITY_TRACKING_GATED_V1":
+        return None
     if str(data.get("session_epoch") or "") != session_epoch:
         return None
     if str(data.get("vio_world_frame") or "") != vio_world_frame:
@@ -617,24 +619,15 @@ def _reviewed_stationary_camera_transform(
         return None
     if data.get("camera_optical_convention_id") != CAMERA_OPTICAL_CONVENTION_ID:
         return None
-    expiry = data.get("expires_at_us")
-    if isinstance(expiry, bool) or not isinstance(expiry, int):
-        return None
-    current_time_us = time.time_ns() // 1_000 if now_us is None else int(now_us)
-    if expiry <= current_time_us:
-        return None
     calibration_revision = str(data.get("calibration_revision") or "")
     activation_id = str(data.get("activation_id") or "")
     if not calibration_revision or not activation_id:
         return None
     if str(observation.get("calibration_revision") or "") != calibration_revision:
         return None
-    observation_expiry = observation.get("expires_at_us")
-    if (
-        isinstance(observation_expiry, bool)
-        or not isinstance(observation_expiry, int)
-        or observation_expiry <= current_time_us
-    ):
+    if data.get("expires_at_us") is not None:
+        return None
+    if observation.get("expires_at_us") is not None:
         return None
     transforms = data.get("transforms")
     if not isinstance(transforms, dict):

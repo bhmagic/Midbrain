@@ -1,4 +1,4 @@
-# Physical Agent Test Scaffold 0.4.2
+# Physical Agent Test Scaffold 0.4.4
 
 The browser service exposes two views of one autonomous OpenAI Agents SDK
 runtime:
@@ -39,7 +39,7 @@ For a finite-Skill dependency, `HOT` is used even when the Provider process is
 stopped because Manager includes startup in that transition. Accepting the
 control request is not treated as completion. The lifecycle tool polls fresh
 Manager evidence for up to
-`PROVIDER_HOT_READINESS_TIMEOUT_S` (20 seconds by default) and completes only
+`PROVIDER_HOT_READINESS_TIMEOUT_S` (45 seconds by default) and completes only
 after the Provider is `HOT` and ready. A Skill-provided `required_capability`
 such as `camera.rgb` is also checked when present. After readiness, the Agent
 must immediately invoke the original finite Skill in the same run. The visual
@@ -82,9 +82,9 @@ operator-expandable. Calibration authorization accepts only
 motion shape, distance, planned nominal speed, and yaw as applicable before the
 SDK decides whether to pause; controller and Provider-side safety checks remain
 active.
-The authorization control accepts up to 100 cm so it can cover future bounded
-tools, but the
-current relative-motion tool independently retains its 20 cm execution limit.
+The authorization control accepts the full 120 cm free-space request envelope.
+Actual reach is still decided by controller IK, joint ranges, and semantic
+scene clearance; CONTACT_WORK retains a separate 20 cm short-stroke policy.
 An operation outside the active session policy produces a normal SDK approval
 interruption for development. The policy decision never disables Provider or
 controller checks.
@@ -113,18 +113,69 @@ gravity. The adapter resolves the world vector through the current timestamped
 world-to-arm transform before IK. Explicit `world +X/-X/+Y/-Y/+Z/-Z` requests
 always require that reviewed motion-usable transform and can never use the
 upright arm-mount fallback. Raw arm axes require explicit
-`ARM_BASE_POSITIVE_*` names. A single relative request is limited to 20 cm,
-and the execution adapter rejects a changed, expired, or already-used preview.
-The operator no longer has to construct a separate decision ID.
+`ARM_BASE_POSITIVE_*` names. A single free-space relative request accepts up to 1.2 m,
+and the execution adapter rejects an expired or already-used approval. A
+periodic semantic-scene update may invalidate the controller's internal
+preview without changing the approved target; in that case the adapter
+re-previews that exact target once against the newest scene after rechecking
+the measured start and spatial frame. Pre-commit failures do not consume the
+approval. The operator no longer has to construct a separate decision ID.
+
+Move-close item requests use the composed no-contact workflow rather than a
+model-invented relative direction. Each iteration locates the item and gripper
+front in parallel, requests a controller-owned collision-checked path preview,
+and exposes a separate `execute_no_contact_approach_step` tool containing only
+the exact preview identifiers and bounded step metadata. Host authorization
+then mints a short-lived controller assertion and executes that one preview.
+The default correction cap spans the complete 1.2 m arm ROI and requests a
+0.12 m/s nominal endpoint speed, so the first accepted path reaches the
+uncertainty-expanded destination. The five-centimeter diagnostic cap is no
+longer a default. A caller can still request a smaller explicit cap.
+The no-contact runtime binds `WAIT_FOR_NEXT`, so measured arrival keeps the
+endpoint under at least 1x impedance plus Basic gravity feed-forward while the
+next parallel observation and signed correction are prepared. A compatible
+next commit chains without an intermediate float or mode transition; the
+bounded wait expires to verified gravity float when no continuation arrives.
+The execution result explicitly marks `WAITING_NEXT`, `HOLDING_FINAL`, and
+verified `COMPLETED_FLOAT` as `measured_arrival_confirmed=true`. The Agent must
+therefore run the returned post-move observation instead of describing
+`WAITING_NEXT` as an unconfirmed move.
+
+RGB-D input follows Fabric best-available snapshot semantics. Bundle freshness
+is evaluated when the exact Fabric-referenced payload is copied, not after
+Manager binding checks, VLM inference, scene compilation, or Agent reasoning.
+Those later delays remain timestamped provenance and are governed by the
+item/effector Skill's task-age policy. The controller independently revalidates
+the newest semantic scene and measured start state at preview/commit. A Skill
+must not poll a camera Provider control API to make downstream computation look
+fresh.
+The loop stops at the uncertainty-expanded standoff, a controller/perception
+rejection, or the configured iteration limit. Planning alone never counts as
+movement, and every step retains the no-contact policy even when the target is
+a touchable workpiece.
+
+Obstacle mapping accepts only explicit user/upstream object descriptions; it
+never defaults a black mat or table to `KEEP_OUT`. Each explicit request starts
+a new mapping epoch. The HOT tracker runs VLM annotation, SAM2 object and arm
+segmentation, and a second VLM mask-quality review before sphere fusion. It
+repeats that complete chain at most three times and publishes an explicit
+zero-sphere failure after the third rejection. The scene inspector waits for
+the compiler to name the exact requested policy revision, then opens
+switchable RGB, registered-depth, and reviewed-mask evidence. The developer 3D
+viewer remains the sphere visualization, with independent legend/toggles and a
+reduced sample; Integrated consumes the full scene.
 
 An optional `requested_speed_m_s` is interpreted as nominal average endpoint
 speed. The adapter requests `distance_m / requested_speed_m_s` seconds from the
-existing one-shot controller, within its 0.25-to-8-second range. Provider
-joint-rate safety may lengthen that duration. The result reports requested,
+existing one-shot controller, within its 0.05-to-60-second representable
+window. There is no independent Cartesian speed ceiling: the preview converts
+the request to per-joint demand, requires explicit authentication above 10
+rad/s on any joint, and rejects a request at or above 20 rad/s. Provider and
+motor POS_SPEED caps may lengthen execution. The result reports requested,
 planned, and controller-reported duration and never describes the
 joint-interpolated motion as constant instantaneous Cartesian velocity. The
-0.5 m/s browser value is an authorization ceiling for future bounded tools;
-the current relative-pose Skill retains its independent 0.2 m/s request limit.
+legacy browser speed field remains accepted for request compatibility but is
+not an authorization gate; the per-joint 10/20 rad/s policy is authoritative.
 
 Every relative request is a new displacement from the current measured pose,
 including a repeated request after an unconfirmed arrival. The Agent does not
@@ -294,9 +345,12 @@ stationary robot base/end effector and creates an immutable world-to-arm-base
 candidate. The Agent must then call
 `review_and_activate_stationary_calibration` with the exact alignment ID and
 candidate digest. Manager independently revalidates quality, provenance,
-current VIO tracking, and expiry before publishing the transform as
-motion-usable for at most five minutes. Candidate creation and exact bounded
-activation have separate browser-session authorization switches. Calibration
+current camera/VIO identity, calibration revision, VIO epoch/convention, and
+tracking health before publishing the transform as motion-usable. A mounted-rig
+activation has no wall-clock expiry; it is suspended when tracking evidence is
+insufficient and invalidated on identity or epoch change, explicit revocation,
+or supersession. Candidate creation and exact activation have separate
+browser-session authorization switches. Calibration
 acquires the global motion inhibit; consequently, Integrated requires an
 explicit approved HOT recovery before a later motion preview. Basic safe-home
 has the same expected recovery boundary because it preempts Integrated's

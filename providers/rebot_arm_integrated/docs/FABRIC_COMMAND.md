@@ -68,8 +68,9 @@ The Manager advertises only the reviewed motion profiles:
 
 - `robot.motion.arm.integrated.mit.one_shot`
 - `robot.motion.arm.integrated.mit.continuous`
+- `robot.motion.arm.integrated.pos_vel.one_shot`
 - `robot.motion.arm.integrated.pos_vel.one_shot_limited`
 
-The POS_VEL one-shot capability is limited to paths at or below 20 cm with no payload or high external load. Continuous POS_VEL and arm POS_TOR one-shot remain experimental/unstable GUI tests and are not present in `heartbeat.details.capability_readiness`.
+The POS_VEL one-shot capability accepts IK-valid free-space requests up to 1.2 m; actual reach, semantic-scene clearance, joint ranges, and motor POS_SPEED caps apply. The `_limited` name is retained as a deprecated compatibility alias. Continuous POS_VEL and arm POS_TOR one-shot remain experimental/unstable GUI tests and are not present in `heartbeat.details.capability_readiness`.
 
 An upstream Skill can discover the provider through Manager `GET /v1/capabilities`, retrieve the provider `control_url`, inspect `GET /v1/capabilities` on the provider, and publish the Cartesian target/settings observation above. Operator Engage + LB remains the physical release boundary.

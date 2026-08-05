@@ -12,6 +12,12 @@ from .phase4_policy import (
 )
 
 
+FOUNDATIONPOSE_EXACT_INVOCATION = (
+    "Use FoundationPose to establish the stationary world-to-arm-base "
+    "transform."
+)
+
+
 class StationaryCalibrationRuntime(Protocol):
     async def run(
         self,
@@ -60,6 +66,35 @@ class StationaryCalibrationSkillAdapter:
         user_request = str(request).strip()
         if not user_request:
             raise ValueError("request must be non-empty")
+        if user_request != FOUNDATIONPOSE_EXACT_INVOCATION:
+            result = {
+                "status": "FOUNDATIONPOSE_EXPLICIT_INVOCATION_REQUIRED",
+                "workflow_complete": False,
+                "motion_usable": False,
+                "reason_code": "FOUNDATIONPOSE_NOT_EXPLICITLY_REQUESTED",
+                "message": (
+                    "FoundationPose was not started. The regular Agent route "
+                    "may invoke this long-running initializer only when the "
+                    "operator uses the documented exact request. Ordinary "
+                    "world-to-arm alignment is reserved for the movement-"
+                    "based gripper alignment workflow."
+                ),
+                "required_exact_request": FOUNDATIONPOSE_EXACT_INVOCATION,
+                "physical_motion_submitted": False,
+                "agent_request": user_request,
+                "agent_adapter": {
+                    "adapter_id": (
+                        "skill.stationary_world_arm_alignment.cli.v1"
+                    ),
+                    "execution": "NOT_STARTED_EXPLICIT_INVOCATION_REQUIRED",
+                    "mode": None,
+                    "arm_is_home_claimed": False,
+                    "active_control_interrupt_allowed": False,
+                    "physical_motion_submitted_by_adapter": False,
+                },
+            }
+            self.last_result = result
+            return result
         if self._lock.locked():
             raise RuntimeError("stationary calibration is already running")
         async with self._lock:

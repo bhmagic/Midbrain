@@ -1,5 +1,191 @@
 # Changelog
 
+## 0.4.9 - 2026-08-05
+
+- Require the operator's documented exact FoundationPose request before the
+  regular Agent loads the long-running stationary calibration runtime. Generic
+  alignment language now returns a structured explicit-invocation result and
+  never silently falls back to FoundationPose.
+- Add the durable next-iteration gripper-motion arm-root alignment plan and
+  handoff, including the accepted two-correspondence physical checkpoint.
+
+## 0.4.8 - 2026-08-04
+
+- Expand ordinary free-space relative motion to the full 1.2 m request
+  envelope and make POS_SPEED the required Integrated capability. Remove the
+  independent Cartesian-speed schema ceiling: requested speed now derives
+  per-joint authentication above 10 rad/s and hard rejection at 20 rad/s.
+- Capture measured controller FK and RGB-D effector points before and after
+  successful moves. Accumulate non-collinear correspondences into an averaged
+  arm-root refinement candidate and recommend the next orthogonal 25 cm
+  controller-previewed calibration move when more geometry is required.
+- Replace the model-copied no-contact execution payload with one opaque
+  pending `plan_id`. The host now recovers exact distance, speed, intent,
+  orientation policy, request digest, and preview digest from its accepted
+  controller preview. This removes the stale 20 cm execution-tool schema cap
+  that rejected valid 22.5 cm and larger full-destination plans before commit,
+  while host authorization still evaluates the canonical stored envelope.
+
+## 0.4.7 - 2026-08-04
+
+- Plan ordinary no-contact requests to the complete uncertainty-expanded
+  destination instead of an arbitrary 5 cm segment, at a 0.12 m/s nominal
+  endpoint speed. Post-move paired observation still owns residual alignment.
+- Automatically retry transient item/effector observation rejection twice and
+  rebuild one stale, expired, start-drifted, or collision-changed controller
+  preview from fresh evidence inside the authorized execution workflow.
+- Convert a stationary-calibration candidate digest mismatch into an exact
+  recoverable continuation, and recover malformed activation arguments from
+  the current persisted continuation without weakening digest verification.
+- Give every explicit obstacle remap a new mapping epoch and reject a compiled
+  scene unless it names that exact policy revision.
+- Open switchable RGB, registered-depth, and reviewed SAM2-mask visual evidence
+  after a successful user-requested map, with the complete and per-object
+  sphere counts retained in the inspection result.
+- Raise the agentic operation deadline from 90 to 300 seconds while retaining
+  the independent 30-second idle-progress and per-VLM-attempt limits. A valid
+  move/reobserve/replan loop is no longer cancelled midway through its second
+  paired observation.
+- Rely on Manager-owned Provider dependency activation for scene tracking and
+  compilation, so Skills continue to read best-available Fabric data without
+  directly jamming camera or arm Providers.
+
+## 0.4.6 - 2026-08-04
+
+- Keep a direct-motion approval pending until the Integrated Controller has
+  actually accepted its one-shot trigger. If a periodic semantic-scene update
+  invalidates only the controller-owned preview, re-preview the exact approved
+  target once against the newest scene instead of failing or consuming the
+  approval; spatial-frame and measured-start checks still run before commit.
+- Treat a missing VIO session epoch as advisory provenance for the reviewed
+  `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` workcell policy. Stationary
+  camera-to-arm motion is bound to canonical camera calibration and the active
+  reviewed transform, while the older V1 identity policy remains epoch-bound.
+- Validate Integrated relative-delta transit previews against their actual
+  `position_delta_m` request instead of reconstructing an unrelated absolute
+  `position_m` contract and rejecting the controller's valid response.
+- Keep an exact-depth visual effector reference eligible for bounded control
+  math when controller FK is temporarily absent. Capture-time FK still has
+  priority, Fabric-latest FK is the second choice, and the 40 mm-uncertainty
+  visual fallback sends only a capped relative correction that Integrated
+  resolves from its own fresh measured controlled frame.
+- Persist the last Fabric-accepted, explicitly user-authored SAM2 scene policy
+  in runtime state and restore it through Fabric after workspace restart. A
+  missing state file still means no policy; no table or black-mat default is
+  introduced.
+- Route direct `move ... above/toward <item>` wording, including commands that
+  omit the effector noun, into the reviewed no-contact item-approach workflow
+  instead of attempting to invent a work-object-only scene policy.
+- Render semantic scene spheres by unique `sphere_id` instead of collapsing
+  every voxel for one object onto its shared `object_id`.
+- Show a deterministic maximum of 240 compiled scene spheres while reporting
+  both displayed and complete controller-scene counts in the 3D viewer.
+- Preserve mounted arm-base item markers by representing an intentionally
+  absent VIO epoch as JSON null rather than the string `"None"`.
+- Evaluate Fabric RGB-D bundle freshness at the exact shared-memory copy time
+  rather than rejecting it after unrelated binding, VLM, scene, or Agent
+  latency; later task-age and controller commit fences remain independent.
+- Require explicit obstacle scans to activate both SAM2 and the arm scene
+  compiler and verify a fresh nonempty KEEP_OUT scene before claiming success.
+- Treat Integrated `WAITING_NEXT`, `HOLDING_FINAL`, and verified
+  `COMPLETED_FLOAT` as measured arrivals and continue mandatory re-observation.
+
+## 0.4.5 - 2026-08-03
+
+- Add independent 3D-viewer toggles and a color legend for keep-out,
+  pushable, work-object, and live gripper markers.
+- Evaluate VIO freshness at the exact captured RGB-D timestamp so downstream
+  scene compilation latency cannot invalidate evidence retroactively.
+- Return a structured HOT scene-compiler activation and exact retry when a
+  no-contact plan has metric landmarks but no current semantic-scene revision.
+- Carry explicit FREE_3D, NO_DESCENT, and same-height vertical policies through
+  prerequisite recovery and every re-observation iteration.
+- Request per-plan POSE_6DOF IK so no-contact transit preserves the current
+  controlled-frame orientation without changing global controller settings.
+- Draw metric-item and semantic workpiece markers from their estimated volume
+  centroid rather than the measured front-surface control point.
+- Fall back to `netstat` when non-elevated PowerShell cannot resolve a healthy
+  loopback listener with `Get-NetTCPConnection` during bounded startup.
+
+## 0.4.4 - 2026-08-03
+
+- Correct the low-level VLM geometry contract used by item and effector
+  localization. Gemini Robotics' normalized 0-1000 coordinates are now mapped
+  once to registered-depth pixels instead of being mistaken for native
+  1920x1080 pixels; source and converted coordinates remain auditable.
+- Expose RGB, registered depth, and RGB-depth overlay as switchable visual
+  evidence channels for item and effector localization.
+- Preserve the last trusted metric item marker across rejected retries within
+  the same VIO epoch, marking it stale after 60 seconds instead of silently
+  removing the diagnostic sphere.
+- Give `locate_item` one clean RGB view on the registered-depth grid instead
+  of the three-panel effector diagnostic composite. The visual result now has
+  one item box and one selected pixel rather than triplicated annotations.
+- Reject a purported whole-item box when its robust local color separation is
+  indistinguishable from its surrounding support/background. Rejected boxes
+  retain their audit evidence but cannot publish a workpiece assertion or
+  enter controller math.
+- Bind each ready no-contact correction to the current semantic-scene
+  revision, exact camera binding/boot/calibration, VIO epoch, and permanent
+  mounted-workcell activation, then request and validate an Integrated
+  controller shadow preview. Planning remains nonphysical and grants no
+  execution authority.
+- Add a separate Agent-SDK-authorized `execute_no_contact_approach_step` tool.
+  It accepts only the current plan's exact preview IDs and digests, mints a
+  decision-bound controller assertion after host authorization, executes at
+  most one capped correction, and returns directly to parallel item/effector
+  re-observation and replanning.
+- Register successful metric `locate_item` results as annotated visual
+  evidence, including the selected item box/pixel and any metric neighbor
+  samples, so the Agent UI opens the exact image used by the Skill.
+- Add `/api/world-annotations` and semantic wireframe markers to the developer
+  3D world viewer for the latest located item plus current `WORKPIECE`,
+  `PUSHABLE`, and `KEEP_OUT` scene spheres.
+- Replace the five-minute mounted world-to-arm activation expiry with
+  `MOUNTED_IDENTITY_TRACKING_GATED_V1`: transient tracking loss suspends motion
+  usability and recovery restores it, while camera/calibration/VIO identity
+  changes invalidate the activation.
+- When visual effector depth is unavailable, retain the current controller FK
+  endpoint as an explicitly degraded 40 mm-uncertainty control reference. The
+  result never claims visual metric localization and the no-contact planner
+  expands its standoff by that uncertainty.
+- Added the discoverable read-only `inspect_arm_semantic_scene` Skill adapter.
+- Publish successful metric `locate_item` results as short-lived canonical
+  Fabric `WORKPIECE` assertions while preserving valid location evidence if
+  semantic publication fails.
+- Wired the HOT arm scene compiler inspection tool into the regular Agent
+  allowlist and setup migration.
+
+## 0.4.3 - 2026-08-03
+
+- Route explicit world-axis-only requests through bounded Local VIO readiness:
+  start camera/VIO as needed, acquire the stationary initialization inhibit,
+  verify a current `TRACKING` body pose, and exclude world reset and the slow
+  stationary world-to-arm-base calibration path.
+- Route explicit 3D/metric item-location requests only to `locate_item`, and
+  route move-close wording to the composed no-contact planner instead of
+  asking the caller to supply relative XYZ motion.
+- Added the `CURRENT_WORLD` target alias, resolved from the synchronized RGB-D
+  frame's exact VIO world identity, so item and point registration do not need
+  an arm-base pose.
+- Added typed loopback endpoints for deterministic item location and supplied
+  RGB-pixel registration. These expose the existing Skill boundary to outside
+  agents without depending on conversational tool selection.
+- Migrated old `PHASE4_ELIGIBLE_TOOLS` configurations to include item,
+  effector, and no-contact approach tools; updated every configuration
+  template so discovery and execution eligibility cannot silently diverge.
+- Normalized duplicate Windows `Path`/`PATH` process keys and hid the Agent
+  background window in the launcher.
+- Record and stop the actual system-Python Agent listener behind the Windows
+  venv launcher, verify its `/health` service identity before orphan cleanup,
+  and fail shutdown if a verified Agent still owns TCP port 8000.
+- Add controller-FK association to arm-base effector localization. The VLM
+  receives a projected tool-pixel/depth prior, while post-registration policy
+  rejects a visual point outside the 1.2 m arm ROI, more than 0.4 m from FK,
+  or lacking a current controller reference.
+- Return missing arm-base registration and rejected item/effector observations
+  as structured non-motion continuation states instead of raw tool errors.
+
 ## 0.4.2 - 2026-07-31
 
 - Offer or activate a stationary calibration only when it carries the current
@@ -99,7 +285,8 @@
   calibration. A separate browser-session switch can authorize this bounded
   non-motion operation; Manager still revalidates candidate digest, quality,
   provenance, current VIO tracking, and expiry before publishing a
-  motion-usable transform for at most five minutes.
+  motion-usable transform under mounted-rig identity and tracking gates,
+  without a wall-clock activation expiry.
 - Required the Agent to invoke necessary lifecycle and calibration tools
   directly instead of ending a run with a conversational permission request;
   tool interruptions remain the authorization boundaries.

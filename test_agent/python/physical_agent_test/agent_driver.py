@@ -30,16 +30,24 @@ from .gemini_pointing_skill import (
     VisualSceneAnalysisSkill,
 )
 from .integrated_motion_adapter import (
+    JOINT_SPEED_AUTHENTICATION_THRESHOLD_RAD_S,
     MAX_CONTROLLED_FRAME_YAW_DELTA_DEG,
-    MAX_RELATIVE_NOMINAL_SPEED_M_S,
+    DEFAULT_RELATIVE_NOMINAL_SPEED_M_S,
+    MAX_RELATIVE_TRANSLATION_M,
     IntegratedRelativeMotionAdapter,
 )
+from .item_locator_adapter import MetricItemLocatorAdapter
 from .manager_client import ManagerClient
+from .no_contact_approach import NoContactItemApproachAdapter
 from .phase4_policy import (
     await_with_progress_heartbeat,
     report_operation_progress,
 )
 from .rgbd_alignment import RgbdAlignmentValidationSkill
+from .semantic_scene_inspector import SemanticSceneInspector
+from .scene_segmentation_policy_publisher import (
+    SceneSegmentationPolicyPublisher,
+)
 from .reviewed_observation_execution import (
     ReviewedObservationExecutionAdapter,
 )
@@ -67,7 +75,7 @@ class AgentSessionAuthorization:
     auto_authorize_provider_stop: bool = False
     auto_authorize_relative_motion: bool = False
     max_auto_move_cm: float = 5.0
-    max_auto_speed_m_s: float = MAX_RELATIVE_NOMINAL_SPEED_M_S
+    max_auto_speed_m_s: float = DEFAULT_RELATIVE_NOMINAL_SPEED_M_S
     auto_authorize_stationary_calibration: bool = False
     auto_authorize_stationary_activation: bool = False
     auto_authorize_safe_home: bool = False
@@ -77,6 +85,227 @@ class AgentSessionAuthorization:
 AgentEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 AgentInput = str | list[dict[str, Any]] | RunState[Any]
 logger = logging.getLogger(__name__)
+
+
+def _current_user_text(input_value: AgentInput) -> str:
+    if isinstance(input_value, str):
+        return input_value.strip()
+    if isinstance(input_value, RunState):
+        return ""
+    for item in reversed(input_value):
+        if str(item.get("role") or "").lower() != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            return "\n".join(parts)
+    return ""
+
+
+def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
+    """Narrow tools for explicit spatial intents that must not degrade."""
+
+    normalized = " ".join(str(prompt or "").lower().split())
+    world_terms = any(
+        term in normalized
+        for term in ("world axis", "world axes", "world frame", "world origin")
+    )
+    excludes_arm = any(
+        term in normalized
+        for term in (
+            "not the arm",
+            "not arm",
+            "without the arm",
+            "exclude the arm",
+            "world only",
+        )
+    )
+    if world_terms and excludes_arm:
+        return {
+            "route": "WORLD_AXIS_ONLY",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "establish_world_axis",
+                "tool_search",
+            },
+            "instruction": (
+                "The current request explicitly excludes arm-base location. "
+                "Never call calibrate_stationary_workcell or any arm-base pose "
+                "locator. Call establish_world_axis so camera/VIO activation, "
+                "the stationary initialization gate, and TRACKING body-pose "
+                "verification remain one bounded operation. Report the returned "
+                "world frame, session epoch, tracking state, and convention. "
+                "This operation must not reset the origin."
+            ),
+        }
+
+    scene_policy_terms = any(
+        term in normalized
+        for term in (
+            "obstacle",
+            "keep out",
+            "keep-out",
+            "pushable",
+            "do not collide",
+            "don't collide",
+        )
+    )
+    if scene_policy_terms:
+        return {
+            "route": "EXPLICIT_SCENE_SEGMENTATION_POLICY",
+            "allowed_tools": {
+                "configure_scene_segmentation_policy",
+                "inspect_arm_semantic_scene",
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                "plan_no_contact_item_approach",
+                "execute_no_contact_approach_step",
+                "tool_search",
+            },
+            "instruction": (
+                "The user is explicitly defining scene semantics. Call "
+                "configure_scene_segmentation_policy with only the objects "
+                "the user described and their requested types. Never infer "
+                "additional KEEP_OUT objects. Include a complete robot-arm "
+                "description for the independent SAM2 arm exclusion mask. "
+                "Unclaimed visible geometry remains PUSHABLE and non-blocking. "
+                "Ensure perception.sam2_scene_tracker is HOT after publishing, "
+                "then ensure world_model.arm_scene_compiler is HOT and call "
+                "inspect_arm_semantic_scene. Do not report that the scan worked "
+                "until inspection returns SCENE_READY with at least one "
+                "KEEP_OUT sphere. The 3D viewer intentionally displays a "
+                "reduced deterministic sample while the controller retains the "
+                "complete scene. "
+                "Only continue into approach planning when the same prompt "
+                "also explicitly requests arm movement."
+            ),
+        }
+
+    metric_terms = any(
+        term in normalized
+        for term in (
+            "3d",
+            "3-d",
+            "metric",
+            "depth",
+            "world coordinate",
+            "camera coordinate",
+            "robot coordinate",
+        )
+    )
+    item_terms = any(
+        term in normalized
+        for term in (
+            "object",
+            "item",
+            "thing",
+            "roll",
+            "toilet paper",
+            "workpiece",
+        )
+    )
+    location_terms = any(
+        term in normalized
+        for term in ("locate", "location", "position", "where", "identify")
+    )
+    if metric_terms and item_terms and location_terms:
+        return {
+            "route": "METRIC_ITEM_LOCATION",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                "locate_item",
+                "tool_search",
+            },
+            "instruction": (
+                "This is an explicit metric item-location request. Use "
+                "locate_item; analyze_visual_scene is RGB-only and cannot "
+                "satisfy the request. Use target_frame=CURRENT_WORLD when the "
+                "user wants world 3D without locating the arm base. If a "
+                "required provider is cold, activate it and then invoke "
+                "locate_item in the same run. Report degraded bearing-only "
+                "evidence as degraded, not as a metric location."
+            ),
+        }
+    approach_terms = any(
+        term in normalized
+        for term in (
+            "close to",
+            "move close",
+            "move near",
+            "move to",
+            "approach",
+            "get near",
+            "above",
+            "over the",
+            "toward",
+            "towards",
+        )
+    )
+    effector_terms = any(
+        term in normalized
+        for term in ("gripper", "effector", "arm", "hand")
+    )
+    implicit_effector_motion = "move" in normalized and item_terms
+    if (
+        approach_terms
+        and item_terms
+        and (effector_terms or implicit_effector_motion)
+    ):
+        return {
+            "route": "NO_CONTACT_ITEM_APPROACH",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                "plan_no_contact_item_approach",
+                "execute_no_contact_approach_step",
+                "calibrate_stationary_workcell",
+                "review_and_activate_stationary_calibration",
+                "tool_search",
+            },
+            "instruction": (
+                "This request asks to move the effector close to an item. Use "
+                "plan_no_contact_item_approach before any motion; do not ask "
+                "the user to translate the visual target into a relative XYZ "
+                "command and do not substitute preview_relative_effector_motion. "
+                "If it returns ARM_BASE_REGISTRATION_REQUIRED, call its exact "
+                "required_next_tool, complete candidate review/activation, then "
+                "retry the preserved plan_no_contact_item_approach arguments. "
+                "If it returns SEMANTIC_SCENE_PROVIDER_REQUIRED, activate its "
+                "exact required provider and retry the preserved arguments in "
+                "the same run. If the SAM2 tracker remains DEGRADED because no "
+                "explicit KEEP_OUT policy exists, do not invent one from this "
+                "move request and do not publish a work-object-only policy; "
+                "report that explicit user obstacle descriptions are required. "
+                "If it returns ITEM_OBSERVATION_REJECTED or "
+                "EFFECTOR_OBSERVATION_REJECTED, reacquire both once with the "
+                "same arguments; stop and report the evidence if the second "
+                "observation is also rejected. "
+                "If the controller preview is ready, invoke its exact "
+                "required_next_tool arguments without editing them. After each "
+                "executed step, treat WAITING_NEXT, HOLDING_FINAL, and verified "
+                "COMPLETED_FLOAT as successful measured arrivals when the tool "
+                "returns measured_arrival_confirmed=true. Immediately invoke "
+                "the returned plan tool so both landmarks are reacquired and "
+                "realigned; do not report WAITING_NEXT as unconfirmed motion. "
+                "Stop only when aligned, a safety "
+                "gate rejects the step, or the iteration limit is reached. A "
+                "planning result alone must not be reported as completed movement. "
+                "Use vertical_policy=PRESERVE_CURRENT_HEIGHT when the user "
+                "explicitly asks for horizontal or same-height motion, "
+                "NO_DESCENT when descent is explicitly forbidden, and FREE_3D "
+                "otherwise."
+            ),
+        }
+    return None
 
 
 def _provider_readiness_snapshot(
@@ -266,23 +495,29 @@ def relative_motion_within_authorization(
 
     try:
         maximum_cm = float(max_auto_move_cm)
-        maximum_speed = float(max_auto_speed_m_s)
         distance_m = float(arguments.get("distance_m"))
         planned_speed_m_s = float(
             arguments.get("planned_nominal_speed_m_s")
+        )
+        requested_peak_joint_speed = float(
+            arguments.get("requested_peak_joint_speed_rad_s", 0.0)
         )
     except (TypeError, ValueError):
         return False
     if (
         not math.isfinite(maximum_cm)
         or maximum_cm <= 0.0
-        or not math.isfinite(maximum_speed)
-        or maximum_speed <= 0.0
         or not math.isfinite(distance_m)
         or distance_m < 0.0
         or distance_m * 100.0 > maximum_cm + 1e-9
         or not math.isfinite(planned_speed_m_s)
         or planned_speed_m_s < 0.0
+        or not math.isfinite(requested_peak_joint_speed)
+        or requested_peak_joint_speed < 0.0
+        or requested_peak_joint_speed >= 20.0
+        or bool(arguments.get("joint_speed_authentication_required"))
+        or requested_peak_joint_speed
+        > JOINT_SPEED_AUTHENTICATION_THRESHOLD_RAD_S
     ):
         return False
 
@@ -316,7 +551,6 @@ def relative_motion_within_authorization(
         if (
             direction == "NONE"
             or planned_speed_m_s <= 0.0
-            or planned_speed_m_s > maximum_speed + 1e-9
         ):
             return False
     elif (
@@ -333,6 +567,7 @@ def relative_motion_within_authorization(
             and orientation_policy
             in {
                 "POSITION_ONLY",
+                "PRESERVE_CURRENT",
                 "PRESERVE_MEASURED_CONTROLLED_FRAME",
             }
         )
@@ -495,7 +730,15 @@ class PrototypeAgentDriver:
         visual_scene_skill: VisualSceneAnalysisSkill | None = None,
         rgbd_alignment_skill: RgbdAlignmentValidationSkill | None = None,
         spatial_registration_skill: SpatialRegistrationSkillAdapter | None = None,
+        item_locator_skill: MetricItemLocatorAdapter | None = None,
         effector_front_skill: EffectorFrontSkillAdapter | None = None,
+        no_contact_approach_skill: (
+            NoContactItemApproachAdapter | None
+        ) = None,
+        semantic_scene_inspector: SemanticSceneInspector | None = None,
+        scene_policy_publisher: (
+            SceneSegmentationPolicyPublisher | None
+        ) = None,
         tool_registration_skill: ToolControlFrameSkillAdapter | None = None,
         stationary_calibration_skill: (
             StationaryCalibrationSkillAdapter | None
@@ -508,6 +751,9 @@ class PrototypeAgentDriver:
         developer_mode: bool = False,
         integrated_motion_skill: IntegratedRelativeMotionAdapter | None = None,
         basic_safe_home_skill: BasicSafeHomeAdapter | None = None,
+        space_cognition_establisher: (
+            Callable[[], Awaitable[dict[str, Any]]] | None
+        ) = None,
         space_cognition_reinitializer: (
             Callable[[str], Awaitable[dict[str, Any]]] | None
         ) = None,
@@ -515,7 +761,7 @@ class PrototypeAgentDriver:
         defer_loading: bool = False,
         adapter_timeout_s: float = 60.0,
         stationary_calibration_timeout_s: float = 600.0,
-        provider_hot_readiness_timeout_s: float = 20.0,
+        provider_hot_readiness_timeout_s: float = 45.0,
         provider_hot_readiness_poll_interval_s: float = 0.25,
         max_turns: int = 16,
         session_history_item_limit: int | None = None,
@@ -561,6 +807,20 @@ class PrototypeAgentDriver:
                 identify_adapter
             ),
         }
+        if space_cognition_establisher is not None:
+            async def establish_world_axis_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                if arguments:
+                    raise ValueError(
+                        "establish_world_axis does not accept arguments"
+                    )
+                result = await space_cognition_establisher()
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.initialize_space_cognition.ensure_tracking.v1"
+            ] = BoundMethodSkillAdapter(establish_world_axis_adapter)
         if space_cognition_reinitializer is not None:
             async def space_cognition_adapter(
                 arguments: dict[str, Any],
@@ -611,6 +871,29 @@ class PrototypeAgentDriver:
             adapters[
                 "skill.spatial_registration_rgbd.v1"
             ] = BoundMethodSkillAdapter(spatial_registration_adapter)
+        if item_locator_skill is not None:
+            async def item_locator_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await item_locator_skill.run(
+                    question=arguments.get("question"),
+                    target_frame=arguments.get("target_frame"),
+                    object_id=arguments.get("object_id"),
+                    contact_policy=arguments.get(
+                        "contact_policy",
+                        "WORKPIECE_CONTACT_ALLOWED",
+                    ),
+                    depth_requirement=arguments.get(
+                        "depth_requirement",
+                        "PREFER_METRIC",
+                    ),
+                    task_plane=arguments.get("task_plane"),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.observe_pointed_object.locate.v2"
+            ] = BoundMethodSkillAdapter(item_locator_adapter)
         if effector_front_skill is not None:
             async def effector_front_adapter(
                 arguments: dict[str, Any],
@@ -623,6 +906,45 @@ class PrototypeAgentDriver:
             adapters[
                 "skill.locate_effector_front.v1"
             ] = BoundMethodSkillAdapter(effector_front_adapter)
+        if no_contact_approach_skill is not None:
+            async def no_contact_approach_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await no_contact_approach_skill.run(
+                    question=arguments.get("question"),
+                    object_id=arguments.get("object_id"),
+                    requested_standoff_m=arguments.get(
+                        "requested_standoff_m",
+                        0.10,
+                    ),
+                    iteration_index=arguments.get("iteration_index", 0),
+                    maximum_iterations=arguments.get(
+                        "maximum_iterations",
+                        6,
+                    ),
+                    maximum_step_m=arguments.get("maximum_step_m", 1.2),
+                    vertical_policy=arguments.get(
+                        "vertical_policy", "FREE_3D"
+                    ),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.approach_item_no_contact.plan.v1"
+            ] = BoundMethodSkillAdapter(no_contact_approach_adapter)
+        if semantic_scene_inspector is not None:
+            async def semantic_scene_inspector_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await semantic_scene_inspector.run(
+                    include_spheres=arguments.get("include_spheres", False),
+                    maximum_spheres=arguments.get("maximum_spheres", 100),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "test_agent.inspect_arm_semantic_scene.v1"
+            ] = BoundMethodSkillAdapter(semantic_scene_inspector_adapter)
         if tool_registration_skill is not None:
             async def tool_registration_adapter(
                 arguments: dict[str, Any],
@@ -749,12 +1071,160 @@ class PrototypeAgentDriver:
         offered_tools = list(tools)
         if defer_loading:
             offered_tools.append(ToolSearchTool())
+        if scene_policy_publisher is not None:
+            async def configure_scene_segmentation_policy(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                result = await scene_policy_publisher.publish_policy(
+                    policy_id=arguments.get("policy_id"),
+                    objects=arguments.get("objects"),
+                    arm_description=arguments.get("arm_description"),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            offered_tools.append(
+                FunctionTool(
+                    name="configure_scene_segmentation_policy",
+                    description=(
+                        "Publish the user's explicit obstacle/work-object/"
+                        "pushable descriptions to the Fabric for the HOT SAM2 "
+                        "scene tracker. Only listed KEEP_OUT objects become "
+                        "blocking geometry; unclaimed visible depth defaults "
+                        "to ignored PUSHABLE geometry. This submits no motion."
+                    ),
+                    params_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "policy_id": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                            "objects": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "object_id": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                        },
+                                        "type": {
+                                            "type": "string",
+                                            "enum": [
+                                                "KEEP_OUT",
+                                                "PUSHABLE",
+                                                "WORK_OBJECT",
+                                            ],
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                        },
+                                    },
+                                    "required": [
+                                        "object_id",
+                                        "type",
+                                        "description",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "arm_description": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                        },
+                        "required": [
+                            "policy_id",
+                            "objects",
+                            "arm_description",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    on_invoke_tool=configure_scene_segmentation_policy,
+                    strict_json_schema=True,
+                    needs_approval=False,
+                )
+            )
+        if no_contact_approach_skill is not None:
+            async def execute_no_contact_approach_step(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                result = await no_contact_approach_skill.execute_preview(
+                    plan_id=arguments.get("plan_id"),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            async def no_contact_motion_needs_approval(
+                context_wrapper: Any,
+                arguments: dict[str, Any],
+                _call_id: str,
+            ) -> bool:
+                authorization = _session_authorization(context_wrapper)
+                canonical = await (
+                    no_contact_approach_skill
+                    .pending_execution_authorization_arguments(
+                        arguments.get("plan_id")
+                    )
+                )
+                return not (
+                    canonical is not None
+                    and authorization.auto_authorize_relative_motion
+                    and relative_motion_within_authorization(
+                        canonical,
+                        max_auto_move_cm=authorization.max_auto_move_cm,
+                        max_auto_speed_m_s=authorization.max_auto_speed_m_s,
+                    )
+                )
+
+            offered_tools.append(
+                FunctionTool(
+                    name="execute_no_contact_approach_step",
+                    description=(
+                        "Execute one exact, fresh, collision-checked no-contact "
+                        "item-approach preview by its opaque plan ID. All motion "
+                        "parameters and controller digests are recovered from "
+                        "the pending preview rather than copied by the model. "
+                        "Host authorization immediately requests one bounded "
+                        "physical correction of at most the planned step, after "
+                        "which both item and effector must be observed again. "
+                        "WAITING_NEXT and HOLDING_FINAL are measured-arrival "
+                        "terminal states, not incomplete motion, when the result "
+                        "sets measured_arrival_confirmed=true."
+                    ),
+                    params_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {"type": "string", "minLength": 1},
+                        },
+                        "required": ["plan_id"],
+                        "additionalProperties": False,
+                    },
+                    on_invoke_tool=execute_no_contact_approach_step,
+                    strict_json_schema=True,
+                    needs_approval=no_contact_motion_needs_approval,
+                )
+            )
         if stationary_calibration_skill is not None:
             async def review_and_activate_stationary_calibration(
                 _context,
                 raw_arguments: str,
             ) -> str:
-                arguments = json.loads(raw_arguments)
+                try:
+                    arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    continuation = (
+                        stationary_calibration_skill
+                        .latest_activation_continuation()
+                    )
+                    if continuation is None:
+                        raise
+                    arguments = dict(continuation["arguments"])
                 result = await stationary_calibration_skill.review_and_activate(
                     alignment_id=arguments.get("alignment_id"),
                     candidate_sha256=arguments.get("candidate_sha256"),
@@ -773,8 +1243,10 @@ class PrototypeAgentDriver:
                         "or service boot. This submits no arm motion. "
                         "Manager independently revalidates candidate quality, "
                         "provenance, current VIO tracking, and expiration, then "
-                        "publishes a motion-usable transform for at most five "
-                        "minutes."
+                        "publishes a persistent mounted-workcell transform. "
+                        "Its motion usability is gated by current camera, "
+                        "calibration, and VIO tracking identities rather than "
+                        "a wall-clock expiry."
                     ),
                     params_json_schema={
                         "type": "object",
@@ -1069,6 +1541,15 @@ class PrototypeAgentDriver:
                     timing_safety_limited=arguments.get(
                         "timing_safety_limited"
                     ),
+                    requested_peak_joint_speed_rad_s=arguments.get(
+                        "requested_peak_joint_speed_rad_s"
+                    ),
+                    effective_peak_joint_speed_rad_s=arguments.get(
+                        "effective_peak_joint_speed_rad_s"
+                    ),
+                    joint_speed_authentication_required=arguments.get(
+                        "joint_speed_authentication_required"
+                    ),
                     target_position_m=arguments.get("target_position_m"),
                     orientation_policy=arguments.get(
                         "orientation_policy", "POSITION_ONLY"
@@ -1155,43 +1636,50 @@ class PrototypeAgentDriver:
                                 "distance_m": {
                                     "type": "number",
                                     "minimum": 0.0,
-                                    "maximum": 0.2,
+                                    "maximum": MAX_RELATIVE_TRANSLATION_M,
                                 },
                                 "original_request_distance_m": {
                                     "type": "number",
                                     "minimum": 0.0,
-                                    "maximum": 0.2,
+                                    "maximum": MAX_RELATIVE_TRANSLATION_M,
                                 },
                                 "requested_speed_m_s": {
                                     "anyOf": [
                                         {
                                             "type": "number",
                                             "exclusiveMinimum": 0.0,
-                                            "maximum": (
-                                                MAX_RELATIVE_NOMINAL_SPEED_M_S
-                                            ),
                                         },
                                         {"type": "null"},
                                     ],
                                 },
                                 "requested_duration_s": {
                                     "type": "number",
-                                    "minimum": 0.25,
-                                    "maximum": 8.0,
+                                    "minimum": 0.05,
+                                    "maximum": 60.0,
                                 },
                                 "planned_duration_s": {
                                     "type": "number",
-                                    "minimum": 0.25,
-                                    "maximum": 8.0,
+                                    "minimum": 0.05,
+                                    "maximum": 60.0,
                                 },
                                 "planned_nominal_speed_m_s": {
                                     "type": "number",
                                     "minimum": 0.0,
-                                    "maximum": (
-                                        MAX_RELATIVE_NOMINAL_SPEED_M_S
-                                    ),
                                 },
                                 "timing_safety_limited": {
+                                    "type": "boolean",
+                                },
+                                "requested_peak_joint_speed_rad_s": {
+                                    "type": "number",
+                                    "minimum": 0.0,
+                                    "exclusiveMaximum": 20.0,
+                                },
+                                "effective_peak_joint_speed_rad_s": {
+                                    "type": "number",
+                                    "minimum": 0.0,
+                                    "exclusiveMaximum": 20.0,
+                                },
+                                "joint_speed_authentication_required": {
                                     "type": "boolean",
                                 },
                                 "target_position_m": {
@@ -1253,6 +1741,9 @@ class PrototypeAgentDriver:
                                 "planned_duration_s",
                                 "planned_nominal_speed_m_s",
                                 "timing_safety_limited",
+                                "requested_peak_joint_speed_rad_s",
+                                "effective_peak_joint_speed_rad_s",
+                                "joint_speed_authentication_required",
                                 "target_position_m",
                                 "orientation_policy",
                                 "controlled_frame_yaw_delta_deg",
@@ -1329,7 +1820,7 @@ class PrototypeAgentDriver:
                 "robot_arm.rebot_dm to HOT first with exact capability "
                 "robot.motion.arm.basic, then activate "
                 "robot_arm.primary.integrated to HOT with exact capability "
-                "robot.motion.arm.integrated.mit.one_shot. Only after both "
+                "robot.motion.arm.integrated.pos_vel.one_shot. Only after both "
                 "dependencies are ready, create the nonphysical preview and "
                 "then "
                 "request execution of that exact preview; do not stop at "
@@ -1441,7 +1932,7 @@ class PrototypeAgentDriver:
                     "HOT first with exact capability robot.motion.arm.basic, "
                     "then activate robot_arm.primary.integrated to HOT with "
                     "exact capability "
-                    "robot.motion.arm.integrated.mit.one_shot. Only after "
+                    "robot.motion.arm.integrated.pos_vel.one_shot. Only after "
                     "both are ready, create the nonphysical Integrated IK "
                     "preview and then request "
                     "execution of that exact preview. "
@@ -1545,9 +2036,17 @@ class PrototypeAgentDriver:
                 )
             if stationary_calibration_skill is not None:
                 instructions += (
-                    " When the operator asks to establish, calibrate, or "
-                    "validate the world-to-arm-base relationship, use "
-                    "calibrate_stationary_workcell immediately. Do not ask for "
+                    " FoundationPose is retained as a slow explicit "
+                    "initializer, not as the default world-to-arm alignment "
+                    "route. Call calibrate_stationary_workcell only when the "
+                    "operator's complete request is exactly: 'Use "
+                    "FoundationPose to establish the stationary world-to-arm-"
+                    "base transform.' Pass that sentence unchanged as the "
+                    "request argument. For every other establish, calibrate, "
+                    "or validate request, do not call FoundationPose; use the "
+                    "movement-based gripper alignment workflow when it is "
+                    "available and otherwise report that it is not yet "
+                    "implemented. Do not ask for "
                     "conversational permission first; the tool authorization "
                     "boundary may be satisfied before execution by active "
                     "browser-session calibration authorization, otherwise it "
@@ -1560,12 +2059,15 @@ class PrototypeAgentDriver:
                     "its required_next_tool immediately with unchanged exact "
                     "alignment ID and digest. Report the relationship as "
                     "established only after that tool returns "
-                    "motion_usable=true. Candidate review and bounded "
-                    "activation have their own authorization policy and "
-                    "Manager revalidates all safety gates. "
-                    "If activation returns FRESH_CALIBRATION_REQUIRED, never "
+                    "motion_usable=true. Candidate review and mounted-rig "
+                    "activation have their own authorization policy. The "
+                    "activation has no wall-clock expiry; Manager gates it "
+                    "using exact camera/VIO identity, calibration revision, "
+                    "VIO epoch and convention, and current tracking health. "
+                    "If an explicitly requested FoundationPose activation "
+                    "returns FRESH_CALIBRATION_REQUIRED, never "
                     "retry that alignment. When the current user request is "
-                    "to establish the relationship, call "
+                    "the same exact FoundationPose sentence, call "
                     "calibrate_stationary_workcell again with the current "
                     "request and activate only its new candidate. "
                     "The Skill acquires "
@@ -1573,6 +2075,20 @@ class PrototypeAgentDriver:
                     "a later Integrated motion requires a fresh explicit "
                     "approved HOT transition before preview."
                 )
+            instructions += (
+                " A request for only the world axis, world frame, or world "
+                "origin that says not the arm base is not a stationary "
+                "workcell-calibration request. Use establish_world_axis and "
+                "never run calibrate_stationary_workcell for that wording. "
+                "establish_world_axis may transiently inhibit robot motion to "
+                "collect stationary IMU samples, but it never resets the VIO "
+                "epoch or locates the arm base. A request to "
+                "identify and locate an item in 3D, metric, depth, world, "
+                "camera, or robot coordinates must use locate_item, never the "
+                "RGB-only analyze_visual_scene tool. Use CURRENT_WORLD when "
+                "the caller wants the live VIO world frame without an arm-base "
+                "relationship."
+            )
         if basic_safe_home_skill is not None:
             instructions += (
                 " For an explicit safe-home request, use "
@@ -1712,16 +2228,35 @@ class PrototypeAgentDriver:
                 "run_config": run_config,
                 "session": self.session,
             }
+            selected_agent = self.agent
+            intent_route = deterministic_intent_tool_route(
+                _current_user_text(input_value)
+            )
+            if intent_route is not None and not isinstance(input_value, RunState):
+                allowed_tools = intent_route["allowed_tools"]
+                selected_agent = self.agent.clone(
+                    tools=[
+                        tool
+                        for tool in self.agent.tools
+                        if getattr(tool, "name", "") in allowed_tools
+                    ],
+                    instructions=(
+                        f"{self.agent.instructions} "
+                        f"Deterministic intent route "
+                        f"{intent_route['route']}: "
+                        f"{intent_route['instruction']}"
+                    ),
+                )
             if event_sink is None:
                 awaitable = Runner.run(
-                    self.agent,
+                    selected_agent,
                     input_value,
                     **runner_arguments,
                 )
             else:
                 awaitable = consume_openai_agent_stream(
                     Runner.run_streamed(
-                        self.agent,
+                        selected_agent,
                         input_value,
                         **runner_arguments,
                     ),
@@ -1916,18 +2451,23 @@ class PrototypeAgentDriver:
             title = "Activate this exact world-to-arm calibration?"
             summary = (
                 "The stationary calibration candidate will be recorded as "
-                "reviewed and submitted to Manager for a bounded activation."
+                "reviewed and submitted to Manager as a mounted-rig "
+                "identity- and tracking-gated activation."
             )
             warning = (
                 "No arm motion is submitted. If Manager accepts the current "
-                "quality, provenance, VIO state, and age checks, this exact "
-                "transform becomes motion-usable for at most five minutes."
+                "quality, provenance, provider identity, VIO epoch, and "
+                "tracking checks, this exact transform remains usable until "
+                "revoked, superseded, or its evidence identity changes."
             )
             confirm_label = "Approve exact calibration"
             details = [
                 {"label": "Alignment", "value": alignment_id},
                 {"label": "Candidate SHA-256", "value": candidate_sha256},
-                {"label": "Activation", "value": "At most 5 minutes"},
+                {
+                    "label": "Activation",
+                    "value": "No timer; identity and tracking gated",
+                },
                 {"label": "Physical motion", "value": "None"},
             ]
         elif tool_name == "reinitialize_space_cognition":

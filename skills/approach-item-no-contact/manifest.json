@@ -1,0 +1,120 @@
+{
+  "skill_type": "approach_item_no_contact",
+  "version": "0.1.4",
+  "display_name": "Plan No-Contact Item Approach",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "plan_no_contact_item_approach",
+    "description": "Locate one visible item and the effector front in parallel, express both in rebot_arm_base, and plan an uncertainty-aware Cartesian correction to the requested no-contact destination. When the runtime supplies the canonical scene and Integrated controller, the adapter also requests a shadow preview and returns an exact separately authorized execution continuation. The default correction reaches the destination in one planned motion; both landmarks are observed again for residual realignment. This planning Skill never submits or authorizes motion.",
+    "when_to_use": [
+      "The robot should move close to a visible item without touching or pushing it.",
+      "An Agent needs one correction from current visual item and effector evidence.",
+      "A previous correction completed and both landmarks must be realigned."
+    ],
+    "when_not_to_use": [
+      "The item has only bearing evidence and no metric or task-plane point.",
+      "The camera-to-arm-base calibration is unavailable or stale.",
+      "The request intends contact, grasping, pushing, or force work."
+    ],
+    "side_effects": [
+      "Reads synchronized RGB-D and arm-base transform evidence for two parallel locator calls.",
+      "May call the configured VLM twice in parallel and write diagnostic evidence images.",
+      "May request a nonphysical Integrated-controller shadow preview through the host adapter.",
+      "Returns an exact execution continuation but does not authorize or execute it."
+    ],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "robot.transforms.read",
+      "vlm.invoke"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "Complete description of the one visible item to approach."
+        },
+        "object_id": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Optional stable object ID supplied by the upstream Agent."
+        },
+        "requested_standoff_m": {
+          "type": "number",
+          "minimum": 0.03,
+          "maximum": 0.5,
+          "default": 0.1
+        },
+        "iteration_index": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "maximum_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 6
+        },
+        "maximum_step_m": {
+          "type": "number",
+          "minimum": 0.005,
+          "maximum": 1.2,
+          "default": 1.2,
+          "description": "Optional explicit correction cap. The default spans the complete 1.2 m arm ROI so normal requests target the destination rather than an arbitrary 5 cm segment."
+        },
+        "vertical_policy": {
+          "type": "string",
+          "enum": ["NO_DESCENT", "PRESERVE_CURRENT_HEIGHT", "FREE_3D"],
+          "default": "FREE_3D",
+          "description": "Vertical correction policy. FREE_3D relies on the required semantic-scene collision preview; PRESERVE_CURRENT_HEIGHT forces a horizontal correction."
+        }
+      },
+      "required": ["question"],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.approach_item_no_contact.plan.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "world.transforms.timestamped",
+    "robot_arm.transforms.local",
+    "world_model.arm.semantic_scene",
+    "perception.vision_language",
+    "robot.motion.arm.integrated.plan.transit_path.shadow"
+  ],
+  "optional_capabilities": [
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "result_policy": {
+    "motion_usable": false,
+    "physical_motion_authorized": false,
+    "destination_move_requires_residual_reobservation": true,
+    "allowed_contact_object_ids": [],
+    "permit_pushable_contact": false
+  },
+  "published_streams": []
+}

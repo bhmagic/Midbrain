@@ -141,7 +141,9 @@ class _Manager:
             "activation_id": "activation-1",
             "review_decision_id": request["review_decision"]["decision_id"],
             "candidate_sha256": canonical_sha256(candidate),
-            "expires_at_us": candidate["expires_at_us"],
+            "expires_at_us": None,
+            "validity_policy": "MOUNTED_IDENTITY_TRACKING_GATED_V1",
+            "invalidation_conditions": ["VIO_SESSION_EPOCH_CHANGED"],
             "state": "ACTIVE",
             "motion_usable": True,
         }
@@ -197,6 +199,12 @@ class StationaryCalibrationActivationTests(
         self.assertTrue(activated["review_created"])
         self.assertNotIn("review_identity_assertion", activated)
         self.assertEqual(len(manager.requests), 1)
+        self.assertNotIn("duration_ms", manager.requests[0])
+        self.assertIsNone(activated["expires_at_us"])
+        self.assertEqual(
+            activated["validity_policy"],
+            "MOUNTED_IDENTITY_TRACKING_GATED_V1",
+        )
         self.assertTrue(repeated["already_active"])
 
     async def test_rejects_digest_mismatch_before_manager_activation(
@@ -217,15 +225,19 @@ class StationaryCalibrationActivationTests(
                 review_root=root / "reviews",
             )
 
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "digest does not match",
-            ):
-                await service.review_and_activate(
-                    alignment_id="alignment-1",
-                    candidate_sha256="0" * 64,
-                )
+            response = await service.review_and_activate(
+                alignment_id="alignment-1",
+                candidate_sha256="0" * 64,
+            )
 
+        self.assertEqual(
+            response["status"],
+            "CALIBRATION_CANDIDATE_DIGEST_REFRESH_REQUIRED",
+        )
+        self.assertEqual(
+            response["required_next_tool"]["arguments"]["candidate_sha256"],
+            canonical_sha256(result["candidate"]),
+        )
         self.assertEqual(manager.requests, [])
 
     async def test_expired_persisted_candidate_requires_fresh_calibration(

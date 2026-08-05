@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import time
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
 import numpy as np
@@ -39,7 +39,7 @@ CAMERA_OPTICAL_CONVENTION_ID = (
 
 
 class RgbdFrameSource(Protocol):
-    async def capture(self) -> Any:
+    async def capture(self, *, require_vio: bool = True) -> Any:
         """Copy one synchronized RGB-D frame out of provider-owned memory."""
 
 
@@ -116,6 +116,10 @@ class SpatialRegistrationSkillAdapter:
         generic_route_mode: str = "SHADOW",
         maximum_transform_extrapolation_us: int = 750_000,
         maximum_source_age_ms: dict[str, float | None] | None = None,
+        mounted_static_target_frames: set[str] | None = None,
+        readiness_ensurer: (
+            Callable[[], Awaitable[dict[str, Any]]] | None
+        ) = None,
     ):
         normalized_binding = str(binding_mode).strip().upper()
         normalized_route = str(generic_route_mode).strip().upper()
@@ -133,6 +137,12 @@ class SpatialRegistrationSkillAdapter:
         self.fallback_camera_provider_id = str(fallback_camera_provider_id)
         self.binding_mode = normalized_binding
         self.generic_route_mode = normalized_route
+        self.readiness_ensurer = readiness_ensurer
+        self.mounted_static_target_frames = {
+            str(frame).strip()
+            for frame in (mounted_static_target_frames or set())
+            if str(frame).strip()
+        }
         self.maximum_transform_extrapolation_us = int(
             maximum_transform_extrapolation_us
         )
@@ -190,7 +200,7 @@ class SpatialRegistrationSkillAdapter:
             target_from_camera=context.target_from_camera,
             observed_at_us=int(frame.timestamp_us),
             source_frame=str(frame.camera_frame),
-            target_frame=requested_target,
+            target_frame=context.target_frame,
             calibration_revision=frame.calibration_revision,
             route_provenance=context.selection.as_dict(),
             depth_policy=str(depth_policy),
@@ -228,12 +238,27 @@ class SpatialRegistrationSkillAdapter:
         if not requested_target:
             raise ValueError("target_frame must not be empty")
         context_skill_id = skill_id or f"spatial-context-{uuid4()}"
+        require_vio = requested_target not in self.mounted_static_target_frames
+        if self.readiness_ensurer is not None and require_vio:
+            report_operation_progress("ENSURE_SPATIAL_TRACKING")
+            await self.readiness_ensurer()
         report_operation_progress("BIND_RGBD_CAMERA")
         binding = await self._bind_camera(context_skill_id)
         self.last_binding = dict(binding.binding)
 
         report_operation_progress("COPY_SYNCHRONIZED_RGBD")
-        frame = await self.capture.capture()
+        frame = await self.capture.capture(require_vio=require_vio)
+        if requested_target.upper() in {
+            "CURRENT_WORLD",
+            "WORLD",
+            "VIO_WORLD",
+        }:
+            requested_target = str(frame.world_frame or "").strip()
+            if not requested_target:
+                raise RuntimeError(
+                    "CURRENT_WORLD requested but the synchronized frame has "
+                    "no VIO world-frame identity"
+                )
 
         report_operation_progress("READ_RGBD_ROUTE_SET")
         route_observation = await self.fabric.latest_optional(
@@ -272,7 +297,6 @@ class SpatialRegistrationSkillAdapter:
             selected_route=selected_route,
             frame=frame,
         )
-        temporal_evidence.update(self._validate_vio_context(frame))
         if (
             self.generic_route_mode == "ENFORCED"
             and selection.capability != GENERIC_RGBD_ROUTE_CAPABILITY
@@ -282,20 +306,36 @@ class SpatialRegistrationSkillAdapter:
             )
 
         report_operation_progress("QUERY_TIMESTAMPED_TRANSFORM")
+        capture_session_epoch = (
+            str(frame.session_epoch) if frame.session_epoch else None
+        )
         transform = await self.fabric.transform(
             from_frame=str(frame.camera_frame),
             to_frame=requested_target,
             at_us=int(frame.timestamp_us),
             max_extrapolation_us=self.maximum_transform_extrapolation_us,
-            session_epoch=str(frame.session_epoch),
+            session_epoch=capture_session_epoch,
         )
         self._validate_transform(
             transform,
             source_frame=str(frame.camera_frame),
             target_frame=requested_target,
             timestamp_us=int(frame.timestamp_us),
-            session_epoch=str(frame.session_epoch),
+            session_epoch=capture_session_epoch,
         )
+        path = transform.get("path")
+        if isinstance(path, list) and self._is_reviewed_mounted_static_path(path):
+            temporal_evidence["vio_context"] = {
+                "decision": "NOT_REQUIRED_FOR_REVIEWED_MOUNTED_STATIC_PATH",
+                "session_epoch": capture_session_epoch,
+                "role": (
+                    "HISTORICAL_CALIBRATION_PROVENANCE_ONLY"
+                    if capture_session_epoch
+                    else "NOT_CAPTURED_FOR_MOUNTED_STATIC_PATH"
+                ),
+            }
+        else:
+            temporal_evidence.update(self._validate_vio_context(frame))
         valid_region = self._registered_depth_valid_region(selected_route)
         return SpatialFrameContext(
             skill_id=context_skill_id,
@@ -325,8 +365,12 @@ class SpatialRegistrationSkillAdapter:
                 int(frame.depth_m.shape[0]),
                 int(frame.depth_m.shape[1]),
             ],
-            "session_epoch": str(frame.session_epoch),
-            "world_frame": str(frame.world_frame),
+            "session_epoch": (
+                str(frame.session_epoch) if frame.session_epoch else None
+            ),
+            "world_frame": (
+                str(frame.world_frame) if frame.world_frame else None
+            ),
             "copy": dict(
                 (frame.observations.get("capture") or {})
                 if isinstance(frame.observations, dict)
@@ -361,7 +405,15 @@ class SpatialRegistrationSkillAdapter:
         context: SpatialFrameContext,
     ) -> dict[str, Any]:
         return {
+            "from_frame": str(context.transform.get("from_frame") or ""),
+            "to_frame": str(context.transform.get("to_frame") or ""),
             "at_us": int(context.transform["at_us"]),
+            "translation_m": list(
+                context.transform.get("translation_m") or []
+            ),
+            "rotation_xyzw": list(
+                context.transform.get("rotation_xyzw") or []
+            ),
             "path": list(context.transform.get("path") or []),
             "maximum_extrapolation_us": self.maximum_transform_extrapolation_us,
         }
@@ -593,6 +645,11 @@ class SpatialRegistrationSkillAdapter:
             "bundle": observations.get("bundle"),
             "calibration": observations.get("calibration"),
         }
+        capture_metadata = observations.get("capture")
+        capture_metadata = (
+            capture_metadata if isinstance(capture_metadata, dict) else {}
+        )
+        copied_at_us = int(capture_metadata.get("copied_at_us") or 0)
         temporal_evidence: dict[str, dict[str, Any]] = {}
         for name, observation in named_observations.items():
             identity = self._observation_identity(observation)
@@ -603,6 +660,11 @@ class SpatialRegistrationSkillAdapter:
             temporal_evidence[name] = self._evaluate_observation_time(
                 name,
                 observation,
+                evaluated_at_us=(
+                    copied_at_us
+                    if name == "bundle" and copied_at_us > 0
+                    else None
+                ),
             )
         self._validate_calibration_revision(
             selected_route=selected_route,
@@ -698,10 +760,12 @@ class SpatialRegistrationSkillAdapter:
             "body_pose": self._evaluate_observation_time(
                 "body_pose",
                 body_pose,
+                evaluated_at_us=int(frame.timestamp_us),
             ),
             "vio_status": self._evaluate_observation_time(
                 "vio_status",
                 vio_status,
+                evaluated_at_us=int(frame.timestamp_us),
             ),
         }
         pose_data = (
@@ -794,12 +858,15 @@ class SpatialRegistrationSkillAdapter:
         self,
         name: str,
         observation: dict[str, Any] | None,
+        *,
+        evaluated_at_us: int | None = None,
     ) -> dict[str, Any]:
         return evaluate_observation_temporal_policy(
             observation_name=name,
             observation=observation,
             policy_id=SPATIAL_INPUT_TEMPORAL_POLICY_ID,
             maximum_source_age_ms=self.maximum_source_age_ms[name],
+            now_us=evaluated_at_us,
         ).as_dict()
 
     def _validate_transform(
@@ -822,6 +889,7 @@ class SpatialRegistrationSkillAdapter:
             raise RuntimeError("Fabric transform has no path provenance")
         if source_frame != target_frame and not path:
             raise RuntimeError("Fabric transform path is empty")
+        reviewed_mounted_static_path = self._is_reviewed_mounted_static_path(path)
         for step in path:
             if not isinstance(step, dict):
                 raise RuntimeError("Fabric transform path contains invalid metadata")
@@ -830,11 +898,32 @@ class SpatialRegistrationSkillAdapter:
                 session_epoch is not None
                 and step_epoch is not None
                 and str(step_epoch) != session_epoch
+                and not reviewed_mounted_static_path
             ):
                 raise RuntimeError("Fabric transform path crossed a VIO session epoch")
             extrapolated = int(step.get("extrapolated_by_us") or 0)
             if extrapolated > self.maximum_transform_extrapolation_us:
                 raise RuntimeError("Fabric transform exceeded extrapolation limit")
+
+    @staticmethod
+    def _is_reviewed_mounted_static_path(path: list[Any]) -> bool:
+        revisions: set[str] = set()
+        for step in path:
+            if not isinstance(step, dict):
+                return False
+            if (
+                step.get("authority")
+                != "manager.workcell_calibration_activation"
+                or step.get("provider_id") != "manager.workcell_calibration"
+                or bool(step.get("interpolated"))
+                or int(step.get("extrapolated_by_us") or 0) != 0
+            ):
+                return False
+            revision = str(step.get("calibration_revision") or "").strip()
+            if not revision:
+                return False
+            revisions.add(revision)
+        return bool(path) and len(revisions) == 1
 
     @staticmethod
     def _transform_matrix(transform: dict[str, Any]) -> np.ndarray:

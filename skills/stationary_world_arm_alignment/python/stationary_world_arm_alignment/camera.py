@@ -4,12 +4,18 @@ import asyncio
 import io
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from orbbec_femto_provider.shared_memory_access import CameraSharedMemory
+from orbbec_femto_provider.shared_memory_access import (
+    STREAM_ALIGNED_DEPTH,
+    STREAM_COLOR,
+    BufferRef,
+    CameraSharedMemory,
+)
 
 from .clients import FabricClient
 from .math3d import deproject_pixel
@@ -29,8 +35,8 @@ class RgbdFrame:
     timestamp_us: int
     frame_number: int
     camera_frame: str
-    session_epoch: str
-    world_frame: str
+    session_epoch: str | None
+    world_frame: str | None
     calibration_revision: str | None
     observations: dict[str, Any]
 
@@ -54,127 +60,316 @@ class RgbdCapture:
         self,
         attempts: int = 8,
         retry_delay_s: float = 0.04,
+        *,
+        require_vio: bool = True,
     ) -> RgbdFrame:
         calibration_observation = await self.fabric.latest_optional("camera.calibration")
-        pose_observation = await self.fabric.latest_optional("localization.body.pose")
-        vio_observation = await self.fabric.latest_optional("localization.vio.status")
         route_observation = await self.fabric.latest_optional(
             "camera.rgbd.data_routes"
         )
-        if not calibration_observation or not pose_observation:
-            raise RuntimeError("camera calibration or VIO body pose is unavailable")
+        device_observation = await self.fabric.latest_optional(
+            "camera.device_info"
+        )
+        if not calibration_observation:
+            raise RuntimeError("camera calibration is unavailable")
 
         last_error: Exception | None = None
         transient_errors: list[str] = []
-        for attempt in range(attempts):
-            # Fetch the high-rate bundle last and copy it immediately. Reading slower
-            # calibration and VIO observations after the bundle can outlive the
-            # camera ring-buffer slot before the first shared-memory read.
-            bundle_observation = await self.fabric.latest_optional("camera.rgbd.bundle")
-            if not bundle_observation:
-                raise RuntimeError("RGB-D bundle is unavailable")
-            bundle = bundle_observation.get("data") or {}
-            coordinate_conventions = (
-                bundle.get("coordinate_conventions") or {}
-            )
-            if (
-                coordinate_conventions.get("rgb")
-                != CAMERA_OPTICAL_CONVENTION_ID
-                or coordinate_conventions.get("aligned_depth")
-                != CAMERA_OPTICAL_CONVENTION_ID
-            ):
-                raise RuntimeError(
-                    "RGB-D bundle does not declare native optical "
-                    "X-right/Y-down/Z-forward coordinates"
+        reader: CameraSharedMemory | None = None
+        reader_mapping_name: str | None = None
+        try:
+            for attempt in range(attempts):
+                # Fetch the high-rate bundle last and copy it immediately. Reading
+                # slower calibration and VIO observations after the bundle can
+                # outlive the camera ring-buffer slot before the first shared-memory
+                # read.
+                bundle_observation = await self.fabric.latest_optional(
+                    "camera.rgbd.bundle"
                 )
-            rgb_ref = bundle.get("rgb")
-            depth_ref = bundle.get("depth_aligned_to_rgb")
-            if not isinstance(rgb_ref, dict) or not isinstance(depth_ref, dict):
-                raise RuntimeError("RGB-D bundle has no aligned RGB and depth BufferRefs")
-            mapping_name = str(rgb_ref.get("mapping_name") or "")
-            if not mapping_name:
-                raise RuntimeError("RGB BufferRef has no shared-memory mapping name")
-            reader = CameraSharedMemory(mapping_name).open()
-            try:
-                rgb = self._read_rgb(reader, rgb_ref)
-                depth = self._read_depth(reader, depth_ref)
-            except Exception as error:
-                if not self._is_transient_buffer_error(error):
-                    raise
-                last_error = error
-                transient_errors.append(str(error))
-                if attempt + 1 < attempts and retry_delay_s > 0:
-                    await asyncio.sleep(retry_delay_s)
-                continue
-            finally:
-                reader.close()
-            calibration = calibration_observation.get("data") or {}
-            calibration_conventions = (
-                calibration.get("coordinate_conventions") or {}
-            )
-            if (
-                calibration_conventions.get("color")
-                != CAMERA_OPTICAL_CONVENTION_ID
-            ):
-                raise RuntimeError(
-                    "camera calibration does not identify the color optical "
-                    "coordinate convention"
+                if not bundle_observation:
+                    raise RuntimeError("RGB-D bundle is unavailable")
+                bundle = bundle_observation.get("data") or {}
+                coordinate_conventions = (
+                    bundle.get("coordinate_conventions") or {}
                 )
-            intrinsics = calibration.get("rgb_intrinsic") or {}
-            if float(intrinsics.get("fx") or 0) <= 0:
-                raise RuntimeError("camera RGB intrinsics are invalid")
-            pose = pose_observation.get("data") or {}
-            vio = (vio_observation or {}).get("data") or {}
-            if (
-                pose.get("convention_id") != WORLD_CONVENTION_ID
-                or vio.get("convention_id") != WORLD_CONVENTION_ID
-            ):
-                raise RuntimeError(
-                    "VIO pose/status do not declare the convention-V2 Z-up "
-                    "world"
-                )
-            epoch = str(pose.get("session_epoch") or vio.get("session_epoch") or "")
-            world = str(pose.get("world_frame") or "")
-            if not epoch or not world:
-                raise RuntimeError("VIO has not published a world frame and session epoch")
-            timestamp_us = self.reference_timestamp(rgb_ref)
-            if timestamp_us <= 0:
-                timestamp_us = int(bundle_observation.get("observed_at_us") or 0)
-            return RgbdFrame(
-                rgb=rgb,
-                depth_m=depth,
-                intrinsics=intrinsics,
-                timestamp_us=timestamp_us,
-                frame_number=int(rgb_ref.get("frame_number") or -1),
-                camera_frame=self.camera_frame,
-                session_epoch=epoch,
-                world_frame=world,
-                calibration_revision=(
-                    str(
-                        calibration.get("calibration_revision")
-                        or calibration_observation.get("calibration_revision")
+                if (
+                    coordinate_conventions.get("rgb")
+                    != CAMERA_OPTICAL_CONVENTION_ID
+                    or coordinate_conventions.get("aligned_depth")
+                    != CAMERA_OPTICAL_CONVENTION_ID
+                ):
+                    raise RuntimeError(
+                        "RGB-D bundle does not declare native optical "
+                        "X-right/Y-down/Z-forward coordinates"
                     )
+                rgb_ref = bundle.get("rgb")
+                depth_ref = bundle.get("depth_aligned_to_rgb")
+                if not isinstance(rgb_ref, dict) or not isinstance(
+                    depth_ref, dict
+                ):
+                    raise RuntimeError(
+                        "RGB-D bundle has no aligned RGB and depth BufferRefs"
+                    )
+                mapping_name = str(rgb_ref.get("mapping_name") or "")
+                if not mapping_name:
+                    raise RuntimeError(
+                        "RGB BufferRef has no shared-memory mapping name"
+                    )
+                if reader is None or reader_mapping_name != mapping_name:
+                    if reader is not None:
+                        reader.close()
+                    reader = CameraSharedMemory(mapping_name).open()
+                    reader_mapping_name = mapping_name
+
+                copied_rgb_ref = dict(rgb_ref)
+                copied_depth_ref = dict(depth_ref)
+                buffer_ref_source = "FABRIC_SYNCHRONIZED_BUNDLE"
+                try:
+                    # Copy the larger depth plane first so it does not wait
+                    # behind RGB decoding while its finite-retention slot is
+                    # advancing.
+                    depth = self._read_depth(reader, copied_depth_ref)
+                    rgb = self._read_rgb(reader, copied_rgb_ref)
+                except Exception as error:
+                    if not self._is_transient_buffer_error(error):
+                        raise
+                    last_error = error
+                    transient_errors.append(str(error))
+                    try:
+                        (
+                            rgb,
+                            depth,
+                            copied_rgb_ref,
+                            copied_depth_ref,
+                        ) = self._copy_latest_synchronized_pair(
+                            reader,
+                            bundle=bundle,
+                        )
+                        buffer_ref_source = (
+                            "LOCAL_MAPPING_SYNCHRONIZED_FALLBACK"
+                        )
+                    except Exception as fallback_error:
+                        last_error = fallback_error
+                        if attempt + 1 < attempts and retry_delay_s > 0:
+                            await asyncio.sleep(retry_delay_s)
+                        continue
+                copied_at_us = time.time_ns() // 1000
+            # Read the high-rate VIO state after the finite-retention RGB-D
+            # payload has been copied. Fetching it before BufferRef retries can
+            # associate a several-second-old pose with the eventual camera
+            # frame even though VIO continued tracking throughout the copy.
+                if require_vio:
+                    pose_observation, vio_observation = await asyncio.gather(
+                        self.fabric.latest_optional(
+                            "localization.body.pose"
+                        ),
+                        self.fabric.latest_optional(
+                            "localization.vio.status"
+                        ),
+                    )
+                    if not pose_observation:
+                        raise RuntimeError("VIO body pose is unavailable")
+                else:
+                    pose_observation = None
+                    vio_observation = None
+                calibration = calibration_observation.get("data") or {}
+                calibration_conventions = (
+                    calibration.get("coordinate_conventions") or {}
+                )
+                if (
+                    calibration_conventions.get("color")
+                    != CAMERA_OPTICAL_CONVENTION_ID
+                ):
+                    raise RuntimeError(
+                        "camera calibration does not identify the color "
+                        "optical coordinate convention"
+                    )
+                intrinsics = calibration.get("rgb_intrinsic") or {}
+                if float(intrinsics.get("fx") or 0) <= 0:
+                    raise RuntimeError("camera RGB intrinsics are invalid")
+                pose = (pose_observation or {}).get("data") or {}
+                vio = (vio_observation or {}).get("data") or {}
+                epoch: str | None = None
+                world: str | None = None
+                if require_vio:
                     if (
-                        calibration.get("calibration_revision") is not None
-                        or calibration_observation.get("calibration_revision") is not None
+                        pose.get("convention_id") != WORLD_CONVENTION_ID
+                        or vio.get("convention_id") != WORLD_CONVENTION_ID
+                    ):
+                        raise RuntimeError(
+                            "VIO pose/status do not declare the convention-V2 "
+                            "Z-up world"
+                        )
+                    epoch = str(
+                        pose.get("session_epoch")
+                        or vio.get("session_epoch")
+                        or ""
                     )
-                    else None
-                ),
-                observations={
-                    "bundle": bundle_observation,
-                    "route": route_observation,
-                    "calibration": calibration_observation,
-                    "body_pose": pose_observation,
-                    "vio_status": vio_observation,
-                    "capture": {
-                        "copy_attempt": attempt + 1,
-                        "transient_buffer_error_count": len(transient_errors),
+                    world = str(pose.get("world_frame") or "")
+                    if not epoch or not world:
+                        raise RuntimeError(
+                            "VIO has not published a world frame and session "
+                            "epoch"
+                        )
+                timestamp_us = self.reference_timestamp(copied_rgb_ref)
+                if timestamp_us <= 0:
+                    timestamp_us = int(
+                        bundle_observation.get("observed_at_us") or 0
+                    )
+                return RgbdFrame(
+                    rgb=rgb,
+                    depth_m=depth,
+                    intrinsics=intrinsics,
+                    timestamp_us=timestamp_us,
+                    frame_number=int(
+                        copied_rgb_ref.get("frame_number") or -1
+                    ),
+                    camera_frame=self.camera_frame,
+                    session_epoch=epoch,
+                    world_frame=world,
+                    calibration_revision=(
+                        str(
+                            calibration.get("calibration_revision")
+                            or calibration_observation.get(
+                                "calibration_revision"
+                            )
+                        )
+                        if (
+                            calibration.get("calibration_revision")
+                            is not None
+                            or calibration_observation.get(
+                                "calibration_revision"
+                            )
+                            is not None
+                        )
+                        else None
+                    ),
+                    observations={
+                        "bundle": self._effective_bundle_observation(
+                            bundle_observation,
+                            rgb_ref=copied_rgb_ref,
+                            depth_ref=copied_depth_ref,
+                            source=buffer_ref_source,
+                        ),
+                        "route": route_observation,
+                        "device_info": device_observation,
+                        "calibration": calibration_observation,
+                        "body_pose": pose_observation,
+                        "vio_status": vio_observation,
+                        "capture": {
+                            "copy_attempt": attempt + 1,
+                            "transient_buffer_error_count": len(
+                                transient_errors
+                            ),
+                            "vio_required": bool(require_vio),
+                            "buffer_ref_source": buffer_ref_source,
+                            "copied_at_us": copied_at_us,
+                            "rgb_frame_number": int(
+                                copied_rgb_ref.get("frame_number") or -1
+                            ),
+                            "aligned_depth_frame_number": int(
+                                copied_depth_ref.get("frame_number") or -1
+                            ),
+                            "synchronization_delta_us": (
+                                self.reference_timestamp(copied_depth_ref)
+                                - self.reference_timestamp(copied_rgb_ref)
+                            ),
+                        },
                     },
-                },
-            )
+                )
+        finally:
+            if reader is not None:
+                reader.close()
         raise RuntimeError(
             "camera BufferRef remained unavailable after "
             f"{attempts} fresh-bundle attempts: {last_error}"
+        )
+
+    @classmethod
+    def _effective_bundle_observation(
+        cls,
+        observation: dict[str, Any],
+        *,
+        rgb_ref: dict[str, Any],
+        depth_ref: dict[str, Any],
+        source: str,
+    ) -> dict[str, Any]:
+        """Describe the exact copied pair used by downstream temporal gates."""
+
+        if source == "FABRIC_SYNCHRONIZED_BUNDLE":
+            return observation
+        effective = dict(observation)
+        data = dict(observation.get("data") or {})
+        data["rgb"] = dict(rgb_ref)
+        data["depth_aligned_to_rgb"] = dict(depth_ref)
+        effective["data"] = data
+        effective["observed_at_us"] = max(
+            cls.reference_timestamp(rgb_ref),
+            cls.reference_timestamp(depth_ref),
+        )
+        effective.pop("received_at", None)
+        effective["capture_source"] = source
+        effective["fabric_bundle_observed_at_us"] = int(
+            observation.get("observed_at_us") or 0
+        )
+        return effective
+
+    @classmethod
+    def _copy_latest_synchronized_pair(
+        cls,
+        reader: CameraSharedMemory,
+        *,
+        bundle: dict[str, Any],
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, Any], dict[str, Any]]:
+        """Copy the newest retained local RGB/aligned-depth pair."""
+
+        reader.refresh()
+        rgb_refs = reader.recent_refs(STREAM_COLOR, attempts=8)
+        depth_refs = reader.recent_refs(STREAM_ALIGNED_DEPTH, attempts=8)
+        maximum_delta_us = max(0, int(bundle.get("max_delta_us") or 0))
+        candidates: list[tuple[int, int, BufferRef, BufferRef]] = []
+        for rgb_ref in rgb_refs:
+            rgb_timestamp = cls.reference_timestamp(rgb_ref.to_dict())
+            if rgb_timestamp <= 0:
+                continue
+            for depth_ref in depth_refs:
+                depth_timestamp = cls.reference_timestamp(
+                    depth_ref.to_dict()
+                )
+                if depth_timestamp <= 0:
+                    continue
+                delta_us = depth_timestamp - rgb_timestamp
+                if abs(delta_us) > maximum_delta_us:
+                    continue
+                candidates.append(
+                    (
+                        min(rgb_timestamp, depth_timestamp),
+                        -abs(delta_us),
+                        rgb_ref,
+                        depth_ref,
+                    )
+                )
+        if not candidates:
+            raise RuntimeError(
+                "no synchronized RGB/aligned-depth pair remains in the "
+                "camera mapping"
+            )
+        candidates.sort(key=lambda value: (value[0], value[1]), reverse=True)
+        last_error: Exception | None = None
+        for _, _, rgb_ref, depth_ref in candidates:
+            rgb_payload = rgb_ref.to_dict()
+            depth_payload = depth_ref.to_dict()
+            try:
+                depth = cls._read_depth(reader, depth_payload)
+                rgb = cls._read_rgb(reader, rgb_payload)
+                return rgb, depth, rgb_payload, depth_payload
+            except RuntimeError as error:
+                last_error = error
+                if not cls._is_transient_buffer_error(error):
+                    raise
+        raise RuntimeError(
+            "all synchronized RGB/aligned-depth pairs were recycled before "
+            f"copy completed: {last_error}"
         )
 
     @staticmethod

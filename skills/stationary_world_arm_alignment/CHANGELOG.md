@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.8.9 - 2026-08-05
+
+- Retain FoundationPose as an explicit finite initializer while removing it as
+  an automatic Agent-facing base-pose route. The regular Agent must receive the
+  documented exact FoundationPose request before loading this runtime.
+- Document the movement-based gripper correspondence plan that will replace
+  generic long-running base-pose initialization in the next iteration.
+
+## 0.8.8 - 2026-08-04
+
+- Retry one malformed structured VLM response for gripper localization and
+  base-axis validation. A second malformed response becomes an explicit
+  bounded error instead of leaking a raw JSON decoder exception.
+
+## 0.8.7 - 2026-08-04
+
+- Record the exact RGB-D shared-memory copy time so downstream Skills can
+  distinguish freshness at acquisition from later Agent/VLM workflow latency.
+- When a finite Fabric BufferRef has already been recycled, retain the bounded
+  synchronized mapping recovery while binding temporal evidence to the exact
+  copied references and preserving the original Fabric bundle time.
+
+## 0.8.6 - 2026-08-03
+
+- Retain the VLM RGB-D foremost-beak observation from the initial independent
+  base fit and derive bounded tool-to-beak geometry for later fast gripper-only
+  mounted-base translation refinement.
+- Record the camera canonical device identity in new candidates. A later
+  refinement may bridge a camera process restart when the physical device,
+  calibration revision, provider, and optical frame still match; older
+  candidates without device identity retain strict instance/boot matching.
+
 ## 0.8.5 - 2026-07-31
 
 - Fix the transform application order for an inverted FoundationPose base

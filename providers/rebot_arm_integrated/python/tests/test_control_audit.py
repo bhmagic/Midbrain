@@ -48,8 +48,10 @@ class _Controller:
         self,
         *,
         target_position_m,
+        target_delta_m,
         target_rpy_rad,
         requested_speed_m_s,
+        ik_mode=None,
         allowed_contact_object_ids,
         permit_pushable_contact,
     ):
@@ -61,11 +63,19 @@ class _Controller:
             "physical_motion_authorized": False,
             "control_state_unchanged": True,
             "lease_unchanged": True,
-            "target_position_m": list(target_position_m),
+            "target_position_m": (
+                None
+                if target_position_m is None
+                else list(target_position_m)
+            ),
+            "target_delta_m": (
+                None if target_delta_m is None else list(target_delta_m)
+            ),
             "target_rpy_rad": (
                 None if target_rpy_rad is None else list(target_rpy_rad)
             ),
             "requested_speed_m_s": requested_speed_m_s,
+            "ik_mode": ik_mode,
             "allowed_contact_object_ids": sorted(allowed_contact_object_ids),
             "permit_pushable_contact": permit_pushable_contact,
             "selected_plan": {
@@ -566,7 +576,9 @@ class ControlAuditTests(unittest.TestCase):
                     "camera_boot_id": "camera-boot-1",
                     "workcell_transform_id": "transform-1",
                     "workcell_transform_revision": "transform-revision-1",
-                    "workcell_transform_expires_at_us": 9_999_999_999_999_999,
+                    "workcell_transform_validity_policy": (
+                        "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                    ),
                     "vio_session_epoch": "vio-epoch-1",
                     "observation_timestamp_us": 1,
                     "observation_expires_at_us": 9_999_999_999_999_999,
@@ -589,6 +601,7 @@ class ControlAuditTests(unittest.TestCase):
             contract = result["preview_contract"]
             self.assertTrue(contract["request_context_complete"])
             self.assertEqual(contract["request_context_issues"], [])
+            self.assertIsNone(contract["scene_revision_adaptation"])
             self.assertEqual(
                 contract["preview_id"],
                 "transit-plan-1",
@@ -621,6 +634,187 @@ class ControlAuditTests(unittest.TestCase):
                 ).splitlines()
             ]
             self.assertEqual(events[0]["canonical_request"], request)
+
+    def test_transit_preview_uses_newest_controller_scene_revision(self) -> None:
+        service = IntegratedService(
+            _Controller(),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        now_us = time.time_ns() // 1000
+        request = {
+            "target": {"position_m": [0.2, 0.1, 0.4], "rpy_rad": None},
+            "requested_speed_m_s": 0.05,
+            "request_context": {
+                "binding_id": "binding-1",
+                "camera_provider_id": "camera.test",
+                "camera_provider_instance_id": "camera-instance-1",
+                "camera_boot_id": "camera-boot-1",
+                "workcell_transform_id": "transform-1",
+                "workcell_transform_revision": "transform-revision-1",
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                ),
+                "vio_session_epoch": "vio-epoch-1",
+                "observation_timestamp_us": now_us,
+                "observation_expires_at_us": now_us + 60_000_000,
+                "scene_revision": "scene-older",
+            },
+        }
+
+        result = service._direct_plan_transit_path(request)
+        contract = result["preview_contract"]
+
+        self.assertTrue(contract["request_context_complete"])
+        self.assertNotIn(
+            "SCENE_REVISION_MISMATCH",
+            contract["request_context_issues"],
+        )
+        self.assertEqual(contract["scene_revision"], "scene-1")
+        self.assertEqual(
+            contract["scene_revision_adaptation"]["policy"],
+            "CONTROLLER_NEWEST_ACCEPTED_SCENE_USED",
+        )
+
+    def test_transit_preview_preserves_relative_delta_request(self) -> None:
+        service = IntegratedService(
+            _Controller(),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        request = {
+            "target": {
+                "position_delta_m": [0.05, 0.0, 0.0],
+                "rpy_rad": None,
+            },
+            "requested_speed_m_s": 0.03,
+        }
+
+        result = service._direct_plan_transit_path(request)
+
+        self.assertEqual(
+            result["preview_contract"]["normalized_request"]["target"][
+                "position_delta_m"
+            ],
+            [0.05, 0.0, 0.0],
+        )
+        self.assertEqual(
+            result["target_delta_m"],
+            [0.05, 0.0, 0.0],
+        )
+
+    def test_v2_mounted_activation_survives_camera_and_vio_process_restart(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = IntegratedService(
+                _Controller(),  # type: ignore[arg-type]
+                {
+                    "provider_id": "robot_arm.primary.integrated",
+                    "listen_host": "127.0.0.1",
+                    "listen_port": 8793,
+                    "control_audit": {
+                        "path": str(root / "events.jsonl"),
+                        "cursor_path": str(root / "cursor.json"),
+                    },
+                },
+                None,
+                None,
+            )
+            context = {
+                "camera_provider_id": "camera.test",
+                "camera_provider_instance_id": "current-instance",
+                "camera_boot_id": "current-boot",
+                "camera_calibration_revision": "camera-calibration-1",
+                "workcell_transform_id": "transform-1",
+                "workcell_transform_revision": "transform-revision-1",
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+                ),
+            }
+            service.platform.workcell_calibrations = lambda: {
+                "enforcement": "ENFORCED",
+                "activations": [
+                    {
+                        "activation_id": "activation-1",
+                        "candidate_id": "transform-1",
+                        "calibration_revision": "transform-revision-1",
+                        "state": "ACTIVE",
+                        "motion_usable": True,
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+                        ),
+                        "camera_provider_id": "camera.test",
+                        "camera_provider_instance_id": "prior-instance",
+                        "camera_boot_id": "prior-boot",
+                        "camera_calibration_revision": "camera-calibration-1",
+                        "session_epoch": "historical-vio-epoch",
+                    }
+                ],
+            }
+
+            activation = service._require_current_workcell_activation(
+                context,
+                now_us=time.time_ns() // 1000,
+            )
+
+            self.assertEqual(activation["activation_id"], "activation-1")
+
+    def test_v2_transit_preview_does_not_require_vio_epoch(self) -> None:
+        service = IntegratedService(
+            _Controller(),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        now_us = time.time_ns() // 1000
+        request = {
+            "target": {
+                "position_delta_m": [0.05, 0.0, 0.0],
+                "rpy_rad": None,
+            },
+            "requested_speed_m_s": 0.03,
+            "request_context": {
+                "binding_id": "binding-1",
+                "camera_provider_id": "camera.test",
+                "camera_provider_instance_id": "camera-instance-1",
+                "camera_boot_id": "camera-boot-1",
+                "camera_calibration_revision": "camera-calibration-1",
+                "workcell_transform_id": "transform-1",
+                "workcell_transform_revision": "transform-revision-1",
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+                ),
+                "observation_timestamp_us": now_us,
+                "observation_expires_at_us": now_us + 60_000_000,
+                "scene_revision": "scene-1",
+            },
+        }
+
+        preview = service._direct_plan_transit_path(request)
+
+        contract = preview["preview_contract"]
+        self.assertTrue(contract["request_context_complete"])
+        self.assertNotIn(
+            "MISSING_REQUEST_CONTEXT:vio_session_epoch",
+            contract["request_context_issues"],
+        )
 
     def test_signed_transit_commit_is_exact_one_time_and_audited_by_hash(
         self,
@@ -660,8 +854,8 @@ class ControlAuditTests(unittest.TestCase):
                     "camera_boot_id": "camera-boot-1",
                     "workcell_transform_id": "transform-1",
                     "workcell_transform_revision": "transform-revision-1",
-                    "workcell_transform_expires_at_us": (
-                        now_us + 60_000_000
+                    "workcell_transform_validity_policy": (
+                        "MOUNTED_IDENTITY_TRACKING_GATED_V1"
                     ),
                     "vio_session_epoch": "vio-epoch-1",
                     "observation_timestamp_us": now_us,
@@ -680,9 +874,10 @@ class ControlAuditTests(unittest.TestCase):
                         "calibration_revision": "transform-revision-1",
                         "state": "ACTIVE",
                         "motion_usable": True,
-                        "expires_at_us": request["request_context"][
-                            "workcell_transform_expires_at_us"
-                        ],
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                        ),
                         "camera_provider_id": "camera.test",
                         "camera_provider_instance_id": (
                             "camera-instance-1"
@@ -773,7 +968,7 @@ class ControlAuditTests(unittest.TestCase):
                 audit_text,
             )
 
-    def test_transit_preview_expires_with_its_workcell_context(self) -> None:
+    def test_transit_preview_expires_with_its_observation_context(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             controller = _Controller()
             service = IntegratedService(
@@ -794,7 +989,7 @@ class ControlAuditTests(unittest.TestCase):
                 None,
             )
             now_us = time.time_ns() // 1000
-            workcell_expires_at_us = now_us + 2_000_000
+            observation_expires_at_us = now_us + 2_000_000
             preview = service._direct_plan_transit_path(
                 {
                     "target": {
@@ -810,13 +1005,13 @@ class ControlAuditTests(unittest.TestCase):
                         "camera_boot_id": "camera-boot-1",
                         "workcell_transform_id": "transform-1",
                         "workcell_transform_revision": "revision-1",
-                        "workcell_transform_expires_at_us": (
-                            workcell_expires_at_us
+                        "workcell_transform_validity_policy": (
+                            "MOUNTED_IDENTITY_TRACKING_GATED_V1"
                         ),
                         "vio_session_epoch": "vio-epoch-1",
                         "observation_timestamp_us": now_us,
                         "observation_expires_at_us": (
-                            now_us + 3_000_000
+                            observation_expires_at_us
                         ),
                         "scene_revision": "scene-1",
                     },
@@ -824,7 +1019,7 @@ class ControlAuditTests(unittest.TestCase):
             )
             self.assertEqual(
                 preview["preview_contract"]["expires_at_us"],
-                workcell_expires_at_us,
+                observation_expires_at_us,
             )
 
     def test_revoked_workcell_activation_blocks_transit_commit(self) -> None:
@@ -846,11 +1041,12 @@ class ControlAuditTests(unittest.TestCase):
                 "http://manager",
                 None,
             )
-            expires_at_us = time.time_ns() // 1000 + 60_000_000
             context = {
                 "workcell_transform_id": "transform-1",
                 "workcell_transform_revision": "revision-1",
-                "workcell_transform_expires_at_us": expires_at_us,
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                ),
                 "camera_provider_id": "camera.test",
                 "camera_provider_instance_id": "camera-instance-1",
                 "camera_boot_id": "camera-boot-1",
@@ -864,7 +1060,10 @@ class ControlAuditTests(unittest.TestCase):
                         "calibration_revision": "revision-1",
                         "state": "REVOKED",
                         "motion_usable": False,
-                        "expires_at_us": expires_at_us,
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                        ),
                         "camera_provider_id": "camera.test",
                         "camera_provider_instance_id": (
                             "camera-instance-1"
@@ -876,7 +1075,7 @@ class ControlAuditTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(
                 PermissionError,
-                "revoked, expired, or changed",
+                "revoked, suspended, invalidated, or changed",
             ):
                 service._require_current_workcell_activation(
                     context,

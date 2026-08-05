@@ -4,7 +4,7 @@
 
 - PRESS_MIT ONE_SHOT: **USABLE**
 - PRESS_MIT HOLD_LB: **USABLE**
-- TRANSIT_SPEED/POS_VEL ONE_SHOT: **LIMITED** to paths ≤20 cm with no payload or high external load
+- TRANSIT_SPEED/POS_VEL ONE_SHOT: **USABLE** for IK-valid free-space requests up to 1.2 m; actual arm reach and joint/scene limits apply
 - TRANSIT_SPEED/POS_VEL HOLD_LB: **EXPERIMENTAL / UNSTABLE**, GUI-only and not Manager-discoverable
 - CONTACT_WORK arm POS_TOR ONE_SHOT: **EXPERIMENTAL / UNSTABLE**, GUI-only and not Manager-discoverable
 
@@ -30,7 +30,7 @@ Select `TRANSIT_SPEED` and `ONE_SHOT`. Engage and click LB. Integrated sends and
 
 `TRANSIT_SPEED` also supports `HOLD_LB` for the next continuous endpoint test. While LB is held, each new target revision may replace the latched POS_VEL endpoint at the configured replan interval; an unchanged target is not resubmitted as a new endpoint. Releasing LB explicitly requests gravity-float.
 
-TRANSIT_SPEED uses dedicated physical-test caps of 2.0 rad/s on J1-J3 and 2.5 rad/s on J4-J6. If Basic rejects a later continuous endpoint with HTTP 400 after at least one endpoint was accepted, Integrated retains the last accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`; it does not request float. A transport or Basic health fault is different because Integrated cannot assume that endpoint control remains available.
+TRANSIT_SPEED uses the requested motor-envelope POS_SPEED caps of 5 rad/s on J1-J3 and 10 rad/s on J4-J6. Requested Cartesian speed is converted to per-joint demand, with explicit authentication above 10 rad/s and hard rejection at or above 20 rad/s. If Basic rejects a later continuous endpoint with HTTP 400 after at least one endpoint was accepted, Integrated retains the last accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`; it does not request float. A transport or Basic health fault is different because Integrated cannot assume that endpoint control remains available.
 
 ## Gripper hardware test
 

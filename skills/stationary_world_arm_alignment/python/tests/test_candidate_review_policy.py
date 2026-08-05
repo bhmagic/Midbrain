@@ -80,14 +80,13 @@ def test_enforced_mode_rejects_pending_prior_candidate() -> None:
 
 def test_enforced_mode_requires_matching_active_manager_registration() -> None:
     skill = _skill("ENFORCED")
-    now_us = time.time_ns() // 1000
     prior = {
         "alignment_id": "candidate-1",
         "vio_session_epoch": "epoch-1",
         "candidate": _v2_candidate("candidate-1"),
         "review_state": "CANDIDATE_REVIEW_REQUIRED",
         "motion_usable": False,
-        "expires_at_us": now_us + 1_000_000,
+        "expires_at_us": time.time_ns() // 1000 + 1_000_000,
     }
 
     assert skill._prior_alignment_review_usable(
@@ -99,7 +98,10 @@ def test_enforced_mode_requires_matching_active_manager_registration() -> None:
                     "motion_usable": True,
                     "candidate_id": "candidate-1",
                     "session_epoch": "epoch-1",
-                    "expires_at_us": now_us + 1_000_000,
+                    "expires_at_us": None,
+                    "validity_policy": (
+                        "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                    ),
                 }
             ]
         },
@@ -113,7 +115,7 @@ def test_enforced_mode_requires_matching_active_manager_registration() -> None:
                     "motion_usable": True,
                     "candidate_id": "candidate-1",
                     "session_epoch": "epoch-1",
-                    "expires_at_us": now_us - 1,
+                    "expires_at_us": time.time_ns() // 1000 + 1_000_000,
                 }
             ]
         },
@@ -141,14 +143,17 @@ def test_enforced_prior_selection_ignores_rejected_latest_candidate() -> None:
         {
             "activations": [
                 {
-                    "state": "EXPIRED",
+                    "state": "INVALIDATED",
                     "enforcement": "ENFORCED",
                     "review_decision_id": "review-1",
                     "candidate_id": "approved-1",
                     "candidate_sha256": canonical_sha256(
                         approved["candidate"]
                     ),
-                    "expires_at_us": 200,
+                    "expires_at_us": None,
+                    "validity_policy": (
+                        "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                    ),
                     "activated_at": "2026-01-01T00:00:00Z",
                 }
             ]
@@ -174,12 +179,15 @@ def test_enforced_prior_selection_rejects_digest_mismatch_and_revocation() -> No
             {
                 "activations": [
                     {
-                        "state": "EXPIRED",
+                        "state": "INVALIDATED",
                         "enforcement": "ENFORCED",
                         "review_decision_id": "review-1",
                         "candidate_id": "candidate-1",
                         "candidate_sha256": "0" * 64,
-                        "expires_at_us": 200,
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                        ),
                     },
                     {
                         "state": "REVOKED",
@@ -189,7 +197,10 @@ def test_enforced_prior_selection_rejects_digest_mismatch_and_revocation() -> No
                         "candidate_sha256": canonical_sha256(
                             prior["candidate"]
                         ),
-                        "expires_at_us": 100,
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                        ),
                     },
                 ]
             }

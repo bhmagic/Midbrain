@@ -13,7 +13,7 @@ The current integrated workspace checkpoint includes:
 - Manager/Fabric v0.3.0
 - Femto Bolt Provider package v0.4.0
 - Local VIO Provider package v0.4.0
-- Test Agent v0.4.2
+- Test Agent v0.4.9
 - FoundationPose finite Skill v0.1.0 with Provider v0.4.0 compatibility route
 - reBot Arm DM Basic Provider v0.1.20
 - reBot Arm Integrated Provider v0.8.1

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Allow a three-minute Manager heartbeat window for this bounded GPU Provider.
+  The measured NVLabs cold path can block the Provider loop for about 97
+  seconds; pose-quality, tracking, session-duration, and motion-inhibit checks
+  remain unchanged.
+
+## Unreleased
+
 - Require native optical convention metadata on calibration and RGB-D inputs.
 - Publish FoundationPose measurements with explicit
   `camera_system_x/y/z` optical-axis names and convention identity.

@@ -145,8 +145,10 @@ remain on the right. A **Run Journal** link on the portal and both Agent pages
 select one of its events; on the right, expand its category and event to inspect
 the complete retained SDK-neutral envelope.
 
-FoundationPose is normally invoked as a finite nested Skill by Stationary
-Alignment. Its backend resources are released before the parent returns. If
+FoundationPose is invoked as a finite nested Skill only when the operator uses
+the exact request `Use FoundationPose to establish the stationary
+world-to-arm-base transform.` It is not the generic/default alignment route.
+Its backend resources are released before the parent returns. If
 the compatibility Provider is used for diagnostics, stop every session and
 request `release_resources`, transition it to `WARM`, or let the bounded parent
 stop it when no foreign sessions remain.

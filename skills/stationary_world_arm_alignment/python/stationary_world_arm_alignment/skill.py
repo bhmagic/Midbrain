@@ -315,11 +315,16 @@ class AlignmentSkill:
             (run_dir / "vlm.json").write_text(json.dumps(vlm, indent=2) + "\n", encoding="utf-8")
             camera_system_beak: np.ndarray | None = None
             tip_depths: dict[str, Any] = {}
-            if selected_mode == RunMode.VLM_GRIPPER_ONLY:
+            beak_depth_warning: str | None = None
+            try:
                 camera_system_beak, tip_depths = self._camera_system_beak(
                     frame,
                     vlm,
                 )
+            except Exception as error:
+                if selected_mode == RunMode.VLM_GRIPPER_ONLY:
+                    raise
+                beak_depth_warning = str(error)
             visible_detections = {
                 name: value
                 for name, value in {"base": vlm["base"], "gripper": vlm["gripper"]}.items()
@@ -421,6 +426,15 @@ class AlignmentSkill:
                     vio_from_camera=vio_from_camera,
                     gripper_axis_reference=gripper_axis_reference,
                 )
+                base_from_tool_for_learning: np.ndarray | None = None
+                tool_learning_warning = beak_depth_warning
+                if camera_system_beak is not None:
+                    try:
+                        base_from_tool_for_learning = await self._base_from_tool(
+                            frame.timestamp_us
+                        )
+                    except Exception as error:
+                        tool_learning_warning = str(error)
                 finish = (
                     self._finish_foundation_dual
                     if use_foundation_gripper
@@ -436,6 +450,9 @@ class AlignmentSkill:
                     arm_is_home=arm_is_home,
                     keeper=keeper,
                     vio_from_camera=vio_from_camera,
+                    camera_system_beak=camera_system_beak,
+                    base_from_tool_for_learning=base_from_tool_for_learning,
+                    tool_learning_warning=tool_learning_warning,
                 )
             path = self.store.save(result)
             await self._publish_result(result)
@@ -1836,6 +1853,9 @@ class AlignmentSkill:
         arm_is_home: bool,
         keeper: MotionInhibitKeeper,
         vio_from_camera: np.ndarray,
+        camera_system_beak: np.ndarray | None = None,
+        base_from_tool_for_learning: np.ndarray | None = None,
+        tool_learning_warning: str | None = None,
     ) -> dict[str, Any]:
         await keeper.ensure_valid()
         await self.progress.update(
@@ -1858,6 +1878,41 @@ class AlignmentSkill:
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
         world_from_camera = world_from_vio @ vio_from_camera
         world_from_base = world_from_camera @ camera_from_base
+        learned_tool_beak: np.ndarray | None = None
+        gripper_measurements: list[dict[str, Any]] = []
+        tool_learning: dict[str, Any] = {
+            "accepted_for_later_refinement": False,
+            "used_in_current_base_transform": False,
+            "basis": "POST_HOC_FROM_INDEPENDENT_BASE_POSE",
+        }
+        if (
+            camera_system_beak is not None
+            and base_from_tool_for_learning is not None
+        ):
+            learned_tool_beak, tool_learning = (
+                self._bounded_tool_beak_estimate(
+                    oriented=vio_from_camera @ camera_from_base,
+                    base_from_tool=base_from_tool_for_learning,
+                    vio_beak=apply_transform(
+                        vio_from_camera,
+                        camera_system_beak,
+                    ),
+                )
+            )
+            gripper_measurements.append(
+                {
+                    "source_type": "VLM_RGBD_BEAK",
+                    "semantic_point": "FOREMOST_BEAK_MEAN",
+                    "position_world_m": apply_transform(
+                        world_from_camera,
+                        camera_system_beak,
+                    ).tolist(),
+                    "role": "AUXILIARY_TOOL_GEOMETRY_OBSERVATION",
+                    "used_in_alignment": False,
+                }
+            )
+        elif tool_learning_warning:
+            tool_learning["warning"] = tool_learning_warning
         vio_drift = self._stationary_camera_vio_drift(
             camera_from_base=camera_from_base,
             vio_from_base=vio_from_base,
@@ -1871,8 +1926,8 @@ class AlignmentSkill:
             world_from_vio=world_from_vio,
             world_from_base=world_from_base,
             vio_from_camera_reference=vio_from_camera,
-            learned_tool_beak=None,
-            gripper_measurements=[],
+            learned_tool_beak=learned_tool_beak,
+            gripper_measurements=gripper_measurements,
             diagnostics={
                 "base_samples": camera_diagnostics,
                 "base_samples_camera": camera_diagnostics,
@@ -1890,6 +1945,7 @@ class AlignmentSkill:
                 ),
                 "vlm": vlm,
                 "motion_inhibit": keeper.status(),
+                "tool_to_beak_learning": tool_learning,
             },
         )
 
@@ -1905,6 +1961,9 @@ class AlignmentSkill:
         arm_is_home: bool,
         keeper: MotionInhibitKeeper,
         vio_from_camera: np.ndarray,
+        camera_system_beak: np.ndarray | None = None,
+        base_from_tool_for_learning: np.ndarray | None = None,
+        tool_learning_warning: str | None = None,
     ) -> dict[str, Any]:
         await keeper.ensure_valid()
         await self.progress.update(
@@ -1932,10 +1991,54 @@ class AlignmentSkill:
         world_from_vio = np.eye(4, dtype=np.float64)
         world_from_vio[:3, 3] = -vio_from_camera[:3, 3]
         world_from_camera = world_from_vio @ vio_from_camera
+        world_from_base = world_from_camera @ camera_from_base
         world_foundation_gripper = apply_transform(
             world_from_camera,
             camera_from_gripper[:3, 3],
         )
+        learned_tool_beak: np.ndarray | None = None
+        gripper_measurements = [
+            {
+                "source_type": "FOUNDATIONPOSE_GRIPPER_POSE",
+                "semantic_point": "GRIPPER_MODEL_ORIGIN",
+                "position_world_m": world_foundation_gripper.tolist(),
+                "role": "AUXILIARY_OBSERVATION",
+                "used_in_alignment": False,
+            },
+        ]
+        tool_learning: dict[str, Any] = {
+            "accepted_for_later_refinement": False,
+            "used_in_current_base_transform": False,
+            "basis": "POST_HOC_FROM_INDEPENDENT_BASE_POSE",
+        }
+        if (
+            camera_system_beak is not None
+            and base_from_tool_for_learning is not None
+        ):
+            learned_tool_beak, tool_learning = (
+                self._bounded_tool_beak_estimate(
+                    oriented=vio_from_camera @ camera_from_base,
+                    base_from_tool=base_from_tool_for_learning,
+                    vio_beak=apply_transform(
+                        vio_from_camera,
+                        camera_system_beak,
+                    ),
+                )
+            )
+            gripper_measurements.append(
+                {
+                    "source_type": "VLM_RGBD_BEAK",
+                    "semantic_point": "FOREMOST_BEAK_MEAN",
+                    "position_world_m": apply_transform(
+                        world_from_camera,
+                        camera_system_beak,
+                    ).tolist(),
+                    "role": "AUXILIARY_TOOL_GEOMETRY_OBSERVATION",
+                    "used_in_alignment": False,
+                }
+            )
+        elif tool_learning_warning:
+            tool_learning["warning"] = tool_learning_warning
         vio_drift = self._stationary_camera_vio_drift(
             camera_from_base=camera_from_base,
             vio_from_base=vio_from_base,
@@ -1947,18 +2050,10 @@ class AlignmentSkill:
             skill_id=skill_id,
             frame=frame,
             world_from_vio=world_from_vio,
-            world_from_base=world_from_camera @ camera_from_base,
+            world_from_base=world_from_base,
             vio_from_camera_reference=vio_from_camera,
-            learned_tool_beak=None,
-            gripper_measurements=[
-                {
-                    "source_type": "FOUNDATIONPOSE_GRIPPER_POSE",
-                    "semantic_point": "GRIPPER_MODEL_ORIGIN",
-                    "position_world_m": world_foundation_gripper.tolist(),
-                    "role": "AUXILIARY_OBSERVATION",
-                    "used_in_alignment": False,
-                },
-            ],
+            learned_tool_beak=learned_tool_beak,
+            gripper_measurements=gripper_measurements,
             diagnostics={
                 "base_samples": base_camera_diagnostics,
                 "base_samples_camera": base_camera_diagnostics,
@@ -1982,6 +2077,7 @@ class AlignmentSkill:
                 ),
                 "vlm": vlm,
                 "motion_inhibit": keeper.status(),
+                "tool_to_beak_learning": tool_learning,
             },
         )
 
@@ -2221,24 +2317,26 @@ class AlignmentSkill:
             if isinstance(observations, dict)
             else None
         )
+        device_observation = (
+            observations.get("device_info")
+            if isinstance(observations, dict)
+            else None
+        )
+        device_data = (
+            device_observation.get("data")
+            if isinstance(device_observation, dict)
+            else None
+        )
         if (
             not isinstance(prior_camera, dict)
             or not isinstance(frame_contract, dict)
             or not isinstance(route_observation, dict)
         ):
             return False
-        comparisons = (
+        stable_comparisons = (
             (
                 prior_camera.get("provider_id"),
                 route_observation.get("provider_id"),
-            ),
-            (
-                prior_camera.get("provider_instance_id"),
-                route_observation.get("provider_instance_id"),
-            ),
-            (
-                prior_camera.get("boot_id"),
-                route_observation.get("boot_id"),
             ),
             (
                 prior_camera.get("calibration_revision"),
@@ -2249,6 +2347,29 @@ class AlignmentSkill:
                 getattr(frame, "camera_frame", None),
             ),
         )
+        prior_device_id = str(
+            prior_camera.get("canonical_device_id") or ""
+        )
+        current_device_id = str(
+            device_data.get("canonical_device_id") or ""
+        ) if isinstance(device_data, dict) else ""
+        if prior_device_id and current_device_id:
+            comparisons = (
+                *stable_comparisons,
+                (prior_device_id, current_device_id),
+            )
+        else:
+            comparisons = (
+                *stable_comparisons,
+                (
+                    prior_camera.get("provider_instance_id"),
+                    route_observation.get("provider_instance_id"),
+                ),
+                (
+                    prior_camera.get("boot_id"),
+                    route_observation.get("boot_id"),
+                ),
+            )
         return all(
             bool(str(expected or "").strip())
             and str(expected) == str(observed)
@@ -2461,6 +2582,12 @@ class AlignmentSkill:
             ),
         )
         bundle_observation = observations.get("bundle")
+        device_observation = observations.get("device_info")
+        device_data = (
+            device_observation.get("data")
+            if isinstance(device_observation, dict)
+            else None
+        )
         vio_status_observation = observations.get("vio_status")
         bundle = (
             bundle_observation.get("data")
@@ -2607,7 +2734,7 @@ class AlignmentSkill:
             "review_mode": review_mode,
             "motion_usable": False,
             "method": {
-                "skill_version": "0.8.5",
+                "skill_version": "0.8.9",
                 "base_pose_engine_route": self.base_pose_engine_route,
                 "run_mode": mode,
             },
@@ -2656,6 +2783,11 @@ class AlignmentSkill:
                 "boot_id": (
                     route_observation.get("boot_id")
                     if isinstance(route_observation, dict)
+                    else None
+                ),
+                "canonical_device_id": (
+                    device_data.get("canonical_device_id")
+                    if isinstance(device_data, dict)
                     else None
                 ),
                 "route_id": (
@@ -3018,14 +3150,14 @@ class AlignmentSkill:
             or ""
         )
         session_epoch = str(prior.get("vio_session_epoch") or "")
-        now_us = time.time_ns() // 1000
         for activation in workcell_calibrations.get("activations") or []:
             if (
                 activation.get("state") == "ACTIVE"
                 and activation.get("motion_usable") is True
                 and str(activation.get("candidate_id") or "") == candidate_id
                 and str(activation.get("session_epoch") or "") == session_epoch
-                and int(activation.get("expires_at_us") or 0) > now_us
+                and activation.get("validity_policy")
+                == "MOUNTED_IDENTITY_TRACKING_GATED_V1"
             ):
                 return True
         return False
@@ -3046,7 +3178,6 @@ class AlignmentSkill:
         activations = sorted(
             workcell_calibrations.get("activations") or [],
             key=lambda activation: (
-                int(activation.get("expires_at_us") or 0),
                 str(activation.get("activated_at") or ""),
             ),
             reverse=True,
@@ -3054,7 +3185,8 @@ class AlignmentSkill:
         for activation in activations:
             if str(activation.get("state") or "") not in {
                 "ACTIVE",
-                "EXPIRED",
+                "SUPERSEDED",
+                "INVALIDATED",
             }:
                 continue
             if str(activation.get("enforcement") or "") != "ENFORCED":

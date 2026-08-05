@@ -9,6 +9,7 @@ SOURCE_ROOTS = (
     "providers/rebot_arm_dm/python",
     "providers/rebot_arm_integrated/python",
     "skills/locate-effector-front/python",
+    "skills/observe_pointed_object/python",
     "skills/register_tool_to_control_frame/python",
     "skills/spatial_registration_rgbd/python",
     "skills/stationary_world_arm_alignment/python",

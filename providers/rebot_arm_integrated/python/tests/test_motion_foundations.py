@@ -22,6 +22,7 @@ from rebot_arm_integrated.planning import (
     build_direct_preview,
     build_transit_frame_candidates,
     controller_owned_duration,
+    joint_speed_policy_schedule,
     solve_cartesian_continuity,
     solve_cartesian_continuity_adaptive,
 )
@@ -34,6 +35,23 @@ BASIC_ROOT = INTEGRATED_ROOT.parent / "rebot_arm_dm"
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_joint_speed_policy_authenticates_above_ten_and_rejects_twenty(self):
+        positions = [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]]
+        schedule = joint_speed_policy_schedule(
+            [[0.0] * 6, [0.5, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            positions,
+            5.0,
+            [5.0, 5.0, 5.0, 10.0, 10.0, 10.0],
+            minimum_stage_duration_s=0.05,
+            authentication_threshold_rad_s=10.0,
+            hard_limit_rad_s=20.0,
+        )
+        self.assertGreater(schedule["requested_peak_joint_speed_rad_s"], 10.0)
+        self.assertLess(schedule["requested_peak_joint_speed_rad_s"], 20.0)
+        self.assertTrue(schedule["authentication_required"])
+        self.assertFalse(schedule["hard_limit_exceeded"])
+        self.assertLessEqual(schedule["effective_peak_joint_speed_rad_s"], 5.0)
+
     def test_quintic_segment_preserves_position_velocity_and_acceleration_boundaries(self):
         segment = QuinticJointSegment.create(
             [0.0, 0.2],
@@ -222,7 +240,7 @@ class ScenePlanningTests(unittest.TestCase):
             names,
         )
 
-    def test_controller_duration_clamps_speed_and_respects_joint_rate_caps(self):
+    def test_controller_duration_uses_requested_speed_and_joint_rate_caps(self):
         schedule = controller_owned_duration(
             [
                 [0.0, 0.0],
@@ -232,13 +250,11 @@ class ScenePlanningTests(unittest.TestCase):
             0.4,
             0.4,
             [0.2, 0.2],
-            speed_min_m_s=0.01,
-            speed_max_m_s=0.15,
             minimum_duration_s=0.25,
         )
 
-        self.assertTrue(schedule["speed_clamped"])
-        self.assertEqual(schedule["effective_speed_m_s"], 0.15)
+        self.assertFalse(schedule["speed_clamped"])
+        self.assertEqual(schedule["effective_speed_m_s"], 0.4)
         self.assertGreaterEqual(schedule["duration_s"], 3.75)
         self.assertEqual(
             schedule["limiting_factor"],
@@ -261,6 +277,106 @@ class ScenePlanningTests(unittest.TestCase):
         allowed = configuration_clearance(points, scene, [0.04] * 7, allowed_contact_object_ids={"workpiece"})
         self.assertFalse(blocked["collision_free"])
         self.assertTrue(allowed["collision_free"])
+
+    def test_collision_diagnostics_are_bounded_without_losing_blocking_state(self):
+        scene = SceneSnapshot.from_payload(
+            {
+                "scene_revision": "many-collisions",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": f"sphere-{index}",
+                        "object_id": f"obstacle-{index}",
+                        "center_m": [0.0, 0.0, 0.05],
+                        "radius_m": 0.06,
+                        "type": "KEEP_OUT",
+                    }
+                    for index in range(20)
+                ],
+            }
+        )
+        points = [[0.0, 0.0, index * 0.1] for index in range(8)]
+
+        report = configuration_clearance(
+            points,
+            scene,
+            [0.04] * 7,
+            maximum_collision_details=2,
+        )
+
+        self.assertFalse(report["collision_free"])
+        self.assertGreater(report["collision_count"], 2)
+        self.assertEqual(len(report["collisions"]), 2)
+        self.assertTrue(report["collision_details_truncated"])
+
+    def test_canonical_scene_enforces_roi_and_minimum_sphere_radius(self):
+        scene = SceneSnapshot.from_payload(
+            {
+                "contract_version": 2,
+                "scene_revision": "scene-canonical-1",
+                "frame_id": "rebot_arm_base",
+                "roi_layers": [
+                    {
+                        "scope": "GRIPPER_0P5M",
+                        "center_m": [0.4, 0.0, 0.3],
+                        "radius_m": 0.5,
+                        "minimum_sphere_radius_m": 0.02,
+                    },
+                    {
+                        "scope": "ARM_BASE_1P2M",
+                        "center_m": [0.0, 0.0, 0.0],
+                        "radius_m": 1.2,
+                        "minimum_sphere_radius_m": 0.06,
+                    },
+                ],
+                "spheres": [
+                    {
+                        "sphere_id": "workpiece-1",
+                        "object_id": "toilet-paper",
+                        "center_m": [0.45, 0.0, 0.3],
+                        "radius_m": 0.02,
+                        "type": "WORKPIECE",
+                        "roi_scope": "GRIPPER_0P5M",
+                    },
+                    {
+                        "sphere_id": "obstacle-1",
+                        "object_id": "obstacle-1",
+                        "center_m": [0.8, 0.0, 0.0],
+                        "radius_m": 0.06,
+                        "roi_scope": "ARM_BASE_1P2M",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(scene.contract_version, 2)
+        self.assertEqual(scene.spheres[0].object_type, "WORK_OBJECT")
+        self.assertEqual(scene.spheres[1].object_type, "KEEP_OUT")
+
+        with self.assertRaisesRegex(ValueError, "minimum radius"):
+            SceneSnapshot.from_payload(
+                {
+                    "contract_version": 2,
+                    "scene_revision": "scene-too-small",
+                    "frame_id": "rebot_arm_base",
+                    "roi_layers": [
+                        {
+                            "scope": "ARM_BASE_1P2M",
+                            "center_m": [0.0, 0.0, 0.0],
+                            "radius_m": 1.2,
+                            "minimum_sphere_radius_m": 0.06,
+                        }
+                    ],
+                    "spheres": [
+                        {
+                            "sphere_id": "tiny",
+                            "center_m": [0.2, 0.0, 0.0],
+                            "radius_m": 0.05,
+                            "roi_scope": "ARM_BASE_1P2M",
+                        }
+                    ],
+                }
+            )
 
     def test_direct_preview_reports_collision_without_executing_commands(self):
         tool = self.kinematics.evaluate(self.q).points[-1]

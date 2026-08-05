@@ -73,7 +73,7 @@ def main():
                 time.sleep(0.5)
         print(f"Arm Integrated motion prototype UI: {service.control_url}")
         print("PRESS_MIT ONE_SHOT and HOLD_LB are marked usable.")
-        print("TRANSIT_SPEED/POS_VEL ONE_SHOT is limited to <=20 cm with no payload or high external load.")
+        print("TRANSIT_SPEED/POS_VEL ONE_SHOT accepts IK-valid free-space requests up to 1.2 m; joint, scene, and motor limits remain authoritative.")
         print("TRANSIT_SPEED HOLD_LB and CONTACT_WORK/POS_TOR ONE_SHOT remain GUI-only experimental/unstable modes and are not advertised through capability discovery.")
         print("Physical arm motion uses Engage plus LB; Basic MIT support runs at 50 Hz and latched motor endpoints refresh at 10 Hz.")
         print("ONE_SHOT: LB rising edge commits once.")

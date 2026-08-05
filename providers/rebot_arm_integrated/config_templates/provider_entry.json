@@ -1,6 +1,7 @@
 {
   "id": "robot_arm.primary.integrated",
   "display_name": "Arm Integrated Staged Trajectory Controller",
+  "dependencies": ["robot_arm.rebot_dm"],
   "command": "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_integrated/.venv/Scripts/python.exe",
   "args": [
     "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_integrated/provider.py",

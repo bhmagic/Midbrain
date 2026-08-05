@@ -233,12 +233,14 @@ class _Fabric:
         *,
         route: dict | None = None,
         transform_epoch: str = "vio-epoch-1",
+        reviewed_mounted_static: bool = False,
     ):
         selected_route = route or _route()
         self.route_observation = _identity_observation(
             {"routes": [selected_route]}
         )
         self.transform_epoch = transform_epoch
+        self.reviewed_mounted_static = reviewed_mounted_static
 
     async def latest_optional(self, stream):
         if stream == "camera.rgbd.data_routes":
@@ -254,24 +256,34 @@ class _Fabric:
         max_extrapolation_us,
         session_epoch,
     ):
+        path_step = {
+            "session_epoch": self.transform_epoch,
+            "extrapolated_by_us": min(10, max_extrapolation_us),
+        }
+        if self.reviewed_mounted_static:
+            path_step.update(
+                {
+                    "authority": "manager.workcell_calibration_activation",
+                    "provider_id": "manager.workcell_calibration",
+                    "calibration_revision": "mounted-calibration-1",
+                    "interpolated": False,
+                    "extrapolated_by_us": 0,
+                }
+            )
         return {
             "from_frame": from_frame,
             "to_frame": to_frame,
             "at_us": at_us,
             "translation_m": [1.0, 2.0, 3.0],
             "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
-            "path": [
-                {
-                    "session_epoch": self.transform_epoch,
-                    "extrapolated_by_us": min(10, max_extrapolation_us),
-                }
-            ],
+            "path": [path_step],
         }
 
 
 class _Capture:
     def __init__(self, *, calibration_boot_id: str = BOOT_ID):
         self.calls = 0
+        self.require_vio_calls: list[bool] = []
         now_us = time.time_ns() // 1000
         self.frame = SimpleNamespace(
             rgb=np.zeros((6, 8, 3), dtype=np.uint8),
@@ -331,8 +343,9 @@ class _Capture:
             },
         )
 
-    async def capture(self):
+    async def capture(self, *, require_vio: bool = True):
         self.calls += 1
+        self.require_vio_calls.append(require_vio)
         return self.frame
 
 
@@ -342,6 +355,160 @@ class _PointingSkill:
 
 
 class SpatialRegistrationAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bundle_age_is_evaluated_when_payload_was_copied(self) -> None:
+        capture = _Capture()
+        copied_at_us = time.time_ns() // 1000 - 5_000_000
+        observed_at_us = copied_at_us - 200_000
+        capture.frame.timestamp_us = observed_at_us
+        capture.frame.session_epoch = None
+        capture.frame.world_frame = None
+        capture.frame.observations["bundle"]["observed_at_us"] = (
+            observed_at_us
+        )
+        capture.frame.observations["capture"]["copied_at_us"] = copied_at_us
+        capture.frame.observations["body_pose"] = None
+        capture.frame.observations["vio_status"] = None
+        adapter = SpatialRegistrationSkillAdapter(
+            capture,
+            _Fabric(reviewed_mounted_static=True),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="ENFORCED",
+            generic_route_mode="ENFORCED",
+            mounted_static_target_frames={"rebot_arm_base"},
+        )
+
+        result = await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="rebot_arm_base",
+            depth_policy="ROBUST_MEDIAN",
+        )
+
+        evidence = result["input_temporal_evidence"]["evaluated_inputs"]
+        self.assertEqual(evidence["bundle"]["evaluated_at_us"], copied_at_us)
+        self.assertAlmostEqual(evidence["bundle"]["source_age_ms"], 200.0)
+
+    async def test_vio_age_is_evaluated_at_rgbd_capture_time(self) -> None:
+        capture = _Capture()
+        capture_time_us = time.time_ns() // 1000 - 2_000_000
+        pose_time_us = capture_time_us - 20_000
+        capture.frame.timestamp_us = capture_time_us
+        capture.frame.observations["body_pose"]["observed_at_us"] = (
+            pose_time_us
+        )
+        capture.frame.observations["vio_status"]["observed_at_us"] = (
+            pose_time_us
+        )
+        adapter = SpatialRegistrationSkillAdapter(
+            capture,
+            _Fabric(),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="ENFORCED",
+            generic_route_mode="ENFORCED",
+        )
+
+        result = await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="CURRENT_WORLD",
+            depth_policy="ROBUST_MEDIAN",
+        )
+
+        evidence = result["input_temporal_evidence"]["evaluated_inputs"]
+        self.assertEqual(
+            evidence["body_pose"]["evaluated_at_us"],
+            capture_time_us,
+        )
+        self.assertAlmostEqual(evidence["body_pose"]["source_age_ms"], 20.0)
+
+    async def test_readiness_is_ensured_before_spatial_capture(self) -> None:
+        calls: list[str] = []
+
+        async def ensure_ready() -> dict:
+            calls.append("ensure")
+            return {"status": "tracking_ready"}
+
+        capture = _Capture()
+        adapter = SpatialRegistrationSkillAdapter(
+            capture,
+            _Fabric(),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="ENFORCED",
+            generic_route_mode="ENFORCED",
+            readiness_ensurer=ensure_ready,
+        )
+
+        await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="CURRENT_WORLD",
+            depth_policy="ROBUST_MEDIAN",
+        )
+
+        self.assertEqual(calls, ["ensure"])
+        self.assertEqual(capture.calls, 1)
+        self.assertEqual(capture.require_vio_calls, [True])
+
+    async def test_mounted_static_target_skips_vio_readiness_and_capture(
+        self,
+    ) -> None:
+        calls: list[str] = []
+
+        async def ensure_ready() -> dict:
+            calls.append("ensure")
+            return {"status": "tracking_ready"}
+
+        capture = _Capture()
+        capture.frame.session_epoch = None
+        capture.frame.world_frame = None
+        capture.frame.observations["body_pose"] = None
+        capture.frame.observations["vio_status"] = None
+        adapter = SpatialRegistrationSkillAdapter(
+            capture,
+            _Fabric(reviewed_mounted_static=True),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="ENFORCED",
+            generic_route_mode="ENFORCED",
+            mounted_static_target_frames={"rebot_arm_base"},
+            readiness_ensurer=ensure_ready,
+        )
+
+        result = await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="rebot_arm_base",
+            depth_policy="ROBUST_MEDIAN",
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(capture.require_vio_calls, [False])
+        self.assertIsNone(result["camera_capture"]["session_epoch"])
+        self.assertIsNone(result["camera_capture"]["world_frame"])
+        self.assertEqual(
+            result["input_temporal_evidence"]["evaluated_inputs"][
+                "vio_context"
+            ]["role"],
+            "NOT_CAPTURED_FOR_MOUNTED_STATIC_PATH",
+        )
+
+    async def test_current_world_alias_uses_captured_vio_world_frame(self) -> None:
+        adapter = SpatialRegistrationSkillAdapter(
+            _Capture(),
+            _Fabric(),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="ENFORCED",
+            generic_route_mode="ENFORCED",
+        )
+
+        result = await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="CURRENT_WORLD",
+            depth_policy="ROBUST_MEDIAN",
+        )
+
+        self.assertEqual(result["target_frame"], "world-vio")
+
     async def test_enforced_current_binding_registers_without_physical_action(
         self,
     ) -> None:
@@ -483,6 +650,45 @@ class SpatialRegistrationAdapterTests(unittest.IsolatedAsyncioTestCase):
                 target_frame="world-vio",
                 depth_policy="CLOSEST_TO_CAMERA",
             )
+
+    async def test_reviewed_mounted_static_path_ignores_live_vio_epoch(self) -> None:
+        capture = _Capture()
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=2)
+        for name in ("body_pose", "vio_status"):
+            capture.frame.observations[name]["observed_at_us"] = (
+                capture.frame.timestamp_us - 2_000_000
+            )
+            capture.frame.observations[name]["received_at"] = (
+                stale_time.isoformat()
+            )
+        adapter = SpatialRegistrationSkillAdapter(
+            capture,
+            _Fabric(
+                transform_epoch="historical-calibration-epoch",
+                reviewed_mounted_static=True,
+            ),
+            manager=_Manager(),
+            fallback_camera_provider_id=PROVIDER_ID,
+            binding_mode="SHADOW",
+        )
+
+        result = await adapter.run(
+            pixel_yx=[3, 4],
+            target_frame="rebot_arm_base",
+            depth_policy="CLOSEST_TO_CAMERA",
+        )
+
+        self.assertEqual(result["target_frame"], "rebot_arm_base")
+        self.assertEqual(
+            result["input_temporal_evidence"]["evaluated_inputs"][
+                "vio_context"
+            ]["decision"],
+            "NOT_REQUIRED_FOR_REVIEWED_MOUNTED_STATIC_PATH",
+        )
+        self.assertNotIn(
+            "body_pose",
+            result["input_temporal_evidence"]["evaluated_inputs"],
+        )
 
     async def test_nontracking_vio_is_rejected(self) -> None:
         capture = _Capture()

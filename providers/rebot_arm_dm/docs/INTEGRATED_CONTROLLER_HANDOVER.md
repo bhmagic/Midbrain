@@ -246,6 +246,25 @@ Each sphere point should include:
 - Optional material ID.
 - Optional velocity estimate.
 
+### Scene region and level of detail
+
+The canonical arm scene should be clipped to the union of two base-frame
+regions so point-cloud volume does not grow with the complete camera view:
+
+- A high-detail sphere centered on the current measured gripper/controlled
+  frame with a radius of 0.5 m.
+- A complete arm-workspace sphere centered on `rebot_arm_base` with a radius of
+  1.2 m.
+
+The scene compiler should use a minimum collision-sphere radius of 0.005 m in
+the 0.5 m gripper region and 0.015 m elsewhere in the 1.2 m arm region.
+Observed geometry smaller than the applicable minimum is conservatively
+inflated to the minimum; it is not discarded as free space. The compiler should
+voxelize and merge redundant samples before publication. Geometry outside both
+regions is excluded from the arm scene. A future mobile base can reuse the same
+contract by moving the base-centered region with the current timestamped base
+transform.
+
 Policies:
 
 ### `KEEP_OUT`
@@ -265,9 +284,13 @@ Objects that may be displaced.
 Behavior:
 
 - Avoid by default.
-- Contact only when the active task explicitly enables pushing.
+- A VLM may suggest that an object appears pushable, but that suggestion is
+  context only and must not assign the canonical policy.
+- Contact only when the upstream Agent or finite Skill explicitly enables
+  pushing for the current task.
 - Request should include maximum force, permitted displacement, and intended direction.
-- If no pushing task is active, treat as KEEP_OUT.
+- If no pushing task is active, treat the object as `KEEP_OUT` unless it is the
+  selected `WORKPIECE`.
 
 ### `WORKPIECE`
 
@@ -276,10 +299,22 @@ Material intentionally being manipulated, cut, pressed, inserted, or probed.
 Behavior:
 
 - Avoid during transit.
-- Permit contact only for an explicit acting frame and contact task.
+- The selected workpiece is contact-eligible by default at the declared acting
+  frame. It does not need a second `PUSHABLE` classification merely because the
+  gripper or tool may touch it.
+- An explicit task-level `NO_CONTACT` or standoff requirement overrides the
+  workpiece default. For example, a request to move close to a toilet-paper
+  roll without touching marks the roll as the workpiece while retaining a
+  no-contact clearance policy.
+- Contact by non-acting robot links remains prohibited unless separately
+  declared by the task policy.
 - Apply task-specific wrench/speed bounds.
 - Expected contact does not trigger a general emergency response.
 - Unexpected contact outside the allowed region does.
+
+Unknown objects default to `KEEP_OUT`. An object explicitly selected as the
+manipulation target defaults to `WORKPIECE`. `PUSHABLE` is therefore a
+task-scoped upstream assertion rather than the VLM's default classification.
 
 Recommended representation is chunked by policy and cluster. Dense KEEP_OUT data should be voxelized or converted to an Octomap. Pushable and workpiece clusters should retain stable IDs and semantic metadata.
 
@@ -299,6 +334,27 @@ During execution:
 - Slow or stop if clearance becomes unsafe.
 - Replan around new obstacles.
 - Use a local reactive controller for short-horizon corrections.
+
+### Controller-owned multistep routing TODO
+
+The Integrated Controller should accept one goal, scene revision, and task
+policy and produce a complete multileg route through the environment. The
+route may contain clearance, lateral, retreat, observation, and final-approach
+legs. The Agent should not need to issue or discuss every intermediate move.
+
+The complete route, its alternative branches, and its permitted local replan
+envelope remain controller-owned and are covered by one preview and one bounded
+authorization decision. Integrated may select another reviewed branch or
+insert local avoidance waypoints without a new Agent command only while the
+goal, contact policy, speed/effort envelope, scene identity rules, and authority
+scope remain unchanged. A changed goal or relaxed contact policy requires a new
+decision.
+
+The execution result should report every attempted leg, scene revision,
+minimum clearance, replan cause, measured arrival, and terminal hold/release
+state. This TODO depends on the canonical scene compiler and live scene-update
+monitor but should precede removal of the current single-commit distance
+restriction.
 
 MoveIt Hybrid Planning is appropriate because it combines global and local planners running at different rates. MoveIt Servo is appropriate for local Cartesian velocity control and provides collision/singularity scaling.
 

@@ -2,7 +2,7 @@
 
 This finite Midbrain Skill aligns a stationary reBot arm base into a camera-origin world frame. All Skill orchestration, configuration, run artifacts, calibration revisions, schemas, tests, and the monitoring GUI live in this folder.
 
-Version 0.8.5 uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. Robot-base local axes
+Version 0.8.9 uses `MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2`. Robot-base local axes
 remain positive X forward, positive Y left, and positive Z model-up. World
 semantic directions are transformed into that local frame when motion is
 planned.
@@ -55,8 +55,11 @@ convention.
 See `CHANGELOG.md` for the reviewed-activation, Agent discovery, GUI, and
 hardware-validation changes made during the 2026-07-29 system test.
 
-The default `FOUNDATIONPOSE_SKILL` route invokes the finite
-`foundation_pose_object_localization` nested Skill. Stationary Alignment owns
+The regular Agent has no automatic base-pose engine. It invokes the finite
+`foundation_pose_object_localization` nested Skill only when the operator uses
+the exact sentence `Use FoundationPose to establish the stationary
+world-to-arm-base transform.` Within that explicit run,
+`FOUNDATIONPOSE_SKILL` is the selected engine. Stationary Alignment owns
 the bounded job, reviewed masks, sampling policy, VIO-epoch checks, and result
 validation. Its default `PROVIDER` execution host keeps PyTorch, CUDA, and the
 pinned NVLabs SDK in the FoundationPose Provider environment. At job
@@ -102,8 +105,8 @@ Run `scripts\run_gui.ps1`. The launcher:
 - Starts passively. Opening the debugging GUI does not request camera, VIO, or
   arm residency; use **Request providers** when acquisition is intended.
 - Leaves the FoundationPose compatibility Provider stopped until a base
-  alignment explicitly using that route requests it. The default
-  `FOUNDATIONPOSE_SKILL` route does not start the Provider.
+  alignment explicitly using that route requests it. The finite
+  `FOUNDATIONPOSE_SKILL` route does not start the compatibility Provider.
 
 Use `scripts\run_gui.ps1 -NoBrowser` to suppress browser opening, or `-NoCoreStart` to require that Manager and Fabric already be running. A partially running core is reported rather than automatically restarting the healthy half, because a restart could disrupt unrelated providers. Stop only the GUI with `scripts\stop_gui.ps1`; the Midbrain core and requested input providers remain available to other work.
 Legacy automatic input acquisition can be restored explicitly with
@@ -163,7 +166,7 @@ The manifest exposes these three concrete modes to upstream Skills:
 | Mode | Base source | Primary gripper source | Intended use |
 |---|---|---|---|
 | `foundation_base_gripper` | FoundationPose base pose | Segmented RGB-D gripper surface point | Slow, dim-scene path that also reports the gripper CAD pose |
-| `foundation_base_vlm_gripper` | FoundationPose base pose | Segmented RGB-D gripper surface point | Faster default base registration |
+| `foundation_base_vlm_gripper` | FoundationPose base pose | Segmented RGB-D gripper surface point | Faster explicit FoundationPose registration |
 | `vlm_gripper_only` | Prior alignment with rotation locked | VLM RGB-D foremost-beak point | Later translation adjustment without starting FoundationPose |
 
 `auto` selects one of the latter two modes and publishes the selected concrete mode. The old `vlm_refine` API value remains a hidden compatibility alias and is canonicalized to `vlm_gripper_only`; new callers should not use it.

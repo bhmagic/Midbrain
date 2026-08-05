@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import time
 
 from physical_agent_test.initialize_space_cognition_skill import InitializeSpaceCognitionSkill
 from physical_agent_test.spatial_frames import WORLD_CONVENTION_ID
@@ -64,6 +65,9 @@ class _VerificationManager:
 
     async def acquire_motion_inhibit(self, **_kwargs):
         self.inhibit_acquire_calls += 1
+        if self.fabric is not None:
+            self.fabric.motion_inhibited = True
+            self.fabric.tracking_state = "TRACKING"
         return {"active": True, "lease_id": "inhibit-1"}
 
     async def release_motion_inhibit(self, **_kwargs):
@@ -91,26 +95,69 @@ class _VerificationFabric:
     def __init__(self, *, tracking_state="TRACKING"):
         self.published: list[dict] = []
         self.tracking_state = tracking_state
+        self.motion_inhibited = True
 
     async def latest_optional(self, stream):
+        now_us = time.time_ns() // 1000
+        common = {
+            "valid": True,
+            "observed_at_us": now_us,
+            "freshness_ms": 1000,
+        }
         if stream == "localization.vio.status":
             return {
-                "valid": True,
+                **common,
                 "data": {
-                    "motion_inhibited": True,
+                    "motion_inhibited": self.motion_inhibited,
                     "tracking_state": self.tracking_state,
                     "session_epoch": "epoch-current",
                     "world_frame": "local_vio/epoch-current",
                     "convention_id": WORLD_CONVENTION_ID,
                 },
             }
-        return {"valid": True, "data": {}}
+        if stream == "localization.body.pose":
+            return {
+                **common,
+                "freshness_ms": 500,
+                "data": {
+                    "body_frame": "body_base",
+                    "position_m": [0.0, 0.0, 0.0],
+                    "session_epoch": "epoch-current",
+                    "world_frame": "local_vio/epoch-current",
+                    "convention_id": WORLD_CONVENTION_ID,
+                },
+            }
+        return {**common, "data": {}}
 
     async def publish(self, observation):
         self.published.append(observation)
 
 
 class InitializeSkillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ensure_tracking_uses_motion_inhibit_without_reset(self) -> None:
+        fabric = _VerificationFabric(tracking_state="INITIALIZING")
+        manager = _VerificationManager(fabric)
+        skill = InitializeSpaceCognitionSkill(
+            manager,
+            fabric,
+            camera_provider_id="camera",
+            vio_provider_id="vio",
+            timeout_s=1.0,
+        )
+
+        result = await skill.ensure_tracking()
+
+        self.assertEqual(result["status"], "tracking_ready")
+        self.assertEqual(
+            result["result"]["stationary_gate"],
+            "GLOBAL_MOTION_INHIBIT",
+        )
+        self.assertFalse(result["result"]["epoch_reset_performed"])
+        self.assertEqual(manager.hot, ["camera", "vio"])
+        self.assertEqual(manager.inhibit_acquire_calls, 1)
+        self.assertEqual(manager.inhibit_release_calls, 1)
+        self.assertEqual(manager.provider_request_calls, 0)
+
     async def test_fixed_rig_tracking_check_does_not_reset_epoch(self) -> None:
         fabric = _VerificationFabric()
         manager = _VerificationManager(fabric)

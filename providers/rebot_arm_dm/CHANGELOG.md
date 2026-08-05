@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Set the requested installed-arm POS_SPEED/POS_VEL cap vector to 5.0 rad/s
+  for J1-J3 and 10.0 rad/s for J4-J6 and the gripper. The former is below the
+  DM-J4340P 24 V no-load characteristic speed; the latter is below the
+  DM-J4310 rated characteristic speed. Conservative MIT and calibration
+  limits remain unchanged. Integrated still authenticates requested
+  per-joint intent above 10 rad/s and rejects intent at or above 20 rad/s.
+
 ## 0.1.20 - 2026-07-29
 
 - Treats a gripper FORCE_POS `velocity_limit_rad_s` request as a physical

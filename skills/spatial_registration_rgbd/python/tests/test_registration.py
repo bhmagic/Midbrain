@@ -5,13 +5,43 @@ import unittest
 import numpy as np
 
 from spatial_registration_rgbd import (
+    deproject_pixel,
     map_pixel_between_grids,
     register_rgbd_point,
     select_depth_sample,
+    transform_point,
 )
 
 
 class SpatialRegistrationTests(unittest.TestCase):
+    def test_level_optical_axes_map_to_world_forward_left_up(self) -> None:
+        intrinsics = {"fx": 100.0, "fy": 100.0, "cx": 50.0, "cy": 50.0}
+        world_from_camera = np.eye(4)
+        world_from_camera[:3, :3] = np.asarray(
+            [
+                [0.0, 0.0, 1.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+            ]
+        )
+
+        center = transform_point(
+            world_from_camera,
+            deproject_pixel((50, 50), 1.0, intrinsics),
+        )
+        right = transform_point(
+            world_from_camera,
+            deproject_pixel((50, 60), 1.0, intrinsics),
+        )
+        down = transform_point(
+            world_from_camera,
+            deproject_pixel((60, 50), 1.0, intrinsics),
+        )
+
+        self.assertTrue(np.allclose(center, [1.0, 0.0, 0.0]))
+        self.assertLess(right[1], center[1])
+        self.assertLess(down[2], center[2])
+
     def test_independent_rgb_and_registered_depth_grids_are_supported(self) -> None:
         mapped = map_pixel_between_grids(
             (539.5, 959.5),

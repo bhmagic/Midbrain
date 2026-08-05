@@ -1,7 +1,55 @@
 # Reference implementation notes
 
-- Official reBot Arm Python examples: `https://github.com/vectorBH6/reBotArm_control_py`
-- MotorBridge Python interface and Damiao modes: `https://github.com/NoBody-114514/motorbridge`
+- Official Seeed reBot Arm Python SDK and examples: `https://github.com/Seeed-Projects/reBotArm_control_py`
+- Official Seeed reBot hardware project: `https://github.com/Seeed-Projects/reBot-DevArm`
+- Official B601-DM real-machine performance test: `https://github.com/Seeed-Projects/reBot-DevArm/blob/main/hardware/reBot_B601_DM/performance_testing/Performance_Testing.md`
+- Damiao DM-J4340P-2EC manual: `https://damiao.enactic.ai/en/products/hardware/dm-j4340p-2ec-v1.0/`
+- Damiao DM-J4310-2EC V1.1 manual: `https://damiao.enactic.ai/en/products/hardware/dm-j4310-2ec-v1.1/`
 - Supplied Unity bridge: `ReBotArm_Unity_Bridge_Final_Bundle_2026_06_21`
 
 The nominal kinematic origins, masses, centers of mass, inertia tensors, and fixed-tool transform in `arm_model.factory.json` were transcribed from the official fixed-end URDF. The first three configured motor models are DM-J4340P and the remaining four are DM-J4310 in the official configuration. Physical identity and revision must be checked on the installed arm.
+
+The upstream sources were rechecked on 2026-08-03. The official Seeed SDK was
+at commit `d54040596faa94bdc4f8ad93f3f06b33dfe3a1bf`. Its
+`config/rebotarm_dm.yaml` declares POS_VEL `vlim` values of 5.0 rad/s for
+joints 1-3 and 3.0 rad/s for joints 4-6, with MIT gains of 120/8 and 18/2
+respectively. Those values describe the official controller configuration;
+they are not, by themselves, validated autonomous whole-arm operating speeds.
+
+The requested Midbrain `0.1.21` motor-envelope configuration deliberately
+overrides the latter application value: it retains 5.0 rad/s for the three
+DM-J4340P joints and selects 10.0 rad/s for the three arm DM-J4310 joints and
+the gripper. At 24 V, 5.0 rad/s is below the DM-J4340P 52 rpm no-load
+characteristic but above its 36 rpm rated characteristic; 10.0 rad/s is below
+the DM-J4310 120 rpm rated characteristic. This is a configured command cap,
+not evidence of continuous-duty whole-arm qualification.
+
+The official hardware repository was at commit
+`e326367bf1bc925f32484d30c5239e3e812065d4` during the same recheck. The
+performance guidance below is therefore tied to that revision rather than an
+older web cache.
+
+The official fixed-end URDF declares the broad mechanical joint ranges used by
+the upstream kinematics. Its velocity attributes of 50 and 200 conflict in
+scale with the SDK POS_VEL configuration and the motor characteristic speeds,
+so Midbrain must not interpret those URDF values as qualified rad/s limits
+without an upstream unit clarification.
+
+The Damiao manuals document MIT Kp in `[0, 500]`, Kd in `[0, 5]`,
+position-speed control with a maximum-velocity command, and
+zero-speed/measured-position capture before a mode switch. The current Seeed
+SDK configuration nevertheless specifies Kd 8 for joints 1-3. Treat that as an
+unresolved version/protocol conflict: verify the installed motor firmware and
+actual command encoding before making the upstream gain an autonomous profile
+default. The DM-J4340P-2EC 24 V characteristic speeds are 36 rpm rated and 52
+rpm no-load; the DM-J4310-2EC V1.1 values are 120 rpm rated and 200 rpm no-load.
+Manufacturer no-load speed, protocol mapping range, arm-level SDK
+configuration, Basic provider caps, and a physically qualified autonomous
+profile are separate limits and must remain separately identified.
+
+Seeed's April 2026 B601-DM V4-motor real-machine test recommends a working load
+below 1.5 kg, working radius below 70% reach (reported as 450 mm), and speed
+below 70% of maximum. Its extreme tests stopped because motor 2 reached a
+thermal limit; the report explicitly says to verify performance on the actual
+arm. These are arm-level operating recommendations, not permission to use 70%
+of every raw motor or URDF value without trajectory and stopping qualification.

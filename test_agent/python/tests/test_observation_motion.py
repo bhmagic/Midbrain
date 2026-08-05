@@ -27,7 +27,9 @@ class ObservationMotionTests(unittest.TestCase):
             "camera_boot_id": "camera-boot-1",
             "workcell_transform_id": "transform-1",
             "workcell_transform_revision": "transform-revision-1",
-            "workcell_transform_expires_at_us": now + 60_000_000,
+            "workcell_transform_validity_policy": (
+                "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+            ),
             "vio_session_epoch": "vio-epoch-1",
             "observation_timestamp_us": now - 10_000,
             "observation_expires_at_us": now + 5_000_000,
@@ -50,6 +52,7 @@ class ObservationMotionTests(unittest.TestCase):
         proposal: dict,
         *,
         now_us: int | None = None,
+        controller_scene_revision: str = "scene-1",
     ) -> dict:
         now = time.time_ns() // 1000 if now_us is None else int(now_us)
         request = proposal["controller_plan_request"]
@@ -58,6 +61,7 @@ class ObservationMotionTests(unittest.TestCase):
             "requested_speed_m_s": float(request["requested_speed_m_s"]),
             "allowed_contact_object_ids": [],
             "permit_pushable_contact": False,
+            "final_state": str(request["final_state"]),
             "request_context": copy.deepcopy(request["request_context"]),
         }
         preview = {
@@ -76,7 +80,8 @@ class ObservationMotionTests(unittest.TestCase):
                     "preview_id": "preview-1",
                 },
             },
-            "scene_revision": "scene-1",
+            "scene_revision": controller_scene_revision,
+            "final_state": str(request["final_state"]),
         }
         contract = {
             "schema": "physical_agent.integrated_transit_preview_contract",
@@ -96,7 +101,7 @@ class ObservationMotionTests(unittest.TestCase):
             ),
             "request_context_complete": True,
             "request_context_issues": [],
-            "scene_revision": "scene-1",
+            "scene_revision": controller_scene_revision,
             "lease_snapshot": {
                 "active": False,
                 "state": "AVAILABLE",
@@ -111,6 +116,21 @@ class ObservationMotionTests(unittest.TestCase):
             "preview_grants_commit_authority": False,
             "commit_endpoint_exposed": False,
         }
+        requested_scene_revision = normalized_request["request_context"][
+            "scene_revision"
+        ]
+        contract["scene_revision_adaptation"] = (
+            {
+                "policy": "CONTROLLER_NEWEST_ACCEPTED_SCENE_USED",
+                "requested_scene_revision": requested_scene_revision,
+                "controller_scene_revision": controller_scene_revision,
+                "commit_policy": (
+                    "REVALIDATE_STORED_WAYPOINTS_AGAINST_NEWEST_SCENE"
+                ),
+            }
+            if controller_scene_revision != requested_scene_revision
+            else None
+        )
         contract["preview_sha256"] = cls._canonical_sha256(
             {
                 "planning_result": preview,
@@ -203,6 +223,70 @@ class ObservationMotionTests(unittest.TestCase):
             ],
         )
 
+    def test_newer_controller_scene_is_valid_with_exact_adaptation(self) -> None:
+        proposal = self._proposal()
+        proposal = attach_controller_preview(
+            proposal,
+            self._accepted_preview(
+                proposal,
+                controller_scene_revision="scene-2",
+            ),
+        )
+
+        self.assertTrue(proposal["controller_preview_valid"])
+        self.assertEqual(
+            proposal["controller_preview_authority"]["scene_revision"],
+            "scene-2",
+        )
+
+    def test_relative_delta_preview_uses_relative_request_contract(self) -> None:
+        proposal = self._proposal()
+        target = proposal["controller_plan_request"]["target"]
+        target.pop("position_m")
+        target["position_delta_m"] = [0.05, 0.0, 0.0]
+
+        proposal = attach_controller_preview(
+            proposal,
+            self._accepted_preview(proposal),
+        )
+
+        self.assertTrue(proposal["controller_preview_valid"])
+        self.assertEqual(
+            proposal["controller_preview"]["preview_contract"][
+                "normalized_request"
+            ]["target"]["position_delta_m"],
+            [0.05, 0.0, 0.0],
+        )
+
+    def test_newer_controller_scene_requires_exact_adaptation(self) -> None:
+        proposal = self._proposal()
+        preview = self._accepted_preview(
+            proposal,
+            controller_scene_revision="scene-2",
+        )
+        preview["preview_contract"]["scene_revision_adaptation"][
+            "commit_policy"
+        ] = "TRUST_WITHOUT_REVALIDATION"
+        contract = preview["preview_contract"]
+        unsigned_contract = copy.deepcopy(contract)
+        unsigned_contract.pop("preview_sha256", None)
+        planning_result = copy.deepcopy(preview)
+        planning_result.pop("preview_contract", None)
+        contract["preview_sha256"] = self._canonical_sha256(
+            {
+                "planning_result": planning_result,
+                "preview_contract": unsigned_contract,
+            }
+        )
+
+        proposal = attach_controller_preview(proposal, preview)
+
+        self.assertFalse(proposal["controller_preview_valid"])
+        self.assertIn(
+            "PREVIEW_SCENE_REVISION_ADAPTATION_INVALID",
+            proposal["controller_preview_validation_issues"],
+        )
+
     def test_rejected_controller_preview_is_not_authorization_ready(self) -> None:
         proposal = self._proposal()
         preview = self._accepted_preview(proposal)
@@ -259,20 +343,19 @@ class ObservationMotionTests(unittest.TestCase):
             proposal["controller_preview_validation_issues"],
         )
 
-    def test_expired_workcell_context_is_rejected(self) -> None:
+    def test_invalid_workcell_validity_policy_is_rejected(self) -> None:
         proposal = self._proposal()
         preview = self._accepted_preview(proposal)
-        expired_at = time.time_ns() // 1000 - 1
         proposal["controller_plan_request"]["request_context"][
-            "workcell_transform_expires_at_us"
-        ] = expired_at
+            "workcell_transform_validity_policy"
+        ] = "LEGACY_TIME_LIMITED"
         preview = self._accepted_preview(proposal)
 
         proposal = attach_controller_preview(proposal, preview)
 
         self.assertFalse(proposal["controller_preview_valid"])
         self.assertIn(
-            "PREVIEW_CONTEXT_EXPIRED:workcell_transform_expires_at_us",
+            "PREVIEW_CONTEXT_WORKCELL_VALIDITY_POLICY_INVALID",
             proposal["controller_preview_validation_issues"],
         )
 

@@ -59,6 +59,12 @@ if (Test-Path (Join-Path $effectorFrontSkill "pyproject.toml")) {
     if ($LASTEXITCODE -ne 0) { throw "Effector-front Skill installation failed." }
 }
 
+$itemLocatorSkill = Join-Path $workspace "skills\observe_pointed_object"
+if (Test-Path (Join-Path $itemLocatorSkill "pyproject.toml")) {
+    & $python -m pip install -e $itemLocatorSkill
+    if ($LASTEXITCODE -ne 0) { throw "Item-locator Skill installation failed." }
+}
+
 & $python -m pip install -e (Join-Path $agent "python")
 if ($LASTEXITCODE -ne 0) { throw "Test-agent package installation failed." }
 
@@ -81,5 +87,45 @@ if (-not (Test-Path $systemFile)) {
         $systemTemplate = Join-Path $agent "config_templates\system.env.example"
     }
     Copy-Item -LiteralPath $systemTemplate -Destination $systemFile
+}
+$systemLines = @(Get-Content -LiteralPath $systemFile)
+$eligiblePrefix = "PHASE4_ELIGIBLE_TOOLS="
+$eligibleIndex = -1
+for ($index = 0; $index -lt $systemLines.Count; $index++) {
+    if ($systemLines[$index].StartsWith($eligiblePrefix)) {
+        $eligibleIndex = $index
+        break
+    }
+}
+$requiredSpatialTools = @(
+    "establish_world_axis",
+    "locate_effector_front",
+    "locate_item",
+    "plan_no_contact_item_approach",
+    "inspect_arm_semantic_scene"
+)
+if ($eligibleIndex -ge 0) {
+    $eligibleValues = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in $systemLines[$eligibleIndex].Substring(
+        $eligiblePrefix.Length
+    ).Split(",")) {
+        $trimmed = $value.Trim()
+        if ($trimmed -and -not $eligibleValues.Contains($trimmed)) {
+            $eligibleValues.Add($trimmed)
+        }
+    }
+    foreach ($toolName in $requiredSpatialTools) {
+        if (-not $eligibleValues.Contains($toolName)) {
+            $eligibleValues.Add($toolName)
+        }
+    }
+    $systemLines[$eligibleIndex] = $eligiblePrefix + (
+        $eligibleValues -join ","
+    )
+    [System.IO.File]::WriteAllLines(
+        $systemFile,
+        $systemLines,
+        [System.Text.UTF8Encoding]::new($false)
+    )
 }
 Write-Host "Test-agent/OpenAI Agents SDK environment ready: $venv"

@@ -1,6 +1,7 @@
 {
   "id": "localization.local_vio",
   "display_name": "Local Inertial-First RGB-D VIO Provider",
+  "dependencies": ["camera.femto_bolt"],
   "command": "${PHYSICAL_AGENT_ROOT}/providers/local_vio/.venv/Scripts/python.exe",
   "args": [
     "${PHYSICAL_AGENT_ROOT}/providers/local_vio/provider.py",

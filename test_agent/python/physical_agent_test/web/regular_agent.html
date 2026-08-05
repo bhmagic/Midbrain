@@ -308,10 +308,10 @@
         <label class="authorization-toggle">
           <input id="autoApproveMoves" type="checkbox" checked>
           Auto-authorize each exact relative arm pose preview: translation up to
-          <input id="maxAutoMoveCm" type="number" min="0.1" max="100" step="0.1" value="35" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
-          cm at a nominal average speed up to
-          <input id="maxAutoSpeedMps" type="number" min="0.001" max="0.5" step="0.001" value="0.5" inputmode="decimal" aria-label="Maximum automatically authorized nominal speed in meters per second">
-          m/s; controlled-frame yaw up to 45°
+          <input id="maxAutoMoveCm" type="number" min="0.1" max="120" step="0.1" value="120" inputmode="decimal" aria-label="Maximum automatically authorized move in centimeters">
+          <input id="maxAutoSpeedMps" type="hidden" value="5">
+          cm; per-joint speed asks above 10 rad/s and hard-stops at 20 rad/s;
+          controlled-frame yaw up to 45°
         </label>
         <label class="authorization-toggle">
           <input id="autoApproveCalibration" type="checkbox" checked>
@@ -467,11 +467,13 @@
       const savedMaximum = Number(saved.maxAutoMoveCm);
       byId("maxAutoMoveCm").value =
         Number.isFinite(savedMaximum) && savedMaximum >= 0.1 &&
-        savedMaximum <= 100 ? String(savedMaximum) : "35";
+        savedMaximum <= 120 ? String(savedMaximum) : "120";
       const savedMaximumSpeed = Number(saved.maxAutoSpeedMps);
       byId("maxAutoSpeedMps").value =
         Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0 &&
-        savedMaximumSpeed <= 0.5 ? String(savedMaximumSpeed) : "0.5";
+        Number.isFinite(savedMaximumSpeed) && savedMaximumSpeed > 0
+          ? String(savedMaximumSpeed)
+          : "5";
       updateAuthorizationTicker();
     }
 
@@ -491,19 +493,20 @@
         autoApproveSpaceReinitialization:
           byId("autoApproveSpaceReinitialization").checked,
         maxAutoMoveCm:
-          Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 100
+          Number.isFinite(maximum) && maximum >= 0.1 && maximum <= 120
             ? maximum
-            : 35,
+            : 120,
         maxAutoSpeedMps:
           Number.isFinite(maximumSpeed) && maximumSpeed > 0 &&
-          maximumSpeed <= 0.5 ? maximumSpeed : 0.5
+          Number.isFinite(maximumSpeed) && maximumSpeed > 0
+            ? maximumSpeed
+            : 5
       };
     }
 
     function updateAuthorizationTicker() {
       const preferences = authorizationPreferences();
       byId("maxAutoMoveCm").disabled = !preferences.autoApproveMoves;
-      byId("maxAutoSpeedMps").disabled = !preferences.autoApproveMoves;
       const providerState = preferences.autoApproveProviders
         ? "Provider activation AUTO"
         : "Provider activation asks";
@@ -511,8 +514,8 @@
         ? "Provider stop AUTO"
         : "Provider stop asks";
       const motionState = preferences.autoApproveMoves
-        ? `relative arm pose AUTO <= ${preferences.maxAutoMoveCm} cm, ` +
-          `<= ${preferences.maxAutoSpeedMps} m/s nominal average; ` +
+        ? `relative arm pose AUTO <= ${preferences.maxAutoMoveCm} cm; ` +
+          "joint speed asks >10 rad/s and hard-stops >=20 rad/s; " +
           "controlled-frame yaw AUTO <= 45°"
         : "physical motion asks";
       const calibrationState = preferences.autoApproveCalibration
@@ -691,8 +694,7 @@
             distanceM > 0 &&
             distanceM * 100 <= preferences.maxAutoMoveCm + 1e-9 &&
             Number.isFinite(plannedSpeedMps) &&
-            plannedSpeedMps > 0 &&
-            plannedSpeedMps <= preferences.maxAutoSpeedMps + 1e-9;
+            plannedSpeedMps > 0;
           const boundedYaw = hasYaw &&
             Number.isFinite(yawDegrees) &&
             Math.abs(yawDegrees) > 1e-9 &&
