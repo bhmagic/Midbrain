@@ -395,6 +395,17 @@ struct WorkcellCalibrationRevocationRequest {
     reason: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct WorkcellTranslationRefinementRequest {
+    request_id: String,
+    updated_by: String,
+    activation_id: String,
+    expected_refinement_revision: u64,
+    source_world_from_base: Value,
+    proposed_world_from_base: Value,
+    refinement: Value,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct WorkcellCalibrationActivationRecord {
     activation_id: String,
@@ -430,6 +441,9 @@ struct WorkcellCalibrationActivationRecord {
     vio_boot_id: String,
     transforms: Value,
     reviewer: Value,
+    translation_refinement_revision: u64,
+    last_translation_refinement: Option<Value>,
+    translation_refinement_journal: Vec<Value>,
     last_transition_reason: String,
 }
 
@@ -620,6 +634,10 @@ async fn main() -> Result<()> {
             post(activate_workcell_calibration),
         )
         .route(
+            "/v1/workcell-calibrations/refine-translation",
+            post(refine_workcell_calibration_translation),
+        )
+        .route(
             "/v1/workcell-calibrations/:id/revoke",
             post(revoke_workcell_calibration),
         )
@@ -681,6 +699,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
             "provider_requests",
             "motion_inhibit",
             "reviewed_workcell_calibration_activation",
+            "compact_workcell_translation_refinement",
             "workcell_calibration_revocation"
         ]
     }))
@@ -823,6 +842,240 @@ async fn activate_workcell_calibration(
     supersede_active_workcell_calibrations(&mut records, &record, Utc::now());
     records.insert(record.activation_id.clone(), record.clone());
     Ok((StatusCode::CREATED, Json(record)))
+}
+
+async fn refine_workcell_calibration_translation(
+    State(state): State<AppState>,
+    Json(request): Json<WorkcellTranslationRefinementRequest>,
+) -> Result<Json<WorkcellCalibrationActivationRecord>, (StatusCode, Json<Value>)> {
+    if request.request_id.trim().is_empty()
+        || request.updated_by.trim().is_empty()
+        || request.activation_id.trim().is_empty()
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "request_id, updated_by, and activation_id are required",
+        ));
+    }
+    let request_sha256 = canonical_json_sha256(
+        &serde_json::to_value(&request)
+            .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?,
+    );
+    let reports = state.reports.lock().await.clone();
+    let mut records = state.workcell_calibrations.lock().await;
+    let record = records
+        .get_mut(request.activation_id.trim())
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "workcell calibration activation does not exist",
+            )
+        })?;
+    if let Some(existing) = record
+        .translation_refinement_journal
+        .iter()
+        .find(|entry| entry["request_id"] == request.request_id.trim())
+    {
+        if existing["request_sha256"] != request_sha256 {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "translation-refinement request_id was reused for different content",
+            ));
+        }
+        return Ok(Json(record.clone()));
+    }
+    refresh_workcell_motion_usability(record, &reports);
+    let updated =
+        build_translation_refined_record(record, &request, &request_sha256, &reports, Utc::now())
+            .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
+    publish_workcell_calibration(&state, &updated, true)
+        .await
+        .map_err(|error| {
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "translation refinement was not activated because Fabric publication failed: {error}"
+                ),
+            )
+        })?;
+    *record = updated.clone();
+    Ok(Json(updated))
+}
+
+fn build_translation_refined_record(
+    current: &WorkcellCalibrationActivationRecord,
+    request: &WorkcellTranslationRefinementRequest,
+    request_sha256: &str,
+    reports: &HashMap<String, ProviderReport>,
+    now: DateTime<Utc>,
+) -> Result<WorkcellCalibrationActivationRecord> {
+    if current.state != "ACTIVE" || current.enforcement != "ENFORCED" || !current.motion_usable {
+        return Err(anyhow!(
+            "translation refinement requires one enforced motion-usable active calibration"
+        ));
+    }
+    if request.expected_refinement_revision != current.translation_refinement_revision {
+        return Err(anyhow!(
+            "translation refinement expected revision {} but active revision is {}",
+            request.expected_refinement_revision,
+            current.translation_refinement_revision
+        ));
+    }
+    if request.source_world_from_base != current.transforms["world_from_base"] {
+        return Err(anyhow!(
+            "translation refinement source world_from_base is stale"
+        ));
+    }
+    validate_transform_payload(
+        &request.source_world_from_base,
+        "translation_refinement.source_world_from_base",
+    )?;
+    validate_transform_payload(
+        &request.proposed_world_from_base,
+        "translation_refinement.proposed_world_from_base",
+    )?;
+    if request.source_world_from_base["rotation_xyzw"]
+        != request.proposed_world_from_base["rotation_xyzw"]
+    {
+        return Err(anyhow!(
+            "translation refinement attempted to change active rotation"
+        ));
+    }
+    // The dedicated Skill owns observation quality, capture-motion, VLM-review,
+    // and adoption policy. Reaching this endpoint is the Skill's apply decision;
+    // Manager only protects the authoritative state transition below.
+    let refinement = &request.refinement;
+    let identities = &refinement["identities"];
+    let identity_matches = [
+        ("world_frame", current.world_frame.as_str()),
+        ("vio_session_epoch", current.session_epoch.as_str()),
+        ("spatial_convention", current.convention_id.as_str()),
+        ("camera_provider_id", current.camera_provider_id.as_str()),
+        (
+            "camera_provider_instance_id",
+            current.camera_provider_instance_id.as_str(),
+        ),
+        ("camera_boot_id", current.camera_boot_id.as_str()),
+        (
+            "camera_calibration_revision",
+            current.camera_calibration_revision.as_str(),
+        ),
+    ];
+    for (field, expected) in identity_matches {
+        if identities[field].as_str() != Some(expected) {
+            return Err(anyhow!(
+                "translation refinement identity {field} does not match the active calibration"
+            ));
+        }
+    }
+    let arm_provider_id = require_json_string(
+        identities,
+        "arm_provider_id",
+        "translation_refinement.identities",
+    )?;
+    let arm_provider_instance_id = require_json_string(
+        identities,
+        "arm_provider_instance_id",
+        "translation_refinement.identities",
+    )?;
+    let arm_boot_id = require_json_string(
+        identities,
+        "arm_boot_id",
+        "translation_refinement.identities",
+    )?;
+    let arm_report = reports
+        .get(&arm_provider_id)
+        .ok_or_else(|| anyhow!("translation refinement arm Provider report is unavailable"))?;
+    if arm_report.instance_id != arm_provider_instance_id
+        || arm_report.boot_id != arm_boot_id
+        || arm_report.expired
+        || !arm_report.ready
+        || arm_report.health != "HEALTHY"
+    {
+        return Err(anyhow!(
+            "translation refinement arm Provider identity or health changed"
+        ));
+    }
+    let source_translation = finite_json_array(
+        &request.source_world_from_base["translation_m"],
+        3,
+        "translation_refinement.source_world_from_base.translation_m",
+    )?;
+    let proposed_translation = finite_json_array(
+        &request.proposed_world_from_base["translation_m"],
+        3,
+        "translation_refinement.proposed_world_from_base.translation_m",
+    )?;
+    let adopted_delta = finite_json_array(
+        &refinement["adopted_translation_delta_m"],
+        3,
+        "translation_refinement.adopted_translation_delta_m",
+    )?;
+    for index in 0..3 {
+        let expected = source_translation[index] + adopted_delta[index];
+        if (proposed_translation[index] - expected).abs() > 1e-9 {
+            return Err(anyhow!(
+                "translation refinement proposed translation does not match its adopted delta"
+            ));
+        }
+    }
+    let next_revision = current.translation_refinement_revision + 1;
+    let next_calibration_revision = format!(
+        "{}:translation-refinement:{}",
+        current.candidate_id, next_revision
+    );
+    let journal_entry = json!({
+        "request_id": request.request_id.trim(),
+        "request_sha256": request_sha256,
+        "updated_by": request.updated_by.trim(),
+        "updated_at_us": now.timestamp_micros().max(0) as u64,
+        "revision_before": current.translation_refinement_revision,
+        "revision_after": next_revision,
+        "calibration_revision_before": current.calibration_revision,
+        "calibration_revision_after": next_calibration_revision,
+        "previous_translation_m": source_translation,
+        "translation_m": proposed_translation,
+        "adopted_translation_delta_m": adopted_delta,
+        "raw_translation_delta_norm_m": refinement["raw_translation_delta_norm_m"],
+        "adoption_factor": refinement["adoption_factor"],
+        "landmark_id": refinement["landmark_id"],
+        "visual_evidence_id": refinement["visual_evidence"]["evidence_id"],
+        "quality_review_verdict": refinement["quality_review"]["verdict"],
+        "parent_state_link": null,
+    });
+    let mut updated = current.clone();
+    updated.transforms["world_from_base"] = request.proposed_world_from_base.clone();
+    updated.translation_refinement_revision = next_revision;
+    updated.calibration_revision = next_calibration_revision;
+    updated.last_translation_refinement = Some(journal_entry.clone());
+    updated.translation_refinement_journal.push(journal_entry);
+    if updated.translation_refinement_journal.len() > 32 {
+        let excess = updated.translation_refinement_journal.len() - 32;
+        updated.translation_refinement_journal.drain(0..excess);
+    }
+    updated.last_transition_reason = format!(
+        "XYZ-only translation refinement revision {} activated with locked rotation",
+        next_revision
+    );
+    Ok(updated)
+}
+
+fn finite_json_array(value: &Value, length: usize, scope: &str) -> Result<Vec<f64>> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| anyhow!("{scope} must be an array"))?;
+    if items.len() != length {
+        return Err(anyhow!("{scope} must contain {length} values"));
+    }
+    let values = items
+        .iter()
+        .map(|item| {
+            item.as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| anyhow!("{scope} contains a non-finite number"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(values)
 }
 
 fn supersede_active_workcell_calibrations(
@@ -1236,6 +1489,9 @@ fn build_workcell_activation_record(
         vio_boot_id,
         transforms: request.candidate["transforms"].clone(),
         reviewer: reviewer.clone(),
+        translation_refinement_revision: 0,
+        last_translation_refinement: None,
+        translation_refinement_journal: Vec::new(),
         last_transition_reason: "reviewed mounted calibration activated without a wall-clock expiry; VIO process freshness is historical provenance, not a mounted-transform gate".to_string(),
     })
 }
@@ -1648,6 +1904,7 @@ async fn publish_workcell_calibration(
                 "activation_id": record.activation_id,
                 "candidate_sha256": record.candidate_sha256,
                 "review_decision_id": record.review_decision_id,
+                "translation_refinement_revision": record.translation_refinement_revision,
                 "motion_usable": motion_usable,
                 "expires_at_us": null,
                 "validity_policy": record.validity_policy,
@@ -4141,6 +4398,263 @@ mod tests {
             ("localization.local_vio".to_string(), vio_report),
         ]);
         (request, reports)
+    }
+
+    fn translation_refinement_request(
+        record: &WorkcellCalibrationActivationRecord,
+        request_id: &str,
+        delta_m: [f64; 3],
+    ) -> WorkcellTranslationRefinementRequest {
+        let source = record.transforms["world_from_base"].clone();
+        let source_translation = source["translation_m"]
+            .as_array()
+            .expect("source translation")
+            .iter()
+            .map(|value| value.as_f64().expect("numeric source translation"))
+            .collect::<Vec<_>>();
+        let proposed_translation = vec![
+            source_translation[0] + delta_m[0],
+            source_translation[1] + delta_m[1],
+            source_translation[2] + delta_m[2],
+        ];
+        let proposed = json!({
+            "translation_m": proposed_translation,
+            "rotation_xyzw": source["rotation_xyzw"],
+        });
+        let raw_norm = delta_m
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        WorkcellTranslationRefinementRequest {
+            request_id: request_id.to_string(),
+            updated_by: "test-agent".to_string(),
+            activation_id: record.activation_id.clone(),
+            expected_refinement_revision: record.translation_refinement_revision,
+            source_world_from_base: source,
+            proposed_world_from_base: proposed,
+            refinement: json!({
+                "schema": "midbrain.arm_root_translation_refinement",
+                "schema_version": 1,
+                "status": "TRANSLATION_UPDATE_READY",
+                "workflow_complete": true,
+                "eligible_for_state_update": true,
+                "physical_motion_submitted": false,
+                "physical_motion_authorized": false,
+                "rotation_change_allowed": false,
+                "rotation_change_rad": 0.0,
+                "source_revision": record.translation_refinement_revision,
+                "adoption_factor": 1.0,
+                "raw_translation_delta_m": delta_m,
+                "raw_translation_delta_norm_m": raw_norm,
+                "adopted_translation_delta_m": delta_m,
+                "landmark_id": "profile_landmark",
+                "quality_review": {
+                    "required": false,
+                    "verdict": "NOT_RUN"
+                },
+                "context_revalidation": {
+                    "capture_context_unchanged": true
+                },
+                "capture_motion": {
+                    "policy_id": "TEMPORAL_FK_LANDMARK_MOTION_BOUND_V1",
+                    "sample_count": 5,
+                    "measured_maximum_landmark_motion_m": 0.001,
+                    "maximum_allowed_landmark_motion_m": 0.005,
+                    "fk_extrapolation_allowed": false
+                },
+                "visual_evidence": {
+                    "schema": "midbrain.visual_evidence",
+                    "schema_version": 1,
+                    "evidence_id": format!("evidence-{request_id}")
+                },
+                "identities": {
+                    "world_frame": record.world_frame,
+                    "vio_session_epoch": record.session_epoch,
+                    "spatial_convention": record.convention_id,
+                    "camera_provider_id": record.camera_provider_id,
+                    "camera_provider_instance_id": record.camera_provider_instance_id,
+                    "camera_boot_id": record.camera_boot_id,
+                    "camera_calibration_revision": record.camera_calibration_revision,
+                    "arm_provider_id": "robot_arm.example",
+                    "arm_provider_instance_id": "robot_arm.example-instance",
+                    "arm_boot_id": "robot_arm.example-boot",
+                    "arm_model_id": "example_arm",
+                    "arm_model_revision": "example-arm-v1",
+                    "effector_profile_revision": "example-effector-v1"
+                }
+            }),
+        }
+    }
+
+    #[test]
+    fn compact_translation_refinement_locks_rotation_and_bounds_journal() {
+        let now = Utc::now();
+        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let activation_sha =
+            canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
+        let mut record = build_workcell_activation_record(
+            &activation,
+            activation_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("activation record");
+        reports.insert(
+            "robot_arm.example".to_string(),
+            provider_report(
+                "robot_arm.example",
+                "robot_arm.transforms.local",
+                true,
+                true,
+                "HOT",
+            ),
+        );
+        let initial_rotation = record.transforms["world_from_base"]["rotation_xyzw"].clone();
+        for revision in 0..35 {
+            let request = translation_refinement_request(
+                &record,
+                &format!("refine-{revision}"),
+                [0.001, 0.0, 0.0],
+            );
+            let digest =
+                canonical_json_sha256(&serde_json::to_value(&request).expect("refinement JSON"));
+            record = build_translation_refined_record(&record, &request, &digest, &reports, now)
+                .expect("translation refinement");
+        }
+        assert_eq!(record.translation_refinement_revision, 35);
+        assert_eq!(
+            record.calibration_revision,
+            format!("{}:translation-refinement:35", record.candidate_id)
+        );
+        assert_eq!(record.translation_refinement_journal.len(), 32);
+        assert_eq!(
+            record.transforms["world_from_base"]["rotation_xyzw"],
+            initial_rotation
+        );
+        assert_eq!(
+            record.translation_refinement_journal[0]["revision_after"],
+            4
+        );
+        assert!(record.translation_refinement_journal[0]["parent_state_link"].is_null());
+        assert_eq!(
+            record.translation_refinement_journal[31]["calibration_revision_after"],
+            record.calibration_revision
+        );
+    }
+
+    #[test]
+    fn compact_translation_refinement_rejects_rotation_change() {
+        let now = Utc::now();
+        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let activation_sha =
+            canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
+        let record = build_workcell_activation_record(
+            &activation,
+            activation_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("activation record");
+        reports.insert(
+            "robot_arm.example".to_string(),
+            provider_report(
+                "robot_arm.example",
+                "robot_arm.transforms.local",
+                true,
+                true,
+                "HOT",
+            ),
+        );
+        let mut request =
+            translation_refinement_request(&record, "refine-rotation", [0.001, 0.0, 0.0]);
+        request.proposed_world_from_base["rotation_xyzw"] = json!([0.0, 0.0, 1.0, 0.0]);
+        let error = build_translation_refined_record(&record, &request, "digest", &reports, now)
+            .expect_err("rotation change must be rejected");
+        assert!(error.to_string().contains("change active rotation"));
+    }
+
+    #[test]
+    fn compact_translation_refinement_accepts_skill_owned_policy_decision() {
+        let now = Utc::now();
+        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let activation_sha =
+            canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
+        let record = build_workcell_activation_record(
+            &activation,
+            activation_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("activation record");
+        reports.insert(
+            "robot_arm.example".to_string(),
+            provider_report(
+                "robot_arm.example",
+                "robot_arm.transforms.local",
+                true,
+                true,
+                "HOT",
+            ),
+        );
+        let mut request =
+            translation_refinement_request(&record, "refine-skill-owned-policy", [0.001, 0.0, 0.0]);
+        let identities = request.refinement["identities"].clone();
+        let adopted_delta = request.refinement["adopted_translation_delta_m"].clone();
+        request.refinement = json!({
+            "adopted_translation_delta_m": adopted_delta,
+            "identities": identities,
+            "skill_policy_metadata": {
+                "capture_accepted": true,
+                "quality_review_accepted": true
+            }
+        });
+        let updated = build_translation_refined_record(&record, &request, "digest", &reports, now)
+            .expect("Manager must accept the dedicated Skill's apply decision");
+        assert_eq!(updated.translation_refinement_revision, 1);
+        assert_eq!(
+            updated.transforms["world_from_base"],
+            request.proposed_world_from_base
+        );
+        assert!(
+            updated.last_translation_refinement.as_ref().unwrap()["quality_review_verdict"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn compact_translation_refinement_rejects_inconsistent_adopted_delta() {
+        let now = Utc::now();
+        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let activation_sha =
+            canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
+        let record = build_workcell_activation_record(
+            &activation,
+            activation_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("activation record");
+        reports.insert(
+            "robot_arm.example".to_string(),
+            provider_report(
+                "robot_arm.example",
+                "robot_arm.transforms.local",
+                true,
+                true,
+                "HOT",
+            ),
+        );
+        let mut request =
+            translation_refinement_request(&record, "refine-bad-adopted-delta", [0.001, 0.0, 0.0]);
+        request.refinement["adopted_translation_delta_m"] = json!([0.0005, 0.0, 0.0]);
+        let error = build_translation_refined_record(&record, &request, "digest", &reports, now)
+            .expect_err("inconsistent adopted delta must be rejected");
+        assert!(error.to_string().contains("adopted delta"));
     }
 
     #[test]

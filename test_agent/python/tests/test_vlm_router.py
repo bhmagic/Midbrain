@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 import unittest
 
@@ -31,6 +32,16 @@ class _Backend:
             raise RuntimeError(self.error)
         return str(self.result)
 
+    def generate_images(
+        self,
+        images: list[tuple[bytes, str]],
+        prompt: str,
+    ) -> str:
+        self.call_count += 1
+        if self.error:
+            raise RuntimeError(self.error)
+        return str(self.result)
+
 
 class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
     async def test_router_falls_back_and_records_backend_provenance(self) -> None:
@@ -53,7 +64,27 @@ class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(remote.call_count, 1)
         self.assertEqual(result.input_bytes, 5)
         self.assertEqual(result.mime_type, "image/jpeg")
-        self.assertEqual(len(result.input_sha256), 64)
+        self.assertEqual(
+            result.input_sha256,
+            hashlib.sha256(b"image").hexdigest(),
+        )
+
+    async def test_router_preserves_multiple_images_in_one_backend_call(self) -> None:
+        backend = _Backend("multi.vlm", "vision", result="coordinates")
+        router = VisionLanguageRouter([backend])
+
+        result = await router.generate_images(
+            images=[
+                (b"rgb-image", "image/png"),
+                (b"depth-image", "image/png"),
+            ],
+            prompt="Compare RGB and depth.",
+        )
+
+        self.assertEqual(result.text, "coordinates")
+        self.assertEqual(result.input_bytes, 20)
+        self.assertEqual(result.mime_type, "multipart/mixed")
+        self.assertEqual(backend.call_count, 1)
 
     def test_voting_and_qc_remain_disabled_for_future_work(self) -> None:
         backend = _Backend("test", "model", result="ok")

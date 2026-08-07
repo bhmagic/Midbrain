@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/effector_alignment_profile.v1.schema.json",
+  "title": "Midbrain Effector Alignment Profile v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "profile_id",
+    "profile_revision",
+    "display_name",
+    "assembly_type",
+    "qualification_state",
+    "robot_compatibility",
+    "kinematic_attachment",
+    "capture_motion_policy",
+    "refinement_policy",
+    "default_visual_alignment_landmark",
+    "landmark_fallback_policy",
+    "visual_alignment_landmarks",
+    "action_frames",
+    "invalidation_conditions"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.effector_alignment_profile"},
+    "schema_version": {"const": 1},
+    "profile_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+    "profile_revision": {"type": "string", "minLength": 3, "maxLength": 160},
+    "display_name": {"type": "string", "minLength": 3, "maxLength": 160},
+    "assembly_type": {"enum": ["FIXED_EFFECTOR", "REPLACEABLE_EFFECTOR", "MOUNTED_TOOL", "HELD_TOOL"]},
+    "qualification_state": {"enum": ["DEVELOPMENT", "QUALIFIED", "REVOKED"]},
+    "robot_compatibility": {
+      "type": "object",
+      "required": ["model_id", "model_revision", "arm_base_frame", "terminal_frame", "controlled_frame"],
+      "properties": {
+        "model_id": {"type": "string", "minLength": 3},
+        "model_revision": {"type": "string", "minLength": 3},
+        "arm_base_frame": {"type": "string", "minLength": 3},
+        "terminal_frame": {"type": "string", "minLength": 3},
+        "controlled_frame": {"type": "string", "minLength": 3}
+      },
+      "additionalProperties": false
+    },
+    "kinematic_attachment": {
+      "type": "object",
+      "required": [
+        "source_schema",
+        "source_reference",
+        "parent_link",
+        "controlled_link",
+        "terminal_joint_to_controlled_frame",
+        "qualification",
+        "replacement_policy"
+      ],
+      "properties": {
+        "source_schema": {"type": "string", "minLength": 3},
+        "source_reference": {"type": "string", "minLength": 3},
+        "parent_link": {"type": "string", "minLength": 1},
+        "controlled_link": {"type": "string", "minLength": 1},
+        "terminal_joint_to_controlled_frame": {
+          "type": "object",
+          "required": ["translation_m", "rpy_rad"],
+          "properties": {
+            "translation_m": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {"type": "number"}
+            },
+            "rpy_rad": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {"type": "number"}
+            }
+          },
+          "additionalProperties": false
+        },
+        "qualification": {"type": "string", "minLength": 3},
+        "replacement_policy": {"type": "string", "minLength": 20}
+      },
+      "additionalProperties": false
+    },
+    "capture_motion_policy": {
+      "type": "object",
+      "required": [
+        "maximum_landmark_motion_m",
+        "additional_camera_timing_margin_us",
+        "arm_feedback_age_field_path",
+        "fallback_arm_feedback_age_ms",
+        "maximum_arm_feedback_age_ms",
+        "preferred_arm_feedback_observation_age_ms",
+        "maximum_transform_wait_ms",
+        "transform_retry_interval_ms",
+        "temporal_sample_count",
+        "qualification",
+        "policy_note"
+      ],
+      "properties": {
+        "maximum_landmark_motion_m": {"type": "number", "minimum": 0.0},
+        "additional_camera_timing_margin_us": {"type": "integer", "minimum": 0},
+        "arm_feedback_age_field_path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "fallback_arm_feedback_age_ms": {"type": "number", "minimum": 0.0},
+        "maximum_arm_feedback_age_ms": {"type": "number", "minimum": 0.0},
+        "preferred_arm_feedback_observation_age_ms": {"type": "number", "exclusiveMinimum": 0.0},
+        "maximum_transform_wait_ms": {"type": "number", "exclusiveMinimum": 0.0},
+        "transform_retry_interval_ms": {"type": "number", "exclusiveMinimum": 0.0},
+        "temporal_sample_count": {"type": "integer", "minimum": 3, "maximum": 21},
+        "qualification": {"type": "string", "minLength": 3},
+        "policy_note": {"type": "string", "minLength": 20}
+      },
+      "additionalProperties": false
+    },
+    "refinement_policy": {
+      "type": "object",
+      "required": [
+        "second_vlm_review_raw_delta_threshold_m",
+        "maximum_raw_translation_delta_m",
+        "maximum_adopted_translation_delta_m",
+        "minimum_landmark_confidence",
+        "minimum_same_surface_confidence"
+      ],
+      "properties": {
+        "second_vlm_review_raw_delta_threshold_m": {"type": "number", "minimum": 0.0},
+        "maximum_raw_translation_delta_m": {"type": "number", "exclusiveMinimum": 0.0},
+        "maximum_adopted_translation_delta_m": {"type": "number", "exclusiveMinimum": 0.0},
+        "minimum_landmark_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "minimum_same_surface_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+      },
+      "additionalProperties": false
+    },
+    "default_visual_alignment_landmark": {"type": "string"},
+    "landmark_fallback_policy": {
+      "type": "object",
+      "required": [
+        "selection_order",
+        "automatic_substitution_allowed",
+        "no_hardware_modification_strategy",
+        "optional_physical_fiducial_policy"
+      ],
+      "properties": {
+        "selection_order": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"}
+        },
+        "automatic_substitution_allowed": {"type": "boolean"},
+        "no_hardware_modification_strategy": {"type": "string", "minLength": 20},
+        "optional_physical_fiducial_policy": {"type": "string", "minLength": 20}
+      },
+      "additionalProperties": false
+    },
+    "visual_alignment_landmarks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "landmark_id",
+          "display_name",
+          "geometry",
+          "required_point_ids",
+          "description_for_vlm",
+          "tool_point_binding",
+          "visibility"
+        ],
+        "properties": {
+          "landmark_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+          "display_name": {"type": "string"},
+          "geometry": {"enum": ["SINGLE_REGISTERED_3D_POINT", "MEAN_OF_REGISTERED_3D_POINTS"]},
+          "required_point_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"}
+          },
+          "description_for_vlm": {"type": "string", "minLength": 20},
+          "tool_point_binding": {
+            "type": "object",
+            "required": ["source", "runtime_key", "qualification"],
+            "properties": {
+              "source": {"type": "string", "minLength": 3},
+              "runtime_key": {"type": ["string", "null"]},
+              "controlled_frame_to_landmark_translation_m": {
+                "type": ["array", "null"],
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {"type": "number"}
+              },
+              "landmark_to_controlled_frame_translation_m": {
+                "type": ["array", "null"],
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {"type": "number"}
+              },
+              "translation_m": {
+                "type": ["array", "null"],
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {"type": "number"},
+                "deprecated": true
+              },
+              "qualification": {"type": "string", "minLength": 3},
+              "measurement_note": {"type": "string", "minLength": 20}
+            },
+            "anyOf": [
+              {
+                "required": [
+                  "controlled_frame_to_landmark_translation_m",
+                  "landmark_to_controlled_frame_translation_m"
+                ]
+              },
+              {"required": ["translation_m"]}
+            ],
+            "additionalProperties": false
+          },
+          "pair_separation_m": {"type": "object"},
+          "visibility": {"type": "object"},
+          "cad_asset_ids": {"type": "array", "items": {"type": "string"}},
+          "vlm_reference_asset_ids": {"type": "array", "items": {"type": "string"}},
+          "relationship_to_controlled_frame": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "action_frames": {"type": "array"},
+    "invalidation_conditions": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

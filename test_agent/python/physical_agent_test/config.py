@@ -160,7 +160,8 @@ class Settings:
                 "locate_effector_front,"
                 "plan_no_contact_item_approach,"
                 "verify_rgbd_image_alignment,"
-                "reinitialize_space_cognition"
+                "reinitialize_space_cognition,"
+                "refine_arm_root_translation"
             ),
         ).split(",")
         if item.strip()

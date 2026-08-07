@@ -29,6 +29,18 @@ class _EffectorFrontSkill:
         }
 
 
+class _ExternalSkillAdapter:
+    async def invoke(self, arguments: dict[str, object]) -> str:
+        return json.dumps(
+            {
+                "adoption_factor": arguments.get("adoption_factor", 1.0),
+                "sample_count": arguments.get("sample_count", 1),
+                "landmark_id": arguments.get("landmark_id"),
+                "physical_motion_submitted": False,
+            }
+        )
+
+
 class _ItemLocatorSkill:
     async def run(
         self,
@@ -244,6 +256,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "locate_item",
                 "plan_no_contact_item_approach",
                 "preview_relative_effector_motion",
+                "refine_arm_root_translation",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
                 "reinitialize_space_cognition",
@@ -373,6 +386,74 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(result)
         self.assertEqual(parsed["target_frame"], "stationary_world")
         self.assertFalse(parsed["physical_action_submitted"])
+
+    async def test_external_refinement_adapter_is_manifest_driven(
+        self,
+    ) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"refine_arm_root_translation"},
+            external_skill_adapters={
+                "skill.refine_arm_root_translation.v1": (
+                    _ExternalSkillAdapter()  # type: ignore[dict-item]
+                )
+            },
+        )
+
+        self.assertEqual(
+            driver.agent.tools[0].name,
+            "refine_arm_root_translation",
+        )
+        self.assertFalse(driver.agent.tools[0].needs_approval)
+        self.assertEqual(driver.agent.tools[0].timeout_seconds, 600.0)
+        self.assertEqual(
+            set(driver.agent.tools[0].params_json_schema["properties"]),
+            {"adoption_factor", "sample_count", "landmark_id"},
+        )
+        self.assertEqual(
+            driver.agent.tools[0].params_json_schema["properties"][
+                "landmark_id"
+            ]["type"],
+            ["string", "null"],
+        )
+        result = await driver.agent.tools[0].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            '{"adoption_factor":0.4}',
+        )
+        parsed = json.loads(result)
+        self.assertEqual(parsed["adoption_factor"], 0.4)
+        self.assertEqual(parsed["sample_count"], 1)
+        self.assertIsNone(parsed["landmark_id"])
+        self.assertFalse(parsed["physical_motion_submitted"])
+
+        defaulted = await driver.agent.tools[0].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            '{}',
+        )
+        defaulted_parsed = json.loads(defaulted)
+        self.assertEqual(defaulted_parsed["adoption_factor"], 1.0)
+        self.assertEqual(defaulted_parsed["sample_count"], 1)
+        self.assertIsNone(defaulted_parsed["landmark_id"])
+
+        requested = await driver.agent.tools[0].on_invoke_tool(
+            None,  # type: ignore[arg-type]
+            json.dumps(
+                {
+                    "adoption_factor": 0.5,
+                    "sample_count": 5,
+                    "landmark_id": "rail_lateral_endpoint_mean",
+                }
+            ),
+        )
+        requested_parsed = json.loads(requested)
+        self.assertEqual(requested_parsed["adoption_factor"], 0.5)
+        self.assertEqual(requested_parsed["sample_count"], 5)
+        self.assertEqual(
+            requested_parsed["landmark_id"],
+            "rail_lateral_endpoint_mean",
+        )
 
     async def test_scene_policy_tool_publishes_exact_described_objects(
         self,

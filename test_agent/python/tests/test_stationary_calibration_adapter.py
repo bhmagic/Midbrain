@@ -11,8 +11,9 @@ pytest.importorskip("agents")
 
 from physical_agent_test.agent_driver import PrototypeAgentDriver
 from physical_agent_test.stationary_calibration_adapter import (
-    FOUNDATIONPOSE_EXACT_INVOCATION,
+    FOUNDATIONPOSE_CANONICAL_INVOCATION,
     StationaryCalibrationSkillAdapter,
+    mentions_foundation_pose,
 )
 from stationary_world_arm_alignment.math3d import YawUnobservableError
 
@@ -70,7 +71,7 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
         adapter = StationaryCalibrationSkillAdapter(factory)
         self.assertEqual(created, [])
 
-        result = await adapter.run(request=FOUNDATIONPOSE_EXACT_INVOCATION)
+        result = await adapter.run(request=FOUNDATIONPOSE_CANONICAL_INVOCATION)
 
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].calls, [("auto", False, False)])
@@ -120,7 +121,7 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
             activation_service=activation,
         )
 
-        candidate = await adapter.run(request=FOUNDATIONPOSE_EXACT_INVOCATION)
+        candidate = await adapter.run(request=FOUNDATIONPOSE_CANONICAL_INVOCATION)
         next_tool = candidate["required_next_tool"]
 
         self.assertFalse(candidate["workflow_complete"])
@@ -151,7 +152,7 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         adapter = StationaryCalibrationSkillAdapter(_UnobservableRuntime)
-        result = await adapter.run(request=FOUNDATIONPOSE_EXACT_INVOCATION)
+        result = await adapter.run(request=FOUNDATIONPOSE_CANONICAL_INVOCATION)
 
         self.assertEqual(result["status"], "CALIBRATION_POSE_REQUIRED")
         self.assertEqual(result["reason_code"], "BASE_YAW_UNOBSERVABLE")
@@ -191,7 +192,7 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
             driver.agent.instructions,
         )
 
-    async def test_nonexact_request_does_not_load_foundationpose(self) -> None:
+    async def test_request_without_foundationpose_name_does_not_load_it(self) -> None:
         created = []
 
         def factory():
@@ -208,10 +209,46 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
             "FOUNDATIONPOSE_EXPLICIT_INVOCATION_REQUIRED",
         )
         self.assertEqual(
-            result["required_exact_request"],
-            FOUNDATIONPOSE_EXACT_INVOCATION,
+            result["required_name_mention"],
+            "FoundationPose",
         )
         self.assertFalse(result["physical_motion_submitted"])
+
+    async def test_foundationpose_name_variations_activate_runtime(self) -> None:
+        requests = [
+            FOUNDATIONPOSE_CANONICAL_INVOCATION,
+            "please use foundation pose to align the arm base",
+            "Run FOUNDATION-POSE calibration now",
+            "use fundation pose for this stationary calibration",
+            "start foundatoinpose alignment",
+        ]
+        for request in requests:
+            with self.subTest(request=request):
+                created = []
+
+                def factory():
+                    runtime = _Runtime()
+                    created.append(runtime)
+                    return runtime
+
+                adapter = StationaryCalibrationSkillAdapter(factory)
+                result = await adapter.run(request=request)
+
+                self.assertTrue(mentions_foundation_pose(request))
+                self.assertEqual(len(created), 1)
+                self.assertTrue(
+                    result["agent_adapter"]["foundationpose_name_match"]
+                )
+
+    def test_generic_alignment_words_do_not_match_foundationpose(self) -> None:
+        for request in (
+            "establish both axes",
+            "calibrate the stationary arm base",
+            "run pose alignment",
+            "use the foundation alignment workflow",
+        ):
+            with self.subTest(request=request):
+                self.assertFalse(mentions_foundation_pose(request))
 
     async def test_concurrent_run_is_rejected(self) -> None:
         entered = asyncio.Event()
@@ -225,12 +262,12 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         adapter = StationaryCalibrationSkillAdapter(_BlockingRuntime)
         first = asyncio.create_task(
-            adapter.run(request=FOUNDATIONPOSE_EXACT_INVOCATION)
+            adapter.run(request=FOUNDATIONPOSE_CANONICAL_INVOCATION)
         )
         await entered.wait()
         try:
             with self.assertRaisesRegex(RuntimeError, "already running"):
-                await adapter.run(request=FOUNDATIONPOSE_EXACT_INVOCATION)
+                await adapter.run(request=FOUNDATIONPOSE_CANONICAL_INVOCATION)
         finally:
             release.set()
             await first

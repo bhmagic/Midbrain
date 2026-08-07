@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/effector_landmark_detection.v2.schema.json",
+  "title": "Midbrain Effector Landmark Detection v2",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "scene_suitable",
+    "landmark_id",
+    "coordinate_space",
+    "reason",
+    "points"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.effector_landmark_detection"},
+    "schema_version": {"const": 2},
+    "scene_suitable": {"type": "boolean"},
+    "landmark_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+    "coordinate_space": {"const": "NORMALIZED_YX_0_1000_PER_IMAGE"},
+    "reason": {"type": "string", "minLength": 1},
+    "points": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "point_id",
+          "rgb_yx_0_1000",
+          "registered_depth_yx_0_1000",
+          "confidence",
+          "same_surface_confidence",
+          "reason"
+        ],
+        "properties": {
+          "point_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+          "rgb_yx_0_1000": {"$ref": "#/$defs/normalized_yx"},
+          "registered_depth_yx_0_1000": {"$ref": "#/$defs/normalized_yx"},
+          "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+          "same_surface_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+          "reason": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "normalized_yx": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"type": "integer", "minimum": 0, "maximum": 1000}
+    }
+  },
+  "additionalProperties": false
+}

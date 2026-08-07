@@ -52,7 +52,11 @@ from .reviewed_observation_execution import (
     ReviewedObservationExecutionAdapter,
 )
 from .skill_catalog import discover_agent_skills
-from .skill_execution import BoundMethodSkillAdapter, build_agent_tools
+from .skill_execution import (
+    BoundMethodSkillAdapter,
+    SkillExecutionAdapter,
+    build_agent_tools,
+)
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
@@ -740,6 +744,9 @@ class PrototypeAgentDriver:
             SceneSegmentationPolicyPublisher | None
         ) = None,
         tool_registration_skill: ToolControlFrameSkillAdapter | None = None,
+        external_skill_adapters: (
+            dict[str, SkillExecutionAdapter] | None
+        ) = None,
         stationary_calibration_skill: (
             StationaryCalibrationSkillAdapter | None
         ) = None,
@@ -802,11 +809,17 @@ class PrototypeAgentDriver:
                 raise ValueError("question must be non-empty text")
             return await self.skill.run(question)
 
-        adapters: dict[str, BoundMethodSkillAdapter] = {
+        adapters: dict[str, SkillExecutionAdapter] = {
             "test_agent.identify_pointed_object.v1": BoundMethodSkillAdapter(
                 identify_adapter
             ),
         }
+        for adapter_id, adapter in (external_skill_adapters or {}).items():
+            if adapter_id in adapters:
+                raise ValueError(
+                    f"duplicate Skill execution adapter: {adapter_id}"
+                )
+            adapters[adapter_id] = adapter
         if space_cognition_establisher is not None:
             async def establish_world_axis_adapter(
                 arguments: dict[str, Any],
@@ -2036,13 +2049,14 @@ class PrototypeAgentDriver:
                 )
             if stationary_calibration_skill is not None:
                 instructions += (
-                    " FoundationPose is retained as a slow explicit "
+                    " FoundationPose is retained as a slow explicitly named "
                     "initializer, not as the default world-to-arm alignment "
-                    "route. Call calibrate_stationary_workcell only when the "
-                    "operator's complete request is exactly: 'Use "
-                    "FoundationPose to establish the stationary world-to-arm-"
-                    "base transform.' Pass that sentence unchanged as the "
-                    "request argument. For every other establish, calibrate, "
+                    "route. Call calibrate_stationary_workcell whenever the "
+                    "operator's request mentions FoundationPose by name. The "
+                    "name match is case-insensitive and accepts spacing, "
+                    "hyphenation, and minor spelling errors. Pass the complete "
+                    "operator request unchanged as the request argument. For "
+                    "every other establish, calibrate, "
                     "or validate request, do not call FoundationPose; use the "
                     "movement-based gripper alignment workflow when it is "
                     "available and otherwise report that it is not yet "
@@ -2067,7 +2081,7 @@ class PrototypeAgentDriver:
                     "If an explicitly requested FoundationPose activation "
                     "returns FRESH_CALIBRATION_REQUIRED, never "
                     "retry that alignment. When the current user request is "
-                    "the same exact FoundationPose sentence, call "
+                    "another explicit FoundationPose request, call "
                     "calibrate_stationary_workcell again with the current "
                     "request and activate only its new candidate. "
                     "The Skill acquires "

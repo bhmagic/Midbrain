@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/arm_root_translation_refinement.v1.schema.json",
+  "title": "Midbrain Arm-Root Translation Refinement v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "status",
+    "workflow_complete",
+    "eligible_for_state_update",
+    "multi_sample_refinement",
+    "landmark_depth_reselection",
+    "physical_motion_submitted",
+    "physical_motion_authorized"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.arm_root_translation_refinement"},
+    "schema_version": {"const": 1},
+    "status": {
+      "enum": [
+        "OBSERVATION_ONLY",
+        "SECOND_VLM_REVIEW_REQUIRED",
+        "TRANSLATION_UPDATE_READY",
+        "REJECTED_OBSERVATION",
+        "REJECTED_DELTA_LIMIT",
+        "REJECTED_QUALITY_REVIEW",
+        "REJECTED_CONTEXT_CHANGED",
+        "STALE_ACTIVE_REVISION",
+        "DEPENDENCY_UNAVAILABLE"
+      ]
+    },
+    "workflow_complete": {"type": "boolean"},
+    "eligible_for_state_update": {"type": "boolean"},
+    "physical_motion_submitted": {"const": false},
+    "physical_motion_authorized": {"const": false},
+    "rotation_change_allowed": {"const": false},
+    "rotation_change_rad": {"const": 0.0},
+    "source_revision": {"type": "integer", "minimum": 0},
+    "adoption_factor": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    "raw_translation_delta_m": {"$ref": "#/$defs/vector3"},
+    "raw_translation_delta_norm_m": {"type": "number", "minimum": 0.0},
+    "adopted_translation_delta_m": {"$ref": "#/$defs/vector3"},
+    "controlled_frame_to_landmark_translation_m": {"$ref": "#/$defs/vector3"},
+    "landmark_to_controlled_frame_translation_m": {"$ref": "#/$defs/vector3"},
+    "observed_world_landmark_point_m": {"$ref": "#/$defs/vector3"},
+    "estimated_world_controlled_frame_origin_m": {"$ref": "#/$defs/vector3"},
+    "multi_sample_refinement": {"$ref": "#/$defs/multi_sample_refinement"},
+    "landmark_depth_reselection": {"$ref": "#/$defs/depth_reselection"},
+    "source_world_from_base": {"$ref": "#/$defs/matrix4"},
+    "proposed_world_from_base": {"$ref": "#/$defs/matrix4"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "landmark_depth_reselection": {
+            "properties": {"required": {"const": false}},
+            "required": ["required"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "landmark_depth_reselection": {
+            "properties": {
+              "attempt_count": {"const": 1},
+              "outcome": {"const": "NOT_REQUIRED"},
+              "initial_invalid_points": {"maxItems": 0}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "landmark_depth_reselection": {
+            "properties": {
+              "attempt_count": {"const": 2},
+              "outcome": {"enum": ["VALID_EXACT_DEPTH", "REJECTED"]},
+              "initial_invalid_points": {"minItems": 1}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "multi_sample_refinement": {
+      "type": "object",
+      "required": [
+        "feature_name",
+        "requested_sample_count",
+        "completed_sample_count",
+        "aggregation",
+        "threshold_scale",
+        "samples"
+      ],
+      "properties": {
+        "feature_name": {"const": "MULTI_SAMPLE_REFINEMENT"},
+        "requested_sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "completed_sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "aggregation": {
+          "enum": [
+            "SINGLE_SAMPLE",
+            "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
+            "INCOMPLETE_NO_UPDATE",
+            "NOT_STARTED_DEPENDENCY_UNAVAILABLE"
+          ]
+        },
+        "threshold_scale": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "mean_raw_translation_delta_m": {"$ref": "#/$defs/vector3"},
+        "component_standard_deviation_m": {"$ref": "#/$defs/vector3"},
+        "maximum_sample_distance_from_mean_m": {
+          "type": "number",
+          "minimum": 0.0
+        },
+        "samples": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/refinement_sample"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "refinement_sample": {
+      "type": "object",
+      "required": [
+        "sample_index",
+        "status",
+        "raw_translation_delta_m",
+        "raw_translation_delta_norm_m",
+        "quality_review",
+        "landmark_depth_reselection",
+        "capture_motion",
+        "observation_provenance",
+        "visual_evidence"
+      ],
+      "properties": {
+        "sample_index": {"type": "integer", "minimum": 1, "maximum": 5},
+        "status": {"type": ["string", "null"]},
+        "raw_translation_delta_m": {
+          "oneOf": [{"$ref": "#/$defs/vector3"}, {"type": "null"}]
+        },
+        "raw_translation_delta_norm_m": {
+          "type": ["number", "null"],
+          "minimum": 0.0
+        },
+        "quality_review": {"type": ["object", "null"]},
+        "landmark_depth_reselection": {"type": ["object", "null"]},
+        "capture_motion": {"type": ["object", "null"]},
+        "observation_provenance": {"type": ["object", "null"]},
+        "visual_evidence": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "depth_reselection": {
+      "type": "object",
+      "required": [
+        "required",
+        "attempt_count",
+        "outcome",
+        "initial_invalid_points"
+      ],
+      "properties": {
+        "required": {"type": "boolean"},
+        "attempt_count": {"type": "integer", "minimum": 1, "maximum": 2},
+        "outcome": {
+          "enum": ["NOT_REQUIRED", "VALID_EXACT_DEPTH", "REJECTED"]
+        },
+        "initial_invalid_points": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": [
+              "point_id",
+              "canonical_coordinate_yx_0_1000",
+              "converted_pixel_yx",
+              "observed_depth_m"
+            ],
+            "properties": {
+              "point_id": {"type": "string"},
+              "canonical_coordinate_yx_0_1000": {"$ref": "#/$defs/pixel2"},
+              "converted_pixel_yx": {"$ref": "#/$defs/pixel2"},
+              "observed_depth_m": {"type": ["number", "null"]}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "pixel2": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"type": "integer", "minimum": 0}
+    },
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "row4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"type": "number"}
+    },
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/row4"}
+    }
+  },
+  "additionalProperties": true
+}

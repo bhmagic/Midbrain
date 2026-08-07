@@ -21,18 +21,18 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "calibrate_stationary_workcell",
-    "description": "Run the retained FoundationPose stationary-workcell initializer only when the operator supplies the documented exact request: Use FoundationPose to establish the stationary world-to-arm-base transform. This long-running initializer is not an automatic or default alignment fallback.",
+    "description": "Run the retained FoundationPose stationary-workcell initializer when the operator explicitly mentions FoundationPose by name. Matching is case-insensitive and tolerates spacing, hyphenation, and minor spelling errors. This long-running initializer is not an automatic or default alignment fallback.",
     "when_to_use": [
       "The camera and robot base are stationary and a world-to-arm transform is missing or stale.",
       "A downstream spatial Skill requires a validated stationary workcell frame.",
-      "The operator uses the exact FoundationPose invocation documented by this Skill."
+      "The operator explicitly mentions FoundationPose by name, including a minor spelling variation."
     ],
     "when_not_to_use": [
       "The camera, workcell, or robot base is moving.",
       "The task only needs an existing valid transform.",
       "The user asks only to establish, inspect, or report the VIO world axes and explicitly excludes the arm base; inspect the current VIO world frame instead.",
       "The request is for continuous real-time body or mobile-base tracking.",
-      "The operator asks generically to establish or calibrate both axes without the exact FoundationPose invocation."
+      "The operator asks generically to establish or calibrate both axes without naming FoundationPose."
     ],
     "side_effects": [
       "Acquires a Manager motion-inhibit lease.",
@@ -52,7 +52,7 @@
       "properties": {
         "request": {
           "type": "string",
-          "description": "Must exactly equal: Use FoundationPose to establish the stationary world-to-arm-base transform."
+          "description": "Complete operator request. It must mention FoundationPose by name; matching is case-insensitive and accepts spacing, hyphenation, and minor spelling errors."
         }
       },
       "required": [
@@ -154,7 +154,8 @@
     "nested_skill": "foundation_pose_object_localization",
     "default_route": "NO_AUTOMATIC_BASE_POSE_ENGINE",
     "explicit_route": "FOUNDATIONPOSE_SKILL",
-    "exact_agent_request": "Use FoundationPose to establish the stationary world-to-arm-base transform.",
+    "agent_activation_match": "FUZZY_EXPLICIT_FOUNDATIONPOSE_NAME_MENTION",
+    "canonical_agent_request_example": "Use FoundationPose to establish the stationary world-to-arm-base transform.",
     "available_routes": [
       "FOUNDATIONPOSE_SKILL",
       "PROVIDER_COMPATIBILITY",

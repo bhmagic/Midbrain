@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Callable, Protocol
 
 from stationary_world_arm_alignment.candidate_review import canonical_sha256
@@ -12,10 +13,42 @@ from .phase4_policy import (
 )
 
 
-FOUNDATIONPOSE_EXACT_INVOCATION = (
+FOUNDATIONPOSE_CANONICAL_INVOCATION = (
     "Use FoundationPose to establish the stationary world-to-arm-base "
     "transform."
 )
+FOUNDATIONPOSE_CANONICAL_NAME = "foundationpose"
+
+
+def _edit_distance(left: str, right: str) -> int:
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1]
+                    + (left_character != right_character),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def mentions_foundation_pose(request: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", str(request).casefold())
+    for start in range(len(words)):
+        for word_count in (1, 2, 3):
+            candidate = "".join(words[start : start + word_count])
+            if not candidate:
+                continue
+            if abs(len(candidate) - len(FOUNDATIONPOSE_CANONICAL_NAME)) > 2:
+                continue
+            if _edit_distance(candidate, FOUNDATIONPOSE_CANONICAL_NAME) <= 2:
+                return True
+    return False
 
 
 class StationaryCalibrationRuntime(Protocol):
@@ -66,7 +99,7 @@ class StationaryCalibrationSkillAdapter:
         user_request = str(request).strip()
         if not user_request:
             raise ValueError("request must be non-empty")
-        if user_request != FOUNDATIONPOSE_EXACT_INVOCATION:
+        if not mentions_foundation_pose(user_request):
             result = {
                 "status": "FOUNDATIONPOSE_EXPLICIT_INVOCATION_REQUIRED",
                 "workflow_complete": False,
@@ -75,11 +108,13 @@ class StationaryCalibrationSkillAdapter:
                 "message": (
                     "FoundationPose was not started. The regular Agent route "
                     "may invoke this long-running initializer only when the "
-                    "operator uses the documented exact request. Ordinary "
+                    "operator explicitly names FoundationPose. Case, spacing, "
+                    "hyphenation, and minor spelling errors are accepted. Ordinary "
                     "world-to-arm alignment is reserved for the movement-"
                     "based gripper alignment workflow."
                 ),
-                "required_exact_request": FOUNDATIONPOSE_EXACT_INVOCATION,
+                "required_name_mention": "FoundationPose",
+                "canonical_example": FOUNDATIONPOSE_CANONICAL_INVOCATION,
                 "physical_motion_submitted": False,
                 "agent_request": user_request,
                 "agent_adapter": {
@@ -91,6 +126,7 @@ class StationaryCalibrationSkillAdapter:
                     "arm_is_home_claimed": False,
                     "active_control_interrupt_allowed": False,
                     "physical_motion_submitted_by_adapter": False,
+                    "foundationpose_name_match": False,
                 },
             }
             self.last_result = result
@@ -151,6 +187,7 @@ class StationaryCalibrationSkillAdapter:
                     "arm_is_home_claimed": False,
                     "active_control_interrupt_allowed": False,
                     "physical_motion_submitted_by_adapter": False,
+                    "foundationpose_name_match": True,
                 },
             }
             candidate = wrapped.get("candidate")

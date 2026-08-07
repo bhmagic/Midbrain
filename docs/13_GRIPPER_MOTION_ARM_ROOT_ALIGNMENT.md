@@ -49,8 +49,8 @@ Three non-collinear gripper positions provide two independent displacement
 vectors. Their cross product supplies the third basis direction, allowing
 rotation and translation to be estimated. More observations improve noise
 rejection and expose bad landmark or transform associations. A single
-stationary position can refine translation only when rotation is already
-trusted; it cannot solve a new six-degree-of-freedom transform.
+timestamp-coherent correspondence can refine translation only when rotation is
+already trusted; it cannot solve a new six-degree-of-freedom transform.
 
 The solver should use weighted rigid registration, initially Kabsch/SVD, with
 weights derived from registered-depth support, gripper landmark confidence,
@@ -149,22 +149,108 @@ calibration sequence; Manager owns final activation and invalidation.
 An accepted transform should have no arbitrary five-minute expiry. It remains
 valid while mounted camera identity/calibration, VIO epoch and convention,
 tracking evidence, arm identity/control-frame definition, and residual checks
-remain consistent. A transform change must be published as a new version with
-rollback evidence, never by mutating an active record.
+remain consistent. A new six-degree-of-freedom alignment supersedes the prior
+activation. Repeated translation-only refinements are different: update the one
+active transform through an atomic expected-revision match, increment its flat
+refinement revision, and retain only a bounded Manager-owned rollback journal.
+Do not embed the previous active object or a parent candidate inside the next
+active object. Publish a new derived calibration revision for every accepted
+translation change so previews made against an earlier transform become stale.
+This keeps constant autonomous refinement from creating an unbounded tree of
+nested states without weakening preview lineage.
 
-## Close-range stationary refinement
+## Effector-profile boundary
 
-Before a task intentionally moves the gripper close enough that its collision
-spheres may meet a workpiece or obstacle, the upstream Agent may explicitly
-request a stationary visual realignment. This is case-by-case, not an automatic
-action after every motion.
+Keep the translation solver, RGB-D/VLM orchestration, Manager adapter, and
+state logic independent of a particular arm. Put the arm model ID and revision,
+arm-base frame, terminal and controlled frames, terminal-joint-to-controlled-
+frame transform, arm feedback-timing semantics, capture-motion thresholds,
+visual landmark descriptions,
+translation-review and per-call delta limits, tool-to-landmark coordinates,
+and CAD reference-asset IDs in a versioned effector profile.
+
+The first profile describes the current reBot B601-DM bare gripper. Its default
+visual point is the mean of the two lateral endpoints of the strongly visible
+neon-green Rail-Bracket. The controller IK/FK point remains the gripper-tip
+midpoint. A user measurement places the tip 80 mm from the rail center along
+controlled/final-joint +X, so the profile records rail-center-to-tip as
+`[+0.080, 0, 0]` m and the solver-facing controlled-tip-to-rail-center point as
+`[-0.080, 0, 0]` m. Timestamped FK rotates that offset; it is never applied in
+world or arm-base X. Refinement reconstructs the controller-tip position from
+the observed rail center before solving base translation, without changing base
+rotation. A held tool or replacement effector requires a new profile
+revision with its own terminal geometry, observed landmarks, and bidirectional
+landmark-to-controlled-frame offsets. An optional non-reflective ball is
+profile-specific and not a baseline dependency.
+
+## Close-range timestamp-coherent refinement
+
+The upstream Agent may invoke a finite visual realignment between movements or
+while the arm moves slowly enough for timestamped FK to remain within the
+capture-motion bound. It may do this repeatedly, including after every useful
+motion when local accuracy warrants the latency. Each call is independent and
+performs no movement, preview, motion authorization, or controller command.
+The caller supplies an adoption factor from zero to one; zero is
+observation-only and one adopts the complete accepted XYZ correction.
 
 With a trusted rotation, one synchronized FK/RGB-D gripper correspondence can
-propose a translation correction. Recompile the semantic scene against that
-candidate and retry planning before deciding that geometry is truly in
-collision. The correction must remain a reviewed, bounded candidate until its
-residual and lineage checks pass; merely collecting the point must not be
-reported as having aligned the base.
+refine only the three translation parameters. Preserve the active quaternion
+exactly; one 3D point cannot identify the other three rotational parameters.
+Use the registered-depth hardware timestamp for metric camera pose and FK.
+Require Fabric to bracket the RGB/depth capture window without extrapolation,
+sample at least five FK poses across RGB/depth skew plus configured camera and
+arm-feedback timing uncertainty, and reject when the selected landmark moves
+more than 5 mm. Because the landmark's profile coordinate is used in every FK
+sample, this gate includes rotation-induced motion for an offset tool landmark.
+Joint-state observation age is diagnostic rather than a separate motion gate.
+If its feedback-latency metadata is not fresh enough to trust, widen the window
+to the profile's conservative maximum latency and let timestamped transform
+history plus the measured landmark-motion bound fail closed.
+Arm motion after the immutable capture window, including during VLM inference,
+does not invalidate the observation. Show the VLM the exact RGB input,
+registered-depth visualization, and their overlap. Require it to select the
+named RGB feature and, separately, the registered-depth pixel on the same
+physical surface. Do not repair an invalid selected depth pixel by snapping to
+a coded neighbor.
+
+Calculate the raw full XYZ delta before applying the adoption factor. When a
+state update is requested and that raw delta exceeds the configured threshold,
+send the marked overlap to one additional VLM review. That review may only
+return PASS, FAIL, or UNRESOLVED and may not invent replacement coordinates.
+Run the review before returning a gross-delta rejection so limit tuning retains
+an independent landmark-quality verdict. The visual evidence must also
+back-project the old and proposed arm-base origins and old and proposed FK
+landmark predictions into the captured image; retain true off-image pixels in
+provenance and show labeled edge-direction markers in the SVG when possible.
+Reject a gross raw mismatch and reject an adopted step above the selected
+effector profile's per-call limit; the Agent can lower its adoption factor and
+retry from a fresh timestamp-coherent observation.
+After final tracking, binding, identity, and active-revision revalidation,
+apply an accepted update by Manager compare-and-swap. Recompile the semantic
+scene against the updated
+alignment and retry planning before deciding that geometry is truly in
+collision. Merely collecting a point or returning visual evidence must not be
+reported as having updated the active alignment.
+
+The refinement Skill is the sole judge of capture-motion bounds, landmark
+quality, VLM review, effector-profile limits, and adoption policy. Its dedicated
+Manager submission path treats the call as the Skill's decision to apply an XYZ
+update; Manager does not repeat those algorithm-specific gates. Manager retains
+only authoritative-state invariants: the activation and expected flat revision
+must still be current, camera/VIO/arm identities must not have changed, the
+transform must be finite, rotation must remain byte-for-byte unchanged, the
+proposed translation must equal the current translation plus the adopted delta,
+and Fabric publication must succeed before the revision is committed.
+
+Keep the hardware/VLM host bridge inside the refinement Skill package. The
+Skill manifest declares both that bridge and the Skill-private setup entrypoint;
+Test Agent only supplies a generic platform-service bundle and loads eligible
+bridges from discovery metadata. The numerical runtime continues in the
+Skill's own virtual environment. Multi-sample refinement declares high latency,
+so the generic Agent tool builder gives it the bounded high-latency budget
+rather than the ordinary 60-second adapter budget. Installing or removing a
+future packaged Skill therefore does not require another named adapter class in
+Agent code.
 
 ## Workpiece and obstacle geometry near contact
 
@@ -200,7 +286,10 @@ not itself a contact controller.
 ## FoundationPose boundary
 
 FoundationPose remains available for difficult initialization, comparison,
-and diagnosis. The exact phrase above is the only normal Agent-facing summon.
+and diagnosis. An explicit mention of FoundationPose by name is the normal
+Agent-facing summon; matching is case-insensitive and tolerates spacing,
+hyphenation, and minor spelling errors while preserving the user's complete
+request for the Skill's own activation check.
 There is no automatic fallback from movement alignment, missing gripper depth,
 poor registration geometry, or a generic axis request. Its finite lifecycle,
 candidate review, activation checks, and separate compatibility Provider remain
@@ -247,7 +336,7 @@ should a candidate be offered to Manager for motion-usable activation.
 5. Add a visual review artifact showing commanded/FK points, observed RGB-D
    points, residual vectors, fitted frames, and rejected samples.
 6. Add Manager candidate activation, supersession, invalidation, and rollback.
-7. Connect the optional stationary translation refinement to the no-contact
+7. Connect the optional timestamp-coherent translation refinement to the no-contact
    approach planner.
 8. Add adaptive close-range workpiece sphere refinement and obstacle-boundary
    spillover tests.
@@ -257,7 +346,7 @@ should a candidate be offered to Manager for motion-usable activation.
 
 ## Acceptance target
 
-The first implementation is complete when a fresh stationary rig can produce a
+The first implementation is complete when a fresh rigid camera/base rig can produce a
 versioned, motion-usable transform from three or more non-collinear gripper
 positions; repeat a held-out point within its reported error bound; survive
 normal Agent/Fabric delay; reject mismatched epochs and bad geometry; visualize

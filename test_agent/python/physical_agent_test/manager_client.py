@@ -201,5 +201,21 @@ class ManagerClient:
         response.raise_for_status()
         return response.json()
 
+    async def refine_workcell_calibration_translation(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.base_url}/v1/workcell-calibrations/refine-translation",
+            json=request,
+        )
+        response.raise_for_status()
+        value = response.json()
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                "Manager translation-refinement response must be an object"
+            )
+        return value
+
     async def close(self) -> None:
         await self._client.aclose()

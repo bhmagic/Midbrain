@@ -65,6 +65,48 @@ if (Test-Path (Join-Path $itemLocatorSkill "pyproject.toml")) {
     if ($LASTEXITCODE -ne 0) { throw "Item-locator Skill installation failed." }
 }
 
+$skillsRoot = Join-Path $workspace "skills"
+foreach ($skillDirectory in Get-ChildItem -LiteralPath $skillsRoot -Directory) {
+    $manifestPath = Join-Path $skillDirectory.FullName "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        continue
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $installationProperty = $manifest.PSObject.Properties["installation"]
+    if ($null -eq $installationProperty) {
+        continue
+    }
+    $setupProperty = (
+        $installationProperty.Value.PSObject.Properties["setup_entrypoint"]
+    )
+    if ($null -eq $setupProperty) {
+        continue
+    }
+    $setupEntry = [string]$setupProperty.Value
+    if (-not $setupEntry) {
+        continue
+    }
+    $setupPath = [System.IO.Path]::GetFullPath(
+        (Join-Path $skillDirectory.FullName $setupEntry)
+    )
+    $skillPrefix = $skillDirectory.FullName.TrimEnd("\", "/") + (
+        [System.IO.Path]::DirectorySeparatorChar
+    )
+    if (-not $setupPath.StartsWith(
+        $skillPrefix,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Skill setup entrypoint escaped its Skill directory: $manifestPath"
+    }
+    if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
+        throw "Skill setup entrypoint is unavailable: $setupPath"
+    }
+    & $setupPath -PythonLauncher $PythonLauncher
+    if ($LASTEXITCODE -ne 0) {
+        throw "Skill-private environment setup failed: $($skillDirectory.Name)"
+    }
+}
+
 & $python -m pip install -e (Join-Path $agent "python")
 if ($LASTEXITCODE -ne 0) { throw "Test-agent package installation failed." }
 
@@ -102,7 +144,8 @@ $requiredSpatialTools = @(
     "locate_effector_front",
     "locate_item",
     "plan_no_contact_item_approach",
-    "inspect_arm_semantic_scene"
+    "inspect_arm_semantic_scene",
+    "refine_arm_root_translation"
 )
 if ($eligibleIndex -ge 0) {
     $eligibleValues = [System.Collections.Generic.List[string]]::new()

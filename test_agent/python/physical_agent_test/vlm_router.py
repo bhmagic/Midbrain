@@ -53,6 +53,13 @@ class VisionLanguageBackend(Protocol):
     ) -> str:
         """Run one synchronous VLM inference."""
 
+    def generate_images(
+        self,
+        images: list[tuple[bytes, str]],
+        prompt: str,
+    ) -> str:
+        """Run one synchronous inference over multiple labeled prompt images."""
+
 
 @dataclass(frozen=True)
 class VlmInferenceResult:
@@ -99,12 +106,21 @@ class GeminiVisionLanguageBackend:
         mime_type: str,
         prompt: str,
     ) -> str:
+        return self.generate_images([(image_bytes, mime_type)], prompt)
+
+    def generate_images(
+        self,
+        images: list[tuple[bytes, str]],
+        prompt: str,
+    ) -> str:
+        contents = [
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            for image_bytes, mime_type in images
+        ]
+        contents.append(prompt)
         response = self._client.models.generate_content(
             model=self.model_id,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                prompt,
-            ],
+            contents=contents,
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
@@ -143,23 +159,34 @@ class OpenAIVisionLanguageBackend:
         mime_type: str,
         prompt: str,
     ) -> str:
-        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return self.generate_images([(image_bytes, mime_type)], prompt)
+
+    def generate_images(
+        self,
+        images: list[tuple[bytes, str]],
+        prompt: str,
+    ) -> str:
+        content = [
+            {
+                "type": "input_text",
+                "text": prompt,
+            }
+        ]
+        for image_bytes, mime_type in images:
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{mime_type};base64,{encoded}",
+                    "detail": "high",
+                }
+            )
         response = self._client.responses.create(
             model=self.model_id,
             input=[
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:{mime_type};base64,{encoded}",
-                            "detail": "high",
-                        },
-                    ],
+                    "content": content,
                 }
             ],
             max_output_tokens=1200,
@@ -210,8 +237,40 @@ class VisionLanguageRouter:
         mime_type: str,
         prompt: str,
     ) -> VlmInferenceResult:
+        return await self.generate_images(
+            images=[(image_bytes, mime_type)],
+            prompt=prompt,
+        )
+
+    async def generate_images(
+        self,
+        *,
+        images: list[tuple[bytes, str]],
+        prompt: str,
+    ) -> VlmInferenceResult:
+        if not isinstance(images, list) or not 1 <= len(images) <= 8:
+            raise ValueError("VLM input must contain one to eight images")
+        normalized_images: list[tuple[bytes, str]] = []
+        digest = hashlib.sha256()
+        input_bytes = 0
+        for image_bytes, mime_type in images:
+            data = bytes(image_bytes)
+            media = str(mime_type).strip()
+            if not data or not media.startswith("image/"):
+                raise ValueError("every VLM input must be a non-empty image")
+            encoded_media = media.encode("utf-8")
+            digest.update(len(encoded_media).to_bytes(4, "big"))
+            digest.update(encoded_media)
+            digest.update(len(data).to_bytes(8, "big"))
+            digest.update(data)
+            input_bytes += len(data)
+            normalized_images.append((data, media))
         started = time.monotonic()
-        input_sha256 = hashlib.sha256(image_bytes).hexdigest()
+        input_sha256 = (
+            hashlib.sha256(normalized_images[0][0]).hexdigest()
+            if len(normalized_images) == 1
+            else digest.hexdigest()
+        )
         failures: list[dict[str, object]] = []
         selected_model = _selected_vlm_model.get()
         backends = self.backends
@@ -235,13 +294,26 @@ class VisionLanguageRouter:
                     f"VLM_ATTEMPT_{attempt_count}_{backend.backend_id}"
                 )
                 try:
-                    text = await self._await_backend(
-                        asyncio.to_thread(
-                            backend.generate,
-                            image_bytes,
-                            mime_type,
+                    backend_call = (
+                        backend.generate
+                        if len(normalized_images) == 1
+                        else getattr(backend, "generate_images", None)
+                    )
+                    if backend_call is None:
+                        raise RuntimeError(
+                            f"VLM backend {backend.backend_id} does not support multiple images"
+                        )
+                    call_arguments = (
+                        (
+                            normalized_images[0][0],
+                            normalized_images[0][1],
                             prompt,
-                        ),
+                        )
+                        if len(normalized_images) == 1
+                        else (normalized_images, prompt)
+                    )
+                    text = await self._await_backend(
+                        asyncio.to_thread(backend_call, *call_arguments),
                         attempt=attempt_count,
                         backend_id=backend.backend_id,
                     )
@@ -257,8 +329,12 @@ class VisionLanguageRouter:
                         quality_control_mode=self.quality_control_mode,
                         elapsed_ms=(time.monotonic() - started) * 1000.0,
                         input_sha256=input_sha256,
-                        input_bytes=len(image_bytes),
-                        mime_type=str(mime_type),
+                        input_bytes=input_bytes,
+                        mime_type=(
+                            normalized_images[0][1]
+                            if len(normalized_images) == 1
+                            else "multipart/mixed"
+                        ),
                     )
                 except Exception as error:
                     retryable = self._is_retryable_failure(error)

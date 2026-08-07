@@ -56,9 +56,9 @@ See `CHANGELOG.md` for the reviewed-activation, Agent discovery, GUI, and
 hardware-validation changes made during the 2026-07-29 system test.
 
 The regular Agent has no automatic base-pose engine. It invokes the finite
-`foundation_pose_object_localization` nested Skill only when the operator uses
-the exact sentence `Use FoundationPose to establish the stationary
-world-to-arm-base transform.` Within that explicit run,
+`foundation_pose_object_localization` nested Skill only when the operator
+explicitly mentions FoundationPose by name. The Agent match is case-insensitive
+and accepts spacing, hyphenation, and minor spelling errors. Within that run,
 `FOUNDATIONPOSE_SKILL` is the selected engine. Stationary Alignment owns
 the bounded job, reviewed masks, sampling policy, VIO-epoch checks, and result
 validation. Its default `PROVIDER` execution host keeps PyTorch, CUDA, and the

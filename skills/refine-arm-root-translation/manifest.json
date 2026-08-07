@@ -1,0 +1,146 @@
+{
+  "skill_type": "refine_arm_root_translation",
+  "version": "0.1.0",
+  "display_name": "Refine Arm-Root Translation",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "refine_arm_root_translation",
+    "description": "Observe a profile-defined rigid effector landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The caller may request one to five independent samples; the Skill averages their raw corrections and performs at most one compact state update. Slow arm motion is accepted only when sampled landmark motion stays within the profile limit. Adoption defaults to one. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
+    "when_to_use": [
+      "A valid world-to-arm-base alignment already exists and only its translation needs local refinement.",
+      "A quick calibration update is useful between movements, or while the arm moves slowly enough to remain within the capture-time landmark-motion bound.",
+      "A separately established active six-DOF alignment exists and a profile-defined gripper landmark can test a translation-only correction."
+    ],
+    "when_not_to_use": [
+      "No trusted active rotation or profile-bound tool-to-landmark coordinate is available.",
+      "The camera mounting or robot base is not rigid, or the observed effector exceeds the profile's capture-time landmark-motion limit.",
+      "The requested operation needs rotational correction, physical movement, grasping, or contact."
+    ],
+    "side_effects": [
+      "Before starting VLM work, the host verifies that the active arm provider identity, joint-state stream, and profile-selected local FK path are present and can bracket a current timestamp. A missing dependency returns a typed lifecycle recovery request without changing calibration state.",
+      "Reads one synchronized RGB and registered-depth observation plus bracketed timestamped arm FK and active calibration state.",
+      "For each requested refinement sample, calls one configured VLM route, permits one exact-depth reselection call only when the selected depth is invalid, and conditionally calls a quality-review VLM when that sample's raw translation delta exceeds the configured review threshold.",
+      "Returns a translation-only compare-and-swap update candidate and visual evidence; it never commands, previews, or authorizes robot motion."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "robot.transforms.read",
+      "vlm.invoke",
+      "world.transforms.publish"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "adoption_factor": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 1.0,
+          "description": "Fraction of the accepted XYZ correction to adopt. Zero is observation-only and one adopts the full translation correction."
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 1,
+          "description": "Number of independent fresh observations to average before one state update. The raw and adopted delta limits scale by this count."
+        },
+        "landmark_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "default": null,
+          "description": "Optional explicit profile-defined landmark ID. Use null or omit it to select the effector profile default. Common agent-generated default sentinels are also normalized safely when they do not name a real profile landmark. A landmark without a qualified tool-frame binding is rejected safely."
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.refine_arm_root_translation.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/refine_arm_root_translation/rpc_entrypoint.py",
+      "host_adapter": {
+        "entrypoint": "python/refine_arm_root_translation/host_adapter.py",
+        "factory": "create_host_adapter"
+      },
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "camera.rgb",
+    "camera.depth_aligned_to_rgb",
+    "camera.rgbd_geometry",
+    "world.transforms.timestamped",
+    "world.tracking.identity",
+    "robot_arm.transforms.local",
+    "robot_arm.model_identity",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [
+    "assets.reference_images",
+    "camera.rgbd.route.generic_shared_memory",
+    "camera.rgbd.route.direct_shared_memory",
+    "perception.object_pose"
+  ],
+  "route_policy": {
+    "required_route_count": 1,
+    "preference_order": [
+      "camera.rgbd.route.generic_shared_memory",
+      "camera.rgbd.route.direct_shared_memory"
+    ],
+    "selection_time": "EXECUTION",
+    "explicit_provider_fallback_allowed": true
+  },
+  "result_policy": {
+    "physical_motion_submitted": false,
+    "physical_motion_authorized": false,
+    "rotation_change_allowed": false,
+    "translation_axes": [
+      "x",
+      "y",
+      "z"
+    ],
+    "caller_selected_adoption_factor": true,
+    "multi_sample_refinement": {
+      "default_sample_count": 1,
+      "maximum_sample_count": 5,
+      "aggregation": "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
+      "state_updates_per_invocation": 1,
+      "threshold_scale": "SAMPLE_COUNT"
+    },
+    "effector_profile_pins_kinematic_attachment": true,
+    "compact_active_state": true,
+    "recursive_parent_chain": false,
+    "manager_owned_bounded_rollback_journal": true,
+    "activation_requires_atomic_revision_match": true,
+    "visual_evidence_contract": "midbrain.visual_evidence.v1"
+  },
+  "effector_profiles": [
+    "profiles/rebot_b601_dm_gripper.v2.json"
+  ],
+  "installation": {
+    "setup_entrypoint": "scripts/setup.ps1"
+  },
+  "published_streams": [],
+  "environment": {
+    "type": "python_venv",
+    "path": ".venv",
+    "python": ">=3.11",
+    "shared_environment_group": "arm_root_alignment"
+  }
+}

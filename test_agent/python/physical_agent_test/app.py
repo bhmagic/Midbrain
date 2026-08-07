@@ -40,6 +40,10 @@ from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .config import Settings
 from .depth_capture import DepthCapture
 from .effector_front_adapter import EffectorFrontSkillAdapter
+from .external_skill_host import (
+    ExternalSkillHostServices,
+    load_external_skill_host_adapters,
+)
 from .fabric_client import FabricClient
 from .gemini_pointing_skill import (
     PointingIdentificationSkill,
@@ -187,6 +191,21 @@ spatial_registration_skill = SpatialRegistrationSkillAdapter(
     generic_route_mode=settings.phase5_spatial_generic_route_mode,
     mounted_static_target_frames={settings.arm_base_frame},
     readiness_ensurer=_ensure_current_world_tracking,
+)
+agent_skill_catalog = discover_agent_skills(
+    settings.workspace_root,
+    include_disabled=True,
+)
+external_skill_adapters = load_external_skill_host_adapters(
+    agent_skill_catalog,
+    eligible_tool_names=set(settings.phase4_eligible_tools),
+    services=ExternalSkillHostServices(
+        manager=manager,
+        fabric=fabric,
+        spatial=spatial_registration_skill,
+        vlm_router=agent_vlm_router,
+        visual_evidence_store=visual_evidence_store,
+    ),
 )
 semantic_assertion_publisher = SemanticAssertionPublisher(fabric)
 scene_segmentation_policy_publisher = SceneSegmentationPolicyPublisher(
@@ -386,6 +405,7 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         semantic_scene_inspector=semantic_scene_inspector,
         scene_policy_publisher=scene_segmentation_policy_publisher,
         tool_registration_skill=tool_registration_skill,
+        external_skill_adapters=external_skill_adapters,
         stationary_calibration_skill=stationary_calibration_agent_adapter,
         manager=manager,
         provider_lifecycle_control=True,
@@ -428,10 +448,6 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
     defer_loading=False,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
     max_turns=settings.openai_agent_max_turns,
-)
-agent_skill_catalog = discover_agent_skills(
-    settings.workspace_root,
-    include_disabled=True,
 )
 
 

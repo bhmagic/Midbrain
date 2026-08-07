@@ -12,6 +12,7 @@ $requiredSetupScripts = @(
     "providers\rebot_arm_integrated\scripts\setup.ps1",
     "skills\locate-effector-front\scripts\setup.ps1",
     "skills\register_tool_to_control_frame\scripts\setup.ps1",
+    "skills\refine-arm-root-translation\scripts\setup.ps1",
     "skills\spatial_registration_rgbd\scripts\setup.ps1",
     "skills\stationary_world_arm_alignment\scripts\setup.ps1",
     "test_agent\scripts\setup.ps1"

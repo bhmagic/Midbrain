@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-refine-arm-root-translation"
+version = "0.1.0"
+description = "Timestamp-coherent XYZ-only arm-root calibration refinement for Midbrain"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3",
+  "Pillow>=11,<13"
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["refine_arm_root_translation*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

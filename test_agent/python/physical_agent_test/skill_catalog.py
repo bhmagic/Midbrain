@@ -37,6 +37,8 @@ class AgentSkillDescriptor:
     execution_adapter_id: str
     execution_adapter_kind: str
     execution_entrypoint: str | None
+    host_adapter_entrypoint: str | None
+    host_adapter_factory: str | None
     invocation_requires_approval: bool
     required_capabilities: tuple[str, ...]
     optional_capabilities: tuple[str, ...]
@@ -159,6 +161,22 @@ def _parse_descriptor(
         not isinstance(execution_entrypoint, str) or not execution_entrypoint.strip()
     ):
         raise ValueError(f"{manifest_path}: execution entrypoint must be text")
+    host_adapter = execution_adapter.get("host_adapter")
+    host_adapter_entrypoint: str | None = None
+    host_adapter_factory: str | None = None
+    if host_adapter is not None:
+        if not isinstance(host_adapter, dict):
+            raise ValueError(f"{manifest_path}: host_adapter must be an object")
+        host_adapter_entrypoint = _required_text(
+            manifest_path,
+            host_adapter,
+            "entrypoint",
+        )
+        host_adapter_factory = _required_text(
+            manifest_path,
+            host_adapter,
+            "factory",
+        )
     invocation_requires_approval = execution_adapter.get(
         "invocation_requires_approval",
         safety_class not in {"READ_ONLY"},
@@ -190,6 +208,8 @@ def _parse_descriptor(
         execution_adapter_id=execution_adapter_id,
         execution_adapter_kind=execution_adapter_kind,
         execution_entrypoint=execution_entrypoint,
+        host_adapter_entrypoint=host_adapter_entrypoint,
+        host_adapter_factory=host_adapter_factory,
         invocation_requires_approval=invocation_requires_approval,
         required_capabilities=tuple(manifest.get("required_capabilities") or ()),
         optional_capabilities=tuple(manifest.get("optional_capabilities") or ()),

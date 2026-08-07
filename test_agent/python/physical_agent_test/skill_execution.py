@@ -7,7 +7,13 @@ from typing import Any, Awaitable, Callable, Protocol
 from agents import FunctionTool
 from jsonschema import validate
 
+from .phase4_policy import extend_current_operation_hard_timeout
 from .skill_catalog import AgentSkillDescriptor
+
+
+_LATENCY_TIMEOUT_FLOORS_S = {
+    "HIGH": 600.0,
+}
 
 
 class SkillExecutionAdapter(Protocol):
@@ -79,6 +85,18 @@ def build_agent_tools(
                 f"{tool_name} has no registered execution adapter "
                 f"{descriptor.execution_adapter_id}"
             )
+        selected_timeout_s = float(
+            timeout_overrides.get(
+                descriptor.tool_name,
+                max(
+                    adapter_timeout_s,
+                    _LATENCY_TIMEOUT_FLOORS_S.get(
+                        descriptor.expected_latency,
+                        adapter_timeout_s,
+                    ),
+                ),
+            )
+        )
 
         async def invoke_tool(
             _context,
@@ -86,11 +104,16 @@ def build_agent_tools(
             *,
             selected_adapter: SkillExecutionAdapter = adapter,
             selected_descriptor: AgentSkillDescriptor = descriptor,
+            effective_timeout_s: float = selected_timeout_s,
         ) -> Any:
             arguments = json.loads(raw_arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("Skill tool arguments must be a JSON object")
             validate(instance=arguments, schema=selected_descriptor.input_schema)
+            extend_current_operation_hard_timeout(
+                effective_timeout_s,
+                stage=f"skill:{selected_descriptor.tool_name}:running",
+            )
             return await selected_adapter.invoke(arguments)
 
         tools.append(
@@ -104,12 +127,7 @@ def build_agent_tools(
                     descriptor.tool_name,
                     descriptor.invocation_requires_approval,
                 ),
-                timeout_seconds=float(
-                    timeout_overrides.get(
-                        descriptor.tool_name,
-                        adapter_timeout_s,
-                    )
-                ),
+                timeout_seconds=selected_timeout_s,
                 timeout_behavior="raise_exception",
                 defer_loading=bool(defer_loading),
             )
