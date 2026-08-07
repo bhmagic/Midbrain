@@ -32,7 +32,8 @@ trying to do rather than by the order in which documents were created.
 - [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) contains
   only active gaps and priorities.
 - [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
-  is the active implementation plan for the next alignment route.
+  records the implemented non-moving translation refiner and the remaining
+  automatic multi-movement six-degree-of-freedom alignment work.
 - [Release and GitHub](10_RELEASE_AND_GITHUB.md) covers local validation and
   publication mechanics.
 - [Changelog](../CHANGELOG.md) is the release and milestone history.
@@ -48,7 +49,7 @@ trying to do rather than by the order in which documents were created.
 | [Configuration and Security](07_CONFIGURATION_AND_SECURITY.md) | Local configuration ownership, secrets, trust boundaries, and publication exclusions. |
 | [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Active limitations and prioritized work only. |
 | [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Maintainer release workflow. |
-| [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md) | Active design plan; not an implemented operator workflow yet. |
+| [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md) | Mixed implementation record: the non-moving XYZ refiner is available; the automatic multi-movement six-degree-of-freedom workflow remains active design. |
 
 The VIO implementation design belongs to
 [`providers/local_vio`](../providers/local_vio/README.md). FoundationPose setup
@@ -100,4 +101,5 @@ is folded into the owning contract and component documentation, then retired.
 - [reBot Arm Integrated Provider](../providers/rebot_arm_integrated/README.md)
 - [FoundationPose Compatibility Provider](../providers/foundation_pose/README.md)
 - [Stationary World-Space Arm Alignment Skill](../skills/stationary_world_arm_alignment/README.md)
+- [Refine Arm-Root Translation Skill](../skills/refine-arm-root-translation/SKILL.md)
 - [Reference Agent](../test_agent/README.md)

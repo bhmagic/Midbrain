@@ -31,6 +31,7 @@ retain their own entry points, including:
 .\providers\foundation_pose\scripts\validate_publication.ps1
 .\providers\rebot_arm_dm\scripts\verify.ps1
 .\providers\rebot_arm_integrated\scripts\verify.ps1
+.\skills\refine-arm-root-translation\scripts\check.ps1
 ```
 
 Consult each component's `VALIDATION.md` for its current coverage and
@@ -75,12 +76,37 @@ limitations.
 ### Agent and Skills
 
 - Discovery does not import or start Skill implementations.
+- A manifest-declared external Skill host remains generic; Skill-specific
+  hardware/VLM code and Python dependencies remain inside the Skill package.
 - Dependencies become ready before the finite operation runs.
 - Browser disconnect does not duplicate or silently cancel backend work.
 - Read-only retries cannot repeat a physical action.
 - Visual evidence refers to the exact analyzed frame and preserves provenance.
 - Structured results distinguish success, rejection, limitation, uncertain
   outcome, and actionable continuation.
+
+### Arm-root translation refinement
+
+- An active motion-usable alignment and matching camera, VIO, arm, convention,
+  frame, calibration, and effector-profile identities are required.
+- The default bare-gripper path consistently resolves the two rail endpoints,
+  averages their registered 3D points, and rotates the profile's 80 mm
+  rail-center-to-controller-tip offset with controlled-frame FK.
+- Synthetic sign and rotation tests prove that the offset follows controlled
+  +X rather than world or arm-base X, including a rotated gripper pose.
+- One to five samples produce one arithmetic-mean correction and at most one
+  Manager state update. Adoption zero is observation-only; adoption one is the
+  full accepted XYZ correction.
+- The proposed rotation is byte-identical to the active rotation. Manager
+  rejects stale revisions, identity changes, rotation changes, inconsistent
+  adopted deltas, and Fabric publication failure.
+- Invalid exact depth permits one VLM reselection. A sufficiently large raw
+  correction requires marked-image VLM review; failed or unresolved review,
+  profile delta limits, and unbracketed FK all leave alignment unchanged.
+- Live qualification should repeat refinements for at least ten minutes with
+  and without intervening arm movement while recording raw arm-FK and Fabric
+  history cadence. Current timestamp anomalies are documented in the
+  [VIO and arm-FK handoff](../skills/refine-arm-root-translation/references/vio_and_arm_fk_timestamp_anomaly_handoff.md).
 
 ### Robot control
 

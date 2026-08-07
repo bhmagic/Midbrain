@@ -84,6 +84,35 @@ lifecycle boundary. The Skills under `skills` show manifest discovery,
 read-only perception, initialization, alignment, and guarded-execution
 patterns.
 
+### Keep replaceable-effector geometry in profiles
+
+Visual arm Skills should not hard-code one gripper, final-joint length, tool
+offset, landmark material, or VLM description into otherwise reusable
+alignment mathematics. The
+[`refine_arm_root_translation`](../skills/refine-arm-root-translation/SKILL.md)
+Skill demonstrates the profile boundary:
+
+- `robot_compatibility` names the arm model, base, terminal, and controlled
+  frames without making those names universal contracts;
+- `kinematic_attachment` pins the qualified final-joint-to-controlled-frame
+  geometry for that installed effector revision;
+- each visual landmark declares its physical point names, VLM description,
+  same-surface depth policy, separation bounds, and explicit bidirectional
+  controlled-frame offset;
+- the default bare-gripper landmark is a non-reflective proximal rail midpoint,
+  while the controller point remains the gripper tip; and
+- replacing the gripper or holding a rigid tool requires a new profile revision
+  with its own attachment and landmark relationship, not a conditional inside
+  the generic solver.
+
+Store both controlled-frame-to-landmark and landmark-to-controlled-frame
+vectors and validate that they are exact inverses. Rotate those vectors with
+timestamped controlled-frame FK; never reinterpret them as world or arm-base
+axis offsets. Profiles may change the landmark description when a tip becomes
+reflective or occluded without changing the refinement algorithm. Optional
+physical fiducials belong in separate profiles and must not become an implicit
+baseline requirement.
+
 ## Connect another Agent framework
 
 The Agent is a planner and coordinator, not a privileged device driver. A new

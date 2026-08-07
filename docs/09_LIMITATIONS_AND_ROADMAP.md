@@ -22,15 +22,37 @@ hardware.
 
 ### Complete movement-based arm-root alignment
 
+The non-moving `refine_arm_root_translation` Skill is implemented. It can use
+one to five timestamp-coherent VLM/RGB-D/FK observations to improve XYZ while
+preserving a previously trusted rotation, but one observed 3D point cannot
+establish a new six-degree-of-freedom transform.
+
 The current before/after collector can gather useful gripper correspondences,
-but the ordinary movement-based alignment workflow is not complete. Implement
-the versioned observation set, rigid solver, conditioning checks, candidate
-activation, rollback, finite calibration motion, visualization, and negative
-tests specified in
+but the ordinary automatic movement-based alignment workflow is not complete.
+Implement the versioned observation set, rigid solver, conditioning checks,
+candidate activation, rollback, finite calibration motion, visualization, and
+negative tests specified in
 [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
 
 FoundationPose remains an explicit finite initializer and compatibility route;
 it must not become an automatic fallback for generic alignment.
+
+### Stabilize arm-FK and Fabric transform history
+
+Repeated live translation refinements succeeded before later FK preflights
+remained approximately 98 ms and 408 ms ahead of available transform history,
+with one timestamped lookup returning 404. One HOT recovery succeeded earlier
+in the same run sequence, but later HOT requests did not prove that the
+underlying FK publisher or Fabric ingestion resumed. The refinement Skill
+correctly failed closed and applied no update.
+
+Instrument raw joint/FK publication and Fabric edge ingestion separately with
+provider boot/process identity, sequence, source timestamp, arrival timestamp,
+requested capture-window end, and explicit 404 reason. Then run a bounded
+ten-minute soak test with and without intervening motion. Do not weaken
+zero-unqualified-extrapolation policy or infer stationarity from publisher
+silence. See the
+[VIO and arm-FK timestamp anomaly handoff](../skills/refine-arm-root-translation/references/vio_and_arm_fk_timestamp_anomaly_handoff.md).
 
 ### Enforce fresh semantic scenes during execution
 

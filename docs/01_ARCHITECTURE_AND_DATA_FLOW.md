@@ -60,6 +60,50 @@ dynamic measurement edges for compatibility comparisons.
 7. Stationary Alignment validates and aggregates the samples, then publishes
    only its own reviewed alignment result.
 
+## VLM arm-root translation-refinement flow
+
+The finite
+[`refine_arm_root_translation`](../skills/refine-arm-root-translation/SKILL.md)
+Skill improves only XYZ translation after another workflow has established a
+motion-usable world-to-arm-base transform and trusted rotation. It performs no
+robot movement and cannot establish the missing three rotational parameters
+from one observed point.
+
+1. The Reference Agent discovers the Skill from its manifest. Its generic
+   external-Skill host loads the Skill-owned hardware bridge and launches the
+   numerical runtime from the Skill's private Python environment.
+2. The host verifies the active alignment, camera/VIO/arm identities, selected
+   effector profile, and a current local arm FK path before starting VLM work.
+3. For each requested sample, it captures one fresh RGB/registered-depth pair,
+   brackets the immutable capture window with timestamped arm FK, and rejects
+   the sample when profile-bounded landmark motion exceeds its limit.
+4. The VLM marks the profile-selected physical feature in both RGB and
+   registered depth. The current bare-gripper profile uses the mean of the two
+   lateral endpoints of the neon-green rail. Invalid exact depth permits at
+   most one VLM reselection; coded nearest-pixel repair is not used.
+5. The profile rotates its measured rigid landmark offset with timestamped FK.
+   For the current gripper, rail center to controller tip is
+   `[+0.080, 0, 0]` m in controlled-frame coordinates. The Skill reconstructs
+   the controller tip and estimates only the base translation while preserving
+   the active rotation byte-for-byte.
+6. A caller may request one to five independent samples and an adoption factor
+   from zero to one. Multi-sample mode averages raw XYZ corrections and submits
+   at most one state update. A sufficiently large raw delta requires a second
+   marked-image VLM quality review before it can be accepted.
+7. The Skill returns exact visual evidence for the selected landmark plus old
+   and proposed base/landmark projections. Accepted updates use Manager's
+   expected-revision compare-and-swap route.
+8. Manager revalidates active state, identities, arm health, locked rotation,
+   and arithmetic consistency; publishes the new transform through Fabric;
+   then increments one flat refinement revision and retains a bounded rollback
+   journal. It does not duplicate the Skill's perception-quality policy.
+
+An arm-FK or Fabric history gap fails before landmark inference or state
+mutation. Do not turn missing timestamp bracketing into an exact transform by
+assuming that silence means the arm was stationary. The current investigation
+handoff is
+[`vio_and_arm_fk_timestamp_anomaly_handoff.md`](../skills/refine-arm-root-translation/references/vio_and_arm_fk_timestamp_anomaly_handoff.md).
+
 ## Startup data flow
 
 1. `Start Midbrain.cmd` starts Manager, Fabric, and the idle Agent UI service,

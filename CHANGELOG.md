@@ -2,13 +2,31 @@
 
 ## Unreleased
 
+- Add the discoverable `refine_arm_root_translation` finite Skill for
+  non-moving XYZ refinement of an existing world-to-arm-base alignment. It
+  captures synchronized RGB and registered depth with timestamp-bracketed arm
+  FK, observes the neon-green gripper-rail midpoint, applies a profile-owned
+  rail-center-to-controller-tip offset, preserves base rotation exactly, and
+  supports one to five averaged samples plus a caller-selected adoption factor.
+  The Skill owns its hardware/VLM host bridge, schemas, effector profile,
+  visual evidence, conditional second VLM review, private Python environment,
+  and fail-closed timing policy; it never submits physical motion.
+- Add generic manifest-discovered external Skill hosting to the Reference Agent
+  and a dedicated Manager compare-and-swap path for accepted translation-only
+  updates. Manager revalidates active revision, locked rotation, identities,
+  arm health, and the exact adopted delta, publishes the updated transform to
+  Fabric before commit, and retains a bounded flat refinement journal without
+  recursive parent layering. Record the distinct VIO and arm-FK/Fabric
+  timestamp anomalies for follow-up rather than accepting guessed transforms.
 - Complete the spatial-autonomy groundwork through Test Agent v0.4.9:
   user-described semantic scenes, SAM2/VLM-reviewed obstacle geometry,
   Fabric-regulated scene spheres, a reusable full-destination no-contact
   approach loop, POS_SPEED motion, and before/after RGB-D/FK arm-root evidence.
 - Retain FoundationPose as a finite initializer and compatibility route but
   remove it as the regular Agent's implicit generic alignment fallback. Its
-  Agent-facing path now requires the documented exact operator request.
+  Agent-facing path now requires the operator to mention FoundationPose by
+  name, with case-insensitive matching and tolerance for spacing, hyphenation,
+  and minor spelling errors.
 - Add one canonical implementation-ready gripper-motion arm-root alignment
   plan, including next-iteration handoff constraints and required negative
   tests. Preserve general point clouds at distance and reserve dense,

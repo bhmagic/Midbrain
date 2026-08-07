@@ -28,6 +28,7 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | GET | `/v1/control-authority/resources/{id}` | Inspect active authority and latest fencing generation |
 | GET | `/v1/workcell-calibrations` | Inspect enforced workcell calibration activations and their state |
 | POST | `/v1/workcell-calibrations/activate` | Activate one exact reviewed stationary-workcell candidate |
+| POST | `/v1/workcell-calibrations/refine-translation` | Compare-and-swap one Skill-accepted XYZ-only update while preserving active rotation |
 | POST | `/v1/workcell-calibrations/{id}/revoke` | Revoke one activation and publish the non-motion-usable edge |
 | POST | `/v1/shutdown/plan` | Build and publish a Manager-owned shutdown dry run |
 | GET | `/v1/shutdown` | Inspect the latest shutdown dry run |
@@ -193,6 +194,31 @@ records.
 non-motion-usable observation before storing the `REVOKED` state. Fabric
 static-transform selection suppresses older active edges after this
 revocation, even if the older transform observation remains in history.
+
+### Compact XYZ-only workcell refinement
+
+`POST /v1/workcell-calibrations/refine-translation` is the state-commit route
+for a finite Skill that has already decided to accept an XYZ-only correction.
+The request identifies the active calibration, expected flat refinement
+revision, exact source and proposed `world_from_base` transforms, caller, and
+the structured refinement artifact. It is not a general calibration solver or
+a perception-quality endpoint.
+
+Manager rejects a request unless the activation is enforced and motion-usable,
+the expected revision and source transform are current, source and proposed
+rotations are byte-identical, camera/VIO/world identities still match, the arm
+Provider instance and boot remain healthy, and proposed translation equals
+source translation plus the declared adopted delta. The finite Skill retains
+ownership of capture-motion limits, VLM/depth quality, conditional review,
+profile bounds, sample aggregation, and adoption policy.
+
+Manager publishes the updated motion-usable transform to Fabric before
+committing the in-memory revision. A Fabric publication failure leaves the
+active record unchanged. Successful updates increment
+`translation_refinement_revision`, derive a new calibration revision, and
+append one compact journal entry. The journal is bounded to 32 entries and has
+no recursive parent-state chain. Reusing `request_id` is idempotent only for
+byte-equivalent canonical request content.
 
 ### Manager shutdown plan and gated execution
 

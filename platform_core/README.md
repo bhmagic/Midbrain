@@ -11,7 +11,8 @@ Manager owns:
 - Provider discovery, process lifecycle, dependency activation, and health;
 - per-capability readiness and selection surfaces;
 - resource, motion-inhibit, authority, and shutdown coordination;
-- guarded activation and revocation of reviewed workcell calibration; and
+- guarded activation, flat translation-only refinement, and revocation of
+  reviewed workcell calibration; and
 - the system portal and implementation-neutral observation pages.
 
 Fabric owns:

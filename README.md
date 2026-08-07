@@ -99,7 +99,8 @@ The repository currently contains:
 - Semantic scene tracking and an arm-scene compiler.
 - Basic reBot/Damiao motor Provider and an Integrated Cartesian controller.
 - Finite Skills for initialization, visual localization, spatial
-  registration, stationary alignment, no-contact approach, and guarded motion.
+  registration, stationary alignment, profile-driven non-moving VLM
+  arm-root translation refinement, no-contact approach, and guarded motion.
 - One backend-owned autonomous Agent runtime with regular and developer views,
   normalized events, visual evidence, chat projection, and a local diagnostic
   journal.
@@ -165,7 +166,8 @@ Key references:
 - [Validation](docs/06_VALIDATION.md)
 - [Configuration and Security](docs/07_CONFIGURATION_AND_SECURITY.md)
 - [Current Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md)
-- [Gripper-Motion Arm-Root Alignment Plan](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
+- [Gripper-Motion Arm-Root Alignment](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
+- [Refine Arm-Root Translation Skill](skills/refine-arm-root-translation/SKILL.md)
 - [Physical AI Contracts](contracts/README.md)
 
 Release history belongs in [CHANGELOG.md](CHANGELOG.md). Component-specific

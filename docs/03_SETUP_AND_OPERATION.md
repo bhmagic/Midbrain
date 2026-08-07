@@ -53,6 +53,12 @@ environments, builds CameraHost when its SDK paths are available, installs the
 core Providers and Skills, and creates missing local configuration from blank
 examples without overwriting existing files.
 
+Manifest-discovered Skills may declare a Skill-owned setup entrypoint. Test
+Agent setup runs those entrypoints inside each Skill directory; the
+arm-root-translation refiner therefore keeps its numerical runtime and
+dependencies in `skills/refine-arm-root-translation/.venv` instead of adding
+them to the Agent environment.
+
 There is no repository-root Python environment. Each Python process launches
 from the environment owned by its component.
 
@@ -140,14 +146,42 @@ Closing an SSE connection or browser tab does not cancel a backend run or prove
 the outcome of a physical action. Reopen the Agent page or run journal to
 inspect retained state.
 
-FoundationPose is available to the regular Agent only for this complete
-operator request:
+FoundationPose is available to the regular Agent only when the operator
+explicitly mentions it by name. Matching is case-insensitive and tolerates
+spacing, hyphenation, and minor spelling errors. A canonical request is:
 
 `Use FoundationPose to establish the stationary world-to-arm-base transform.`
 
 Generic alignment requests must not silently load it. The movement-based
-replacement is still an active design; see
+six-degree-of-freedom replacement is still an active design; see
 [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
+
+### Refine an existing arm-base alignment without movement
+
+The discoverable
+[`refine_arm_root_translation`](../skills/refine-arm-root-translation/SKILL.md)
+Skill can improve XYZ translation after a trusted motion-usable alignment has
+already established rotation. A typical Agent request is `Refine the arm
+alignment with VLM.` The caller may add `using 5 samples` or an adaptation
+factor from zero to one. Omitted sample count and adoption factor default to
+one.
+
+The operation itself never commands the robot. For the current bare-gripper
+profile, every default call asks the VLM for both lateral endpoints of the
+neon-green rail and averages their registered 3D points. The profile applies
+the measured 80 mm rail-center-to-controller-tip offset along controlled-frame
++X before solving base translation. Rotation remains unchanged. Visual
+evidence shows the exact RGB/depth inputs, selected points, derived rail
+midpoint, and old/proposed base and selected-landmark projections.
+
+Before using it, establish the current VIO world axis and an enforced
+motion-usable world-to-arm-base alignment. The Skill also requires matching
+camera calibration, VIO epoch, arm identity, and timestamp-bracketed FK across
+each RGB-D capture window. Missing or extrapolated FK fails closed before VLM
+correction and leaves alignment state unchanged. Repeated arm-FK/Fabric timing
+failures are a Provider/Fabric investigation, not a reason to relax the
+Skill's timestamp requirement; see the
+[VIO and arm-FK timestamp anomaly handoff](../skills/refine-arm-root-translation/references/vio_and_arm_fk_timestamp_anomaly_handoff.md).
 
 ## Stop safely
 

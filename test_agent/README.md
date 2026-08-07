@@ -44,6 +44,14 @@ Discovery reads concise manifest metadata without importing or starting Skill
 implementations. After selection, the host binds the required adapter and
 loads the detailed input schema.
 
+An `EXTERNAL_SKILL_ENTRYPOINT` manifest may also declare a Skill-owned host
+adapter factory and setup entrypoint. The Reference Agent loads that factory
+through a generic service bundle; Skill-specific RGB-D, FK, VLM, profile, and
+state logic remains inside the Skill package. The numerical entrypoint runs in
+the Skill's private environment. Manifest latency class selects a bounded
+adapter deadline, allowing multi-sample visual work without putting a
+Skill-specific timeout in the Agent.
+
 Provider dependencies are made `HOT` through Manager. The host waits for a
 fresh Manager report showing the required capability ready; process creation
 alone is not success. Visual Skills separately wait for a readable current
@@ -53,6 +61,27 @@ first data-plane frame is already usable.
 Retries are bounded at named read-only boundaries such as transient visual
 inference or initial camera capture. A complete task or physical action is not
 automatically repeated.
+
+## Arm-root translation refinement
+
+The discoverable `refine_arm_root_translation` tool performs a non-moving
+XYZ-only refinement of an existing motion-usable world-to-arm-base alignment.
+Natural requests may specify an adoption factor from zero to one and one to
+five samples; both default to one. For example: `Refine the arm alignment with
+VLM using 5 samples and adoption factor 0.25.`
+
+The Agent does not choose pixels, repair depth, perform kinematics, average
+samples, judge delta limits, or submit the calibration record itself. Those
+decisions remain inside the finite Skill and its effector profile. The Agent
+may perform at most the typed dependency continuation returned by the Skill:
+one HOT recovery followed by one fresh retry. A repeated arm-FK/Fabric timing
+failure is reported without a calibration update or recovery loop.
+
+The result exposes exact Midbrain visual evidence for RGB, registered depth,
+overlap, selected landmark points, derived 3D midpoint, and old/proposed
+alignment projections. A successful result distinguishes the raw estimated
+correction from the adopted correction and confirms that rotation was
+unchanged and no physical motion was submitted.
 
 ## Runs and events
 

@@ -1,9 +1,11 @@
-# Gripper-Motion Arm-Root Alignment Plan
+# Gripper-Motion Arm-Root Alignment
 
-Status: active implementation design; the ordinary movement workflow is not
-yet available to operators. Retire this plan after its contracts, solver,
-finite Skill, Manager activation, tests, and component documentation are
-implemented and verified.
+Status: mixed implementation and active design. The non-moving, translation-only
+VLM refinement Skill and its flat Manager update path are implemented and
+available to the Agent. The automatic multi-movement six-degree-of-freedom
+workflow remains design work. Retire this document after that movement Skill,
+its solver, activation path, tests, and component documentation are implemented
+and verified.
 
 ## Decision and scope
 
@@ -13,8 +15,9 @@ gripper positions. It is intended to become the ordinary, reusable alignment
 path for a rigidly mounted camera and arm. It does not remove FoundationPose.
 
 FoundationPose remains a deliberately slow initializer and diagnostic route.
-The regular Agent may summon it only when the operator supplies this exact
-request:
+The regular Agent may summon it only when the operator explicitly mentions
+FoundationPose by name; matching is case-insensitive and tolerates spacing,
+hyphenation, and minor spelling errors. A canonical request is:
 
 `Use FoundationPose to establish the stationary world-to-arm-base transform.`
 
@@ -37,6 +40,38 @@ That test produced two endpoint correspondences. It correctly did not activate
 a six-degree-of-freedom root correction because one displacement vector cannot
 observe rotation about that vector. This is evidence gathering, not yet full
 alignment.
+
+## Implemented non-moving translation refinement
+
+The finite
+[`refine_arm_root_translation`](../skills/refine-arm-root-translation/SKILL.md)
+Skill implements the second, simpler alignment route from this plan. Given an
+existing motion-usable alignment with trusted rotation, it captures fresh
+RGB/registered depth plus timestamp-bracketed FK and observes a profile-defined
+rigid effector landmark. It estimates and optionally applies only XYZ
+translation; rotation is copied exactly and the Skill submits no physical
+motion.
+
+The current reBot B601-DM bare-gripper profile consistently observes the mean
+of the two lateral endpoints of the neon-green rail. It stores the measured
+rail-center-to-controller-tip vector as `[+0.080, 0, 0]` m in controlled-frame
+coordinates and the exact inverse solver point. This keeps Rebot-specific
+attachment geometry, visual descriptions, alternative landmarks, and future
+tool/effector changes outside the generic refinement mathematics.
+
+The caller selects an adoption factor from zero to one and may request one to
+five independent observations. Multi-sample mode averages raw XYZ corrections,
+scales configured delta limits by sample count, and performs at most one atomic
+Manager update. Visual evidence exposes the exact VLM inputs, selected rail
+points, derived midpoint, and old/proposed base and landmark projections. Large
+raw deltas require one additional marked-image VLM review. Invalid depth,
+failed review, gross delta, identity change, stale revision, excessive capture
+motion, and unbracketed FK all fail without changing alignment.
+
+Manager preserves the active rotation, verifies current identities and the
+adopted-delta arithmetic, publishes Fabric state before commit, increments one
+flat refinement revision, and keeps a bounded journal. Repeated calls do not
+create recursive parent layers.
 
 ## Minimum geometry
 
@@ -318,7 +353,7 @@ visualized residual:
 Passing a low aggregate RMS value is insufficient when one of these systematic
 failures is present.
 
-## Implementation order for the next iteration
+## Remaining implementation order
 
 Begin with the versioned Fabric contracts and a pure solver. Feed the accepted
 two-point record plus synthetic third points into it before connecting new
@@ -336,7 +371,8 @@ should a candidate be offered to Manager for motion-usable activation.
 5. Add a visual review artifact showing commanded/FK points, observed RGB-D
    points, residual vectors, fitted frames, and rejected samples.
 6. Add Manager candidate activation, supersession, invalidation, and rollback.
-7. Connect the optional timestamp-coherent translation refinement to the no-contact
+7. Qualify the implemented timestamp-coherent translation refiner against the
+   arm-FK/Fabric soak-test requirements, then connect it to the no-contact
    approach planner.
 8. Add adaptive close-range workpiece sphere refinement and obstacle-boundary
    spillover tests.
