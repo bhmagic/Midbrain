@@ -223,6 +223,13 @@
     "integrated_recovery_transition": "EXPLICIT_APPROVED_HOT",
     "physical_execution_tool": "execute_integrated_motion_preview",
     "physical_execution_arguments": "OPAQUE_PENDING_PREVIEW_ID_ONLY",
+    "reference_agent_prepared_action_projection": {
+      "tool_name": "perform_relative_effector_motion",
+      "preparation_tool": "preview_relative_effector_motion",
+      "continuation_tool": "execute_integrated_motion_preview",
+      "binding": "EXACT_SDK_CALL_ID_AND_OPAQUE_PREVIEW_ID",
+      "optional_for_compatible_agent_hosts": true
+    },
     "explicit_world_axis_requires_reviewed_transform": true,
     "explicit_world_axis_may_use_arm_mount_fallback": false,
     "reviewed_world_transform_precedes_mount_fallback": true,

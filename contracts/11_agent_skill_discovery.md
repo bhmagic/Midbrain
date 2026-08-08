@@ -127,3 +127,28 @@ opaque pending preview identifier when the host retains canonical state. The
 host resolves the full motion envelope for authorization and execution. A
 model-copied target, timing value, transform, or controller digest is not an
 authority source and must not replace the pending host record.
+
+An Agent adapter may project one nonphysical preparation and its exact
+execution continuation as one agent-visible prepared action. This projection
+is valid only when all of the following remain true:
+
+- preparation itself grants no physical authority and submits no motion;
+- the Skill result names one allowlisted continuation with a minimal opaque
+  identifier;
+- host state binds the preparation, authorization evidence, and execution to
+  one exact SDK or adapter call identity rather than to model-generated input;
+- the existing authorization policy is evaluated against host-recovered
+  canonical state after preparation and before execution;
+- approval or bounded autonomous policy authorizes that exact prepared action,
+  not a class of later actions;
+- execution revalidates freshness, controller state, and authority and fails
+  closed when the call-scoped preparation is missing or changed; and
+- a nonmatching continuation, dependency request, calibration step, replan,
+  user question, or other semantic branch is returned without automatic
+  execution.
+
+This is a host projection, not a general instruction to recursively follow
+`required_next_tool`. Different Skills use that field for lifecycle recovery,
+reviewed activation, re-observation, replanning, and physical commit. An
+adapter must explicitly bind each eligible pair and leave all other
+continuations visible to the Agent or owning deterministic workflow.

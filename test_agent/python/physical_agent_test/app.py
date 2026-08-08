@@ -25,6 +25,7 @@ from .agent_driver import (
     AgentEventSink,
     AgentInput,
     AgentSessionAuthorization,
+    PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
     PrototypeAgentDriver,
     relative_motion_within_authorization,
 )
@@ -754,10 +755,18 @@ def _approval_arguments(approval: dict[str, Any]) -> dict[str, Any]:
 
 def _approval_fingerprint(approval: dict[str, Any]) -> str:
     """Identify an exact protected operation without SDK call identifiers."""
+    tool_name = str(approval.get("tool_name") or "")
+    arguments = dict(_approval_arguments(approval))
+    if tool_name in {
+        "execute_integrated_motion_preview",
+        PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+    }:
+        arguments.pop("preview_id", None)
+        tool_name = "integrated_relative_motion_commit"
     return json.dumps(
         {
-            "tool_name": str(approval.get("tool_name") or ""),
-            "arguments": _approval_arguments(approval),
+            "tool_name": tool_name,
+            "arguments": arguments,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -876,7 +885,10 @@ def _validate_automatic_agent_approval(
             )
         eligible = all(
             approval.get("tool_name")
-            == "execute_integrated_motion_preview"
+            in {
+                "execute_integrated_motion_preview",
+                PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+            }
             and relative_motion_within_authorization(
                 _approval_arguments(approval),
                 max_auto_move_cm=maximum_cm,
@@ -2656,6 +2668,7 @@ async def decide_streaming_run(
         if decision.approve:
             entry.state.approve(interruption)
         else:
+            await driver.discard_pending_prepared_action(interruption)
             entry.state.reject(
                 interruption,
                 rejection_message=decision.rejection_message,
@@ -3828,6 +3841,8 @@ function updateAgentAuthorizationTicker() {
 }
 
 function agentApprovalArguments(approval) {
+  const canonical = approval.authorization_arguments;
+  if (canonical && typeof canonical === 'object') return canonical;
   const raw = (approval.request && approval.request.arguments) || {};
   if (typeof raw === 'string') {
     try {
@@ -3911,7 +3926,10 @@ function automaticDeveloperApprovalDecision(approvals) {
         direction === 'NONE' && distanceM === 0 &&
         plannedSpeedMps === 0 &&
         argumentsValue.requested_speed_m_s == null && boundedYaw;
-      return approval.tool_name === 'execute_integrated_motion_preview' &&
+      return [
+        'execute_integrated_motion_preview',
+        'perform_relative_effector_motion'
+      ].includes(approval.tool_name) &&
         (exactTranslation || exactCombinedPose || exactPureRotation);
     });
   if (motionEligible) {

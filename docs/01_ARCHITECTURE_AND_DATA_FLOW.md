@@ -186,6 +186,18 @@ run/approval/streaming implementation. Both pages submit only to the canonical
 developer execution alias. Developer diagnostics do not change the Agent's
 eligible tools, lifecycle policy, retries, or authorization behavior.
 
+For an ordinary requested Integrated relative motion, the reference Agent host
+projects nonphysical preview and its exact execution continuation as one
+`perform_relative_effector_motion` tool call. Preparation is keyed by the SDK
+call ID and retains the opaque preview ID in host memory. A `PREVIEW_READY`
+result may proceed only through the existing canonical motion-authorization
+policy; execution then reuses the exact pending preview and retains controller
+freshness and completion checks. Dependency recovery, calibration, operator
+questions, failed previews, and every continuation other than the allowlisted
+physical commit return to normal Agent orchestration without being chained.
+The lower-level preview and execution tools remain available for explicit
+nonphysical preview and compatibility diagnostics.
+
 The browser groups each backend-owned run into one user/Agent turn. Public
 reasoning-summary deltas and sanitized lifecycle events populate an expandable
 execution summary, while visual evidence remains attached to the turn that

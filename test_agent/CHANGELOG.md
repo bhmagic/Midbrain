@@ -12,6 +12,15 @@
   transitively. Scene compilation likewise requests only its task-facing
   Provider instead of replaying SAM2, camera, and Basic dependencies through
   the model.
+- Add the call-scoped `perform_relative_effector_motion` Agent projection. It
+  prepares the existing nonphysical preview during the exact SDK tool call,
+  resolves authorization from host-retained canonical state, and executes only
+  that preview after the existing approval policy. Repeated identical commands
+  remain distinct because the binding uses both SDK call ID and opaque preview
+  ID.
+- Leave dependency recovery, calibration, operator questions, replanning, and
+  every nonmatching `required_next_tool` visible to their existing workflows;
+  there is no recursive continuation executor.
 
 ## 0.4.9 - 2026-08-05
 

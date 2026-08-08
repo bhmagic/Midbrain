@@ -21,6 +21,7 @@ from agents import (
     ToolExecutionConfig,
     ToolSearchTool,
 )
+from jsonschema import validate
 
 from .agent_events import translate_openai_sdk_events
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
@@ -40,8 +41,10 @@ from .manager_client import ManagerClient
 from .no_contact_approach import NoContactItemApproachAdapter
 from .phase4_policy import (
     await_with_progress_heartbeat,
+    extend_current_operation_hard_timeout,
     report_operation_progress,
 )
+from .prepared_action import CallScopedPreparedActionCoordinator
 from .rgbd_alignment import RgbdAlignmentValidationSkill
 from .semantic_scene_inspector import SemanticSceneInspector
 from .scene_segmentation_policy_publisher import (
@@ -88,6 +91,7 @@ class AgentSessionAuthorization:
 AgentEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 AgentInput = str | list[dict[str, Any]] | RunState[Any]
 logger = logging.getLogger(__name__)
+PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL = "perform_relative_effector_motion"
 
 
 def _current_user_text(input_value: AgentInput) -> str:
@@ -776,6 +780,9 @@ class PrototypeAgentDriver:
     ):
         self.skill = skill
         self.integrated_motion_skill = integrated_motion_skill
+        self._prepared_relative_motion: (
+            CallScopedPreparedActionCoordinator | None
+        ) = None
         self.max_turns = int(max_turns)
         if not 1 <= self.max_turns <= 32:
             raise ValueError("max_turns must be between 1 and 32")
@@ -1007,10 +1014,10 @@ class PrototypeAgentDriver:
                 reviewed_observation_execution_adapter
             )
         if integrated_motion_skill is not None:
-            async def integrated_relative_preview_adapter(
+            async def prepare_integrated_relative_motion(
                 arguments: dict[str, Any],
-            ) -> str:
-                result = await integrated_motion_skill.preview(
+            ) -> dict[str, Any]:
+                return await integrated_motion_skill.preview(
                     direction=arguments.get("direction"),
                     distance_m=arguments.get("distance_m"),
                     requested_speed_m_s=arguments.get(
@@ -1035,6 +1042,11 @@ class PrototypeAgentDriver:
                         "controlled_frame_yaw_delta_deg"
                     ),
                 )
+
+            async def integrated_relative_preview_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await prepare_integrated_relative_motion(arguments)
                 return json.dumps(result, ensure_ascii=False, default=str)
 
             adapters[
@@ -1524,6 +1536,138 @@ class PrototypeAgentDriver:
                 ]
             )
         if integrated_motion_skill is not None:
+            async def prepare_relative_motion_action(
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                try:
+                    validate(
+                        instance=arguments,
+                        schema=preview_tool.params_json_schema,
+                    )
+                    extend_current_operation_hard_timeout(
+                        float(adapter_timeout_s),
+                        stage=(
+                            "skill:perform_relative_effector_motion:preparing"
+                        ),
+                    )
+                    return await asyncio.wait_for(
+                        prepare_integrated_relative_motion(arguments),
+                        timeout=float(adapter_timeout_s),
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "Integrated relative motion preparation failed"
+                    )
+                    return {
+                        "status": "MOTION_PREPARATION_FAILED",
+                        "workflow_complete": False,
+                        "physical_motion_authorized": False,
+                        "physical_motion_submitted": False,
+                        "message": str(error),
+                    }
+
+            def select_relative_motion_continuation(
+                result: dict[str, Any],
+            ) -> dict[str, Any] | None:
+                if (
+                    result.get("status") != "PREVIEW_READY"
+                    or result.get("workflow_complete") is not False
+                    or result.get("physical_motion_authorized") is not False
+                ):
+                    return None
+                continuation = result.get("required_next_tool")
+                if not isinstance(continuation, dict) or (
+                    continuation.get("name")
+                    != "execute_integrated_motion_preview"
+                ):
+                    return None
+                arguments = continuation.get("arguments")
+                if not isinstance(arguments, dict) or set(arguments) != {
+                    "preview_id"
+                }:
+                    return None
+                preview_id = arguments.get("preview_id")
+                if not isinstance(preview_id, str) or not preview_id.strip():
+                    return None
+                return {"preview_id": preview_id.strip()}
+
+            async def resolve_relative_motion_authorization(
+                arguments: dict[str, Any],
+            ) -> dict[str, Any] | None:
+                preview_id = arguments.get("preview_id")
+                canonical = await (
+                    integrated_motion_skill
+                    .pending_execution_authorization_arguments(preview_id)
+                )
+                if not isinstance(canonical, dict) or (
+                    canonical.get("preview_id") != preview_id
+                ):
+                    return None
+                return canonical
+
+            async def execute_relative_motion_continuation(
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                return await integrated_motion_skill.execute_preview(
+                    preview_id=arguments.get("preview_id"),
+                )
+
+            self._prepared_relative_motion = (
+                CallScopedPreparedActionCoordinator(
+                    prepare_action=prepare_relative_motion_action,
+                    select_continuation=(
+                        select_relative_motion_continuation
+                    ),
+                    resolve_authorization=(
+                        resolve_relative_motion_authorization
+                    ),
+                    execute_continuation=(
+                        execute_relative_motion_continuation
+                    ),
+                )
+            )
+
+            async def perform_relative_motion_needs_approval(
+                context_wrapper: Any,
+                arguments: dict[str, Any],
+                call_id: str,
+            ) -> bool:
+                assert self._prepared_relative_motion is not None
+                prepared = await (
+                    self._prepared_relative_motion.prepare_for_call(
+                        call_id,
+                        arguments,
+                    )
+                )
+                canonical = prepared.authorization_arguments
+                if not prepared.executable or canonical is None:
+                    return False
+                authorization = _session_authorization(context_wrapper)
+                return not (
+                    authorization.auto_authorize_relative_motion
+                    and relative_motion_within_authorization(
+                        canonical,
+                        max_auto_move_cm=(
+                            authorization.max_auto_move_cm
+                        ),
+                        max_auto_speed_m_s=(
+                            authorization.max_auto_speed_m_s
+                        ),
+                    )
+                )
+
+            async def perform_relative_effector_motion(
+                context_wrapper: Any,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                assert self._prepared_relative_motion is not None
+                result = await self._prepared_relative_motion.execute_for_call(
+                    getattr(context_wrapper, "tool_call_id", ""),
+                    arguments,
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
             async def execute_integrated_motion_preview(
                 _context,
                 raw_arguments: str,
@@ -1558,8 +1702,38 @@ class PrototypeAgentDriver:
                     )
                 )
 
+            preview_tool = next(
+                tool
+                for tool in offered_tools
+                if getattr(tool, "name", "")
+                == "preview_relative_effector_motion"
+            )
             offered_tools.extend(
                 [
+                    FunctionTool(
+                        name=PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+                        description=(
+                            "Prepare, authorize, and execute one requested "
+                            "relative end-effector translation, bounded "
+                            "controlled-frame yaw, or combined pose change "
+                            "as one call-scoped finite action. The host first "
+                            "creates a nonphysical preview. Only PREVIEW_READY "
+                            "with the exact opaque execution continuation can "
+                            "reach the existing motion approval policy and "
+                            "controller commit. Dependency, alignment, "
+                            "confirmation, preview, authorization, freshness, "
+                            "and controller failures return without motion. "
+                            "Use the separate preview tool only when the "
+                            "operator explicitly requests a nonphysical "
+                            "preview without execution."
+                        ),
+                        params_json_schema=preview_tool.params_json_schema,
+                        on_invoke_tool=perform_relative_effector_motion,
+                        strict_json_schema=True,
+                        needs_approval=(
+                            perform_relative_motion_needs_approval
+                        ),
+                    ),
                     FunctionTool(
                         name="execute_integrated_motion_preview",
                         description=(
@@ -1648,23 +1822,23 @@ class PrototypeAgentDriver:
                 "call, do not request that identical transition again in the "
                 "same run; inspect once and report nonconvergence if the "
                 "runtime still does not satisfy the dependency. For a "
-                "requested relative effector motion, create the nonphysical "
-                "preview first instead of inspecting or activating Providers "
-                "preemptively. If that Skill reports a dependency unavailable, "
-                "follow its typed required_next_tool once. Request only the "
-                "Integrated capability named by the continuation; Manager owns "
-                "selection and transitive activation of its declared Basic "
-                "dependency. Then create one fresh preview and "
-                "request execution of that exact preview; do not stop at "
-                "asking the user to construct a separate decision ID. The "
-                "execution tool itself provides the human approval boundary, "
-                "and approval immediately sends its one-shot commit trigger. "
-                "A PREVIEW_READY tool result is an incomplete workflow: call "
-                "its required_next_tool immediately with unchanged arguments "
-                "instead of answering the user. "
-                "If preview reports DEPENDENCY_UNAVAILABLE, follow its "
-                "required_next_tool and activation sequence; do not repeat the "
-                "same preview call while the controller is unreachable. "
+                "requested physical relative effector motion, call "
+                "perform_relative_effector_motion directly instead of "
+                "inspecting or activating Providers preemptively. The host "
+                "prepares a nonphysical preview inside that exact SDK call, "
+                "binds its opaque continuation to the call ID, applies the "
+                "existing approval policy, and only then executes it. If the "
+                "result reports a dependency unavailable, follow its typed "
+                "required_next_tool once. Request only the Integrated "
+                "capability named by the continuation; Manager owns selection "
+                "and transitive activation of its declared Basic dependency. "
+                "Then retry perform_relative_effector_motion once with the "
+                "original semantic request. Use "
+                "preview_relative_effector_motion only when the operator "
+                "explicitly requests a nonphysical preview without execution; "
+                "in that case do not follow its physical continuation. "
+                "A rejected physical-motion approval is final for the current "
+                "run; do not prepare the same action again. "
                 "Do not treat target-edit engagement as completed motion. "
                 "Report success only when the tool returns "
                 "physical_motion_completed=true; otherwise report its exact "
@@ -1761,15 +1935,24 @@ class PrototypeAgentDriver:
                 )
             if integrated_motion_skill is not None:
                 instructions += (
-                    " For a requested relative end-effector motion, create "
-                    "the nonphysical Integrated IK preview first; do not "
-                    "inspect or activate Providers preemptively. If the "
-                    "preview reports a cold dependency, follow its typed "
-                    "required_next_tool once and request only its Integrated "
-                    "capability. Manager owns selection and transitive "
-                    "activation of the declared Basic dependency. After that "
-                    "transition is ready, create a fresh preview and request "
-                    "execution of that exact preview. "
+                    " For a requested physical relative end-effector motion, "
+                    "call perform_relative_effector_motion directly; do not "
+                    "inspect or activate Providers preemptively. The host "
+                    "creates the nonphysical Integrated IK preview inside the "
+                    "same call, binds its opaque continuation to the exact SDK "
+                    "call ID, evaluates the existing motion authorization, and "
+                    "only then commits that preview. If the result reports a "
+                    "cold dependency, follow its typed required_next_tool once "
+                    "and request only its Integrated capability. Manager owns "
+                    "selection and transitive activation of the declared Basic "
+                    "dependency. After that transition is ready, retry "
+                    "perform_relative_effector_motion once with the original "
+                    "semantic request. Use preview_relative_effector_motion "
+                    "only when the operator explicitly requests a nonphysical "
+                    "preview without execution; then do not follow its "
+                    "physical continuation. "
+                    "A rejected physical-motion approval is final for the "
+                    "current run; do not prepare the same action again. "
                     "If Integrated is stopped, cold, or requires HOT "
                     "recovery, do not report that approval is needed and end "
                     "the run: call set_provider_residency immediately so its "
@@ -1777,9 +1960,9 @@ class PrototypeAgentDriver:
                     "If manual authorization is required, tell the operator "
                     "that approval immediately sends its one-shot commit "
                     "trigger. "
-                    "A PREVIEW_READY result is incomplete: call its "
-                    "required_next_tool immediately with unchanged arguments "
-                    "instead of answering the user. "
+                    "A PREVIEW_READY result from an explicitly requested raw "
+                    "preview remains nonphysical and must not be described as "
+                    "completed motion. "
                     "If preview reports DEPENDENCY_UNAVAILABLE, follow its "
                     "required_next_tool and activation sequence; do not repeat "
                     "the same preview call while the controller is unreachable. "
@@ -1788,7 +1971,7 @@ class PrototypeAgentDriver:
                     "approved HOT transition. Do this even when Manager says "
                     "the provider process is already running: HOT is the "
                     "controller recovery boundary that reacquires its Basic "
-                    "lease. After approval, create a fresh preview. "
+                    "lease. After approval, retry the prepared-action tool. "
                     "If preview asks ARM_MOUNT_CONFIRMATION_REQUIRED, ask its "
                     "exact y/n question. On yes retry the same request with "
                     "arm_mount_assumption=CONFIRMED_X_FORWARD_Z_UP; on no "
@@ -1935,9 +2118,9 @@ class PrototypeAgentDriver:
                 "when physical_motion_completed=true. Safe-home preempts "
                 "Integrated's Basic lease, so RECOVERY_REQUIRED afterward is "
                 "expected. On the next Integrated motion request, perform the "
-                "explicit approved Integrated HOT recovery and continue with "
-                "a fresh preview instead of treating recovery as a terminal "
-                "failure."
+                "explicit approved Integrated HOT recovery and retry "
+                "perform_relative_effector_motion instead of treating "
+                "recovery as a terminal failure."
             )
         if space_cognition_reinitializer is not None:
             instructions += (
@@ -2178,7 +2361,10 @@ class PrototypeAgentDriver:
                 {"label": "Provider", "value": provider_id},
                 {"label": "Requested state", "value": action},
             ]
-        elif tool_name == "execute_integrated_motion_preview":
+        elif tool_name in {
+            "execute_integrated_motion_preview",
+            PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+        }:
             direction = str(arguments.get("direction") or "unknown").upper()
             motion_intent = str(
                 arguments.get("motion_intent") or "NEW_RELATIVE_MOVE"
@@ -2376,19 +2562,20 @@ class PrototypeAgentDriver:
         item: Any,
     ) -> dict[str, Any]:
         canonical: dict[str, Any] | None = None
+        raw_item = item.raw_item
+        if hasattr(raw_item, "model_dump"):
+            raw = raw_item.model_dump(mode="json")
+        elif isinstance(raw_item, dict):
+            raw = raw_item
+        else:
+            raw = {
+                "call_id": getattr(raw_item, "call_id", None),
+                "arguments": getattr(raw_item, "arguments", {}),
+            }
         if (
             item.tool_name == "execute_integrated_motion_preview"
             and self.integrated_motion_skill is not None
         ):
-            raw_item = item.raw_item
-            if hasattr(raw_item, "model_dump"):
-                raw = raw_item.model_dump(mode="json")
-            elif isinstance(raw_item, dict):
-                raw = raw_item
-            else:
-                raw = {
-                    "arguments": getattr(raw_item, "arguments", {})
-                }
             raw_arguments = raw.get("arguments", {})
             if isinstance(raw_arguments, str):
                 try:
@@ -2404,7 +2591,31 @@ class PrototypeAgentDriver:
                         decoded.get("preview_id")
                     )
                 )
+        elif (
+            item.tool_name == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
+            and self._prepared_relative_motion is not None
+        ):
+            canonical = await (
+                self._prepared_relative_motion
+                .authorization_arguments_for_call(raw.get("call_id"))
+            )
         return self._approval_description(
             item,
             canonical_motion_arguments=canonical,
         )
+
+    async def discard_pending_prepared_action(self, item: Any) -> None:
+        if (
+            item.tool_name != PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
+            or self._prepared_relative_motion is None
+        ):
+            return
+        raw_item = item.raw_item
+        if hasattr(raw_item, "model_dump"):
+            raw = raw_item.model_dump(mode="json")
+            call_id = raw.get("call_id")
+        elif isinstance(raw_item, dict):
+            call_id = raw_item.get("call_id")
+        else:
+            call_id = getattr(raw_item, "call_id", None)
+        await self._prepared_relative_motion.discard_call(call_id)

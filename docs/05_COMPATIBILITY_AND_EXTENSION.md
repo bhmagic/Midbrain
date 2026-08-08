@@ -136,6 +136,17 @@ Agent adapter should:
    targets, timing, controller digests, and freshness checks from that pending
    host state immediately before execution.
 
+A compatible Agent adapter may reduce one mechanically determined
+preview-to-commit model round trip with a call-scoped prepared-action
+projection. It must prepare nonphysically, retain canonical state behind an
+opaque identifier, bind that state to the exact agent tool-call identity,
+evaluate the existing authorization policy after preparation, and fail closed
+if the binding is missing or changed. Only one explicitly configured
+continuation pair may be coalesced. Do not recursively interpret
+`required_next_tool`: lifecycle recovery, calibration activation,
+re-observation, replanning, user questions, and other branches retain their
+own owning workflow and authorization boundary.
+
 When a task-facing Provider declares dependencies in Manager configuration,
 the adapter requests that Provider once. Manager resolves, orders, and
 deduplicates the transitive dependency graph. An Agent may inspect a typed
