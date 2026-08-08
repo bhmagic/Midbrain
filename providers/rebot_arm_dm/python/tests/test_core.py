@@ -48,6 +48,83 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(diagnostics["command_frames"], 1)
         self.assertGreaterEqual(diagnostics["command_frames_per_s"], 0.0)
 
+    def test_feedback_deadline_retains_control_loop_jitter_margin(self):
+        backend = MotorBridgeBackend(self.config, "COM3", 921600)
+        diagnostics = backend.diagnostics()
+        self.assertEqual(diagnostics["feedback_cycle_timeout_ms"], 40.0)
+        self.assertEqual(diagnostics["feedback_rerequest_interval_ms"], 4.0)
+
+    def test_explicit_hot_recovery_requalifies_fresh_feedback_and_fences_lease(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        lease = controller.acquire_lease("integrated", 6000)
+        controller.state = ProviderState.FAULTED
+        controller.health = "FAULTED"
+        controller.last_error = "fresh feedback generation did not advance"
+
+        result = controller.recover_fault_to_gravity_float()
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(
+            controller.state,
+            ProviderState.SAFE_HOLD_GRAVITY_FLOAT,
+        )
+        self.assertEqual(controller.health, "HEALTHY")
+        self.assertIsNone(controller.last_error)
+        self.assertIsNone(controller.lease)
+        self.assertGreater(controller.fencing_generation, lease.fencing_generation)
+        self.assertEqual(controller.last_lease_event["event"], "REVOKED")
+        recovery = controller.snapshot()["loop"]["fault_recovery"]
+        self.assertEqual(recovery["attempt_count"], 1)
+        self.assertEqual(recovery["success_count"], 1)
+        self.assertEqual(recovery["failure_count"], 0)
+        self.assertGreaterEqual(backend.command_frame_count, 7)
+
+    def test_explicit_hot_recovery_rejects_old_feedback(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.feedback.observed_monotonic -= 1.0
+        controller.state = ProviderState.FAULTED
+        controller.health = "FAULTED"
+
+        result = controller.recover_fault_to_gravity_float()
+
+        self.assertFalse(result["recovered"])
+        self.assertEqual(result["status"], "waiting_for_fresh_feedback")
+        self.assertEqual(controller.state, ProviderState.FAULTED)
+        self.assertEqual(controller.health, "FAULTED")
+        recovery = controller.snapshot()["loop"]["fault_recovery"]
+        self.assertEqual(recovery["attempt_count"], 1)
+        self.assertEqual(recovery["success_count"], 0)
+        self.assertEqual(recovery["failure_count"], 1)
+
+    def test_explicit_hot_recovery_clears_fault_health_after_safe_float_fallback(self):
+        backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        controller.health = "FAULTED"
+        controller.last_error = "transient control output failed"
+
+        result = controller.recover_fault_to_gravity_float()
+
+        self.assertTrue(result["recovered"])
+        self.assertEqual(
+            result["status"],
+            "fresh_feedback_requalified_into_gravity_float",
+        )
+        self.assertEqual(controller.state, ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
+        self.assertEqual(controller.health, "HEALTHY")
+        self.assertIsNone(controller.last_error)
+
     def test_motorbridge_retries_one_windows_semaphore_timeout(self):
         backend = MotorBridgeBackend(self.config, "COM3", 921600)
         calls = 0
@@ -475,6 +552,12 @@ class CoreTests(unittest.TestCase):
         self.assertLess(elapsed, 0.1)
         self.assertTrue(cached["snapshot_delivery"]["cached"])
         self.assertEqual(cached["positions_rad"], fresh["positions_rad"])
+        self.assertEqual(cached["observed_at_us"], fresh["observed_at_us"])
+        self.assertGreater(cached["feedback_age_ms"], fresh["feedback_age_ms"])
+        self.assertEqual(
+            cached["feedback_timing"]["timestamp_semantics"],
+            "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+        )
 
     def setUp(self):
         self.config=configuration(); self.kin=RebotKinematics(self.config.model); self.dyn=RebotDynamics(self.config,self.kin)
@@ -560,11 +643,13 @@ class CoreTests(unittest.TestCase):
 
         class FakeMotor:
             def __init__(self,index):
-                self.index=index; self.state=None; self.requested=False; self.request_count=0
+                self.index=index; self.state=None; self.generation=0; self.requested=False; self.request_count=0
             def request_feedback(self):
                 self.requested=True; self.request_count+=1
             def get_state(self):
                 return self.state
+            def get_state_sample(self):
+                return None if self.state is None else (self.state,self.generation,0)
 
         class FakeController:
             instance=None
@@ -580,7 +665,7 @@ class CoreTests(unittest.TestCase):
                 self.poll_count+=1
                 for motor in self.motors:
                     if motor.requested:
-                        motor.state=FakeState(motor.index); motor.requested=False
+                        motor.state=FakeState(motor.index); motor.generation+=1; motor.requested=False
             def disable_all(self):
                 pass
             def shutdown(self):
@@ -602,11 +687,13 @@ class CoreTests(unittest.TestCase):
 
         class FakeMotor:
             def __init__(self,index):
-                self.index=index; self.state=None; self.requested=False; self.request_count=0
+                self.index=index; self.state=None; self.generation=0; self.requested=False; self.request_count=0
             def request_feedback(self):
                 self.requested=True; self.request_count+=1
             def get_state(self):
                 return self.state
+            def get_state_sample(self):
+                return None if self.state is None else (self.state,self.generation,0)
 
         class FakeController:
             instance=None
@@ -627,7 +714,7 @@ class CoreTests(unittest.TestCase):
                     if motor.index==6 and motor.request_count==1:
                         motor.requested=False
                         continue
-                    motor.state=FakeState(motor.index); motor.requested=False
+                    motor.state=FakeState(motor.index); motor.generation+=1; motor.requested=False
             def disable_all(self):
                 pass
             def shutdown(self):
@@ -638,9 +725,77 @@ class CoreTests(unittest.TestCase):
         fake_module=types.SimpleNamespace(Controller=FakeController,Mode=types.SimpleNamespace())
         with patch.dict(sys.modules,{'motorbridge':fake_module}):
             backend=MotorBridgeBackend(self.config,'COM3',921600); backend.connect(); feedback=backend.read()
-        self.assertEqual(FakeController.instance.poll_count,2)
+        self.assertGreaterEqual(FakeController.instance.poll_count,2)
         self.assertEqual(FakeController.instance.motors[6].request_count,2)
         self.assertTrue(np.all(np.isfinite(feedback.positions_rad)))
+
+    def test_motorbridge_rejects_cached_state_when_a_later_reply_is_dropped(self):
+        class FakeState:
+            def __init__(self,index):
+                self.pos=float(index); self.vel=0.0; self.torq=0.0; self.status_code=0
+
+        class FakeMotor:
+            def __init__(self,index):
+                self.index=index; self.state=None; self.generation=0; self.requested=False
+            def request_feedback(self):
+                self.requested=True
+            def get_state_sample(self):
+                return None if self.state is None else (self.state,self.generation,0)
+
+        class FakeController:
+            def __init__(self):
+                self.motors=[]; self.completed_cycles=0
+            @classmethod
+            def from_dm_serial(cls,port,baudrate):
+                return cls()
+            def add_damiao_motor(self,motor_id,feedback_id,motor_model):
+                motor=FakeMotor(len(self.motors)); self.motors.append(motor); return motor
+            def poll_feedback_once(self):
+                for motor in self.motors:
+                    if not motor.requested:
+                        continue
+                    if self.completed_cycles>=1 and motor.index==6:
+                        motor.requested=False
+                        continue
+                    motor.state=FakeState(motor.index); motor.generation+=1; motor.requested=False
+                if all(motor.generation>=1 for motor in self.motors):
+                    self.completed_cycles=1
+            def disable_all(self):
+                pass
+            def shutdown(self):
+                pass
+            def close(self):
+                pass
+
+        fake_module=types.SimpleNamespace(Controller=FakeController,Mode=types.SimpleNamespace())
+        with patch.dict(sys.modules,{'motorbridge':fake_module}):
+            backend=MotorBridgeBackend(self.config,'COM3',921600); backend.connect()
+            first=backend.read()
+            with self.assertRaisesRegex(RuntimeError,'gripper'):
+                backend.read()
+        self.assertEqual(first.feedback_generations,[1]*7)
+        self.assertEqual(backend.feedback_stale_rejection_count,1)
+
+    def test_controller_does_not_retain_feedback_after_a_failed_fresh_read(self):
+        class FailingBackend(SimulationBackend):
+            def __init__(self, config, gravity):
+                super().__init__(config, gravity)
+                self.fail = False
+            def read(self):
+                if self.fail:
+                    raise RuntimeError("fresh feedback unavailable")
+                return super().read()
+
+        backend=FailingBackend(self.config,self.dyn.calibrated_gravity_torque)
+        backend.connect()
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.feedback=backend.read()
+        backend.fail=True
+
+        with self.assertRaisesRegex(RuntimeError,"fresh feedback unavailable"):
+            controller._tick(time.monotonic())
+
+        self.assertIsNone(controller.feedback)
 
     def test_command_expiry_enters_gravity_float(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque); controller=ArmController(self.config,backend,self.dyn); controller.start(); controller.enable()
@@ -1409,6 +1564,113 @@ class FastIngressTests(unittest.TestCase):
             self.assertIs(controller.pending,envelope)
 
 class PlatformIsolationTests(unittest.TestCase):
+    def test_explicit_acquisition_timestamp_is_published_and_recorded(self):
+        from rebot_arm_dm_provider.fabric import PlatformPublisher
+
+        class RecordingHttp:
+            def __init__(self):
+                self.payload = None
+            def post(self, url, payload):
+                self.payload = payload
+                return {"accepted": True}
+
+        publisher = PlatformPublisher(
+            'robot_arm.rebot_dm',
+            'instance',
+            'boot',
+            None,
+            'http://fabric',
+        )
+        publisher.http = RecordingHttp()
+        publisher.publish(
+            'robot_arm.joint_state',
+            'physical_agent.robot_arm_joint_state',
+            {'positions_rad': [0.0] * 7},
+            'rebot_arm_base',
+            'calibration',
+            observed_at_us=123456,
+        )
+
+        self.assertEqual(publisher.http.payload['observed_at_us'], 123456)
+        self.assertEqual(
+            publisher.output_status('robot_arm.joint_state')['observed_at_us'],
+            123456,
+        )
+
+    def test_batch_boolean_acceptance_remains_compatible(self):
+        from rebot_arm_dm_provider.fabric import PlatformPublisher
+
+        class BooleanAcceptanceHttp:
+            def post(self, url, payload):
+                return {'accepted': True}
+
+        publisher = PlatformPublisher(
+            'robot_arm.rebot_dm',
+            'instance',
+            'boot',
+            None,
+            'http://fabric',
+        )
+        publisher.http = BooleanAcceptanceHttp()
+        observations = [
+            publisher.observation(
+                f'robot_arm.transforms.local.{index}',
+                'physical_agent.transform',
+                {'translation_m': [0.0, 0.0, 0.0]},
+                'rebot_arm_base',
+                'calibration',
+                observed_at_us=123456,
+            )
+            for index in range(2)
+        ]
+
+        publisher.publish_batch(observations, success_key='robot_arm.transforms.local')
+
+        self.assertEqual(
+            publisher.output_status('robot_arm.transforms.local')['observed_at_us'],
+            123456,
+        )
+
+    def test_slow_manager_request_does_not_block_transform_publication(self):
+        config=configuration(); kin=RebotKinematics(config.model); dyn=RebotDynamics(config,kin)
+        backend=SimulationBackend(config,dyn.calibrated_gravity_torque)
+        controller=ArmController(config,backend,dyn)
+        temporary=tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        service=ArmProviderService(
+            config,
+            controller,
+            kin,
+            Path(temporary.name)/'calibration.json',
+            '127.0.0.1',
+            0,
+            'http://manager',
+            'http://fabric',
+            False,
+            True,
+        )
+        manager_entered=threading.Event(); manager_release=threading.Event()
+        transform_published=threading.Event()
+
+        class BlockingManagerHttp:
+            def post(self, url, payload):
+                if url.startswith('http://manager'):
+                    manager_entered.set(); manager_release.wait(2.0); return {}
+                if url.endswith('/v1/observations/batch'):
+                    transform_published.set()
+                    return {'accepted': len(payload['observations'])}
+                return {'accepted': True}
+            def get(self, url):
+                return {'inhibited': False, 'owners': []}
+
+        service.publisher.http=BlockingManagerHttp()
+        try:
+            service.start()
+            self.assertTrue(manager_entered.wait(1.0))
+            self.assertTrue(transform_published.wait(1.0))
+        finally:
+            manager_release.set()
+            service.shutdown(False)
+
     def test_manager_failure_does_not_disable_fabric_publication(self):
         from rebot_arm_dm_provider.fabric import PlatformPublisher
 
@@ -1550,8 +1812,17 @@ class MidbrainAuditTests(unittest.TestCase):
         state = service._platform_state()
         self.assertIn('capability_readiness', state)
         self.assertIn('robot.motion.arm.basic', state['capability_readiness'])
+        self.assertIn('robot_arm.transforms.local', state['capability_readiness'])
+        self.assertFalse(state['capability_readiness']['robot_arm.transforms.local'])
         self.assertEqual(state['audited_midbrain_commit'], 'e226a09')
         self.assertFalse(state['manager_authority_lease_supported'])
+
+        now_us=time.time_ns()//1000
+        service.publisher._record_successful_output('robot_arm.joint_state',now_us)
+        service.publisher._record_successful_output('robot_arm.transforms.local',now_us)
+        ready=service._platform_state()['capability_readiness']
+        self.assertTrue(ready['robot_arm.joint_state'])
+        self.assertTrue(ready['robot_arm.transforms.local'])
 
     def test_manager_request_idempotence(self):
         service, controller = self.make_service()

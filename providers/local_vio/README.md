@@ -45,6 +45,12 @@ device identity, calibration revision, or camera/IMU extrinsics.
 
 RGB features and RGB-aligned depth are the primary correction source. The original raw grayscale ORB/PnP path always runs first. Circular local contrast normalization is only an additional candidate in dim or low-contrast frames and must materially outperform the raw result before selection.
 
+The Provider selects RGB and registered depth as a retained synchronized pair,
+not as two independent latest slots. Sensor capture timestamps qualify the
+pair; system timestamps remain the common ordering domain used by the visual
+and IMU estimator inputs. D2C processing latency is therefore never treated as
+camera motion or as capture-time skew.
+
 ### Infrared and native depth
 
 IR is used only when:

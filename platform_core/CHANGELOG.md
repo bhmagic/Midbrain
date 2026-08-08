@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Index transform observations at ingestion and resolve timestamped paths
+  without repeatedly decoding and sorting complete edge histories under the
+  Fabric lock. Batch publication now uses one write-lock acquisition while
+  preserving ordinary history and the 4096-sample per-edge transform bound.
+- Add optional bounded `wait_for_bracket_ms` behavior to the existing
+  `/v1/transform` route so capture-time consumers can wait on publication
+  events instead of polling. Requests without the parameter retain immediate
+  v0.3 behavior.
+
 - Add Manager-owned transitive Provider HOT dependencies with deterministic
   ordering, shared-dependency deduplication, cycle/unknown-ID rejection, and
   returned dependency provenance. Camera/arm consumers no longer enter HOT

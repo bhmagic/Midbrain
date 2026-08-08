@@ -106,6 +106,8 @@ class FemtoBoltProvider:
         self.data_route_sequence = 0
         self.last_data_route_publish_monotonic = 0.0
         self.latest_refs: dict[str, BufferRef] = {}
+        self.latest_rgbd_pair: Optional[tuple[BufferRef, BufferRef]] = None
+        self.latest_rgbd_sync_details: dict[str, Any] = {}
         self.latest_imu: dict[str, ImuSample] = {}
         self.readiness_details = self._empty_readiness()
 
@@ -614,12 +616,21 @@ class FemtoBoltProvider:
             if self.ir_calibration_valid:
                 self.stream_last_seen["ir_geometry"] = now
 
-        rgb = self.latest_refs.get("rgb")
-        depth = self.latest_refs.get("depth")
-        if rgb is not None and depth is not None:
-            delta = abs(self._ref_timestamp(rgb) - self._ref_timestamp(depth))
-            if delta <= self.args.rgbd_max_delta_us:
-                self.stream_last_seen["rgbd_sync"] = now
+        rgb_refs = reader.recent_refs(STREAM_COLOR)
+        depth_refs = reader.recent_refs(STREAM_DEPTH)
+        self.latest_rgbd_pair = self._newest_synchronized_pair(
+            rgb_refs,
+            depth_refs,
+            maximum_delta_us=self.args.rgbd_max_delta_us,
+        )
+        self.latest_rgbd_sync_details = self._rgbd_sync_details(
+            rgb_refs,
+            depth_refs,
+            pair=self.latest_rgbd_pair,
+            maximum_delta_us=self.args.rgbd_max_delta_us,
+        )
+        if self.latest_rgbd_pair is not None:
+            self.stream_last_seen["rgbd_sync"] = now
 
         self.readiness_details = {
             name: now - self.stream_last_seen.get(name, float("-inf")) <= 2.0
@@ -675,6 +686,109 @@ class FemtoBoltProvider:
             or sample.system_timestamp_us
             or sample.device_timestamp_us
         )
+
+    @classmethod
+    def _newest_synchronized_pair(
+        cls,
+        first_refs: list[BufferRef],
+        second_refs: list[BufferRef],
+        *,
+        maximum_delta_us: int,
+    ) -> Optional[tuple[BufferRef, BufferRef]]:
+        candidates: list[
+            tuple[tuple[int, int], BufferRef, BufferRef]
+        ] = []
+        for first in first_refs:
+            first_timestamp_us = cls._ref_timestamp(first)
+            if first_timestamp_us <= 0:
+                continue
+            for second in second_refs:
+                second_timestamp_us = cls._ref_timestamp(second)
+                if second_timestamp_us <= 0:
+                    continue
+                delta_us = abs(first_timestamp_us - second_timestamp_us)
+                if maximum_delta_us > 0 and delta_us > maximum_delta_us:
+                    continue
+                candidates.append(
+                    (
+                        (min(first_timestamp_us, second_timestamp_us), -delta_us),
+                        first,
+                        second,
+                    )
+                )
+        if not candidates:
+            return None
+        _, first, second = max(candidates, key=lambda item: item[0])
+        return first, second
+
+    @classmethod
+    def _nearest_synchronized_ref(
+        cls,
+        target: BufferRef,
+        candidates: list[BufferRef],
+        *,
+        maximum_delta_us: int,
+    ) -> Optional[BufferRef]:
+        target_timestamp_us = cls._ref_timestamp(target)
+        matched: list[tuple[tuple[int, int, int], BufferRef]] = []
+        for candidate in candidates:
+            candidate_timestamp_us = cls._ref_timestamp(candidate)
+            delta_us = abs(candidate_timestamp_us - target_timestamp_us)
+            if candidate_timestamp_us <= 0:
+                continue
+            if maximum_delta_us > 0 and delta_us > maximum_delta_us:
+                continue
+            exact_frame = int(candidate.frame_number == target.frame_number)
+            matched.append(
+                (
+                    (exact_frame, -delta_us, candidate_timestamp_us),
+                    candidate,
+                )
+            )
+        if not matched:
+            return None
+        return max(matched, key=lambda item: item[0])[1]
+
+    @classmethod
+    def _rgbd_sync_details(
+        cls,
+        rgb_refs: list[BufferRef],
+        depth_refs: list[BufferRef],
+        *,
+        pair: Optional[tuple[BufferRef, BufferRef]],
+        maximum_delta_us: int,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "maximum_delta_us": int(maximum_delta_us),
+            "retained_rgb_frames": len(rgb_refs),
+            "retained_depth_frames": len(depth_refs),
+            "synchronized": pair is not None,
+            "timestamp_selection": "global_then_system_then_device",
+        }
+        if pair is not None:
+            rgb, depth = pair
+            result.update(
+                {
+                    "rgb_frame_number": int(rgb.frame_number),
+                    "depth_frame_number": int(depth.frame_number),
+                    "timestamp_delta_us": int(
+                        cls._ref_timestamp(depth) - cls._ref_timestamp(rgb)
+                    ),
+                }
+            )
+        elif rgb_refs and depth_refs:
+            rgb = rgb_refs[-1]
+            depth = depth_refs[-1]
+            result.update(
+                {
+                    "newest_rgb_frame_number": int(rgb.frame_number),
+                    "newest_depth_frame_number": int(depth.frame_number),
+                    "newest_timestamp_delta_us": int(
+                        cls._ref_timestamp(depth) - cls._ref_timestamp(rgb)
+                    ),
+                }
+            )
+        return result
 
     def _publish_latest(self) -> None:
         reader = self.reader
@@ -907,10 +1021,14 @@ class FemtoBoltProvider:
                 )
             )
 
-        rgb = current_refs.get("rgb") or self.latest_refs.get("rgb")
-        depth = current_refs.get("depth") or self.latest_refs.get("depth")
-        if rgb is not None and depth is not None:
-            aligned_depth = current_refs.get("aligned_depth") or self.latest_refs.get("aligned_depth")
+        pair = self.latest_rgbd_pair
+        if pair is not None:
+            rgb, depth = pair
+            aligned_depth = self._nearest_synchronized_ref(
+                rgb,
+                reader.recent_refs(STREAM_ALIGNED_DEPTH),
+                maximum_delta_us=self.args.rgbd_max_delta_us,
+            )
             bundle = self._rgbd_bundle(rgb, depth, aligned_depth)
             bundle_key = (
                 rgb.generation,
@@ -1064,7 +1182,7 @@ class FemtoBoltProvider:
             except RuntimeError:
                 header = self.reader.header
         return {
-            "provider_version": "0.4.0",
+            "provider_version": "0.4.1",
             "device_name": header.device_name if header else None,
             "serial_number": header.device_serial if header else None,
             "sdk_version": header.sdk_version if header else None,
@@ -1366,7 +1484,7 @@ class FemtoBoltProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.4.0",
+                "provider_version": "0.4.1",
                 "native_pid": native_pid,
                 "mapping_name": self.args.mapping_name,
                 "last_error": self.last_error,
@@ -1408,6 +1526,7 @@ class FemtoBoltProvider:
                 },
                 "data_routes": self._rgbd_routes(),
                 "route_publish_error": self.route_publish_error,
+                "rgbd_synchronization": dict(self.latest_rgbd_sync_details),
                 "configured_features": self._configured_features(),
                 "calibration_revision": self.calibration_revision,
                 "canonical_device_id": (

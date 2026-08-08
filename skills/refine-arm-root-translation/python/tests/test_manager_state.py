@@ -214,6 +214,38 @@ def test_manager_store_rejects_profile_arm_revision_mismatch() -> None:
         asyncio.run(store.snapshot())
 
 
+def test_manager_store_treats_process_rpc_409_as_compare_and_swap_conflict() -> None:
+    class ConflictError(RuntimeError):
+        status_code = 409
+
+    class ConflictManager(FakeManager):
+        async def refine_workcell_calibration_translation(self, request: dict):
+            raise ConflictError("409 Conflict")
+
+    store = ManagerCompactAlignmentStore(
+        ConflictManager(),
+        profile=generic_effector_profile(),
+        arm_identity_source=generic_arm_identity,
+    )
+    snapshot = asyncio.run(store.snapshot())
+    proposed = copy.deepcopy(snapshot)
+    proposed["world_from_base"][0][3] += 0.004
+
+    applied = asyncio.run(
+        store.compare_and_swap(
+            expected_revision=0,
+            state=proposed,
+            refinement={
+                "schema": "midbrain.arm_root_translation_refinement",
+                "schema_version": 1,
+                "status": "TRANSLATION_UPDATE_READY",
+            },
+        )
+    )
+
+    assert not applied
+
+
 def test_manager_store_rejects_profile_arm_base_frame_mismatch() -> None:
     manager = FakeManager()
     manager.record["arm_base_frame"] = "different_arm_base"

@@ -26,7 +26,8 @@ does not belong in VLM prompts or arm-alignment mathematics.
    history. Zero FK and camera-pose extrapolation is allowed: wait a bounded
    time for a later sample, then fail closed if interpolation cannot be formed.
 3. Build a capture window that covers RGB/depth timestamp skew, the profile's
-   camera timing margin, and arm feedback age. Sample profile-defined FK poses
+   camera timing margin, and any feedback age required by the profile's declared
+   timestamp semantics. Sample profile-defined FK poses
    across that window. Transform the selected landmark's actual tool-frame
    coordinate through each pose and reject when the largest pairwise motion is
    over the configured limit, initially 5 mm. This automatically includes
@@ -107,7 +108,10 @@ does not belong in VLM prompts or arm-alignment mathematics.
 15. Apply an accepted update only through an atomic active-revision match. Keep
    one compact current state and bounded diagnostics; do not build a recursive
    parent-candidate chain. Manager may retain a bounded append-only activation
-   and rollback journal outside that active-state object.
+   and rollback journal outside that active-state object. Preserve a Manager
+   HTTP conflict across the external Skill process boundary and return the
+   normal non-applied stale-state result; do not turn compare-and-swap rejection
+   into an opaque Skill crash.
 
 If omitted, `sample_count` is one and `adoption_factor` is 1.0. An adoption
 factor of zero is observation-only and must not increment the active

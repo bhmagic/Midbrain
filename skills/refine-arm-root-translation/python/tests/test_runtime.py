@@ -12,7 +12,7 @@ from refine_arm_root_translation import TranslationRefinementSkill
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v2.json"
+PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v3.json"
 IDENTITIES = {
     "world_frame": "local_vio/epoch-1",
     "vio_session_epoch": "epoch-1",
@@ -24,7 +24,7 @@ IDENTITIES = {
     "arm_boot_id": "arm-boot",
     "arm_model_id": "rebot_arm_b601_dm",
     "arm_model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
-    "effector_profile_revision": "rebot-b601-dm-gripper-alignment-v2",
+    "effector_profile_revision": "rebot-b601-dm-gripper-alignment-v3",
 }
 
 

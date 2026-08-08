@@ -18,6 +18,17 @@ The prepared Base and Gripper geometry and reference renders originate from reBo
 
 The Provider can optionally use SAM2 and the OpenAI API during GUI-assisted mask initialization. Their code, model files, hosted services, and outputs remain subject to their respective licenses and service terms and are not relicensed by this repository.
 
+## MotorBridge integration patch
+
+The reBot Arm Basic Provider builds MotorBridge from reviewed upstream commit
+`e9ec70e455f5d37dd7170ad13532daf288759152` and applies the additive patch at
+`providers/rebot_arm_dm/third_party/motorbridge-state-sample.patch`. MotorBridge
+is distributed under the MIT License by its upstream contributors:
+<https://github.com/motorbridge/motorbridge>. The upstream license text is
+retained at `providers/rebot_arm_dm/third_party/MOTORBRIDGE_LICENSE.txt`. The
+external checkout and compiled artifacts remain ignored machine-local build
+state and are not bundled here.
+
 ## Audit checklist
 
 - Identify copied, adapted, generated, or vendored source and preserve its attribution and license text.

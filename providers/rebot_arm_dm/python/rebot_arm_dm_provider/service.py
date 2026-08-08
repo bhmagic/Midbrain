@@ -31,7 +31,7 @@ class ArmProviderService:
         self.allow_hardware_calibration=allow_hardware_calibration; self.simulation=simulation
         self.read_only=read_only
         self.shutdown_event=threading.Event(); self.httpd:ThreadingHTTPServer|None=None
-        self.publish_thread:threading.Thread|None=None; self.model_published=False
+        self.platform_threads:list[threading.Thread]=[]; self.model_published=False
         self.manager_registered=False
         self.motion_inhibited=False
         self.motion_inhibit_owners=[]
@@ -59,17 +59,30 @@ class ArmProviderService:
         except Exception:
             self.controller.close(force=True)
             raise
-        try:
-            self.publisher.register(self._platform_state(), self.control_url)
-            self.manager_registered = self.publisher.manager_url is not None
-        except Exception as exc:
-            print(f"[basic-platform] Manager registration deferred: {exc}")
-        self.publish_thread = threading.Thread(
-            target=self._publish_loop,
-            name="rebot-arm-publish",
-            daemon=True,
-        )
-        self.publish_thread.start()
+        self.platform_threads = [
+            threading.Thread(
+                target=self._registration_loop,
+                name="rebot-arm-manager-heartbeat",
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._motion_inhibit_loop,
+                name="rebot-arm-motion-inhibit",
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._joint_publish_loop,
+                name="rebot-arm-joint-publish",
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._transform_publish_loop,
+                name="rebot-arm-transform-publish",
+                daemon=True,
+            ),
+        ]
+        for thread in self.platform_threads:
+            thread.start()
 
     def wait(self) -> None:
         while not self.shutdown_event.wait(0.2): pass
@@ -103,6 +116,26 @@ class ArmProviderService:
         motion_allowed = bool(
             controller_ready and self.manager_registered and not self.motion_inhibited
         )
+        joint_output = self.publisher.output_status("robot_arm.joint_state")
+        transform_output = self.publisher.output_status("robot_arm.transforms.local")
+        joint_output_ready = bool(
+            controller_ready
+            and isinstance(joint_output["age_ms"], (int, float))
+            and float(joint_output["age_ms"]) <= 200.0
+        )
+        transform_output_ready = bool(
+            controller_ready
+            and isinstance(transform_output["age_ms"], (int, float))
+            and float(transform_output["age_ms"]) <= 200.0
+        )
+        output_timestamps = [
+            int(value)
+            for value in (
+                joint_output["observed_at_us"],
+                transform_output["observed_at_us"],
+            )
+            if isinstance(value, int)
+        ]
         lease = state.get("lease")
         state.update(
             {
@@ -114,16 +147,23 @@ class ArmProviderService:
                 "midbrain_motion_allowed": motion_allowed,
                 "capability_readiness": {
                     "robot.motion.arm.basic": motion_allowed,
-                    "robot_arm.joint_state": controller_ready,
+                    "robot_arm.joint_state": joint_output_ready,
+                    "robot_arm.transforms.local": transform_output_ready,
                     "robot_arm.gravity_float": controller_ready,
                     "robot_arm.control.impedance": motion_allowed,
+                },
+                "publication_outputs": {
+                    "robot_arm.joint_state": joint_output,
+                    "robot_arm.transforms.local": transform_output,
                 },
                 "held_control_authority_leases": [],
                 "provider_local_control_lease": lease,
                 "manager_authority_lease_supported": False,
                 "midbrain_contract_status": "RUNTIME_ALIGNED_AUTHORITY_API_PENDING",
                 "audited_midbrain_commit": "e226a09",
-                "last_successful_output_timestamp_us": state.get("observed_at_us"),
+                "last_successful_output_timestamp_us": (
+                    max(output_timestamps) if output_timestamps else None
+                ),
             }
         )
         return state
@@ -169,48 +209,46 @@ class ArmProviderService:
         )
         return {"status": "payload_updated", "payload": value}
 
-    def _publish_loop(self) -> None:
-        rate = float(self.configuration.model["control"]["fabric_rate_hz"])
-        transform_period = 1.0 / max(
-            float(self.configuration.model["control"].get("transform_rate_hz", 30.0)),
-            1.0,
-        )
+    def _registration_loop(self) -> None:
         next_register = 0.0
         next_heartbeat = 0.0
-        next_model = 0.0
-        next_transforms = 0.0
-        next_motion_inhibit = 0.0
-        while not self.shutdown_event.wait(max(0.002, 1.0 / rate)):
-            snapshot = self.controller.snapshot()
+        while not self.shutdown_event.is_set():
             now = time.monotonic()
-
             if not self.manager_registered and now >= next_register:
                 try:
                     self.publisher.register(self._platform_state(), self.control_url)
-                    self.manager_registered = True
-                except Exception:
-                    pass
+                    self.manager_registered = self.publisher.manager_url is not None
+                except Exception as exc:
+                    print(f"[basic-platform] Manager registration deferred: {exc}")
                 next_register = now + 2.0
-
             if now >= next_heartbeat:
                 try:
                     self.publisher.heartbeat(self._platform_state(), self.control_url)
-                    self.manager_registered = True
+                    self.manager_registered = self.publisher.manager_url is not None
                 except Exception:
                     self.manager_registered = False
                 next_heartbeat = now + 1.0
+            self.shutdown_event.wait(0.05)
 
-            if now >= next_motion_inhibit:
-                try:
-                    inhibit = self.publisher.motion_inhibit()
-                    self.motion_inhibited = bool(inhibit.get("inhibited", False))
-                    owners = inhibit.get("owners", [])
-                    self.motion_inhibit_owners = owners if isinstance(owners, list) else []
-                except Exception:
-                    self.manager_registered = False
-                self._enforce_platform_safety()
-                next_motion_inhibit = now + 0.2
+    def _motion_inhibit_loop(self) -> None:
+        while not self.shutdown_event.is_set():
+            try:
+                inhibit = self.publisher.motion_inhibit()
+                self.motion_inhibited = bool(inhibit.get("inhibited", False))
+                owners = inhibit.get("owners", [])
+                self.motion_inhibit_owners = owners if isinstance(owners, list) else []
+            except Exception:
+                self.manager_registered = False
+            self._enforce_platform_safety()
+            self.shutdown_event.wait(0.2)
 
+    def _joint_publish_loop(self) -> None:
+        rate = float(self.configuration.model["control"]["fabric_rate_hz"])
+        period = max(0.002, 1.0 / rate)
+        next_model = 0.0
+        while not self.shutdown_event.is_set():
+            snapshot = self.controller.snapshot()
+            now = time.monotonic()
             if now >= next_model:
                 try:
                     self.publisher.publish(
@@ -224,25 +262,31 @@ class ArmProviderService:
                 except Exception:
                     pass
                 next_model = now + 2.0
-
-            if "positions_rad" not in snapshot:
-                continue
-
-            try:
-                self.publisher.publish(
-                    "robot_arm.joint_state",
-                    "physical_agent.robot_arm_joint_state",
-                    snapshot,
-                    self.configuration.model["frames"]["base"],
-                    self.configuration.calibration_revision,
-                    200,
-                )
-            except Exception:
-                pass
-
-            if now >= next_transforms:
+            if "positions_rad" in snapshot:
                 try:
-                    observed_at = int(snapshot.get("observed_at_us", time.time_ns() // 1000))
+                    self.publisher.publish(
+                        "robot_arm.joint_state",
+                        "physical_agent.robot_arm_joint_state",
+                        snapshot,
+                        self.configuration.model["frames"]["base"],
+                        self.configuration.calibration_revision,
+                        200,
+                        int(snapshot["observed_at_us"]),
+                    )
+                except Exception:
+                    pass
+            self.shutdown_event.wait(period)
+
+    def _transform_publish_loop(self) -> None:
+        period = 1.0 / max(
+            float(self.configuration.model["control"].get("transform_rate_hz", 30.0)),
+            1.0,
+        )
+        while not self.shutdown_event.is_set():
+            snapshot = self.controller.snapshot()
+            if "positions_rad" in snapshot:
+                try:
+                    observed_at = int(snapshot["observed_at_us"])
                     observations = []
                     for transform in self.kinematics.public_transforms(snapshot["positions_rad"]):
                         transform["authority"] = "robot_arm.rebot_dm"
@@ -262,10 +306,13 @@ class ArmProviderService:
                                 observed_at,
                             )
                         )
-                    self.publisher.publish_batch(observations)
+                    self.publisher.publish_batch(
+                        observations,
+                        success_key="robot_arm.transforms.local",
+                    )
                 except Exception:
                     pass
-                next_transforms = now + transform_period
+            self.shutdown_event.wait(period)
 
     def handle_manager_request(self, body: dict[str, Any]) -> dict[str, Any]:
         action = str(body.get("action", "")).strip()
@@ -700,7 +747,7 @@ class ArmProviderService:
     def _handler_type(self):
         service=self
         class Handler(BaseHTTPRequestHandler):
-            server_version="RebotArmProvider/0.1.20"
+            server_version="RebotArmProvider/0.1.21"
             def log_message(self,format,*args):
                 # HTTP access lines are suppressed. Meaningful lifecycle and lease
                 # events are emitted explicitly by the controller/service.
@@ -759,9 +806,25 @@ class ArmProviderService:
                     if self.path=='/v1/control/hot':
                         if service.controller.state == ProviderState.DISCONNECTED:
                             service.controller.start()
+                        recovery = None
+                        if (
+                            service.controller.state == ProviderState.FAULTED
+                            or service.controller.health == "FAULTED"
+                        ):
+                            recovery = service.controller.recover_fault_to_gravity_float()
+                            if not recovery.get("recovered", False):
+                                return self._json(409,{
+                                    "status":"fault_recovery_pending",
+                                    "state":service.controller.state.value,
+                                    "recovery":recovery,
+                                })
                         if not service.read_only and service.controller.state == ProviderState.READ_ONLY:
                             service.controller.enable()
-                        return self._json(200,{"status":"hot","state":service.controller.state.value})
+                        return self._json(200,{
+                            "status":"hot",
+                            "state":service.controller.state.value,
+                            "fault_recovery":recovery,
+                        })
                     if self.path=='/v1/control/warm':
                         if service.controller.state in {ProviderState.DISCONNECTED, ProviderState.READ_ONLY}:
                             return self._json(200,{"status":"already_warm","success":True})

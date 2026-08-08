@@ -59,6 +59,7 @@ class FabricClient:
         at_us: int | None = None,
         max_extrapolation_us: int = 500_000,
         session_epoch: str | None = None,
+        wait_for_bracket_ms: int | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "from_frame": from_frame,
@@ -69,9 +70,15 @@ class FabricClient:
             params["at_us"] = at_us
         if session_epoch is not None:
             params["session_epoch"] = session_epoch
+        if wait_for_bracket_ms is not None:
+            params["wait_for_bracket_ms"] = max(0, int(wait_for_bracket_ms))
         response = await self._client.get(
             f"{self.base_url}/v1/transform",
             params=params,
+            timeout=max(
+                10.0,
+                (float(wait_for_bracket_ms or 0) / 1000.0) + 1.0,
+            ),
         )
         response.raise_for_status()
         return response.json()

@@ -40,6 +40,7 @@ class ProviderResetTests(unittest.TestCase):
         )
         self.assertEqual(provider._reference_timestamp(reference), 700)
         self.assertEqual(provider._sample_timestamp(sample), 701)
+        self.assertEqual(provider._visual_capture_timestamp(reference), 900)
 
     def test_session_reset_keeps_observation_sequence_monotonic(self) -> None:
         provider = self.make_provider()
@@ -185,30 +186,44 @@ class ProviderResetTests(unittest.TestCase):
         self.assertFalse(provider._fixed_rig_attestation_active())
         self.assertIsNone(provider.fixed_rig_attestation_skill_id)
 
-    def test_rgbd_copy_uses_provider_latest_refs_not_fabric_refs(self) -> None:
+    def test_rgbd_copy_matches_retained_capture_pair_not_independent_latest_refs(self) -> None:
         provider = object.__new__(LocalVioProvider)
         requested_streams = []
 
         class Reference:
-            def __init__(self, label: str, timestamp_us: int):
+            def __init__(
+                self,
+                label: str,
+                frame_number: int,
+                global_timestamp_us: int,
+                system_timestamp_us: int,
+            ):
                 self.label = label
-                self.timestamp_us = timestamp_us
+                self.frame_number = frame_number
+                self.global_timestamp_us = global_timestamp_us
+                self.system_timestamp_us = system_timestamp_us
 
             def to_dict(self) -> dict:
                 return {
                     "label": self.label,
-                    "frame_number": 100,
-                    "system_timestamp_us": self.timestamp_us,
+                    "frame_number": self.frame_number,
+                    "global_timestamp_us": self.global_timestamp_us,
+                    "system_timestamp_us": self.system_timestamp_us,
                 }
 
         class Reader:
-            def latest_ref(self, stream_kind: int):
+            def recent_refs(self, stream_kind: int):
                 requested_streams.append(stream_kind)
-                if stream_kind == STREAM_ALIGNED_DEPTH:
-                    return Reference("aligned", 1_000_000)
                 if stream_kind == STREAM_COLOR:
-                    return Reference("rgb", 1_001_000)
-                return None
+                    return [
+                        Reference("rgb-matched", 100, 1_001_000, 1_001_000),
+                        Reference("rgb-latest", 106, 1_300_000, 1_300_000),
+                    ]
+                if stream_kind == STREAM_ALIGNED_DEPTH:
+                    return [
+                        Reference("aligned", 100, 1_000_000, 1_300_000)
+                    ]
+                return []
 
         provider.reader = Reader()
         provider._read_depth_m = lambda reference: np.ones(
@@ -226,9 +241,9 @@ class ProviderResetTests(unittest.TestCase):
 
         self.assertEqual(
             requested_streams,
-            [STREAM_ALIGNED_DEPTH, STREAM_COLOR],
+            [STREAM_COLOR, STREAM_ALIGNED_DEPTH],
         )
-        self.assertEqual(rgb_ref["label"], "rgb")
+        self.assertEqual(rgb_ref["label"], "rgb-matched")
         self.assertEqual(aligned_ref["label"], "aligned")
         self.assertEqual(rgb.shape, (2, 2, 3))
         self.assertEqual(depth.shape, (2, 2))

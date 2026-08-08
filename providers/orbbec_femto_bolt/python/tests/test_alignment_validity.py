@@ -92,6 +92,130 @@ class AlignedDepthValidityTests(unittest.TestCase):
         self.assertEqual(result["valid_fraction"], 0.0)
 
 
+class RgbdPairingTests(unittest.TestCase):
+    @staticmethod
+    def _provider_module():
+        provider_path = Path(__file__).resolve().parents[2] / "provider.py"
+        spec = importlib.util.spec_from_file_location(
+            "orbbec_femto_bolt_provider_pairing_test",
+            provider_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load Orbbec Provider from {provider_path}")
+        provider_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(provider_module)
+        return provider_module
+
+    @staticmethod
+    def _reference(
+        *,
+        stream_kind: int,
+        frame_number: int,
+        generation: int,
+        global_timestamp_us: int,
+        system_timestamp_us: int,
+    ) -> BufferRef:
+        return BufferRef(
+            transport="windows_named_shared_memory",
+            mapping_name=r"Local\Test",
+            stream_kind=stream_kind,
+            stream_name=str(stream_kind),
+            pool_id="pool",
+            slot_id=generation,
+            generation=generation,
+            slot_offset=0,
+            payload_offset=0,
+            payload_bytes=2,
+            payload_capacity_bytes=2,
+            frame_number=frame_number,
+            host_qpc=1,
+            device_timestamp_us=global_timestamp_us - 100,
+            system_timestamp_us=system_timestamp_us,
+            global_timestamp_us=global_timestamp_us,
+            frame_type=0,
+            format=0,
+            format_name="Y16",
+            width=1,
+            height=1,
+            stride_bytes=2,
+            bytes_per_pixel=2,
+            depth_value_scale_mm=1.0,
+            flags=0,
+            metadata_mask=0,
+            frame_metadata={},
+            note="test",
+        )
+
+    def test_retained_pair_avoids_independent_latest_frame_race(self) -> None:
+        provider_class = self._provider_module().FemtoBoltProvider
+        matching_rgb = self._reference(
+            stream_kind=0,
+            frame_number=100,
+            generation=1,
+            global_timestamp_us=1_000_000,
+            system_timestamp_us=1_000_000,
+        )
+        newer_unmatched_rgb = self._reference(
+            stream_kind=0,
+            frame_number=106,
+            generation=2,
+            global_timestamp_us=1_300_000,
+            system_timestamp_us=1_300_000,
+        )
+        depth = self._reference(
+            stream_kind=1,
+            frame_number=94,
+            generation=3,
+            global_timestamp_us=1_001_000,
+            system_timestamp_us=1_028_000,
+        )
+
+        pair = provider_class._newest_synchronized_pair(
+            [matching_rgb, newer_unmatched_rgb],
+            [depth],
+            maximum_delta_us=50_000,
+        )
+
+        self.assertIsNotNone(pair)
+        assert pair is not None
+        self.assertEqual(pair[0].frame_number, 100)
+        self.assertEqual(pair[1].frame_number, 94)
+
+    def test_registered_depth_prefers_exact_rgb_frame_when_retained(self) -> None:
+        provider_class = self._provider_module().FemtoBoltProvider
+        rgb = self._reference(
+            stream_kind=0,
+            frame_number=100,
+            generation=1,
+            global_timestamp_us=1_000_000,
+            system_timestamp_us=1_000_000,
+        )
+        closer_wrong_frame = self._reference(
+            stream_kind=8,
+            frame_number=99,
+            generation=2,
+            global_timestamp_us=1_001_000,
+            system_timestamp_us=1_300_000,
+        )
+        exact_frame = self._reference(
+            stream_kind=8,
+            frame_number=100,
+            generation=3,
+            global_timestamp_us=1_020_000,
+            system_timestamp_us=1_320_000,
+        )
+
+        matched = provider_class._nearest_synchronized_ref(
+            rgb,
+            [closer_wrong_frame, exact_frame],
+            maximum_delta_us=50_000,
+        )
+
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        self.assertEqual(matched.frame_number, 100)
+
+
 class CalibrationPublicationTests(unittest.TestCase):
     def _provider(self):
         provider_path = Path(__file__).resolve().parents[2] / "provider.py"

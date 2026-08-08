@@ -601,7 +601,8 @@ void OrbbecNativeCamera::publishFrameSet(const std::shared_ptr<ob::FrameSet>& fr
                     publishVideoFrame(
                         alignedFrameset->depthFrame(),
                         StreamKind::AlignedDepth,
-                        "software D2C; depth resampled into color coordinates"
+                        "software D2C; depth resampled into color coordinates",
+                        frameset->depthFrame()
                     );
                 }
             }
@@ -718,7 +719,12 @@ void OrbbecNativeCamera::collectFrameMetadata(
     }
 }
 
-void OrbbecNativeCamera::publishVideoFrame(const std::shared_ptr<ob::Frame>& frame, StreamKind kind, const std::string& note) {
+void OrbbecNativeCamera::publishVideoFrame(
+    const std::shared_ptr<ob::Frame>& frame,
+    StreamKind kind,
+    const std::string& note,
+    const std::shared_ptr<ob::Frame>& captureTimestampSource
+) {
     if(!frame) {
         return;
     }
@@ -729,9 +735,10 @@ void OrbbecNativeCamera::publishVideoFrame(const std::shared_ptr<ob::Frame>& fra
         meta.streamKind = kind;
         meta.payloadKind = PayloadKind::RawFrame;
         meta.frameNumber = video->index();
-        meta.deviceTimestampUs = video->timeStampUs();
-        meta.systemTimestampUs = video->systemTimeStampUs();
-        meta.globalTimestampUs = video->globalTimeStampUs();
+        const auto timestampFrame = captureTimestampSource ? captureTimestampSource : frame;
+        meta.deviceTimestampUs = timestampFrame->timeStampUs();
+        meta.systemTimestampUs = timestampFrame->systemTimeStampUs();
+        meta.globalTimestampUs = timestampFrame->globalTimeStampUs();
         meta.frameType = static_cast<uint32_t>(video->type());
         meta.format = static_cast<uint32_t>(video->format());
         meta.formatName = formatName(video->format());

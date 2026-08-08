@@ -14,7 +14,8 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
+use tokio::time::{timeout, Duration, Instant};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 use uuid::Uuid;
@@ -23,6 +24,7 @@ const DEFAULT_HISTORY_PER_STREAM: usize = 256;
 const DEFAULT_TRANSFORM_HISTORY_PER_EDGE: usize = 4096;
 const DEFAULT_SYNC_MAX_DELTA_US: u64 = 50_000;
 const DEFAULT_TRANSFORM_MAX_EXTRAPOLATION_US: u64 = 100_000;
+const MAX_TRANSFORM_BRACKET_WAIT_MS: u64 = 30_000;
 const TRANSFORM_SCHEMA: &str = "physical_agent.transform";
 const SEMANTIC_SPHERE_SCENE_SCHEMA: &str = "physical_agent.arm_semantic_sphere_scene";
 const ARM_POINT_CLOUD_SCHEMA: &str = "physical_agent.arm_point_cloud";
@@ -174,13 +176,14 @@ struct TransformEdgeSummary {
     stale: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct TransformQuery {
     from_frame: String,
     to_frame: String,
     at_us: Option<u64>,
     max_extrapolation_us: Option<u64>,
     session_epoch: Option<String>,
+    wait_for_bracket_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -240,7 +243,7 @@ struct TransformPathStep {
     calibration_revision: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct TransformQueryResult {
     from_frame: String,
     to_frame: String,
@@ -278,17 +281,103 @@ struct SchemaDescriptor {
     description: &'static str,
 }
 
+#[derive(Debug)]
+struct StoredTransform {
+    observation: Observation,
+    data: TransformData,
+    authority: String,
+    insertion_id: u64,
+}
+
+#[derive(Default)]
+struct TransformAuthorityHistory {
+    static_samples: Vec<Arc<StoredTransform>>,
+    dynamic_samples: Vec<Arc<StoredTransform>>,
+}
+
+impl TransformAuthorityHistory {
+    fn is_empty(&self) -> bool {
+        self.static_samples.is_empty() && self.dynamic_samples.is_empty()
+    }
+
+    fn insert(&mut self, sample: Arc<StoredTransform>) {
+        let samples = if sample.data.is_static {
+            &mut self.static_samples
+        } else {
+            &mut self.dynamic_samples
+        };
+        let position = samples.partition_point(|current| {
+            current.observation.observed_at_us < sample.observation.observed_at_us
+                || (current.observation.observed_at_us == sample.observation.observed_at_us
+                    && current.insertion_id < sample.insertion_id)
+        });
+        samples.insert(position, sample);
+    }
+
+    fn remove(&mut self, sample: &StoredTransform) {
+        let samples = if sample.data.is_static {
+            &mut self.static_samples
+        } else {
+            &mut self.dynamic_samples
+        };
+        if let Some(position) = samples
+            .iter()
+            .position(|current| current.insertion_id == sample.insertion_id)
+        {
+            samples.remove(position);
+        }
+    }
+}
+
+#[derive(Default)]
+struct TransformEdgeHistory {
+    insertion_order: VecDeque<Arc<StoredTransform>>,
+    authorities: HashMap<String, TransformAuthorityHistory>,
+}
+
+impl TransformEdgeHistory {
+    fn len(&self) -> usize {
+        self.insertion_order.len()
+    }
+
+    fn insert(&mut self, sample: Arc<StoredTransform>, maximum_samples: usize) {
+        self.authorities
+            .entry(sample.authority.clone())
+            .or_default()
+            .insert(sample.clone());
+        self.insertion_order.push_back(sample);
+
+        while self.insertion_order.len() > maximum_samples {
+            let Some(evicted) = self.insertion_order.pop_front() else {
+                break;
+            };
+            let remove_authority =
+                if let Some(history) = self.authorities.get_mut(&evicted.authority) {
+                    history.remove(&evicted);
+                    history.is_empty()
+                } else {
+                    false
+                };
+            if remove_authority {
+                self.authorities.remove(&evicted.authority);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct FabricStore {
     latest: HashMap<String, Observation>,
     history: HashMap<String, VecDeque<Observation>>,
-    transforms: HashMap<TransformEdgeKey, VecDeque<Observation>>,
+    transforms: HashMap<TransformEdgeKey, TransformEdgeHistory>,
     accepted: u64,
+    next_transform_insertion_id: u64,
 }
 
 #[derive(Clone)]
 struct AppState {
     store: Arc<RwLock<FabricStore>>,
+    transform_updates: Arc<Notify>,
     history_per_stream: usize,
     transform_history_per_edge: usize,
 }
@@ -313,6 +402,7 @@ async fn main() -> Result<()> {
         .unwrap_or(DEFAULT_TRANSFORM_HISTORY_PER_EDGE);
     let state = AppState {
         store: Arc::new(RwLock::new(FabricStore::default())),
+        transform_updates: Arc::new(Notify::new()),
         history_per_stream,
         transform_history_per_edge,
     };
@@ -351,7 +441,8 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
             "stream_catalog",
             "timestamp_nearest_sync",
             "schema_catalog",
-            "timestamped_transform_graph"
+            "timestamped_transform_graph",
+            "event_driven_transform_bracket_wait"
         ]
     }))
 }
@@ -425,7 +516,13 @@ async fn publish_observation(
     State(state): State<AppState>,
     Json(observation): Json<Observation>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
-    let accepted = insert_observation(&state, observation).await?;
+    let mut store = state.store.write().await;
+    let (accepted, transform_accepted) =
+        insert_observation_locked(&state, &mut store, observation)?;
+    drop(store);
+    if transform_accepted {
+        state.transform_updates.notify_waiters();
+    }
     Ok((StatusCode::ACCEPTED, Json(json!({"accepted": accepted}))))
 }
 
@@ -434,18 +531,37 @@ async fn publish_batch(
     Json(batch): Json<ObservationBatch>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let mut accepted = 0usize;
+    let mut transform_accepted = false;
+    let mut store = state.store.write().await;
     for observation in batch.observations {
-        if insert_observation(&state, observation).await? {
-            accepted += 1;
+        match insert_observation_locked(&state, &mut store, observation) {
+            Ok((was_accepted, was_transform)) => {
+                if was_accepted {
+                    accepted += 1;
+                }
+                transform_accepted |= was_transform;
+            }
+            Err(error) => {
+                drop(store);
+                if transform_accepted {
+                    state.transform_updates.notify_waiters();
+                }
+                return Err(error);
+            }
         }
+    }
+    drop(store);
+    if transform_accepted {
+        state.transform_updates.notify_waiters();
     }
     Ok((StatusCode::ACCEPTED, Json(json!({"accepted": accepted}))))
 }
 
-async fn insert_observation(
+fn insert_observation_locked(
     state: &AppState,
+    store: &mut FabricStore,
     mut observation: Observation,
-) -> Result<bool, (StatusCode, Json<Value>)> {
+) -> Result<(bool, bool), (StatusCode, Json<Value>)> {
     if observation.stream.trim().is_empty() || observation.schema.trim().is_empty() {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -468,14 +584,14 @@ async fn insert_observation(
         validate_arm_semantic_assertions_observation(&observation)?;
     }
     observation.received_at = Some(Utc::now());
+    let is_transform = observation.schema == TRANSFORM_SCHEMA;
 
-    let mut store = state.store.write().await;
     if let Some(current) = store.latest.get(&observation.stream) {
         if current.provider_instance_id == observation.provider_instance_id
             && current.boot_id == observation.boot_id
             && observation.sequence <= current.sequence
         {
-            return Ok(false);
+            return Ok((false, false));
         }
     }
 
@@ -487,21 +603,28 @@ async fn insert_observation(
         history.pop_front();
     }
 
-    if observation.schema == TRANSFORM_SCHEMA {
-        let transform = parse_transform(&observation)?;
+    if is_transform {
+        let mut transform = parse_transform(&observation)?;
+        transform.rotation_xyzw = normalize_quat(transform.rotation_xyzw);
+        let authority = transform_authority(&observation, &transform);
         let key = TransformEdgeKey {
-            parent_frame: transform.parent_frame,
-            child_frame: transform.child_frame,
+            parent_frame: transform.parent_frame.clone(),
+            child_frame: transform.child_frame.clone(),
         };
+        let insertion_id = store.next_transform_insertion_id;
+        store.next_transform_insertion_id = store.next_transform_insertion_id.wrapping_add(1);
+        let sample = Arc::new(StoredTransform {
+            observation,
+            data: transform,
+            authority,
+            insertion_id,
+        });
         let edge_history = store.transforms.entry(key).or_default();
-        edge_history.push_back(observation);
-        while edge_history.len() > state.transform_history_per_edge {
-            edge_history.pop_front();
-        }
+        edge_history.insert(sample, state.transform_history_per_edge);
     }
 
     store.accepted += 1;
-    Ok(true)
+    Ok((true, is_transform))
 }
 
 fn validate_transform_observation(
@@ -1202,50 +1325,32 @@ async fn transform_catalog(State(state): State<AppState>) -> Json<Vec<TransformE
     let now = Utc::now();
     let mut result = Vec::new();
     for (key, history) in &store.transforms {
-        let mut by_authority: HashMap<String, Vec<(&Observation, TransformData)>> = HashMap::new();
-        for observation in history {
-            let Ok(data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
-                continue;
-            };
-            let authority = transform_authority(observation, &data);
-            by_authority
-                .entry(authority)
-                .or_default()
-                .push((observation, data));
-        }
-        for (authority, mut samples) in by_authority {
-            samples.sort_by_key(|(observation, _)| observation.observed_at_us);
-            let latest_static = samples
-                .iter()
-                .rev()
-                .find(|(_, data)| data.is_static)
-                .map(|(observation, _)| *observation);
-            let observation = if let Some(latest_static) = latest_static {
-                if !transform_observation_is_graph_usable(latest_static) {
+        for (authority, samples) in &history.authorities {
+            let sample = if let Some(latest_static) = samples.static_samples.last() {
+                if !transform_observation_is_graph_usable(&latest_static.observation) {
                     continue;
                 }
                 latest_static
-            } else if let Some((latest_dynamic, _)) = samples
+            } else if let Some(latest_dynamic) = samples
+                .dynamic_samples
                 .iter()
                 .rev()
-                .find(|(observation, _)| transform_observation_is_graph_usable(observation))
+                .find(|sample| transform_observation_is_graph_usable(&sample.observation))
             {
-                *latest_dynamic
+                latest_dynamic
             } else {
                 continue;
             };
-            let Ok(data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
-                continue;
-            };
+            let observation = &sample.observation;
             result.push(TransformEdgeSummary {
                 parent_frame: key.parent_frame.clone(),
                 child_frame: key.child_frame.clone(),
-                authority,
+                authority: authority.clone(),
                 provider_id: observation.provider_id.clone(),
                 provider_instance_id: observation.provider_instance_id.clone(),
                 latest_observed_at_us: observation.observed_at_us,
-                is_static: data.is_static,
-                session_epoch: data.session_epoch,
+                is_static: sample.data.is_static,
+                session_epoch: sample.data.session_epoch.clone(),
                 calibration_revision: observation.calibration_revision.clone(),
                 sample_count: history.len(),
                 stale: observation_is_stale(observation, &now),
@@ -1289,26 +1394,89 @@ async fn query_transform(
     let max_extrapolation_us = query
         .max_extrapolation_us
         .unwrap_or(DEFAULT_TRANSFORM_MAX_EXTRAPOLATION_US);
-    let store = state.store.read().await;
-    let mut adjacency: HashMap<String, Vec<GraphArc>> = HashMap::new();
-    let mut conflicts = Vec::new();
-
-    for (key, history) in &store.transforms {
-        match resolve_edge(
-            key,
-            history,
+    let wait_for_bracket_ms = query
+        .wait_for_bracket_ms
+        .unwrap_or(0)
+        .min(MAX_TRANSFORM_BRACKET_WAIT_MS);
+    if wait_for_bracket_ms == 0 {
+        return resolve_transform_once(
+            &state,
+            from_frame,
+            to_frame,
             at_us,
             max_extrapolation_us,
             query.session_epoch.as_deref(),
-        ) {
-            Ok(Some(edge)) => add_resolved_edge_to_graph(&mut adjacency, edge),
-            Ok(None) => {}
-            Err(authorities) => conflicts.push(json!({
-                "parent_frame": key.parent_frame,
-                "child_frame": key.child_frame,
-                "authorities": authorities,
-            })),
+        )
+        .await;
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(wait_for_bracket_ms);
+    loop {
+        let notified = state.transform_updates.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        let outcome = resolve_transform_once(
+            &state,
+            from_frame.clone(),
+            to_frame.clone(),
+            at_us,
+            max_extrapolation_us,
+            query.session_epoch.as_deref(),
+        )
+        .await;
+        if !transform_query_needs_bracket(&outcome) {
+            return outcome;
         }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return outcome;
+        }
+        if timeout(deadline - now, notified).await.is_err() {
+            return outcome;
+        }
+    }
+}
+
+fn transform_query_needs_bracket(
+    outcome: &Result<Json<TransformQueryResult>, (StatusCode, Json<Value>)>,
+) -> bool {
+    match outcome {
+        Ok(result) => result.path.iter().any(|step| step.extrapolated_by_us > 0),
+        Err((status, _)) => *status == StatusCode::NOT_FOUND,
+    }
+}
+
+async fn resolve_transform_once(
+    state: &AppState,
+    from_frame: String,
+    to_frame: String,
+    at_us: u64,
+    max_extrapolation_us: u64,
+    session_epoch: Option<&str>,
+) -> Result<Json<TransformQueryResult>, (StatusCode, Json<Value>)> {
+    let (resolved_edges, conflicts) = {
+        let store = state.store.read().await;
+        let mut resolved_edges = Vec::new();
+        let mut conflicts = Vec::new();
+        for (key, history) in &store.transforms {
+            match resolve_edge(key, history, at_us, max_extrapolation_us, session_epoch) {
+                Ok(Some(edge)) => resolved_edges.push(edge),
+                Ok(None) => {}
+                Err(authorities) => conflicts.push(json!({
+                    "parent_frame": key.parent_frame,
+                    "child_frame": key.child_frame,
+                    "authorities": authorities,
+                })),
+            }
+        }
+        (resolved_edges, conflicts)
+    };
+
+    let mut adjacency: HashMap<String, Vec<GraphArc>> = HashMap::new();
+    for edge in resolved_edges {
+        add_resolved_edge_to_graph(&mut adjacency, edge);
     }
 
     let mut queue = VecDeque::new();
@@ -1421,44 +1589,34 @@ fn add_resolved_edge_to_graph(adjacency: &mut HashMap<String, Vec<GraphArc>>, ed
 
 fn resolve_edge(
     key: &TransformEdgeKey,
-    history: &VecDeque<Observation>,
+    history: &TransformEdgeHistory,
     at_us: u64,
     max_extrapolation_us: u64,
     requested_session_epoch: Option<&str>,
 ) -> Result<Option<ResolvedEdge>, Vec<String>> {
-    let mut by_authority: HashMap<String, Vec<(&Observation, TransformData)>> = HashMap::new();
-    for observation in history {
-        let Ok(mut data) = serde_json::from_value::<TransformData>(observation.data.clone()) else {
-            continue;
-        };
-        if data.parent_frame != key.parent_frame || data.child_frame != key.child_frame {
-            continue;
-        }
-        if let Some(requested) = requested_session_epoch {
-            if data.session_epoch.as_deref() != Some(requested) && !data.is_static {
-                continue;
-            }
-        }
-        data.rotation_xyzw = normalize_quat(data.rotation_xyzw);
-        let authority = transform_authority(observation, &data);
-        by_authority
-            .entry(authority)
-            .or_default()
-            .push((observation, data));
-    }
-
     let mut candidates = Vec::new();
-    for (authority, mut samples) in by_authority {
-        samples.sort_by_key(|(observation, _)| observation.observed_at_us);
-        if let Some((latest_static, _)) = samples.iter().rev().find(|(_, data)| data.is_static) {
-            if !transform_observation_is_graph_usable(latest_static) {
+    for (authority, samples) in &history.authorities {
+        if let Some(latest_static) = samples.static_samples.last() {
+            if !transform_observation_is_graph_usable(&latest_static.observation) {
                 continue;
             }
+            candidates.push(resolved_from_sample(
+                key,
+                authority.clone(),
+                latest_static,
+                false,
+                0,
+            ));
+            continue;
         }
-        samples.retain(|(observation, _)| transform_observation_is_graph_usable(observation));
-        if let Some(candidate) =
-            resolve_authority_samples(key, authority, &samples, at_us, max_extrapolation_us)
-        {
+        if let Some(candidate) = resolve_authority_samples(
+            key,
+            authority.clone(),
+            &samples.dynamic_samples,
+            at_us,
+            max_extrapolation_us,
+            requested_session_epoch,
+        ) {
             candidates.push(candidate);
         }
     }
@@ -1475,100 +1633,85 @@ fn resolve_edge(
 fn resolve_authority_samples(
     key: &TransformEdgeKey,
     authority: String,
-    samples: &[(&Observation, TransformData)],
+    samples: &[Arc<StoredTransform>],
     at_us: u64,
     max_extrapolation_us: u64,
+    requested_session_epoch: Option<&str>,
 ) -> Option<ResolvedEdge> {
-    let latest_static = samples
-        .iter()
-        .rev()
-        .find(|(_, data)| data.is_static)
-        .cloned();
-    if let Some((observation, data)) = latest_static {
-        return Some(resolved_from_sample(
-            key,
-            authority,
-            observation,
-            &data,
-            false,
-            0,
-        ));
-    }
-
-    let dynamic: Vec<(&Observation, &TransformData)> = samples
-        .iter()
-        .filter(|(_, data)| !data.is_static)
-        .map(|(observation, data)| (*observation, data))
-        .collect();
-    if dynamic.is_empty() {
+    if samples.is_empty() {
         return None;
     }
 
-    let before = dynamic
+    let is_eligible = |sample: &&Arc<StoredTransform>| {
+        transform_observation_is_graph_usable(&sample.observation)
+            && requested_session_epoch
+                .is_none_or(|requested| sample.data.session_epoch.as_deref() == Some(requested))
+    };
+    let before_end = samples.partition_point(|sample| sample.observation.observed_at_us <= at_us);
+    let before = samples[..before_end]
         .iter()
         .rev()
-        .find(|(observation, _)| observation.observed_at_us <= at_us)
-        .copied();
-    let after = dynamic
+        .find(is_eligible)
+        .map(Arc::as_ref);
+    let after_start = samples.partition_point(|sample| sample.observation.observed_at_us < at_us);
+    let after = samples[after_start..]
         .iter()
-        .find(|(observation, _)| observation.observed_at_us >= at_us)
-        .copied();
+        .find(is_eligible)
+        .map(Arc::as_ref);
 
     match (before, after) {
-        (Some((left_obs, left)), Some((right_obs, right)))
-            if left_obs.observed_at_us != right_obs.observed_at_us
-                && left.session_epoch == right.session_epoch =>
+        (Some(left), Some(right))
+            if left.observation.observed_at_us != right.observation.observed_at_us
+                && left.data.session_epoch == right.data.session_epoch =>
         {
-            let span = right_obs.observed_at_us - left_obs.observed_at_us;
-            let alpha = (at_us - left_obs.observed_at_us) as f64 / span as f64;
+            let span = right.observation.observed_at_us - left.observation.observed_at_us;
+            let alpha = (at_us - left.observation.observed_at_us) as f64 / span as f64;
             let transform = RigidTransform {
                 translation_m: [
-                    lerp(left.translation_m[0], right.translation_m[0], alpha),
-                    lerp(left.translation_m[1], right.translation_m[1], alpha),
-                    lerp(left.translation_m[2], right.translation_m[2], alpha),
+                    lerp(
+                        left.data.translation_m[0],
+                        right.data.translation_m[0],
+                        alpha,
+                    ),
+                    lerp(
+                        left.data.translation_m[1],
+                        right.data.translation_m[1],
+                        alpha,
+                    ),
+                    lerp(
+                        left.data.translation_m[2],
+                        right.data.translation_m[2],
+                        alpha,
+                    ),
                 ],
-                rotation_xyzw: quat_slerp(left.rotation_xyzw, right.rotation_xyzw, alpha),
+                rotation_xyzw: quat_slerp(left.data.rotation_xyzw, right.data.rotation_xyzw, alpha),
             };
             Some(ResolvedEdge {
                 key: key.clone(),
                 transform_parent_from_child: transform,
                 authority,
-                provider_id: right_obs.provider_id.clone(),
-                provider_instance_id: right_obs.provider_instance_id.clone(),
+                provider_id: right.observation.provider_id.clone(),
+                provider_instance_id: right.observation.provider_instance_id.clone(),
                 observed_at_us: at_us,
                 interpolated: true,
                 extrapolated_by_us: 0,
-                session_epoch: right.session_epoch.clone(),
-                calibration_revision: right_obs.calibration_revision.clone(),
+                session_epoch: right.data.session_epoch.clone(),
+                calibration_revision: right.observation.calibration_revision.clone(),
             })
         }
-        (Some((observation, data)), _) => {
-            let delta = at_us.saturating_sub(observation.observed_at_us);
+        (Some(sample), _) => {
+            let delta = at_us.saturating_sub(sample.observation.observed_at_us);
             if delta > max_extrapolation_us {
                 return None;
             }
-            Some(resolved_from_sample(
-                key,
-                authority,
-                observation,
-                data,
-                false,
-                delta,
-            ))
+            Some(resolved_from_sample(key, authority, sample, false, delta))
         }
-        (None, Some((observation, data))) => {
-            let delta = observation.observed_at_us.saturating_sub(at_us);
+        (None, Some(sample)) => {
+            let delta = sample.observation.observed_at_us.saturating_sub(at_us);
             if delta > max_extrapolation_us {
                 return None;
             }
-            Some(resolved_from_sample(
-                key,
-                authority,
-                observation,
-                data,
-                false,
-                delta,
-            ))
+            Some(resolved_from_sample(key, authority, sample, false, delta))
         }
         (None, None) => None,
     }
@@ -1577,25 +1720,24 @@ fn resolve_authority_samples(
 fn resolved_from_sample(
     key: &TransformEdgeKey,
     authority: String,
-    observation: &Observation,
-    data: &TransformData,
+    sample: &StoredTransform,
     interpolated: bool,
     extrapolated_by_us: u64,
 ) -> ResolvedEdge {
     ResolvedEdge {
         key: key.clone(),
         transform_parent_from_child: RigidTransform {
-            translation_m: data.translation_m,
-            rotation_xyzw: normalize_quat(data.rotation_xyzw),
+            translation_m: sample.data.translation_m,
+            rotation_xyzw: sample.data.rotation_xyzw,
         },
         authority,
-        provider_id: observation.provider_id.clone(),
-        provider_instance_id: observation.provider_instance_id.clone(),
-        observed_at_us: observation.observed_at_us,
+        provider_id: sample.observation.provider_id.clone(),
+        provider_instance_id: sample.observation.provider_instance_id.clone(),
+        observed_at_us: sample.observation.observed_at_us,
         interpolated,
         extrapolated_by_us,
-        session_epoch: data.session_epoch.clone(),
-        calibration_revision: observation.calibration_revision.clone(),
+        session_epoch: sample.data.session_epoch.clone(),
+        calibration_revision: sample.observation.calibration_revision.clone(),
     }
 }
 
@@ -1830,6 +1972,37 @@ mod tests {
         }
     }
 
+    fn indexed_transform_history(
+        observations: impl IntoIterator<Item = Observation>,
+        maximum_samples: usize,
+    ) -> TransformEdgeHistory {
+        let mut history = TransformEdgeHistory::default();
+        for (insertion_id, observation) in observations.into_iter().enumerate() {
+            let mut data = parse_transform(&observation).expect("valid transform test fixture");
+            data.rotation_xyzw = normalize_quat(data.rotation_xyzw);
+            let authority = transform_authority(&observation, &data);
+            history.insert(
+                Arc::new(StoredTransform {
+                    observation,
+                    data,
+                    authority,
+                    insertion_id: insertion_id as u64,
+                }),
+                maximum_samples,
+            );
+        }
+        history
+    }
+
+    fn test_state() -> AppState {
+        AppState {
+            store: Arc::new(RwLock::new(FabricStore::default())),
+            transform_updates: Arc::new(Notify::new()),
+            history_per_stream: DEFAULT_HISTORY_PER_STREAM,
+            transform_history_per_edge: DEFAULT_TRANSFORM_HISTORY_PER_EDGE,
+        }
+    }
+
     fn approx(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-9, "{left} != {right}");
     }
@@ -1919,7 +2092,7 @@ mod tests {
             "motion_usable": false
         }));
         revoked.observed_at_us = now;
-        let history = VecDeque::from([active, revoked]);
+        let history = indexed_transform_history([active, revoked], 4096);
         let key = TransformEdgeKey {
             parent_frame: "world".to_string(),
             child_frame: "arm".to_string(),
@@ -1929,6 +2102,162 @@ mod tests {
             .expect("revocation should suppress without creating a conflict");
 
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn indexed_dynamic_history_interpolates_without_reordering_raw_retention() {
+        let mut right = transform_observation(json!({
+            "is_static": false,
+            "session_epoch": "session-1",
+            "translation_m": [2.0, 0.0, 0.0]
+        }));
+        right.sequence = 2;
+        right.observed_at_us = 1_200;
+        let mut left = transform_observation(json!({
+            "is_static": false,
+            "session_epoch": "session-1",
+            "translation_m": [0.0, 0.0, 0.0]
+        }));
+        left.observed_at_us = 1_000;
+
+        let history = indexed_transform_history([right, left], 4096);
+        let key = TransformEdgeKey {
+            parent_frame: "world".to_string(),
+            child_frame: "arm".to_string(),
+        };
+        let resolved = resolve_edge(&key, &history, 1_100, 100_000, Some("session-1"))
+            .expect("single authority")
+            .expect("interpolated transform");
+
+        assert!(resolved.interpolated);
+        assert_eq!(resolved.extrapolated_by_us, 0);
+        approx(resolved.transform_parent_from_child.translation_m[0], 1.0);
+        assert_eq!(history.insertion_order[0].observation.observed_at_us, 1_200);
+        assert_eq!(history.insertion_order[1].observation.observed_at_us, 1_000);
+    }
+
+    #[test]
+    fn indexed_history_evicts_by_original_global_insertion_order() {
+        let mut first = transform_observation(json!({"authority": "authority-a"}));
+        first.observed_at_us = 3_000;
+        let mut second = transform_observation(json!({"authority": "authority-b"}));
+        second.observed_at_us = 1_000;
+        let mut third = transform_observation(json!({"authority": "authority-a"}));
+        third.observed_at_us = 2_000;
+
+        let history = indexed_transform_history([first, second, third], 2);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.insertion_order[0].authority, "authority-b");
+        assert_eq!(history.insertion_order[1].authority, "authority-a");
+        assert_eq!(history.authorities["authority-a"].static_samples.len(), 1);
+    }
+
+    #[test]
+    fn indexed_history_preserves_authority_conflict_reporting() {
+        let first = transform_observation(json!({"authority": "authority-a"}));
+        let mut second = transform_observation(json!({"authority": "authority-b"}));
+        second.sequence = 2;
+        let history = indexed_transform_history([first, second], 4096);
+        let key = TransformEdgeKey {
+            parent_frame: "world".to_string(),
+            child_frame: "arm".to_string(),
+        };
+
+        let mut authorities = resolve_edge(&key, &history, current_time_us(), 100_000, None)
+            .expect_err("multiple authorities must conflict");
+        authorities.sort();
+
+        assert_eq!(authorities, ["authority-a", "authority-b"]);
+    }
+
+    #[tokio::test]
+    async fn raw_and_transform_histories_keep_independent_configured_bounds() {
+        let mut state = test_state();
+        state.history_per_stream = 2;
+        state.transform_history_per_edge = 3;
+        for sequence in 1..=4 {
+            let mut observation = transform_observation(json!({
+                "is_static": false,
+                "session_epoch": "session-1"
+            }));
+            observation.sequence = sequence;
+            observation.observed_at_us = 1_000 + sequence;
+            let mut store = state.store.write().await;
+            insert_observation_locked(&state, &mut store, observation)
+                .expect("insert transform observation");
+        }
+
+        let store = state.store.read().await;
+        let key = TransformEdgeKey {
+            parent_frame: "world".to_string(),
+            child_frame: "arm".to_string(),
+        };
+        assert_eq!(store.latest["transform.test"].sequence, 4);
+        assert_eq!(store.history["transform.test"].len(), 2);
+        assert_eq!(store.transforms[&key].len(), 3);
+        assert_eq!(store.history["transform.test"][0].sequence, 3);
+        assert_eq!(
+            store.transforms[&key].insertion_order[0]
+                .observation
+                .sequence,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn transform_query_waits_for_a_bracketing_sample_on_the_same_api() {
+        let state = test_state();
+        let mut left = transform_observation(json!({
+            "is_static": false,
+            "session_epoch": "session-1",
+            "translation_m": [0.0, 0.0, 0.0]
+        }));
+        left.observed_at_us = 1_000;
+        {
+            let mut store = state.store.write().await;
+            insert_observation_locked(&state, &mut store, left).expect("insert left sample");
+        }
+
+        let publisher_state = state.clone();
+        let publisher = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut right = transform_observation(json!({
+                "is_static": false,
+                "session_epoch": "session-1",
+                "translation_m": [2.0, 0.0, 0.0]
+            }));
+            right.sequence = 2;
+            right.observed_at_us = 1_200;
+            let mut store = publisher_state.store.write().await;
+            let (_, transform_accepted) =
+                insert_observation_locked(&publisher_state, &mut store, right)
+                    .expect("insert right sample");
+            drop(store);
+            if transform_accepted {
+                publisher_state.transform_updates.notify_waiters();
+            }
+        });
+
+        let result = query_transform(
+            State(state),
+            Query(TransformQuery {
+                from_frame: "arm".to_string(),
+                to_frame: "world".to_string(),
+                at_us: Some(1_100),
+                max_extrapolation_us: Some(1_000),
+                session_epoch: Some("session-1".to_string()),
+                wait_for_bracket_ms: Some(200),
+            }),
+        )
+        .await
+        .expect("bracketed transform");
+        publisher.await.expect("publisher task");
+
+        assert_eq!(result.path.len(), 1);
+        assert!(result.path[0].interpolated);
+        assert_eq!(result.path[0].extrapolated_by_us, 0);
+        approx(result.translation_m[0], 1.0);
     }
 
     #[test]

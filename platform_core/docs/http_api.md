@@ -272,6 +272,8 @@ available and is required when Manager cannot prove the provider sequence.
 | GET | `/v1/snapshot` | Latest observation for every stream |
 | GET | `/v1/streams` | Stream catalog with freshness and stale status |
 | GET | `/v1/sync` | Timestamp-nearest multi-stream observation bundle |
+| GET | `/v1/transforms` | Current graph-eligible transform-edge catalog |
+| GET | `/v1/transform` | Composed transform at a requested timestamp |
 
 Example synchronized query:
 
@@ -289,11 +291,27 @@ explicitly `motion_usable=false`, or
 explicitly declare `motion_usable=false`. The graph therefore cannot be
 bypassed by publishing the same parent/child edge on a `.candidate` stream.
 
+`GET /v1/transform` accepts `from_frame`, `to_frame`, optional `at_us`,
+optional `session_epoch`, optional `max_extrapolation_us`, and optional
+`wait_for_bracket_ms`. Without `wait_for_bracket_ms`, the route retains its
+immediate v0.3 behavior. With a positive value, Fabric waits on transform
+publication events until the requested path is exact or interpolated with
+zero extrapolation, an authority conflict is known, or the deadline expires.
+The wait is capped at 30 seconds. On deadline, Fabric returns the same current
+200 extrapolated result or 404 result that an immediate query would return;
+callers therefore retain the existing status and response contract.
+
+Fabric retains ordinary per-stream observation history independently from its
+transform-query index. The defaults remain 256 observations per stream and
+4096 transform observations per directed edge. Transform indexing changes
+query cost but does not replace the raw observation APIs, discard intermediate
+samples, lower publisher cadence, or alter insertion-order eviction.
+
 ## v0.3 additions
 
 - `GET /v1/schemas`
 - `GET /v1/transforms`
-- `GET /v1/transform?from_frame=...&to_frame=...&at_us=...&session_epoch=...`
+- `GET /v1/transform?from_frame=...&to_frame=...&at_us=...&session_epoch=...&wait_for_bracket_ms=...`
 - `POST /v1/providers/:id/request`
 - `GET /v1/motion/inhibit`
 - `POST /v1/motion/inhibit/acquire`

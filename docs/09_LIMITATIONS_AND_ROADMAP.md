@@ -44,9 +44,20 @@ remained approximately 98 ms and 408 ms ahead of available transform history,
 with one timestamped lookup returning 404. One HOT recovery succeeded earlier
 in the same run sequence, but later HOT requests did not prove that the
 underlying FK publisher or Fabric ingestion resumed. The refinement Skill
-correctly failed closed and applied no update.
+correctly failed closed and applied no update. Investigation then reproduced a
+Fabric-side amplification mechanism: every graph query decoded and sorted the
+full retained history for every edge while holding the shared store read lock,
+and multi-link arm queries could delay publication write-lock acquisition.
 
-Instrument raw joint/FK publication and Fabric edge ingestion separately with
+The current stabilization candidate indexes typed transform observations at
+ingestion, performs graph traversal after releasing the store lock, acquires
+the write lock once per publication batch, and lets the refinement Skill use
+the existing transform route's optional event-driven bracket wait. It preserves
+the ordinary 256-sample stream history, 4096 transform samples per edge,
+intermediate FK samples, and existing conflict/provenance behavior.
+
+Before considering the anomaly closed, instrument raw joint/FK publication
+and Fabric edge ingestion separately with
 provider boot/process identity, sequence, source timestamp, arrival timestamp,
 requested capture-window end, and explicit 404 reason. Then run a bounded
 ten-minute soak test with and without intervening motion. Do not weaken

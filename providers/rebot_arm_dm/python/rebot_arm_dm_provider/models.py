@@ -127,6 +127,18 @@ class ArmConfiguration:
         retry_delay_ms = float(
             self.model.get("control", {}).get("transient_serial_retry_delay_ms", -1.0)
         )
+        feedback_cycle_timeout_ms = float(
+            self.model.get("control", {}).get("feedback_cycle_timeout_ms", 40.0)
+        )
+        feedback_rerequest_interval_ms = float(
+            self.model.get("control", {}).get("feedback_rerequest_interval_ms", 4.0)
+        )
+        fault_recovery_feedback_max_age_ms = float(
+            self.model.get("control", {}).get(
+                "fault_recovery_feedback_max_age_ms",
+                100.0,
+            )
+        )
         mit_mode_confirmation_timeout_ms = int(
             self.model.get("control", {}).get("mit_mode_confirmation_timeout_ms", 0)
         )
@@ -151,6 +163,19 @@ class ArmConfiguration:
         if retry_delay_ms < 0.0 or retry_delay_ms > 20.0:
             raise ConfigurationError(
                 "transient_serial_retry_delay_ms must be in [0, 20]"
+            )
+        if not 1.0 <= feedback_cycle_timeout_ms <= 100.0:
+            raise ConfigurationError(
+                "feedback_cycle_timeout_ms must be in [1, 100]"
+            )
+        if not 0.5 <= feedback_rerequest_interval_ms < feedback_cycle_timeout_ms:
+            raise ConfigurationError(
+                "feedback_rerequest_interval_ms must be in [0.5, feedback_cycle_timeout_ms)"
+            )
+        if not feedback_cycle_timeout_ms <= fault_recovery_feedback_max_age_ms <= 1000.0:
+            raise ConfigurationError(
+                "fault_recovery_feedback_max_age_ms must be in "
+                "[feedback_cycle_timeout_ms, 1000]"
             )
         if not 20 <= mit_mode_confirmation_timeout_ms <= 1000:
             raise ConfigurationError(

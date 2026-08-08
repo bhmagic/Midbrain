@@ -8,6 +8,37 @@ param(
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "common.ps1")
+
+# Windows normally treats environment-variable names case-insensitively, but
+# MSBuild's child-process launcher rejects a process block containing both Path
+# and PATH. Normalize only that duplicate while preserving the effective value.
+$processPathEntries = @(
+    [Environment]::GetEnvironmentVariables("Process").GetEnumerator() |
+        Where-Object { $_.Key -ieq "Path" }
+)
+if ($processPathEntries.Count -gt 1) {
+    $processPathValue = (
+        $processPathEntries |
+            Where-Object { $_.Key -ceq "Path" } |
+            Select-Object -First 1
+    ).Value
+    if (-not $processPathValue) {
+        $processPathValue = $processPathEntries[0].Value
+    }
+    foreach ($entry in $processPathEntries) {
+        [Environment]::SetEnvironmentVariable(
+            [string]$entry.Key,
+            $null,
+            "Process"
+        )
+    }
+    [Environment]::SetEnvironmentVariable(
+        "Path",
+        [string]$processPathValue,
+        "Process"
+    )
+}
+
 $provider = Get-ProviderRoot
 $source = Join-Path $provider "native_host"
 $build = Join-Path $source "build"
@@ -25,12 +56,26 @@ foreach ($required in $requiredSdkFiles) {
     }
 }
 
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    throw "CMake is not on PATH."
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+if (-not $cmakeCommand) {
+    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vswhere) {
+        $vsInstall = & $vswhere -latest -products * -property installationPath
+        if ($vsInstall) {
+            $bundledCmake = Join-Path $vsInstall "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+            if (Test-Path -LiteralPath $bundledCmake) {
+                $cmakeCommand = Get-Item -LiteralPath $bundledCmake
+            }
+        }
+    }
 }
-
-if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
-    throw "Use Developer PowerShell for Visual Studio 2022."
+if (-not $cmakeCommand) {
+    throw "CMake is unavailable. Install CMake or the Visual Studio CMake component."
+}
+$cmakeExe = if ($cmakeCommand -is [System.IO.FileSystemInfo]) {
+    $cmakeCommand.FullName
+} else {
+    $cmakeCommand.Source
 }
 
 $extensionCandidates = @(
@@ -78,13 +123,13 @@ $arguments = @(
 
 Write-Host "Configuring CameraHost"
 Write-Host "Orbbec extensions: $extensionSource"
-& cmake @arguments
+& $cmakeExe @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "CMake configuration failed."
 }
 
 Write-Host "Building CameraHost Release"
-& cmake --build $build --config Release --parallel
+& $cmakeExe --build $build --config Release --parallel
 if ($LASTEXITCODE -ne 0) {
     throw "CameraHost build failed."
 }

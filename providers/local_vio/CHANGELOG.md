@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 - 2026-08-07
+
+- Matched RGB and registered-depth inputs from retained provider-local ring
+  slots instead of independently reading two latest slots across the D2C
+  processing boundary.
+- Used sensor capture timestamps to qualify visual synchronization while
+  retaining system time for camera/IMU estimator ordering.
+- Added frame, capture-delta, and system-delta evidence when no retained pair
+  satisfies the declared synchronization threshold.
+
 ## 0.4.0 - 2026-07-30
 
 - Added bounded fixed-rig stationary attestation for initialization without

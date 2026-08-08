@@ -81,6 +81,11 @@ class _Fabric:
                 "data": {
                     "velocities_rad_s": [0.0, 0.01, -0.01],
                     "feedback_age_ms": 2.0,
+                    "feedback_timing": {
+                        "timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+                        "freshness_verified": True,
+                        "timestamp_uncertainty_us": 50,
+                    },
                 },
             }
         if stream == "localization.vio.status":
@@ -161,6 +166,17 @@ class _Evidence:
             "title": kwargs["title"],
             "default_channel": kwargs["default_channel"],
         }
+
+
+class _RpcResponseSink:
+    def __init__(self) -> None:
+        self.payload = b""
+
+    def write(self, payload: bytes) -> None:
+        self.payload += payload
+
+    async def drain(self) -> None:
+        return None
 
 
 class _EndToEndManager:
@@ -408,6 +424,50 @@ class ArmRootTranslationRefinementAdapterTests(
                 visual_evidence_store=_Evidence(),
             )
 
+    async def test_host_rpc_preserves_manager_http_conflict(self) -> None:
+        class _ConflictResponse:
+            status_code = 409
+            text = '{"error":"active arm identity changed"}'
+
+            @staticmethod
+            def json():
+                return {"error": "active arm identity changed"}
+
+        class _ConflictManager(_Manager):
+            async def refine_workcell_calibration_translation(self, request):
+                error = RuntimeError("409 Conflict")
+                error.response = _ConflictResponse()
+                raise error
+
+        adapter = ArmRootTranslationRefinementAdapter(
+            skill_root=self.skill_root,
+            profile_path=self.profile_path,
+            manager=_ConflictManager(),
+            fabric=_Fabric(),
+            spatial=_Spatial(),
+            vlm_router=_Vlm(),
+            visual_evidence_store=_Evidence(),
+        )
+        sink = _RpcResponseSink()
+        process = SimpleNamespace(stdin=sink)
+
+        await adapter._answer_request(
+            process,
+            {
+                "id": 17,
+                "method": "manager.refine_workcell_translation",
+                "parameters": {"request": {}},
+            },
+        )
+
+        response = json.loads(sink.payload.decode("utf-8"))
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["status_code"], 409)
+        self.assertEqual(
+            response["error"]["response_body"]["error"],
+            "active arm identity changed",
+        )
+
     async def test_capture_uses_timestamped_fk_motion_window(self) -> None:
         adapter = self._adapter()
         with tempfile.TemporaryDirectory() as session:
@@ -491,6 +551,50 @@ class ArmRootTranslationRefinementAdapterTests(
         self.assertFalse(timing["fresh_for_feedback_age"])
         self.assertGreater(timing["observation_age_us"], 300_000)
 
+    def test_measured_acquisition_timestamp_does_not_double_count_feedback_age(
+        self,
+    ) -> None:
+        adapter = self._adapter()
+        adapter.profile["capture_motion_policy"][
+            "arm_transform_timestamp_semantics"
+        ] = "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE"
+        timing = adapter._arm_feedback_age(
+            {
+                "observed_at_us": time.time_ns() // 1000,
+                "data": {
+                    "feedback_age_ms": 12.0,
+                    "feedback_timing": {
+                        "timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+                        "freshness_verified": True,
+                        "timestamp_uncertainty_us": 75,
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(timing["age_us"], 0)
+        self.assertEqual(
+            timing["source"],
+            "JOINT_STATE_TIMESTAMP_IS_MEASURED_ACQUISITION",
+        )
+        self.assertEqual(timing["timestamp_uncertainty_us"], 75)
+
+    def test_measured_acquisition_profile_rejects_legacy_joint_timestamps(
+        self,
+    ) -> None:
+        adapter = self._adapter()
+        adapter.profile["capture_motion_policy"][
+            "arm_transform_timestamp_semantics"
+        ] = "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE"
+
+        with self.assertRaisesRegex(RuntimeError, "timing metadata"):
+            adapter._arm_feedback_age(
+                {
+                    "observed_at_us": time.time_ns() // 1000,
+                    "data": {"feedback_age_ms": 2.0},
+                }
+            )
+
     async def test_arm_identity_is_provider_and_model_driven(self) -> None:
         result = await self._adapter()._arm_identity({})
 
@@ -521,7 +625,7 @@ class ArmRootTranslationRefinementAdapterTests(
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
             profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v2.json"
+                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
             ),
             manager=manager,
             fabric=_EndToEndFabric(),
@@ -558,7 +662,7 @@ class ArmRootTranslationRefinementAdapterTests(
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
             profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v2.json"
+                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
             ),
             manager=_EndToEndManager(),
             fabric=_UnavailableLocalTransformFabric(),
@@ -617,7 +721,7 @@ class ArmRootTranslationRefinementAdapterTests(
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
             profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v2.json"
+                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
             ),
             manager=_EndToEndManager(),
             fabric=fabric,

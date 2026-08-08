@@ -21,7 +21,14 @@ class JointFeedback:
     temperatures_c: np.ndarray
     voltages_v: np.ndarray
     status_codes: list[str]
+    observed_at_us: int
     observed_monotonic: float
+    timestamp_uncertainty_us: int
+    per_joint_observed_at_us: list[int]
+    feedback_generations: list[int]
+    freshness_verified: bool
+    freshness_source: str
+    acquisition_duration_ms: float
 
 
 class HardwareBackend(Protocol):
@@ -102,9 +109,27 @@ class SimulationBackend:
     def read(self) -> JointFeedback:
         with self.lock:
             if not self.connected: raise RuntimeError("simulation backend is disconnected")
+            acquisition_started = time.monotonic()
             self.read_cycle_count += 1
             self._step()
-            return JointFeedback(self.position.copy(), self.velocity.copy(), self.torque.copy(), self.temperature.copy(), self.voltage.copy(), ["OK"]*7, time.monotonic())
+            observed_monotonic = time.monotonic()
+            observed_at_us = time.time_ns() // 1000
+            return JointFeedback(
+                positions_rad=self.position.copy(),
+                velocities_rad_s=self.velocity.copy(),
+                torques_nm=self.torque.copy(),
+                temperatures_c=self.temperature.copy(),
+                voltages_v=self.voltage.copy(),
+                status_codes=["OK"] * 7,
+                observed_at_us=observed_at_us,
+                observed_monotonic=observed_monotonic,
+                timestamp_uncertainty_us=0,
+                per_joint_observed_at_us=[observed_at_us] * 7,
+                feedback_generations=[self.read_cycle_count] * 7,
+                freshness_verified=True,
+                freshness_source="SIMULATION_STEP_COMPLETION",
+                acquisition_duration_ms=(observed_monotonic - acquisition_started) * 1000.0,
+            )
 
     def send_impedance(self, index, position, velocity, kp, kd, torque):
         with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="IMPEDANCE", position=position, velocity=velocity, kp=kp, kd=kd, torque=torque)
@@ -127,7 +152,7 @@ class SimulationBackend:
 
 
 class MotorBridgeBackend:
-    """Direct adapter for the MotorBridge 0.4.9 Python API."""
+    """Direct adapter for the reviewed MotorBridge 0.5.1 freshness API."""
 
     MODE_NAMES = {
         "IMPEDANCE": "MIT",
@@ -143,12 +168,20 @@ class MotorBridgeBackend:
         self.feedback_poll_count=0; self.command_frame_attempt_count=0; self.command_frame_count=0
         self.mode_switch_count=0; self.mode_switch_attempt_count=0; self.mode_switch_failure_count=0
         self.io_error_count=0; self.last_io_error=None; self.last_mode_switch_error=None
+        self.feedback_stale_rejection_count=0; self.last_missing_feedback_joint_names=[]
+        self.last_feedback_acquisition_duration_ms=0.0; self.last_feedback_timestamp_uncertainty_us=0
         control=configuration.model.get("control",{})
         self.transient_retry_limit=int(control.get("transient_serial_retry_count",0))
         self.transient_retry_delay_s=float(control.get("transient_serial_retry_delay_ms",0.0))/1000.0
         self.mit_mode_confirmation_timeout_ms=int(
             control.get("mit_mode_confirmation_timeout_ms",250)
         )
+        self.feedback_cycle_timeout_s=float(
+            control.get("feedback_cycle_timeout_ms",40.0)
+        )/1000.0
+        self.feedback_rerequest_interval_s=float(
+            control.get("feedback_rerequest_interval_ms",4.0)
+        )/1000.0
         self.transient_retry_attempt_count=0; self.transient_retry_recovery_count=0
         self.transient_retry_failure_count=0; self.last_transient_retry_error=None
 
@@ -161,12 +194,26 @@ class MotorBridgeBackend:
         if Controller is None or self.mode_enum is None:
             raise RuntimeError("MotorBridge must export Controller and Mode")
         if not hasattr(Controller,"from_dm_serial"):
-            raise RuntimeError("Controller.from_dm_serial is unavailable; MotorBridge 0.4.9 or later is required")
+            raise RuntimeError("Controller.from_dm_serial is unavailable; MotorBridge 0.5.1 or later is required")
+        Motor=getattr(module,"Motor",None)
+        if Motor is not None and not callable(getattr(Motor,"get_state_sample",None)):
+            raise RuntimeError(
+                "MotorBridge does not expose verified feedback generations and receive ages; "
+                "run providers/rebot_arm_dm/scripts/setup.ps1 -WithMotorBridge to install "
+                "the reviewed freshness build"
+            )
         self.controller=Controller.from_dm_serial(self.port,self.baudrate)
         self.started_monotonic=time.monotonic()
         self.motors=[]; self.active_modes=[None]*7
         for joint in self.configuration.joints:
             self.motors.append(self.controller.add_damiao_motor(joint.motor_id,joint.feedback_id,joint.motor_model))
+        if not all(callable(getattr(motor,"get_state_sample",None)) for motor in self.motors):
+            self.disconnect()
+            raise RuntimeError(
+                "MotorBridge does not expose verified feedback generations and receive ages; "
+                "run providers/rebot_arm_dm/scripts/setup.ps1 -WithMotorBridge to install "
+                "the reviewed freshness build"
+            )
 
     def disconnect(self) -> None:
         if self.controller is not None:
@@ -240,42 +287,101 @@ class MotorBridgeBackend:
 
     def read(self) -> JointFeedback:
         if self.controller is None: raise RuntimeError("MotorBridge is disconnected")
+        acquisition_started_monotonic=time.monotonic()
+        baselines=[]
+        try:
+            for motor in self.motors:
+                sample=motor.get_state_sample()
+                baselines.append(0 if sample is None else int(sample[1]))
+        except Exception as exc:
+            self.io_error_count += 1; self.last_io_error = str(exc); raise
 
-        # MotorBridge batches feedback reception: request the selected motors,
-        # then call poll_feedback_once() once to process the available replies.
-        # A request can occasionally be dropped by the serial/CAN bridge, so
-        # re-request only motors whose state is still missing instead of polling
-        # repeatedly without putting another request on the bus.
-        missing=list(range(len(self.motors)))
-        max_attempts=10
-        retry_delay_s=0.02
-        for attempt in range(max_attempts):
+        pending=set(range(len(self.motors)))
+        samples:dict[int,tuple[Any,int,int,int,float]]={}
+        deadline=acquisition_started_monotonic+self.feedback_cycle_timeout_s
+        next_request_at=acquisition_started_monotonic
+        while pending:
+            now=time.monotonic()
+            if now>=next_request_at:
+                try:
+                    for index in sorted(pending):
+                        self.feedback_request_count += 1
+                        self._with_transient_retry(self.motors[index].request_feedback)
+                    next_request_at=now+self.feedback_rerequest_interval_s
+                except Exception as exc:
+                    self.io_error_count += 1; self.last_io_error = str(exc); raise
             try:
-                for index in missing:
-                    self.feedback_request_count += 1
-                    self._with_transient_retry(self.motors[index].request_feedback)
                 self.feedback_poll_count += 1
                 self._with_transient_retry(self.controller.poll_feedback_once)
+                for index in list(pending):
+                    call_started_us=time.time_ns()//1000
+                    sample=self.motors[index].get_state_sample()
+                    call_completed_us=time.time_ns()//1000
+                    if sample is None or int(sample[1])<=baselines[index]:
+                        continue
+                    state,generation,age_us=sample
+                    receive_upper_us=call_completed_us-int(age_us)
+                    receive_lower_us=call_started_us-int(age_us)
+                    observed_at_us=(receive_lower_us+receive_upper_us)//2
+                    uncertainty_us=max(1,(receive_upper_us-receive_lower_us+1)//2)
+                    observed_monotonic=time.monotonic()-max(0,int(age_us))/1_000_000.0
+                    samples[index]=(state,int(generation),observed_at_us,uncertainty_us,observed_monotonic)
+                    pending.remove(index)
             except Exception as exc:
-                self.io_error_count += 1
-                self.last_io_error = str(exc)
-                raise
-            missing=[index for index in missing if self.motors[index].get_state() is None]
-            if not missing:
+                self.io_error_count += 1; self.last_io_error = str(exc); raise
+            if not pending:
                 break
-            if attempt+1<max_attempts:
-                time.sleep(retry_delay_s)
+            if time.monotonic()>=deadline:
+                self.feedback_stale_rejection_count += 1
+                self.last_missing_feedback_joint_names=[
+                    self.configuration.joints[index].name for index in sorted(pending)
+                ]
+                missing_text=", ".join(self.last_missing_feedback_joint_names)
+                raise RuntimeError(
+                    "fresh feedback generation did not advance within "
+                    f"{self.feedback_cycle_timeout_s * 1000.0:.1f} ms for: "
+                    f"{missing_text}"
+                )
+            time.sleep(min(0.001,max(0.0,deadline-time.monotonic())))
 
         positions=[]; velocities=[]; torques=[]; status=[]
-        for index,motor in enumerate(self.motors):
-            state=motor.get_state()
-            if state is None: raise RuntimeError(f"no feedback from {self.configuration.joints[index].name}")
+        per_joint_observed_at_us=[]; generations=[]
+        interval_start_us=[]; interval_end_us=[]; observed_monotonic_values=[]
+        for index in range(len(self.motors)):
+            state,generation,observed_at_us,uncertainty_us,observed_monotonic=samples[index]
             q,qd,tau=self._joint_from_motor(index,float(state.pos),float(state.vel),float(state.torq))
             positions.append(q); velocities.append(qd); torques.append(tau); status.append(str(state.status_code))
+            per_joint_observed_at_us.append(observed_at_us); generations.append(generation)
+            interval_start_us.append(observed_at_us-uncertainty_us)
+            interval_end_us.append(observed_at_us+uncertainty_us)
+            observed_monotonic_values.append(observed_monotonic)
         values=np.asarray(positions,dtype=float)
         if not np.all(np.isfinite(values)): raise RuntimeError("MotorBridge returned non-finite positions")
+        batch_start_us=min(interval_start_us); batch_end_us=max(interval_end_us)
+        observed_at_us=(batch_start_us+batch_end_us)//2
+        timestamp_uncertainty_us=max(1,(batch_end_us-batch_start_us+1)//2)
+        observed_monotonic=(min(observed_monotonic_values)+max(observed_monotonic_values))/2.0
+        acquisition_duration_ms=(time.monotonic()-acquisition_started_monotonic)*1000.0
         self.read_cycle_count += 1
-        return JointFeedback(values,np.asarray(velocities),np.asarray(torques),np.full(7,np.nan),np.full(7,np.nan),status,time.monotonic())
+        self.last_missing_feedback_joint_names=[]
+        self.last_feedback_acquisition_duration_ms=acquisition_duration_ms
+        self.last_feedback_timestamp_uncertainty_us=timestamp_uncertainty_us
+        return JointFeedback(
+            positions_rad=values,
+            velocities_rad_s=np.asarray(velocities),
+            torques_nm=np.asarray(torques),
+            temperatures_c=np.full(7,np.nan),
+            voltages_v=np.full(7,np.nan),
+            status_codes=status,
+            observed_at_us=observed_at_us,
+            observed_monotonic=observed_monotonic,
+            timestamp_uncertainty_us=timestamp_uncertainty_us,
+            per_joint_observed_at_us=per_joint_observed_at_us,
+            feedback_generations=generations,
+            freshness_verified=True,
+            freshness_source="MOTORBRIDGE_GENERATION_ADVANCED_WITH_RECEIVE_AGE",
+            acquisition_duration_ms=acquisition_duration_ms,
+        )
 
     def _motor(self,index:int):
         if index<0 or index>=len(self.motors): raise IndexError(index)
@@ -390,6 +496,13 @@ class MotorBridgeBackend:
             "read_cycles": self.read_cycle_count,
             "feedback_requests": self.feedback_request_count,
             "feedback_polls": self.feedback_poll_count,
+            "feedback_cycle_timeout_ms": self.feedback_cycle_timeout_s * 1000.0,
+            "feedback_rerequest_interval_ms": self.feedback_rerequest_interval_s * 1000.0,
+            "feedback_stale_rejections": self.feedback_stale_rejection_count,
+            "last_missing_feedback_joint_names": list(self.last_missing_feedback_joint_names),
+            "last_feedback_acquisition_duration_ms": self.last_feedback_acquisition_duration_ms,
+            "last_feedback_timestamp_uncertainty_us": self.last_feedback_timestamp_uncertainty_us,
+            "freshness_semantics": "EVERY_JOINT_GENERATION_MUST_ADVANCE_AFTER_BATCH_REQUEST",
             "command_frame_attempts": self.command_frame_attempt_count,
             "command_frames": self.command_frame_count,
             "mode_switches": self.mode_switch_count,

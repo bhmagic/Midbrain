@@ -27,7 +27,7 @@ from refine_arm_root_translation import (
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v2.json"
+PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v3.json"
 
 
 def detection_for(landmark: dict, *, confidence: float = 0.95) -> dict:

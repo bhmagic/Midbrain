@@ -185,7 +185,8 @@ class ManagerCompactAlignmentStore:
             )
         except Exception as error:
             response = getattr(error, "response", None)
-            if getattr(response, "status_code", None) == 409:
+            status_code = getattr(error, "status_code", None)
+            if status_code == 409 or getattr(response, "status_code", None) == 409:
                 return False
             raise
         if not isinstance(updated, dict):

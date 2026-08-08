@@ -25,7 +25,7 @@ IDENTITIES = {
     "arm_boot_id": "arm-boot",
     "arm_model_id": "rebot_arm_b601_dm",
     "arm_model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
-    "effector_profile_revision": "rebot-b601-dm-gripper-alignment-v2",
+    "effector_profile_revision": "rebot-b601-dm-gripper-alignment-v3",
 }
 
 

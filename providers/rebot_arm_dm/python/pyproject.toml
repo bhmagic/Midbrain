@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "physical-ai-rebot-arm-dm-provider"
-version = "0.1.20"
+version = "0.1.21"
 description = "reBot Arm DM Basic Controller and calibration utility"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
-hardware = ["motorbridge>=0.4.9"]
+hardware = ["motorbridge>=0.5.1"]
 test = ["pytest>=8.0"]
 
 [tool.setuptools]

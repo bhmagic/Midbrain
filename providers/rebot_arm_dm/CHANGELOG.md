@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.21 - 2026-08-07
+
+- Requires a fresh feedback generation from every motor after each batch request;
+  cached MotorBridge state can no longer satisfy a later control cycle.
+- Allows 40 ms for that fresh seven-motor batch so normal approximately 16 ms
+  acquisition retains bounded Windows scheduling margin under concurrent vision
+  load.
+- Makes Manager `HOT` an explicit fault-recovery transition: Basic requires
+  recent generation-verified feedback, fences prior control authority, and
+  restores gravity float rather than remaining permanently faulted after a
+  transient feedback miss.
+- Publishes joint state and local FK at the measured feedback-acquisition estimate
+  with per-joint generation, timestamp uncertainty, and acquisition telemetry.
+- Separates Manager heartbeat, motion-inhibit polling, joint publication, and FK
+  publication so a slow control-plane request cannot stall transform output.
+
 This file records release-level outcomes. Historical entries may use the
 device or Integrated aliases current at the time; use the
 [command terminology map](README.md#command-terminology) for implementation

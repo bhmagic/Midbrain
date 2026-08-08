@@ -42,7 +42,9 @@ endpoint replacement, keepalive, and mode-transition behavior.
 Basic owns a Provider-local Python environment at
 `providers/rebot_arm_dm/.venv`. Create it with
 `scripts/setup.ps1 -WithMotorBridge`; it is not shared with Integrated and is
-not committed to Git.
+not committed to Git. Hardware setup builds the pinned reviewed MotorBridge
+source with the tracked additive feedback-generation/receive-age patch; Basic
+fails closed if that API is absent.
 
 Setup seeds missing machine-local model, calibration, and calibration-collision
 files from `config_templates`. Active files under `config` are installation
@@ -62,8 +64,15 @@ Basic owns:
 - command-schema, joint, rate, stiffness, damping, effort, and deadline checks;
 - fenced lease acquisition, renewal, expiry, and revocation;
 - calibrated arm and declared-payload gravity feed-forward;
-- gravity-float, fault response, and safe-home sequencing; and
+- gravity-float, explicit Manager `HOT` fault requalification, and safe-home
+  sequencing; and
 - bounded calibration primitives and machine-local calibration output.
+
+A control fault never restores motion authority automatically. A later Manager
+`HOT` request may recover only after Basic has received a recent complete
+generation-verified joint batch. Recovery fences any earlier lease and enters
+powered gravity float; a higher-level controller must acquire new authority
+before it can move the arm again.
 
 Basic exposes motor primitives and hard safety enforcement. The Integrated
 Provider owns reviewed Cartesian profiles, path previews, semantic-scene

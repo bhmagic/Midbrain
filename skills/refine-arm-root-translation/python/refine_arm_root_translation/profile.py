@@ -73,6 +73,17 @@ def validate_effector_profile(value: Any) -> dict[str, Any]:
     capture_motion = value.get("capture_motion_policy")
     if not isinstance(capture_motion, dict):
         raise ValueError("capture_motion_policy must be an object")
+    timestamp_semantics = capture_motion.get(
+        "arm_transform_timestamp_semantics",
+        "SNAPSHOT_TIME_WITH_FEEDBACK_AGE",
+    )
+    if timestamp_semantics not in {
+        "SNAPSHOT_TIME_WITH_FEEDBACK_AGE",
+        "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+    }:
+        raise ValueError(
+            "capture_motion_policy arm_transform_timestamp_semantics is invalid"
+        )
     for field in (
         "maximum_landmark_motion_m",
         "additional_camera_timing_margin_us",

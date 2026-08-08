@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.rebot_dm",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "display_name": "reBot Arm DM Basic Controller",
   "manager_ids": ["robot_arm.rebot_dm"],
   "ui": {
@@ -45,7 +45,9 @@
     "robot_arm.serial.transient_semaphore_retry",
     "robot_arm.serial.transient_device_command_retry",
     "robot_arm.control.early_mit_mode_bridge",
-    "robot_arm.control.physical_pos_tor_peak_envelope"
+    "robot_arm.control.physical_pos_tor_peak_envelope",
+    "robot_arm.feedback.generation_verified",
+    "robot_arm.control.explicit_hot_fault_recovery"
   ],
   "published_streams": [
     "robot_arm.model",
@@ -64,7 +66,8 @@
     "numpy": ">=1.26",
     "motorbridge": {
       "required_for_hardware": true,
-      "minimum_version": "0.4.9",
+      "minimum_version": "0.5.1",
+      "required_features": ["state_sample_generation_age"],
       "optional_in_simulation": true
     }
   },
@@ -93,6 +96,8 @@
     "global_motion_inhibit": "BLOCK_NEW_OPERATIONAL_LEASES_RENEWS_AND_COMMANDS; REVOKE_ACTIVE_LEASE",
     "motor_endpoint_output": "CHANGED_ENDPOINT_IMMEDIATE; UNCHANGED_POS_VEL_POS_TOR_AT_10HZ",
     "transient_serial_retry": "ONE_OS_ERROR_121_OR_22_RETRY_AFTER_5MS; REPEATED_FAILURE_FAULTS",
+    "feedback_batch_deadline_ms": 40,
+    "fault_recovery": "EXPLICIT_MANAGER_HOT_REQUIRES_RECENT_GENERATION_VERIFIED_FEEDBACK; FENCES_PRIOR_LEASE; ENTERS_GRAVITY_FLOAT; NEVER_REPLAYS_MOTION",
     "physical_pos_tor_caps": "J1_J6_UP_TO_CONFIGURED_TMAX; J7_RATIO_0.2",
     "mode_switch_support": "CTRL_MODE_WRITE_THEN_EARLY_MIT_FRAME_THEN_REGISTER_CONFIRMATION_THEN_CONFIRMED_MIT_FRAME"
   },
@@ -124,5 +129,5 @@
     "provider_local_fencing": true,
     "full_physical_control_contract": false
   },
-  "notes": "0.1.20 adds fenced tool-payload gravity compensation, fast dedicated POS_VEL caps, motor-side endpoint keepalive semantics, and one bounded Windows semaphore-timeout retry; existing tracking-effort and torque limits remain active."
+  "notes": "0.1.21 requires per-motor feedback generations and receive ages, retains a bounded 40 ms fresh-batch scheduling margin, supports explicit Manager HOT recovery into gravity float with prior authority fenced, publishes joint/FK observations at measured acquisition time, and isolates Manager, joint-state, and transform publication workers."
 }

@@ -373,12 +373,15 @@ class LocalVioProvider:
                 )
                 if isinstance(ir_reference, dict) and isinstance(native_depth_reference, dict):
                     ir_time = self._reference_timestamp(ir_reference)
-                    depth_time = self._reference_timestamp(native_depth_reference)
                     tolerance = int(getattr(self.args, "ir_sync_tolerance_us", 8_000))
-                    rgb_time = int(timestamp_us)
+                    ir_capture_time = self._visual_capture_timestamp(ir_reference)
+                    depth_capture_time = self._visual_capture_timestamp(
+                        native_depth_reference
+                    )
+                    rgb_capture_time = self._visual_capture_timestamp(rgb_reference)
                     if (
-                        abs(ir_time - depth_time) <= tolerance
-                        and abs(ir_time - rgb_time) <= tolerance
+                        abs(ir_capture_time - depth_capture_time) <= tolerance
+                        and abs(ir_capture_time - rgb_capture_time) <= tolerance
                     ):
                         ir_gray = self._read_ir_u8(ir_reference)
                         ir_depth_m = self._read_depth_m(native_depth_reference)
@@ -423,33 +426,38 @@ class LocalVioProvider:
         *,
         maximum_delta_us: int,
     ) -> tuple[dict[str, Any], dict[str, Any], np.ndarray, np.ndarray]:
-        """Copy the newest provider-local RGB-D pair before its ring recycles."""
+        """Copy the newest retained synchronized RGB-D pair before recycling."""
 
         reader = self._require_reader()
         last_error: Exception | None = None
         for _ in range(4):
             try:
-                aligned_buffer_ref = reader.latest_ref(
-                    STREAM_ALIGNED_DEPTH
+                rgb_refs = reader.recent_refs(STREAM_COLOR)
+                aligned_refs = reader.recent_refs(STREAM_ALIGNED_DEPTH)
+                pair = self._newest_synchronized_rgbd_pair(
+                    rgb_refs,
+                    aligned_refs,
+                    maximum_delta_us=maximum_delta_us,
                 )
-                if aligned_buffer_ref is None:
+                if pair is None:
                     raise RuntimeError(
-                        "shared memory has no aligned-depth frame"
+                        self._rgbd_pair_error(
+                            rgb_refs,
+                            aligned_refs,
+                            maximum_delta_us=maximum_delta_us,
+                        )
                     )
+                rgb_buffer_ref, aligned_buffer_ref = pair
                 aligned_reference = aligned_buffer_ref.to_dict()
                 depth_m = self._read_depth_m(aligned_reference)
-
-                rgb_buffer_ref = reader.latest_ref(STREAM_COLOR)
-                if rgb_buffer_ref is None:
-                    raise RuntimeError("shared memory has no RGB frame")
                 rgb_reference = rgb_buffer_ref.to_dict()
                 rgb = self._read_rgb(rgb_reference)
             except RuntimeError as error:
                 last_error = error
                 continue
 
-            rgb_timestamp_us = self._reference_timestamp(rgb_reference)
-            aligned_timestamp_us = self._reference_timestamp(
+            rgb_timestamp_us = self._visual_capture_timestamp(rgb_reference)
+            aligned_timestamp_us = self._visual_capture_timestamp(
                 aligned_reference
             )
             if min(rgb_timestamp_us, aligned_timestamp_us) <= 0:
@@ -471,6 +479,69 @@ class LocalVioProvider:
         raise RuntimeError(
             "could not copy a fresh provider-local synchronized RGB-D pair: "
             f"{last_error}"
+        )
+
+    @classmethod
+    def _newest_synchronized_rgbd_pair(
+        cls,
+        rgb_refs: list[Any],
+        aligned_refs: list[Any],
+        *,
+        maximum_delta_us: int,
+    ) -> tuple[Any, Any] | None:
+        candidates: list[tuple[tuple[int, int, int], Any, Any]] = []
+        for aligned in aligned_refs:
+            aligned_dict = aligned.to_dict()
+            aligned_timestamp_us = cls._visual_capture_timestamp(aligned_dict)
+            if aligned_timestamp_us <= 0:
+                continue
+            for rgb in rgb_refs:
+                rgb_dict = rgb.to_dict()
+                rgb_timestamp_us = cls._visual_capture_timestamp(rgb_dict)
+                if rgb_timestamp_us <= 0:
+                    continue
+                delta_us = abs(aligned_timestamp_us - rgb_timestamp_us)
+                if maximum_delta_us > 0 and delta_us > maximum_delta_us:
+                    continue
+                exact_frame = int(
+                    int(rgb_dict.get("frame_number", -1))
+                    == int(aligned_dict.get("frame_number", -2))
+                )
+                candidates.append(
+                    (
+                        (aligned_timestamp_us, exact_frame, -delta_us),
+                        rgb,
+                        aligned,
+                    )
+                )
+        if not candidates:
+            return None
+        _, rgb, aligned = max(candidates, key=lambda item: item[0])
+        return rgb, aligned
+
+    @classmethod
+    def _rgbd_pair_error(
+        cls,
+        rgb_refs: list[Any],
+        aligned_refs: list[Any],
+        *,
+        maximum_delta_us: int,
+    ) -> str:
+        if not rgb_refs:
+            return "shared memory retains no RGB frame"
+        if not aligned_refs:
+            return "shared memory retains no aligned-depth frame"
+        rgb = rgb_refs[-1].to_dict()
+        aligned = aligned_refs[-1].to_dict()
+        rgb_capture_us = cls._visual_capture_timestamp(rgb)
+        aligned_capture_us = cls._visual_capture_timestamp(aligned)
+        return (
+            "no retained RGB/aligned-depth pair is within the declared "
+            f"{maximum_delta_us} us capture-time threshold; "
+            f"newest_rgb_frame={rgb.get('frame_number')} "
+            f"newest_aligned_frame={aligned.get('frame_number')} "
+            f"capture_delta_us={abs(aligned_capture_us-rgb_capture_us)} "
+            f"system_delta_us={abs(int(aligned.get('system_timestamp_us') or 0)-int(rgb.get('system_timestamp_us') or 0))}"
         )
 
     def _publish_inertial_prediction_if_due(self) -> None:
@@ -1169,6 +1240,17 @@ class LocalVioProvider:
         )
 
     @staticmethod
+    def _visual_capture_timestamp(reference: dict[str, Any]) -> int:
+        # SDK image-processing filters can stamp output system time at processing
+        # completion. Global or device time retains the sensor capture instant.
+        return int(
+            reference.get("global_timestamp_us")
+            or reference.get("device_timestamp_us")
+            or reference.get("system_timestamp_us")
+            or 0
+        )
+
+    @staticmethod
     def _sample_timestamp(sample: Any) -> int:
         return int(
             sample.system_timestamp_us
@@ -1238,7 +1320,7 @@ class LocalVioProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.4.0",
+                "provider_version": "0.4.1",
                 "backend": self.args.backend,
                 "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
                 "world_frame": self.world_frame,

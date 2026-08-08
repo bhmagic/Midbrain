@@ -108,8 +108,9 @@ if (-not $SkipPython) {
     Invoke-Checked -FilePath $python -Arguments @(
         "-m", "pip", "install", "--upgrade",
         "pip", "setuptools", "wheel", "build", "pytest",
-        "numpy", "httpx", "Pillow", "opencv-python-headless", "fastapi",
-        "uvicorn", "python-dotenv", "openai-agents", "google-genai"
+        "numpy", "httpx", "Pillow>=10,<12",
+        "opencv-python-headless>=4.10,<5", "fastapi", "uvicorn",
+        "python-dotenv", "openai-agents", "google-genai>=1.0,<2"
     )
     foreach ($package in @(
         "providers\orbbec_femto_bolt\python",
@@ -121,6 +122,7 @@ if (-not $SkipPython) {
         "skills\spatial_registration_rgbd",
         "skills\locate-effector-front",
         "skills\observe_pointed_object",
+        "skills\refine-arm-root-translation",
         "skills\register_tool_to_control_frame",
         "skills\stationary_world_arm_alignment",
         "test_agent\python"
@@ -141,6 +143,7 @@ if (-not $SkipPython) {
         (Join-Path $workspace "providers\rebot_arm_integrated\python"),
         (Join-Path $workspace "skills\locate-effector-front\python"),
         (Join-Path $workspace "skills\observe_pointed_object\python"),
+        (Join-Path $workspace "skills\refine-arm-root-translation\python"),
         (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
         (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
         (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
@@ -159,6 +162,7 @@ if (-not $SkipPython) {
             (Join-Path $workspace "providers\rebot_arm_integrated\python"),
             (Join-Path $workspace "skills\locate-effector-front\python"),
             (Join-Path $workspace "skills\observe_pointed_object\python"),
+            (Join-Path $workspace "skills\refine-arm-root-translation\python"),
             (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
             (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
@@ -174,6 +178,7 @@ if (-not $SkipPython) {
             (Join-Path $workspace "providers\rebot_arm_integrated\python\tests"),
             (Join-Path $workspace "skills\locate-effector-front\python\tests"),
             (Join-Path $workspace "skills\observe_pointed_object\python\tests"),
+            (Join-Path $workspace "skills\refine-arm-root-translation\python\tests"),
             (Join-Path $workspace "skills\register_tool_to_control_frame\python\tests"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python\tests"),
             (Join-Path $workspace "skills\stationary_world_arm_alignment\python\tests"),
@@ -199,6 +204,7 @@ if (-not $SkipPython) {
         "skills\spatial_registration_rgbd",
         "skills\locate-effector-front",
         "skills\observe_pointed_object",
+        "skills\refine-arm-root-translation",
         "skills\register_tool_to_control_frame",
         "skills\stationary_world_arm_alignment",
         "test_agent\python"

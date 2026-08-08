@@ -16,6 +16,23 @@ from refine_arm_root_translation.profile import load_effector_profile
 from refine_arm_root_translation.runtime import TranslationRefinementSkill
 
 
+class LineRpcError(RuntimeError):
+    """Preserve structured host failures across the Skill process boundary."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str | None = None,
+        status_code: int | None = None,
+        response_body: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
+        self.response_body = response_body
+
+
 class LineRpcClient:
     def __init__(self) -> None:
         self._next_id = 1
@@ -48,7 +65,23 @@ class LineRpcClient:
                 if isinstance(error, dict)
                 else str(error or "host RPC request failed")
             )
-            raise RuntimeError(message)
+            raise LineRpcError(
+                message,
+                error_type=(
+                    str(error.get("type"))
+                    if isinstance(error, dict) and error.get("type") is not None
+                    else None
+                ),
+                status_code=(
+                    int(error["status_code"])
+                    if isinstance(error, dict)
+                    and isinstance(error.get("status_code"), int)
+                    else None
+                ),
+                response_body=(
+                    error.get("response_body") if isinstance(error, dict) else None
+                ),
+            )
         return response.get("result")
 
 

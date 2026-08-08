@@ -1,6 +1,6 @@
 {
   "skill_type": "refine_arm_root_translation",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "display_name": "Refine Arm-Root Translation",
   "ui": {
     "observation": {
@@ -29,7 +29,7 @@
       "Before starting VLM work, the host verifies that the active arm provider identity, joint-state stream, and profile-selected local FK path are present and can bracket a current timestamp. A missing dependency returns a typed lifecycle recovery request without changing calibration state.",
       "Reads one synchronized RGB and registered-depth observation plus bracketed timestamped arm FK and active calibration state.",
       "For each requested refinement sample, calls one configured VLM route, permits one exact-depth reselection call only when the selected depth is invalid, and conditionally calls a quality-review VLM when that sample's raw translation delta exceeds the configured review threshold.",
-      "Returns a translation-only compare-and-swap update candidate and visual evidence; it never commands, previews, or authorizes robot motion."
+      "Returns a translation-only compare-and-swap update candidate and visual evidence; a Manager compare-and-swap conflict remains a structured non-applied result across the Skill process boundary; the Skill never commands, previews, or authorizes robot motion."
     ],
     "safety_class": "STATEFUL_NO_MOTION",
     "expected_latency": "HIGH",
@@ -131,7 +131,7 @@
     "visual_evidence_contract": "midbrain.visual_evidence.v1"
   },
   "effector_profiles": [
-    "profiles/rebot_b601_dm_gripper.v2.json"
+    "profiles/rebot_b601_dm_gripper.v3.json"
   ],
   "installation": {
     "setup_entrypoint": "scripts/setup.ps1"

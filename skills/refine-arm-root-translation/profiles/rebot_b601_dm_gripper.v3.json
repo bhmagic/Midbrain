@@ -2,7 +2,7 @@
   "schema": "midbrain.effector_alignment_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm_gripper",
-  "profile_revision": "rebot-b601-dm-gripper-alignment-v2",
+  "profile_revision": "rebot-b601-dm-gripper-alignment-v3",
   "display_name": "reBot B601-DM Bare Gripper",
   "assembly_type": "REPLACEABLE_EFFECTOR",
   "qualification_state": "DEVELOPMENT",
@@ -36,6 +36,7 @@
   "capture_motion_policy": {
     "maximum_landmark_motion_m": 0.005,
     "additional_camera_timing_margin_us": 20000,
+    "arm_transform_timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
     "arm_feedback_age_field_path": [
       "data",
       "feedback_age_ms"
@@ -47,7 +48,7 @@
     "transform_retry_interval_ms": 10.0,
     "temporal_sample_count": 5,
     "qualification": "DEVELOPMENT_DEFAULTS_REQUIRE_LIVE_TIMING_REFINEMENT",
-    "policy_note": "The DM arm transform publication timestamp describes its controller snapshot, while measured positions can be older by data.feedback_age_ms. The host includes that age and a camera timing margin in the sampled capture window. Replace these fields in another arm or effector profile when its timestamp semantics differ."
+    "policy_note": "The DM arm joint-state and FK transform timestamps describe the estimated measured-joint acquisition interval, with uncertainty reported in data.feedback_timing. The host therefore does not add feedback age to those timestamps. Another arm or effector profile must declare its own timestamp semantics explicitly."
   },
   "refinement_policy": {
     "second_vlm_review_raw_delta_threshold_m": 0.005,

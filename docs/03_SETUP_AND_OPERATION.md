@@ -17,7 +17,8 @@ The complete camera and VIO path targets Windows 10/11 and requires:
 
 The optional reBot arm path also requires the supported seven-motor assembly,
 reviewed machine-local calibration, Windows serial access, and
-`motorbridge>=0.4.9`. The Xbox-compatible controller is needed only for the
+the reviewed MotorBridge 0.5.1 freshness build installed by Basic's setup
+script. The Xbox-compatible controller is needed only for the
 manual Integrated development GUI.
 
 The optional FoundationPose route requires an NVIDIA/CUDA/PyTorch environment,

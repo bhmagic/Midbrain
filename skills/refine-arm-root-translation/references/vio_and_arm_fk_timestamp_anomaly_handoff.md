@@ -192,3 +192,80 @@ attempt failed closed, performed no VLM-based correction, and left the active
 translation and rotation unchanged. Treat the arm/Fabric reliability issue as
 a known external dependency limitation rather than weakening the refinement
 Skill's timestamp requirements.
+
+## 2026-08-07 follow-up
+
+The later physical run separated the two paths. Basic remained healthy at its
+configured 50 Hz rate, reported no stale-feedback rejection or control fault,
+and continuously published timestamped FK. Integrated completed the requested
+20 cm motion with controller-confirmed joint arrival and returned to float. No
+new arm/Fabric bracketing failure appeared in that run.
+
+Camera and VIO did fail before the motion. CameraHost's software D2C filter
+published registered depth with the filter output's processing-completion
+timestamp. The Local VIO consumer also copied the independently latest RGB and
+registered-depth slots; the next RGB callback could therefore advance while
+the corresponding D2C output still occupied an older retained slot. This made
+processing latency appear to be RGB-D capture skew and left VIO degraded.
+
+The corrective boundary remains at the producing and consuming Providers.
+CameraHost now preserves the source depth capture timestamps on registered
+depth, the camera wrapper derives synchronized bundles from retained ring
+slots, and Local VIO selects a retained capture-time-qualified RGB/registered-
+depth pair while keeping system time for camera/IMU estimator ordering. The
+Skill's epoch, identity, freshness, and zero-extrapolation gates are unchanged.
+
+## 2026-08-07 late-run follow-up
+
+The later session `70eb48f1-6f90-4f46-915e-f8ccdfd9eb78` established and
+activated alignment `20260807T214557Z-61d05571` successfully. Basic then
+recorded 37 feedback-batch rejections and control faults at approximately
+21:47 UTC. The last error was `fresh feedback generation did not advance for:
+gripper`. Subsequent telemetry showed all seven generations advancing again,
+roughly 10–17 ms feedback age, approximately 16 ms acquisition, no I/O error,
+and continued 50 Hz sampling. The Provider nevertheless remained latched
+`FAULTED`; its old `HOT` endpoint returned success without performing recovery.
+
+This evidence identifies a separate control-lifecycle defect, not a recurrence
+of the camera/VIO timestamp bug. The 18 ms feedback deadline left only about
+2 ms above normal physical acquisition and produced false faults under the
+concurrent FoundationPose/VLM workload. A fault also cleared pending commands
+without consistently fencing their lease, and no Manager-owned transition
+could requalify the recovered feedback stream.
+
+Basic now uses a bounded 40 ms fresh-batch deadline. Any control-loop exception
+immediately fences the current lease. An explicit Manager `HOT` request can
+recover only from a recent complete generation-verified batch; it enters
+gravity float and never restores or replays the interrupted authority. The
+refinement Skill also preserves Manager HTTP 409 metadata across its subprocess
+RPC so an atomic-update conflict returns a non-applied stale-state result rather
+than the opaque `409 Conflict` that terminated this run.
+
+## 2026-08-07 Fabric contention follow-up
+
+A synthetic reproduction isolated an additional Fabric-side latency amplifier.
+The previous transform resolver decoded and sorted the complete retained
+history for every graph edge on every query while holding the shared store read
+lock. Seven arm-link edges at the configured 4096 samples per edge produced
+approximately 93.1 ms median and 99.2 ms p95 transform-query latency. Under
+continuous query load, a transform publication batch waited approximately
+72.7 ms median and 90.9 ms p95 for the write lock. This can make healthy
+continuous FK publication appear stalled at capture time.
+
+The stabilization candidate retains the same APIs and history capacities but
+indexes typed transform samples by edge, authority, static/dynamic class, and
+timestamp at ingestion. It resolves graph traversal after releasing the store
+lock and acquires the write lock once for a publication batch. A repeat of the
+same seven-edge/4096-sample workload measured 14.935 ms median and 16.138 ms
+p95 end-to-end HTTP query latency. Seven-edge batch publication under four
+continuous query workers measured 1.122 ms median and 1.491 ms p95. These are
+local synthetic measurements, not physical qualification results.
+
+The existing `/v1/transform` route also accepts an optional bounded
+`wait_for_bracket_ms`. The refinement host uses it to wait on transform
+publication notification rather than issuing repeated polling requests. A
+missing parameter retains immediate behavior, and a deadline retains the
+normal extrapolated-200 or missing-path-404 result. No intermediate samples,
+raw history, session checks, authority conflicts, provenance, or
+zero-extrapolation requirements were removed. The physical ten-minute soak
+test in the checklist remains required before closing the arm/Fabric anomaly.

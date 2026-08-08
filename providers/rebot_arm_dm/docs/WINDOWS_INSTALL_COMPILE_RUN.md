@@ -8,7 +8,8 @@ software validation and simulation before opening a real motor connection.
 - Windows 10/11
 - Developer PowerShell for Visual Studio 2022
 - Python 3.11
-- supported MotorBridge installation
+- Git and the Rust toolchain (`cargo` and `rustc`)
+- network access for the reviewed MotorBridge source and Rust dependencies
 - supported reBot B601-DM hardware and reviewed local calibration
 - exclusive access to the arm's serial interface
 - independent emergency stop and a cleared, padded work area
@@ -23,9 +24,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\providers\rebot_arm_dm\scripts\setup.ps1 -WithMotorBridge
 ```
 
-The setup creates the Provider-owned `.venv`, installs its package, and seeds
-missing machine-local model and calibration files from sanitized templates. It
-preserves existing active configuration.
+The setup creates the Provider-owned `.venv`, checks out the reviewed
+MotorBridge commit under ignored `.artifact_work`, applies the tracked additive
+state-generation/receive-age patch, compiles its native ABI and gateway,
+installs that build, and seeds missing machine-local model and calibration files
+from sanitized templates. It preserves existing active configuration.
 
 Register the Provider with Manager:
 
@@ -137,8 +140,10 @@ start a second controller until the physical device identity is known.
 
 ### MotorBridge unavailable
 
-Re-run component setup with the reviewed MotorBridge installation. Do not copy
-unknown native binaries into the repository or commit them.
+Re-run component setup with `-WithMotorBridge`. Basic intentionally rejects a
+MotorBridge build that cannot prove each feedback generation is newer than the
+current control-cycle request. Do not copy unknown native binaries into the
+repository or commit them.
 
 ### Wrong Python environment
 
@@ -149,7 +154,10 @@ share environments.
 
 Inspect the Provider process output, Manager observation page, active local
 configuration, COM ownership, and native dependency loading. Repeated `HOT`
-requests do not repair a deterministic startup fault.
+requests do not repair a deterministic startup fault. For a runtime control
+fault, one Manager `HOT` transition may requalify Basic only after recent
+generation-verified feedback is available; it fences the previous lease and
+returns to gravity float without replaying motion.
 
 ### PowerShell script blocked
 

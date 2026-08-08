@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 - 2026-08-07
 
 - Republished calibration and static camera transforms while HOT so a restarted
   in-memory Fabric can recover without restarting the camera.
@@ -10,6 +10,13 @@
   Orbbec-specific reader as an explicit compatibility fallback.
 - Added a headless external launcher, current mapping-name configuration, and
   regression isolation from unrelated top-level Python modules.
+- Preserved the source depth capture timestamps on software-aligned depth
+  instead of exposing D2C processing-completion time as sensor time.
+- Selected synchronized RGB-D bundles from retained ring slots so a consumer
+  cannot lose synchronization merely by observing the next RGB publication
+  before the corresponding registered-depth product completes.
+- Made the native build script locate Visual Studio's bundled CMake and
+  normalize duplicate Windows Path/PATH entries for unattended setup.
 
 ## 0.3.1
 

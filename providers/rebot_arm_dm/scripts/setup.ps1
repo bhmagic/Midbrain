@@ -15,8 +15,46 @@ if ($LASTEXITCODE -ne 0) { throw "Could not update packaging tools." }
 & $python -m pip install -e (Join-Path $provider "python")
 if ($LASTEXITCODE -ne 0) { throw "Basic Controller package installation failed." }
 if ($WithMotorBridge) {
-    & $python -m pip install "motorbridge>=0.4.9"
-    if ($LASTEXITCODE -ne 0) { throw "MotorBridge installation failed." }
+    $workspace = Get-WorkspaceRoot
+    $motorBridgeCommit = "e9ec70e455f5d37dd7170ad13532daf288759152"
+    $motorBridgeSource = Join-Path $workspace ".artifact_work\motorbridge"
+    $motorBridgePatch = Join-Path $provider "third_party\motorbridge-state-sample.patch"
+    if (-not (Test-Path (Join-Path $motorBridgeSource ".git"))) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $motorBridgeSource) | Out-Null
+        & git clone --filter=blob:none --no-checkout https://github.com/motorbridge/motorbridge.git $motorBridgeSource
+        if ($LASTEXITCODE -ne 0) { throw "Could not clone the reviewed MotorBridge source." }
+        & git -C $motorBridgeSource checkout $motorBridgeCommit
+        if ($LASTEXITCODE -ne 0) { throw "Could not check out reviewed MotorBridge commit $motorBridgeCommit." }
+    }
+    $actualCommit = (& git -C $motorBridgeSource rev-parse HEAD).Trim()
+    if ($actualCommit -ne $motorBridgeCommit) {
+        throw "MotorBridge source is at $actualCommit; expected reviewed commit $motorBridgeCommit."
+    }
+    & git -C $motorBridgeSource apply --reverse --check $motorBridgePatch 2>$null
+    $patchAlreadyApplied = $LASTEXITCODE -eq 0
+    if (-not $patchAlreadyApplied) {
+        $sourceChanges = & git -C $motorBridgeSource status --porcelain
+        if ($sourceChanges) {
+            throw "MotorBridge source contains unrelated changes; preserve or remove them before setup."
+        }
+        & git -C $motorBridgeSource apply --check $motorBridgePatch
+        if ($LASTEXITCODE -ne 0) { throw "The reviewed MotorBridge freshness patch does not apply cleanly." }
+        & git -C $motorBridgeSource apply $motorBridgePatch
+        if ($LASTEXITCODE -ne 0) { throw "Could not apply the reviewed MotorBridge freshness patch." }
+    }
+    $expectedPatch = ((Get-Content -Raw -LiteralPath $motorBridgePatch) -replace "`r`n", "`n").TrimEnd()
+    $actualPatch = ((& git -C $motorBridgeSource diff --binary) -join "`n").TrimEnd()
+    if ($actualPatch -cne $expectedPatch) {
+        throw "MotorBridge source differs from the reviewed tracked patch."
+    }
+    & cargo build --manifest-path (Join-Path $motorBridgeSource "Cargo.toml") -p motor_abi -p ws_gateway --release
+    if ($LASTEXITCODE -ne 0) { throw "Patched MotorBridge native build failed." }
+    $env:MOTORBRIDGE_LIB = Join-Path $motorBridgeSource "target\release\motor_abi.dll"
+    $env:MOTORBRIDGE_WS_GATEWAY_BIN = Join-Path $motorBridgeSource "target\release\ws_gateway.exe"
+    & $python -m pip install --force-reinstall (Join-Path $motorBridgeSource "bindings\python")
+    if ($LASTEXITCODE -ne 0) { throw "Patched MotorBridge Python installation failed." }
+    & $python -c "import motorbridge; assert hasattr(motorbridge.Motor, 'get_state_sample'); print('MotorBridge freshness API:', motorbridge.__version__)"
+    if ($LASTEXITCODE -ne 0) { throw "Installed MotorBridge is missing the reviewed freshness API." }
 }
 $config = Join-Path $provider "config"
 New-Item -ItemType Directory -Force -Path $config | Out-Null

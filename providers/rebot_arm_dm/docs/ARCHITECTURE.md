@@ -12,6 +12,8 @@ Basic enforces load-bearing stiffness, damping, joint, rate, effort, tracking,
 lease, deadline, gravity-support, and safe-home rules locally. The canonical
 operator explanation and failure boundary are in [Safety behavior](SAFETY.md);
 higher-level Providers must not restate or weaken those limits.
+For load-bearing MIT states, low spring stiffness is forbidden; `kd` remains
+velocity damping and is not a substitute for the enforced `kp` floor.
 
 ## Control states
 
@@ -22,7 +24,8 @@ higher-level Providers must not restate or weaken those limits.
 - `TRAJECTORY_CONTROL`: reserved for the planning provider.
 - `SAFE_HOLD_GRAVITY_FLOAT`: factory gravity torque plus high-`kp` MIT whose position target follows measured position each cycle.
 - `SAFE_HOME`: powered movement to the configured home vector.
-- `FAULTED`: motion blocked pending recovery.
+- `FAULTED`: motion blocked pending explicit Manager `HOT` recovery from a
+  recent complete generation-verified feedback batch.
 - `EMERGENCY_DISABLED`: output disabled under emergency policy.
 
 ## Command modes
@@ -41,7 +44,26 @@ back to another mode. The attended sequence and fitted model are defined in
 
 ## Timing
 
-The current physical-test local loop is 50 Hz to reduce serial load after a USB write timeout was still observed at 60 Hz. MIT targets are rate-limited locally. Motor-side modes are refreshed for watchdog purposes. Fabric publication is not the real-time command path.
+The current physical-test local loop is 50 Hz to reduce serial load after a USB
+write timeout was still observed at 60 Hz. A fresh seven-motor feedback batch
+normally takes about 16 ms on the installed transport. Its bounded 40 ms
+acquisition deadline intentionally exceeds one nominal loop period so host
+scheduling jitter or concurrent vision work does not turn a healthy late frame
+into a permanent fault. Healthy acquisitions still run on the 50 Hz schedule;
+only a delayed or missing batch consumes the extra detection margin. MIT targets
+are rate-limited locally. Motor-side modes are refreshed for watchdog purposes.
+Fabric publication is not the real-time command path.
+
+## Fault recovery
+
+The control loop fences the active lease immediately when an exception occurs.
+It continues sampling feedback while motion remains blocked. Manager `HOT` is
+the sole ordinary requalification transition: Basic checks the latest complete
+batch is generation-verified and no older than the configured recovery limit,
+fences all prior authority, and enters gravity float. Recovery does not replay
+the interrupted command or return its lease. If fresh feedback is not yet
+available, `HOT` returns a bounded conflict so Manager can retry its lifecycle
+request.
 
 ## Graceful-stop continuity
 

@@ -1,6 +1,6 @@
 {
   "provider_type": "localization.local_vio",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "display_name": "Local Inertial-First RGB-D VIO Provider",
   "manager_ids": ["localization.local_vio"],
   "ui": {

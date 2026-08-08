@@ -41,7 +41,12 @@ public:
 
 private:
     void publishFrameSet(const std::shared_ptr<ob::FrameSet>& frameset);
-    void publishVideoFrame(const std::shared_ptr<ob::Frame>& frame, StreamKind kind, const std::string& note = {});
+    void publishVideoFrame(
+        const std::shared_ptr<ob::Frame>& frame,
+        StreamKind kind,
+        const std::string& note = {},
+        const std::shared_ptr<ob::Frame>& captureTimestampSource = nullptr
+    );
     void publishPointCloud(const std::shared_ptr<ob::Frame>& input, const std::shared_ptr<ob::FrameSet>& sourceFrameset);
     void publishImuFrame(const std::shared_ptr<ob::Frame>& frame);
     bool publishCalibrationText();

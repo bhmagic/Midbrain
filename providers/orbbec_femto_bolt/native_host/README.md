@@ -15,6 +15,10 @@
 - Device, system, and global timestamps
 - Device identity and status
 
+Software D2C output retains the source depth frame's device, system, and global
+capture timestamps. Its own output frame number still identifies the registered
+product. Processing-completion time is not published as sensor capture time.
+
 Default mapping:
 
 ```text

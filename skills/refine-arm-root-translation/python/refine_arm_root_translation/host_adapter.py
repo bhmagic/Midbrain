@@ -437,13 +437,24 @@ class ArmRootTranslationRefinementAdapter:
         except Exception as error:
             if isinstance(error, ArmDataDependencyError):
                 self._arm_dependency_error = error
+            error_payload: dict[str, Any] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            http_response = getattr(error, "response", None)
+            status_code = getattr(http_response, "status_code", None)
+            if isinstance(status_code, int):
+                error_payload["status_code"] = status_code
+                try:
+                    error_payload["response_body"] = http_response.json()
+                except Exception:
+                    response_text = str(getattr(http_response, "text", "")).strip()
+                    if response_text:
+                        error_payload["response_body"] = response_text[:2000]
             response = {
                 "id": request_id,
                 "ok": False,
-                "error": {
-                    "type": type(error).__name__,
-                    "message": str(error),
-                },
+                "error": error_payload,
             }
         process.stdin.write((json.dumps(response) + "\n").encode("utf-8"))
         await process.stdin.drain()
@@ -853,6 +864,32 @@ class ArmRootTranslationRefinementAdapter:
                 "preferred_observation_age_us": preferred_observation_age_us,
                 "fresh_for_feedback_age": False,
             }
+        timestamp_semantics = policy.get(
+            "arm_transform_timestamp_semantics",
+            "SNAPSHOT_TIME_WITH_FEEDBACK_AGE",
+        )
+        if timestamp_semantics == "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE":
+            data = observation.get("data")
+            timing = data.get("feedback_timing") if isinstance(data, dict) else None
+            if not isinstance(timing, dict):
+                raise RuntimeError(
+                    "arm profile requires measured acquisition timestamps but joint-state timing metadata is unavailable"
+                )
+            if timing.get("timestamp_semantics") != timestamp_semantics:
+                raise RuntimeError(
+                    "arm joint-state timestamp semantics do not match the effector profile"
+                )
+            if timing.get("freshness_verified") is not True:
+                raise RuntimeError("arm joint-state freshness is not verified")
+            return {
+                "age_us": 0,
+                "source": "JOINT_STATE_TIMESTAMP_IS_MEASURED_ACQUISITION",
+                "observed_at_us": observed_at_us,
+                "observation_age_us": observation_age_us,
+                "preferred_observation_age_us": preferred_observation_age_us,
+                "fresh_for_feedback_age": True,
+                "timestamp_uncertainty_us": timing.get("timestamp_uncertainty_us"),
+            }
         value: Any = observation
         for field in policy["arm_feedback_age_field_path"]:
             if not isinstance(value, dict) or field not in value:
@@ -959,6 +996,7 @@ class ArmRootTranslationRefinementAdapter:
         deadline = time.monotonic() + wait_s
         last_reason = "transform is unavailable"
         while True:
+            remaining = max(0.0, deadline - time.monotonic())
             try:
                 transform = await self.fabric.transform(
                     from_frame=from_frame,
@@ -966,6 +1004,7 @@ class ArmRootTranslationRefinementAdapter:
                     at_us=int(at_us),
                     max_extrapolation_us=750_000,
                     session_epoch=session_epoch,
+                    wait_for_bracket_ms=max(0, int(remaining * 1000.0)),
                 )
                 self._validate_timestamped_transform(
                     transform,

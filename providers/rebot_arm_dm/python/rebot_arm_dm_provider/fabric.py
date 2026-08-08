@@ -48,6 +48,8 @@ class PlatformPublisher:
         self.http = JsonHttpClient()
         self.sequence: dict[str, int] = {}
         self.lock = threading.Lock()
+        self.output_lock = threading.Lock()
+        self.last_successful_output_us: dict[str, int] = {}
         self.manager_error: str | None = None
         self.fabric_error: str | None = None
         self.last_error: str | None = None
@@ -173,17 +175,34 @@ class PlatformPublisher:
             'data': data,
         }
 
-    def _post_fabric(self, path: str, payload: dict[str, Any]) -> None:
+    def _post_fabric(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.fabric_url:
-            return
+            return {}
         try:
-            self.http.post(f'{self.fabric_url}{path}', payload)
+            response = self.http.post(f'{self.fabric_url}{path}', payload)
         except Exception as exc:
             self.fabric_error = str(exc)
             self._refresh_last_error()
             raise
         self.fabric_error = None
         self._refresh_last_error()
+        return response
+
+    def _record_successful_output(self, key: str, observed_at_us: int) -> None:
+        with self.output_lock:
+            self.last_successful_output_us[key] = int(observed_at_us)
+
+    def output_status(self, key: str) -> dict[str, int | float | None]:
+        with self.output_lock:
+            observed_at_us = self.last_successful_output_us.get(key)
+        return {
+            'observed_at_us': observed_at_us,
+            'age_ms': (
+                None
+                if observed_at_us is None
+                else max(0.0, (time.time_ns() // 1000 - observed_at_us) / 1000.0)
+            ),
+        }
 
     def publish(
         self,
@@ -193,25 +212,47 @@ class PlatformPublisher:
         frame_id: str | None,
         calibration_revision: str,
         freshness_ms: int = 200,
+        observed_at_us: int | None = None,
     ) -> None:
         if not self.fabric_url:
             return
-        self._post_fabric(
-            '/v1/observations',
-            self.observation(
-                stream,
-                schema,
-                data,
-                frame_id,
-                calibration_revision,
-                freshness_ms,
-            ),
+        observation = self.observation(
+            stream,
+            schema,
+            data,
+            frame_id,
+            calibration_revision,
+            freshness_ms,
+            observed_at_us,
         )
+        response = self._post_fabric(
+            '/v1/observations',
+            observation,
+        )
+        if response.get('accepted') is False:
+            raise RuntimeError(f'Fabric did not accept {stream}')
+        self._record_successful_output(stream, int(observation['observed_at_us']))
 
-    def publish_batch(self, observations: list[dict[str, Any]]) -> None:
+    def publish_batch(
+        self,
+        observations: list[dict[str, Any]],
+        success_key: str | None = None,
+    ) -> None:
         if not self.fabric_url or not observations:
             return
-        self._post_fabric('/v1/observations/batch', {'observations': observations})
+        response = self._post_fabric('/v1/observations/batch', {'observations': observations})
+        accepted = response.get('accepted')
+        if accepted is False:
+            raise RuntimeError('Fabric rejected the observation batch')
+        if type(accepted) is int and accepted != len(observations):
+            raise RuntimeError(
+                f'Fabric accepted {accepted} of {len(observations)} observations'
+            )
+        if success_key:
+            self._record_successful_output(
+                success_key,
+                max(int(item['observed_at_us']) for item in observations),
+            )
 
     def errors(self) -> dict[str, str | None]:
         return {'manager': self.manager_error, 'fabric': self.fabric_error}

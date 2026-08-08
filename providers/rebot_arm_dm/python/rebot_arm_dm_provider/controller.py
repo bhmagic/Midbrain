@@ -91,6 +91,7 @@ class ArmController:
             "ready": False,
         }
         self.snapshot_cache_monotonic = time.monotonic()
+        self.snapshot_cache_feedback_monotonic: float | None = None
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.state = ProviderState.DISCONNECTED
@@ -184,6 +185,11 @@ class ArmController:
         self.last_mode_transition_to: str | None = None
         self.control_fault_count = 0
         self.last_control_fault_at_us: int | None = None
+        self.fault_recovery_attempt_count = 0
+        self.fault_recovery_success_count = 0
+        self.fault_recovery_failure_count = 0
+        self.last_fault_recovery_at_us: int | None = None
+        self.last_fault_recovery_error: str | None = None
         self.endpoint_keepalive_period_s = 1.0 / float(
             configuration.model["control"]["motor_endpoint_keepalive_hz"]
         )
@@ -262,6 +268,121 @@ class ArmController:
                 self.hold_reference = self.feedback.positions_rad.copy()
                 self.mit_moving_target = self.feedback.positions_rad.copy()
             self._enter_gravity_float_locked("motor enable", immediate=True, apply_now=True)
+
+    def recover_fault_to_gravity_float(self) -> dict[str, Any]:
+        """Requalify a faulted controller from recent verified feedback.
+
+        HOT is the explicit Manager-owned recovery transition. It may restore
+        powered gravity support only after the control loop has obtained a
+        complete fresh joint batch again. Any old lease and pending command are
+        fenced before motor output resumes.
+        """
+        recovery_block_reason = "explicit HOT fault recovery owns hardware control"
+        with self.ingress_lock:
+            if (
+                self.operational_control_block_reason is not None
+                and self.operational_control_block_reason != recovery_block_reason
+            ):
+                return {
+                    "recovered": False,
+                    "status": "operational_control_blocked",
+                    "state": self.state.value,
+                    "error": self.operational_control_block_reason,
+                }
+            self.operational_control_block_reason = recovery_block_reason
+            previous_lease = self.lease
+            self.lease = None
+            self.pending = None
+            self.fencing_generation += 1
+            if previous_lease is not None:
+                self._record_lease_event_ingress_locked(
+                    "REVOKED",
+                    "explicit HOT fault recovery fenced previous authority",
+                    lease=previous_lease,
+                )
+
+        try:
+            with self.lock:
+                if (
+                    self.state != ProviderState.FAULTED
+                    and self.health != "FAULTED"
+                ):
+                    return {
+                        "recovered": True,
+                        "status": "not_faulted",
+                        "state": self.state.value,
+                    }
+                self.fault_recovery_attempt_count += 1
+                feedback = self.feedback
+                maximum_age_ms = float(
+                    self.configuration.model["control"].get(
+                        "fault_recovery_feedback_max_age_ms",
+                        100.0,
+                    )
+                )
+                feedback_age_ms = (
+                    math.inf
+                    if feedback is None
+                    else max(
+                        0.0,
+                        (time.monotonic() - feedback.observed_monotonic) * 1000.0,
+                    )
+                )
+                if (
+                    feedback is None
+                    or not feedback.freshness_verified
+                    or feedback_age_ms > maximum_age_ms
+                ):
+                    self.fault_recovery_failure_count += 1
+                    self.last_fault_recovery_error = (
+                        "fresh verified joint feedback is not yet available "
+                        f"within {maximum_age_ms:.1f} ms"
+                    )
+                    return {
+                        "recovered": False,
+                        "status": "waiting_for_fresh_feedback",
+                        "state": self.state.value,
+                        "feedback_age_ms": (
+                            None if not math.isfinite(feedback_age_ms) else feedback_age_ms
+                        ),
+                        "maximum_feedback_age_ms": maximum_age_ms,
+                    }
+
+                try:
+                    self.health = "HEALTHY"
+                    self.last_error = None
+                    self._enter_gravity_float_locked(
+                        "explicit HOT recovery after fresh feedback requalification",
+                        immediate=True,
+                        apply_now=True,
+                    )
+                except Exception as error:
+                    self.state = ProviderState.FAULTED
+                    self.health = "FAULTED"
+                    self.last_error = f"HOT fault recovery failed: {error}"
+                    self.fault_recovery_failure_count += 1
+                    self.last_fault_recovery_error = str(error)
+                    return {
+                        "recovered": False,
+                        "status": "gravity_float_recovery_failed",
+                        "state": self.state.value,
+                        "error": str(error),
+                    }
+
+                self.fault_recovery_success_count += 1
+                self.last_fault_recovery_at_us = time.time_ns() // 1000
+                self.last_fault_recovery_error = None
+                self._update_snapshot_cache_locked()
+                return {
+                    "recovered": True,
+                    "status": "fresh_feedback_requalified_into_gravity_float",
+                    "state": self.state.value,
+                    "feedback_age_ms": feedback_age_ms,
+                }
+        finally:
+            with self.ingress_lock:
+                if self.operational_control_block_reason == recovery_block_reason:
+                    self.operational_control_block_reason = None
 
     def _lease_status_ingress_locked(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -913,7 +1034,16 @@ class ArmController:
             try: self._tick(now)
             except Exception as error:
                 with self.ingress_lock:
+                    failed_lease = self.lease
+                    self.lease = None
                     self.pending=None
+                    if failed_lease is not None:
+                        self.fencing_generation += 1
+                        self._record_lease_event_ingress_locked(
+                            "REVOKED",
+                            "control-loop fault fenced operational authority",
+                            lease=failed_lease,
+                        )
                 with self.lock:
                     self.health="FAULTED"
                     self.last_error=str(error)
@@ -926,7 +1056,15 @@ class ArmController:
                         f"state={self.state.value} error={error} hardware_io={diagnostics}"
                     )
                     try:
-                        self._enter_gravity_float_locked("control loop exception", immediate=True, apply_now=True)
+                        if self.feedback is None:
+                            self.state=ProviderState.FAULTED
+                            self.last_float_reason=(
+                                "fresh feedback unavailable; motor outputs left unchanged"
+                            )
+                        else:
+                            self._enter_gravity_float_locked(
+                                "control loop exception", immediate=True, apply_now=True
+                            )
                     except Exception as fallback_error:
                         self.state=ProviderState.FAULTED
                         print(f"[basic-control-fault] gravity-float fallback failed: {fallback_error}")
@@ -958,9 +1096,13 @@ class ArmController:
             no_active_lease=self.lease is None
 
         with self.lock:
-            self.feedback=self.backend.read()
-            if self.feedback is None:
+            self.feedback=None
+            feedback=self.backend.read()
+            if feedback is None:
                 return
+            if not feedback.freshness_verified:
+                raise RuntimeError("hardware backend returned unverified joint feedback")
+            self.feedback=feedback
             if lease_expired_reason is not None:
                 self._enter_gravity_float_locked("lease expired", immediate=True, apply_now=True)
             elif command_expired:
@@ -1297,11 +1439,23 @@ class ArmController:
             }
         return {
             "schema":"physical_agent.robot_arm_joint_state","schema_version":1,
-            "observed_at_us":time.time_ns()//1000,"provider_state":self.state.value,"health":self.health,
+            "observed_at_us":feedback.observed_at_us,
+            "timestamp_uncertainty_us":feedback.timestamp_uncertainty_us,
+            "provider_state":self.state.value,"health":self.health,
+            "ready":feedback.freshness_verified,
             "positions_rad":feedback.positions_rad.tolist(),"velocities_rad_s":feedback.velocities_rad_s.tolist(),"torques_nm":feedback.torques_nm.tolist(),
             "temperatures_c":[None if not math.isfinite(float(v)) else float(v) for v in feedback.temperatures_c],
             "voltages_v":[None if not math.isfinite(float(v)) else float(v) for v in feedback.voltages_v],"motor_status":feedback.status_codes,
             "feedback_age_ms":max(0.0,(time.monotonic()-feedback.observed_monotonic)*1000.0),
+            "feedback_timing":{
+                "timestamp_semantics":"MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+                "freshness_verified":feedback.freshness_verified,
+                "freshness_source":feedback.freshness_source,
+                "acquisition_duration_ms":feedback.acquisition_duration_ms,
+                "timestamp_uncertainty_us":feedback.timestamp_uncertainty_us,
+                "per_joint_observed_at_us":list(feedback.per_joint_observed_at_us),
+                "per_joint_feedback_generation":list(feedback.feedback_generations),
+            },
             "last_applied_command_id":self.last_applied_command_id,"lease":lease,
             "active_command_modes":list(self.active_command_modes),
             "float_transition_pending_joint_indices":[
@@ -1374,6 +1528,19 @@ class ArmController:
                 "max_tick_duration_ms":self.max_tick_duration_ms,
                 "control_fault_count":self.control_fault_count,
                 "last_control_fault_at_us":self.last_control_fault_at_us,
+                "fault_recovery":{
+                    "semantics":"EXPLICIT_MANAGER_HOT_REQUIRES_RECENT_VERIFIED_FEEDBACK_AND_FENCES_OLD_AUTHORITY",
+                    "attempt_count":self.fault_recovery_attempt_count,
+                    "success_count":self.fault_recovery_success_count,
+                    "failure_count":self.fault_recovery_failure_count,
+                    "last_recovered_at_us":self.last_fault_recovery_at_us,
+                    "last_error":self.last_fault_recovery_error,
+                    "maximum_feedback_age_ms":float(
+                        self.configuration.model["control"].get(
+                            "fault_recovery_feedback_max_age_ms",100.0
+                        )
+                    ),
+                },
             },
             "last_error":self.last_error,"last_float_reason":self.last_float_reason,
             "last_safe_home_result":copy.deepcopy(self.last_safe_home_result),
@@ -1389,9 +1556,13 @@ class ArmController:
         }
 
     def _store_snapshot_cache(self, snapshot: dict[str, Any]) -> None:
+        feedback=self.feedback
         with self.snapshot_cache_lock:
             self.snapshot_cache=copy.deepcopy(snapshot)
             self.snapshot_cache_monotonic=time.monotonic()
+            self.snapshot_cache_feedback_monotonic=(
+                None if feedback is None else feedback.observed_monotonic
+            )
 
     def _update_snapshot_cache_locked(self) -> dict[str, Any]:
         snapshot=self.snapshot_locked()
@@ -1413,7 +1584,13 @@ class ArmController:
                 self.lock.release()
         with self.snapshot_cache_lock:
             snapshot=copy.deepcopy(self.snapshot_cache)
-            cache_age_ms=max(0.0,(time.monotonic()-self.snapshot_cache_monotonic)*1000.0)
+            delivered_monotonic=time.monotonic()
+            cache_age_ms=max(0.0,(delivered_monotonic-self.snapshot_cache_monotonic)*1000.0)
+            feedback_monotonic=self.snapshot_cache_feedback_monotonic
+        if feedback_monotonic is not None:
+            snapshot["feedback_age_ms"]=max(
+                0.0,(delivered_monotonic-feedback_monotonic)*1000.0
+            )
         snapshot["snapshot_delivery"]={
             "cached":True,
             "cache_age_ms":cache_age_ms,
