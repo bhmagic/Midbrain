@@ -198,6 +198,17 @@ physical commit return to normal Agent orchestration without being chained.
 The lower-level preview and execution tools remain available for explicit
 nonphysical preview and compatibility diagnostics.
 
+The general reference invariant is one Agent decision per task-facing finite
+operation. Such an operation may own several sequential internal API calls
+only when their order and continuation are mechanically determined within one
+existing responsibility boundary. Each stage remains independently bounded,
+validated, observable, and auditable. Crossing into Provider lifecycle
+recovery, calibration review, operator input, new observation, replanning, or
+uncertain physical-outcome handling ends the compound operation and returns a
+typed result to the Agent. A prompt containing several semantic operations
+therefore still produces several task-facing calls; the host does not turn a
+quest into one opaque transaction.
+
 The browser groups each backend-owned run into one user/Agent turn. Public
 reasoning-summary deltas and sanitized lifecycle events populate an expandable
 execution summary, while visual evidence remains attached to the turn that

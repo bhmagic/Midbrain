@@ -156,6 +156,22 @@ steps. This keeps dependency topology out of Agent prompts and permits another
 compatible Provider graph to be substituted without rewriting conversation
 logic.
 
+Treat the resulting compound operation as one Agent-facing decision boundary,
+not as one indivisible implementation API. Its internal Provider, Skill, and
+controller calls remain typed, timeout-bounded, observable, and attributable
+to their owning components. An adapter must return control when a continuation
+changes owner or requires semantic interpretation, recovery, reviewed state
+activation, new evidence, operator input, or uncertain-outcome handling.
+Independent Skills must not be collapsed merely to reduce the visible tool
+count.
+
+For current reference workflows, the generic host infrastructure now provides
+the intended readiness and exact-continuation handoff mechanics. Further
+latency or reliability work should normally be implemented by the owning
+Provider or Skill while preserving the same capability, evidence, and result
+contracts. A compatible Agent should not need custom prompts that replay a
+Provider dependency graph or a Skill's deterministic internal state machine.
+
 An adapter may use an OpenAI, Google, local, deterministic, ROS-connected, or
 other planning runtime. Manager, Fabric, Provider, Skill, safety, and evidence
 contracts must not depend on that framework's private classes.

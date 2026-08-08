@@ -131,16 +131,32 @@ schema compatibility must remain separate from the repository release number.
 
 ## P2: faster autonomous execution
 
-### Reduce Agent turns without weakening boundaries
+The reference infrastructure now targets one Agent decision per task-facing
+finite operation. Manager resolves a task-facing Provider's transitive
+dependencies, and the reference Agent can project an allowlisted nonphysical
+preview plus its exact commit as one call-scoped prepared action. Lower-level
+interfaces remain available, and recovery, calibration review, new evidence,
+replanning, operator input, and uncertain physical outcomes still return to
+their owning boundary.
 
-Instrument intent interpretation, discovery, Provider activation, evidence
-collection, planning, authorization, execution, and result interpretation.
-Move frequent deterministic sequences into bounded compound Skills or
-controller-owned orchestration after the Agent resolves intent.
+### Reduce Provider- and Skill-owned latency
 
-This optimization must preserve individual typed Skills for outside adapters
-and recovery. It must not hide preview, authority, controller, or evidence
-boundaries.
+The remaining dominant latency and reliability work in current robot flows is
+normally owned by the Provider or Skill that performs it, rather than by more
+generic Agent-host conversation logic. Instrument and improve:
+
+- Provider initialization, capability publication, dependency convergence,
+  and recovery evidence;
+- Skill-owned perception sampling, geometry validation, and one bounded
+  reselection when the same observation remains unambiguous;
+- controller preview, commit, progress, arrival, and relinquish latency; and
+- deterministic multi-sample or multistage Skill workflows whose intermediate
+  results do not require another owner or semantic decision.
+
+These paths must preserve typed intermediate evidence, cancellation, bounded
+timeouts, authority, and structured terminal results. Do not combine
+independent Skills into one opaque quest API or lower a perception or safety
+threshold merely to increase apparent completion rate.
 
 ### Controller-owned multistep routing
 

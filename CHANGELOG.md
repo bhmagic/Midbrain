@@ -38,13 +38,13 @@
   roadmap guidance; retire completed phase notes and stale snapshots; and add
   automated local-link, duplicate-heading, stale-path, and workspace-path
   checks.
-- Record the next Agent objectives in the active roadmap. The
-  immediate performance objective is a measured deterministic command chain
-  for frequent robot operations that reduces extra model turns without
-  bypassing finite Skills, lifecycle policy, controller checks, leases,
-  evidence, or authorization. Contextual development approval cards are marked
-  near future; remote command security and durable evidence policy remain
-  explicit future work.
+- Reduce routine Agent decision overhead without moving framework ownership or
+  authority boundaries. Manager now resolves transitive Provider activation
+  from one task-facing readiness request, and the reference Agent projects the
+  allowlisted Integrated nonphysical-preview-to-exact-commit pair as one
+  call-scoped prepared action. Lower-level tools remain available, while
+  lifecycle recovery, calibration review, new evidence, replanning, operator
+  questions, and uncertain physical outcomes remain explicit boundaries.
 - Reconcile periodically synchronized Agent turns in place instead of
   destroying and recreating their DOM. Live local runs retain the correct
   chronological position, unchanged server projections are skipped, expanded

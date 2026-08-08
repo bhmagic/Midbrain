@@ -85,6 +85,31 @@ the Fabric carries generation-checked references and provenance. Physical
 commands remain inside controller-enforced paths rather than passing through
 the language model or the Fabric.
 
+### Agent-facing execution granularity
+
+The reference target is one Agent decision per task-facing finite operation,
+not one model-selected call per internal API. Manager may satisfy one
+task-facing readiness request by ordering and activating the Provider's
+declared transitive dependencies. A Skill host may likewise execute a bounded
+sequence of mechanically determined internal calls, such as nonphysical
+preview, canonical authorization lookup, and exact preview commit, without
+returning each intermediate handoff to the model.
+
+This is not a general opaque mega-API. Internal stages retain typed results,
+timeouts, evidence, authorization, controller validation, and audit records.
+The operation returns to the Agent whenever progress requires another owner,
+a semantic decision, Provider recovery, calibration review, re-observation,
+replanning, an operator answer, or uncertain physical-outcome handling.
+Independent task-facing Skills remain separate operations.
+
+With these host-side handoff mechanics established, remaining latency and
+reliability improvements for current robot workflows should normally be made
+inside the owning Provider or Skill: Provider initialization and publication,
+perception sampling and bounded reselection, controller progress, and
+Skill-owned deterministic orchestration. Extra Agent prompting must not be
+used to compensate for an owning component's missing readiness or workflow
+logic.
+
 See [Architecture and Data Flow](docs/01_ARCHITECTURE_AND_DATA_FLOW.md) for the
 runtime flow and [Physical AI Contracts](contracts/README.md) for normative and
 working-draft interfaces.
