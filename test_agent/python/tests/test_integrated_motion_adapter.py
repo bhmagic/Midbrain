@@ -401,29 +401,16 @@ class IntegratedRelativeMotionAdapterTests(
             result["required_next_tool"],
             {
                 "name": "execute_integrated_motion_preview",
-                "arguments": {
-                    "preview_id": "preview-1",
-                    "motion_intent": "NEW_RELATIVE_MOVE",
-                    "direction": "UP",
-                    "reference_frame": "WORLD",
-                    "resolved_direction_arm_base": [0.0, 0.0, 1.0],
-                    "distance_m": 0.2,
-                    "original_request_distance_m": 0.2,
-                    "requested_speed_m_s": None,
-                    "requested_duration_s": 3.0,
-                    "planned_duration_s": 3.0,
-                    "planned_nominal_speed_m_s": 0.2 / 3.0,
-                    "timing_safety_limited": False,
-                    "requested_peak_joint_speed_rad_s": 0.0,
-                    "effective_peak_joint_speed_rad_s": 0.0,
-                    "joint_speed_authentication_required": False,
-                    "target_position_m": [0.1, 0.2, 0.5],
-                    "orientation_policy": "POSITION_ONLY",
-                    "controlled_frame_yaw_delta_deg": None,
-                    "target_orientation_rpy_rad": None,
-                },
+                "arguments": {"preview_id": "preview-1"},
             },
         )
+        canonical = await (
+            adapter.pending_execution_authorization_arguments("preview-1")
+        )
+        assert canonical is not None
+        self.assertEqual(canonical["direction"], "UP")
+        self.assertEqual(canonical["distance_m"], 0.2)
+        self.assertEqual(canonical["target_position_m"], [0.1, 0.2, 0.5])
         self.assertEqual(client.engage_count, 0)
 
     async def test_explicit_speed_derives_and_binds_trajectory_duration(
@@ -453,7 +440,7 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(preview["planned_nominal_speed_m_s"], 0.2)
         self.assertFalse(preview["timing_safety_limited"])
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -560,7 +547,10 @@ class IntegratedRelativeMotionAdapterTests(
             distance_m=0.1,
             requested_speed_m_s=0.2,
         )
-        arguments = dict(preview["required_next_tool"]["arguments"])
+        arguments = await adapter.pending_execution_authorization_arguments(
+            preview["preview_id"]
+        )
+        assert arguments is not None
         arguments["planned_duration_s"] = 0.6
 
         with self.assertRaisesRegex(RuntimeError, "do not match"):
@@ -605,7 +595,7 @@ class IntegratedRelativeMotionAdapterTests(
         )
 
         arguments = preview["required_next_tool"]["arguments"]
-        result = await adapter.execute(**arguments)
+        result = await adapter.execute_preview(**arguments)
 
         self.assertEqual(
             result["orientation_policy"],
@@ -676,7 +666,7 @@ class IntegratedRelativeMotionAdapterTests(
         )
         self.assertEqual(command["settings"]["ik_mode"], "POSE_6DOF")
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -752,7 +742,7 @@ class IntegratedRelativeMotionAdapterTests(
             controlled_frame_yaw_delta_deg=-30.0,
         )
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -819,7 +809,10 @@ class IntegratedRelativeMotionAdapterTests(
             orientation_policy="APPLY_CONTROLLED_FRAME_YAW_DELTA",
             controlled_frame_yaw_delta_deg=-30.0,
         )
-        arguments = dict(preview["required_next_tool"]["arguments"])
+        arguments = await adapter.pending_execution_authorization_arguments(
+            preview["preview_id"]
+        )
+        assert arguments is not None
         arguments["controlled_frame_yaw_delta_deg"] = -29.0
 
         with self.assertRaisesRegex(RuntimeError, "do not match"):
@@ -844,7 +837,7 @@ class IntegratedRelativeMotionAdapterTests(
         ][2] += 0.03
 
         with self.assertRaisesRegex(RuntimeError, "orientation changed"):
-            await adapter.execute(
+            await adapter.execute_preview(
                 **preview["required_next_tool"]["arguments"]
             )
 
@@ -1167,7 +1160,7 @@ class IntegratedRelativeMotionAdapterTests(
             RuntimeError,
             "orientation changed",
         ):
-            await adapter.execute(
+            await adapter.execute_preview(
                 **preview["required_next_tool"]["arguments"]
             )
 
@@ -1200,9 +1193,19 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")
         self.assertFalse(result["retry_same_tool"])
         self.assertEqual(
-            result["required_next_tool"]["name"],
-            "inspect_midbrain_runtime",
+            result["required_next_tool"],
+            {
+                "name": "set_provider_residency",
+                "arguments": {
+                    "provider_id": "robot_arm.primary.integrated",
+                    "action": "hot",
+                    "required_capability": (
+                        "robot.motion.arm.integrated.pos_vel.one_shot"
+                    ),
+                },
+            },
         )
+        self.assertIn("transitively", result["message"])
 
     async def test_recovery_required_returns_explicit_hot_transition(
         self,
@@ -1241,7 +1244,7 @@ class IntegratedRelativeMotionAdapterTests(
         adapter = _adapter(client)
         preview = await adapter.preview(direction="UP", distance_m=0.2)
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -1256,7 +1259,7 @@ class IntegratedRelativeMotionAdapterTests(
         adapter = _adapter(client)
         preview = await adapter.preview(direction="UP", distance_m=0.2)
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -1281,7 +1284,7 @@ class IntegratedRelativeMotionAdapterTests(
         preview = await adapter.preview(direction="UP", distance_m=0.2)
         client.snapshot["planning"]["target_revision"] = 3
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -1301,7 +1304,7 @@ class IntegratedRelativeMotionAdapterTests(
             RuntimeError,
             "measured arm pose changed",
         ):
-            await adapter.execute(
+            await adapter.execute_preview(
                 **preview["required_next_tool"]["arguments"]
             )
 
@@ -1333,7 +1336,7 @@ class IntegratedRelativeMotionAdapterTests(
             RuntimeError,
             "spatial resolution changed",
         ):
-            await adapter.execute(
+            await adapter.execute_preview(
                 **preview["required_next_tool"]["arguments"]
             )
 
@@ -1642,7 +1645,7 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(readiness.calls, 1)
         self.assertEqual(evidence.calls, ["local_vio/epoch-1"])
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 
@@ -1730,7 +1733,7 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(len(evidence.calls), 1)
         self.assertEqual(fabric.transform_calls, 1)
 
-        result = await adapter.execute(
+        result = await adapter.execute_preview(
             **preview["required_next_tool"]["arguments"]
         )
 

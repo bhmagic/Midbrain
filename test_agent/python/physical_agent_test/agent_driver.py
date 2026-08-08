@@ -33,7 +33,6 @@ from .integrated_motion_adapter import (
     JOINT_SPEED_AUTHENTICATION_THRESHOLD_RAD_S,
     MAX_CONTROLLED_FRAME_YAW_DELTA_DEG,
     DEFAULT_RELATIVE_NOMINAL_SPEED_M_S,
-    MAX_RELATIVE_TRANSLATION_M,
     IntegratedRelativeMotionAdapter,
 )
 from .item_locator_adapter import MetricItemLocatorAdapter
@@ -181,9 +180,11 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "additional KEEP_OUT objects. Include a complete robot-arm "
                 "description for the independent SAM2 arm exclusion mask. "
                 "Unclaimed visible geometry remains PUSHABLE and non-blocking. "
-                "Ensure perception.sam2_scene_tracker is HOT after publishing, "
-                "then ensure world_model.arm_scene_compiler is HOT and call "
-                "inspect_arm_semantic_scene. Do not report that the scan worked "
+                "After publishing, request only "
+                "world_model.arm_scene_compiler HOT; Manager owns transitive "
+                "activation of its declared SAM2, camera, and Basic "
+                "dependencies. Then call inspect_arm_semantic_scene. Do not "
+                "report that the scan worked "
                 "until inspection returns SCENE_READY with at least one "
                 "KEEP_OUT sphere. The 3D viewer intentionally displays a "
                 "reduced deterministic sample while the controller retains the "
@@ -774,6 +775,7 @@ class PrototypeAgentDriver:
         session_history_item_limit: int | None = None,
     ):
         self.skill = skill
+        self.integrated_motion_skill = integrated_motion_skill
         self.max_turns = int(max_turns)
         if not 1 <= self.max_turns <= 32:
             raise ValueError("max_turns must be between 1 and 32")
@@ -1527,54 +1529,34 @@ class PrototypeAgentDriver:
                 raw_arguments: str,
             ) -> str:
                 arguments = json.loads(raw_arguments)
-                result = await integrated_motion_skill.execute(
+                result = await integrated_motion_skill.execute_preview(
                     preview_id=arguments.get("preview_id"),
-                    motion_intent=arguments.get("motion_intent"),
-                    direction=arguments.get("direction"),
-                    reference_frame=arguments.get("reference_frame"),
-                    resolved_direction_arm_base=arguments.get(
-                        "resolved_direction_arm_base"
-                    ),
-                    distance_m=arguments.get("distance_m"),
-                    original_request_distance_m=arguments.get(
-                        "original_request_distance_m"
-                    ),
-                    requested_speed_m_s=arguments.get(
-                        "requested_speed_m_s"
-                    ),
-                    requested_duration_s=arguments.get(
-                        "requested_duration_s"
-                    ),
-                    planned_duration_s=arguments.get(
-                        "planned_duration_s"
-                    ),
-                    planned_nominal_speed_m_s=arguments.get(
-                        "planned_nominal_speed_m_s"
-                    ),
-                    timing_safety_limited=arguments.get(
-                        "timing_safety_limited"
-                    ),
-                    requested_peak_joint_speed_rad_s=arguments.get(
-                        "requested_peak_joint_speed_rad_s"
-                    ),
-                    effective_peak_joint_speed_rad_s=arguments.get(
-                        "effective_peak_joint_speed_rad_s"
-                    ),
-                    joint_speed_authentication_required=arguments.get(
-                        "joint_speed_authentication_required"
-                    ),
-                    target_position_m=arguments.get("target_position_m"),
-                    orientation_policy=arguments.get(
-                        "orientation_policy", "POSITION_ONLY"
-                    ),
-                    target_orientation_rpy_rad=arguments.get(
-                        "target_orientation_rpy_rad"
-                    ),
-                    controlled_frame_yaw_delta_deg=arguments.get(
-                        "controlled_frame_yaw_delta_deg"
-                    ),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
+
+            async def integrated_motion_needs_approval(
+                context_wrapper: Any,
+                arguments: dict[str, Any],
+                _call_id: str,
+            ) -> bool:
+                authorization = _session_authorization(context_wrapper)
+                canonical = await (
+                    integrated_motion_skill
+                    .pending_execution_authorization_arguments(
+                        arguments.get("preview_id")
+                    )
+                )
+                return not (
+                    canonical is not None
+                    and authorization.auto_authorize_relative_motion
+                    and relative_motion_within_authorization(
+                        canonical,
+                        max_auto_move_cm=authorization.max_auto_move_cm,
+                        max_auto_speed_m_s=(
+                            authorization.max_auto_speed_m_s
+                        ),
+                    )
+                )
 
             offered_tools.extend(
                 [
@@ -1583,8 +1565,9 @@ class PrototypeAgentDriver:
                         description=(
                             "Execute one exact, fresh Integrated Controller "
                             "relative translation, controlled-frame yaw, or "
-                            "combined pose preview. Copy all arguments "
-                            "exactly from preview_relative_effector_motion. "
+                            "combined pose preview by its opaque preview ID. "
+                            "The host recovers all canonical motion parameters "
+                            "and controller evidence from the pending preview. "
                             "Host authorization, whether manual or an active "
                             "bounded session policy, immediately sends the "
                             "existing one-shot commit trigger, requests "
@@ -1594,179 +1577,17 @@ class PrototypeAgentDriver:
                         params_json_schema={
                             "type": "object",
                             "properties": {
-                                "preview_id": {"type": "string"},
-                                "motion_intent": {
+                                "preview_id": {
                                     "type": "string",
-                                    "enum": [
-                                        "NEW_RELATIVE_MOVE",
-                                        "NEW_RELATIVE_POSE_MOVE",
-                                        "NEW_RELATIVE_ROTATION",
-                                    ],
-                                },
-                                "direction": {
-                                    "type": "string",
-                                    "enum": [
-                                        "NONE",
-                                        "UP",
-                                        "DOWN",
-                                        "FRONT",
-                                        "BACK",
-                                        "LEFT",
-                                        "RIGHT",
-                                        "NORTH",
-                                        "SOUTH",
-                                        "EAST",
-                                        "WEST",
-                                        "POSITIVE_X",
-                                        "NEGATIVE_X",
-                                        "POSITIVE_Y",
-                                        "NEGATIVE_Y",
-                                        "POSITIVE_Z",
-                                        "NEGATIVE_Z",
-                                        "ARM_BASE_POSITIVE_X",
-                                        "ARM_BASE_NEGATIVE_X",
-                                        "ARM_BASE_POSITIVE_Y",
-                                        "ARM_BASE_NEGATIVE_Y",
-                                        "ARM_BASE_POSITIVE_Z",
-                                        "ARM_BASE_NEGATIVE_Z",
-                                    ],
-                                },
-                                "reference_frame": {
-                                    "type": "string",
-                                    "enum": [
-                                        "WORLD",
-                                        "CAMERA_LEVEL",
-                                        "ARM_BASE",
-                                        "CONTROLLED_FRAME",
-                                    ],
-                                },
-                                "resolved_direction_arm_base": {
-                                    "type": "array",
-                                    "items": {"type": "number"},
-                                    "minItems": 3,
-                                    "maxItems": 3,
-                                },
-                                "distance_m": {
-                                    "type": "number",
-                                    "minimum": 0.0,
-                                    "maximum": MAX_RELATIVE_TRANSLATION_M,
-                                },
-                                "original_request_distance_m": {
-                                    "type": "number",
-                                    "minimum": 0.0,
-                                    "maximum": MAX_RELATIVE_TRANSLATION_M,
-                                },
-                                "requested_speed_m_s": {
-                                    "anyOf": [
-                                        {
-                                            "type": "number",
-                                            "exclusiveMinimum": 0.0,
-                                        },
-                                        {"type": "null"},
-                                    ],
-                                },
-                                "requested_duration_s": {
-                                    "type": "number",
-                                    "minimum": 0.05,
-                                    "maximum": 60.0,
-                                },
-                                "planned_duration_s": {
-                                    "type": "number",
-                                    "minimum": 0.05,
-                                    "maximum": 60.0,
-                                },
-                                "planned_nominal_speed_m_s": {
-                                    "type": "number",
-                                    "minimum": 0.0,
-                                },
-                                "timing_safety_limited": {
-                                    "type": "boolean",
-                                },
-                                "requested_peak_joint_speed_rad_s": {
-                                    "type": "number",
-                                    "minimum": 0.0,
-                                    "exclusiveMaximum": 20.0,
-                                },
-                                "effective_peak_joint_speed_rad_s": {
-                                    "type": "number",
-                                    "minimum": 0.0,
-                                    "exclusiveMaximum": 20.0,
-                                },
-                                "joint_speed_authentication_required": {
-                                    "type": "boolean",
-                                },
-                                "target_position_m": {
-                                    "type": "array",
-                                    "items": {"type": "number"},
-                                    "minItems": 3,
-                                    "maxItems": 3,
-                                },
-                                "orientation_policy": {
-                                    "type": "string",
-                                    "enum": [
-                                        "POSITION_ONLY",
-                                        (
-                                            "PRESERVE_MEASURED_"
-                                            "CONTROLLED_FRAME"
-                                        ),
-                                        (
-                                            "APPLY_CONTROLLED_FRAME_"
-                                            "YAW_DELTA"
-                                        ),
-                                    ],
-                                },
-                                "controlled_frame_yaw_delta_deg": {
-                                    "anyOf": [
-                                        {
-                                            "type": "number",
-                                            "minimum": (
-                                                -MAX_CONTROLLED_FRAME_YAW_DELTA_DEG
-                                            ),
-                                            "maximum": (
-                                                MAX_CONTROLLED_FRAME_YAW_DELTA_DEG
-                                            ),
-                                        },
-                                        {"type": "null"},
-                                    ],
-                                },
-                                "target_orientation_rpy_rad": {
-                                    "anyOf": [
-                                        {
-                                            "type": "array",
-                                            "items": {"type": "number"},
-                                            "minItems": 3,
-                                            "maxItems": 3,
-                                        },
-                                        {"type": "null"},
-                                    ],
+                                    "minLength": 1,
                                 },
                             },
-                            "required": [
-                                "preview_id",
-                                "motion_intent",
-                                "direction",
-                                "reference_frame",
-                                "resolved_direction_arm_base",
-                                "distance_m",
-                                "original_request_distance_m",
-                                "requested_speed_m_s",
-                                "requested_duration_s",
-                                "planned_duration_s",
-                                "planned_nominal_speed_m_s",
-                                "timing_safety_limited",
-                                "requested_peak_joint_speed_rad_s",
-                                "effective_peak_joint_speed_rad_s",
-                                "joint_speed_authentication_required",
-                                "target_position_m",
-                                "orientation_policy",
-                                "controlled_frame_yaw_delta_deg",
-                                "target_orientation_rpy_rad",
-                            ],
+                            "required": ["preview_id"],
                             "additionalProperties": False,
                         },
                         on_invoke_tool=execute_integrated_motion_preview,
                         strict_json_schema=True,
-                        needs_approval=relative_motion_needs_approval,
+                        needs_approval=integrated_motion_needs_approval,
                     ),
                 ]
             )
@@ -1827,15 +1648,13 @@ class PrototypeAgentDriver:
                 "call, do not request that identical transition again in the "
                 "same run; inspect once and report nonconvergence if the "
                 "runtime still does not satisfy the dependency. For a "
-                "requested relative "
-                "effector motion, inspect the current runtime even if earlier "
-                "conversation says the Providers were running, then activate "
-                "robot_arm.rebot_dm to HOT first with exact capability "
-                "robot.motion.arm.basic, then activate "
-                "robot_arm.primary.integrated to HOT with exact capability "
-                "robot.motion.arm.integrated.pos_vel.one_shot. Only after both "
-                "dependencies are ready, create the nonphysical preview and "
-                "then "
+                "requested relative effector motion, create the nonphysical "
+                "preview first instead of inspecting or activating Providers "
+                "preemptively. If that Skill reports a dependency unavailable, "
+                "follow its typed required_next_tool once. Request only the "
+                "Integrated capability named by the continuation; Manager owns "
+                "selection and transitive activation of its declared Basic "
+                "dependency. Then create one fresh preview and "
                 "request execution of that exact preview; do not stop at "
                 "asking the user to construct a separate decision ID. The "
                 "execution tool itself provides the human approval boundary, "
@@ -1907,10 +1726,13 @@ class PrototypeAgentDriver:
             )
             if lifecycle_control:
                 instructions += (
-                    " For an explicit Provider lifecycle request, or when a "
-                    "cold Provider is required for the requested Skill, "
-                    "inspect the runtime and call set_provider_residency for "
-                    "the necessary transition instead of answering with a "
+                    " For an explicit Provider lifecycle request, inspect the "
+                    "runtime and call set_provider_residency for the necessary "
+                    "transition. When a Skill reports a cold dependency, "
+                    "follow its typed required_next_tool directly and let "
+                    "Manager resolve declared transitive dependencies; inspect "
+                    "only if that transition does not converge. Do this instead "
+                    "of answering with a "
                     "permission request or calling an unrelated Skill. The "
                     "runtime snapshot includes complete current Provider "
                     "reports, controller telemetry, command and target state, "
@@ -1939,17 +1761,16 @@ class PrototypeAgentDriver:
                 )
             if integrated_motion_skill is not None:
                 instructions += (
-                    " For a requested relative end-effector motion, inspect "
-                    "the current runtime even if earlier conversation says the "
-                    "Providers were running. Activate robot_arm.rebot_dm to "
-                    "HOT first with exact capability robot.motion.arm.basic, "
-                    "then activate robot_arm.primary.integrated to HOT with "
-                    "exact capability "
-                    "robot.motion.arm.integrated.pos_vel.one_shot. Only after "
-                    "both are ready, create the nonphysical Integrated IK "
-                    "preview and then request "
+                    " For a requested relative end-effector motion, create "
+                    "the nonphysical Integrated IK preview first; do not "
+                    "inspect or activate Providers preemptively. If the "
+                    "preview reports a cold dependency, follow its typed "
+                    "required_next_tool once and request only its Integrated "
+                    "capability. Manager owns selection and transitive "
+                    "activation of the declared Basic dependency. After that "
+                    "transition is ready, create a fresh preview and request "
                     "execution of that exact preview. "
-                    "If either Provider is stopped, cold, or requires HOT "
+                    "If Integrated is stopped, cold, or requires HOT "
                     "recovery, do not report that approval is needed and end "
                     "the run: call set_provider_residency immediately so its "
                     "actual approval interruption can be resolved. "
@@ -2191,13 +2012,15 @@ class PrototypeAgentDriver:
             event_sink=event_sink,
         )
         if result.interruptions:
+            approvals = []
+            for item in result.interruptions:
+                approvals.append(
+                    await self._approval_description_with_pending(item)
+                )
             return InteractiveAgentResult(
                 answer=None,
                 state=result.to_state(),
-                approvals=[
-                    self._approval_description(item)
-                    for item in result.interruptions
-                ],
+                approvals=approvals,
             )
         return InteractiveAgentResult(
             answer=self._final_output(result.final_output),
@@ -2292,7 +2115,11 @@ class PrototypeAgentDriver:
         return json.dumps(output, ensure_ascii=False, default=str)
 
     @staticmethod
-    def _approval_description(item: Any) -> dict[str, Any]:
+    def _approval_description(
+        item: Any,
+        *,
+        canonical_motion_arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raw_item = item.raw_item
         if hasattr(raw_item, "model_dump"):
             raw = raw_item.model_dump(mode="json")
@@ -2315,6 +2142,9 @@ class PrototypeAgentDriver:
                 arguments = {}
         elif isinstance(raw_arguments, dict):
             arguments = raw_arguments
+
+        if canonical_motion_arguments is not None:
+            arguments = dict(canonical_motion_arguments)
 
         tool_name = item.tool_name
         title = f"Approve {tool_name}?"
@@ -2538,4 +2368,43 @@ class PrototypeAgentDriver:
             "confirm_label": confirm_label,
             "details": details,
             "request": raw,
+            "authorization_arguments": arguments,
         }
+
+    async def _approval_description_with_pending(
+        self,
+        item: Any,
+    ) -> dict[str, Any]:
+        canonical: dict[str, Any] | None = None
+        if (
+            item.tool_name == "execute_integrated_motion_preview"
+            and self.integrated_motion_skill is not None
+        ):
+            raw_item = item.raw_item
+            if hasattr(raw_item, "model_dump"):
+                raw = raw_item.model_dump(mode="json")
+            elif isinstance(raw_item, dict):
+                raw = raw_item
+            else:
+                raw = {
+                    "arguments": getattr(raw_item, "arguments", {})
+                }
+            raw_arguments = raw.get("arguments", {})
+            if isinstance(raw_arguments, str):
+                try:
+                    decoded = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    decoded = {}
+            else:
+                decoded = raw_arguments
+            if isinstance(decoded, dict):
+                canonical = await (
+                    self.integrated_motion_skill
+                    .pending_execution_authorization_arguments(
+                        decoded.get("preview_id")
+                    )
+                )
+        return self._approval_description(
+            item,
+            canonical_motion_arguments=canonical,
+        )

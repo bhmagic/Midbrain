@@ -131,6 +131,19 @@ Agent adapter should:
 7. Treat browser disconnect, model timeout, cancellation, and process restart
    as explicit states. None of them proves whether a physical action completed.
 8. Preserve one stable run identity and structured terminal result.
+9. Pass only an opaque preview or plan identifier through the model when the
+   host already owns canonical execution state. Resolve authorization limits,
+   targets, timing, controller digests, and freshness checks from that pending
+   host state immediately before execution.
+
+When a task-facing Provider declares dependencies in Manager configuration,
+the adapter requests that Provider once. Manager resolves, orders, and
+deduplicates the transitive dependency graph. An Agent may inspect a typed
+failure after a bounded activation fails to converge, but it must not turn
+`A depends on B depends on C` into three routine model-selected lifecycle
+steps. This keeps dependency topology out of Agent prompts and permits another
+compatible Provider graph to be substituted without rewriting conversation
+logic.
 
 An adapter may use an OpenAI, Google, local, deterministic, ROS-connected, or
 other planning runtime. Manager, Fabric, Provider, Skill, safety, and evidence

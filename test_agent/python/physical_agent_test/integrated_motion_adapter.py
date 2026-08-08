@@ -989,37 +989,6 @@ class IntegratedRelativeMotionAdapter:
                 <= self.approval_ttl_s
             }
             self._pending[preview_id] = pending
-        required_next_arguments = {
-            "preview_id": preview_id,
-            "motion_intent": pending["motion_intent"],
-            "direction": normalized_direction,
-            "reference_frame": normalized_reference_frame,
-            "resolved_direction_arm_base": list(vector),
-            "distance_m": distance,
-            "original_request_distance_m": distance,
-            "requested_speed_m_s": requested_speed,
-            "requested_duration_s": requested_duration_s,
-            "planned_duration_s": planned_duration_s,
-            "planned_nominal_speed_m_s": planned_nominal_speed_m_s,
-            "timing_safety_limited": timing_safety_limited,
-            "requested_peak_joint_speed_rad_s": (
-                requested_peak_joint_speed_rad_s
-            ),
-            "effective_peak_joint_speed_rad_s": (
-                effective_peak_joint_speed_rad_s
-            ),
-            "joint_speed_authentication_required": (
-                joint_speed_authentication_required
-            ),
-            "target_position_m": target,
-            "orientation_policy": normalized_orientation_policy,
-            "controlled_frame_yaw_delta_deg": normalized_yaw_delta_deg,
-            "target_orientation_rpy_rad": (
-                list(target_orientation_rpy_rad)
-                if target_orientation_rpy_rad is not None
-                else None
-            ),
-        }
         return {
             "status": "PREVIEW_READY",
             "workflow_complete": False,
@@ -1063,12 +1032,13 @@ class IntegratedRelativeMotionAdapter:
             "next_tool": "execute_integrated_motion_preview",
             "required_next_tool": {
                 "name": "execute_integrated_motion_preview",
-                "arguments": required_next_arguments,
+                "arguments": {"preview_id": preview_id},
             },
             "message": (
                 "The exact IK target is previewed but has not moved. Do not "
-                "answer the operator yet. Call required_next_tool now with "
-                "its arguments unchanged to present operator approval."
+                "answer the operator yet. Call required_next_tool with its "
+                "opaque preview ID to present operator approval. The host "
+                "recovers the canonical motion envelope."
             ),
             "integrated_preview": preview,
             "visual_verification": (
@@ -1306,29 +1276,33 @@ class IntegratedRelativeMotionAdapter:
             "workflow_complete": False,
             "physical_motion_authorized": False,
             "retry_same_tool": False,
-            "required_provider_sequence": [
+            "required_provider": {
+                "provider_id": "robot_arm.primary.integrated",
+                "required_residency": "HOT",
+                "required_capability": _INTEGRATED_ONE_SHOT_CAPABILITY,
+            },
+            "manager_resolved_dependencies": [
                 {
                     "provider_id": "robot_arm.rebot_dm",
                     "required_residency": "HOT",
                     "required_capability": _BASIC_MOTION_CAPABILITY,
-                },
-                {
+                }
+            ],
+            "required_next_tool": {
+                "name": "set_provider_residency",
+                "arguments": {
                     "provider_id": "robot_arm.primary.integrated",
-                    "required_residency": "HOT",
+                    "action": "hot",
                     "required_capability": (
                         _INTEGRATED_ONE_SHOT_CAPABILITY
                     ),
                 },
-            ],
-            "required_next_tool": {
-                "name": "inspect_midbrain_runtime",
-                "arguments": {},
             },
             "message": (
                 "The controller dependency is unavailable. Do not call this "
-                "preview tool again yet. Inspect the current Midbrain runtime, "
-                "activate Basic and then Integrated to HOT with approval, and "
-                "only then create a fresh preview."
+                "preview tool again yet. Request Integrated HOT with approval; "
+                "Manager resolves and activates its declared Basic dependency "
+                "transitively. Then create a fresh preview."
             ),
             "connection_detail": reason,
         }
@@ -1390,6 +1364,94 @@ class IntegratedRelativeMotionAdapter:
                 plan=plan,
             )
         return preview, preview_id
+
+    @staticmethod
+    def _execution_arguments_from_pending(
+        preview_id: str,
+        pending: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the canonical execution envelope behind an opaque preview ID."""
+
+        target_orientation = pending["target_orientation_rpy_rad"]
+        return {
+            "preview_id": preview_id,
+            "motion_intent": pending["motion_intent"],
+            "direction": pending["direction"],
+            "reference_frame": pending["reference_frame"],
+            "resolved_direction_arm_base": list(
+                pending["resolved_direction_arm_base"]
+            ),
+            "distance_m": pending["distance_m"],
+            "original_request_distance_m": pending[
+                "original_request_distance_m"
+            ],
+            "requested_speed_m_s": pending["requested_speed_m_s"],
+            "requested_duration_s": pending["requested_duration_s"],
+            "planned_duration_s": pending["planned_duration_s"],
+            "planned_nominal_speed_m_s": pending[
+                "planned_nominal_speed_m_s"
+            ],
+            "timing_safety_limited": pending["timing_safety_limited"],
+            "requested_peak_joint_speed_rad_s": pending[
+                "requested_peak_joint_speed_rad_s"
+            ],
+            "effective_peak_joint_speed_rad_s": pending[
+                "effective_peak_joint_speed_rad_s"
+            ],
+            "joint_speed_authentication_required": pending[
+                "joint_speed_authentication_required"
+            ],
+            "target_position_m": list(pending["target_position_m"]),
+            "orientation_policy": pending["orientation_policy"],
+            "controlled_frame_yaw_delta_deg": pending[
+                "controlled_frame_yaw_delta_deg"
+            ],
+            "target_orientation_rpy_rad": (
+                list(target_orientation)
+                if target_orientation is not None
+                else None
+            ),
+        }
+
+    async def pending_execution_authorization_arguments(
+        self,
+        preview_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the canonical motion envelope behind one opaque preview ID."""
+
+        normalized_preview_id = str(preview_id or "").strip()
+        if not normalized_preview_id:
+            return None
+        async with self._lock:
+            pending = self._pending.get(normalized_preview_id)
+            if pending is None:
+                return None
+            if (
+                time.monotonic() - pending["created_monotonic"]
+                > self.approval_ttl_s
+            ):
+                self._pending.pop(normalized_preview_id, None)
+                return None
+            return self._execution_arguments_from_pending(
+                normalized_preview_id,
+                pending,
+            )
+
+    async def execute_preview(
+        self,
+        *,
+        preview_id: str,
+    ) -> dict[str, Any]:
+        """Execute a pending preview without trusting model-copied motion data."""
+
+        arguments = await self.pending_execution_authorization_arguments(
+            preview_id
+        )
+        if arguments is None:
+            raise RuntimeError(
+                "the approved IK preview is missing, expired, or already used"
+            )
+        return await self.execute(**arguments)
 
     async def execute(
         self,

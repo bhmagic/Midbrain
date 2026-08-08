@@ -2,7 +2,7 @@
 
 ## Control plane: Resource Provider Manager
 
-The Manager discovers Providers from manifests and configuration, starts and stops them, forwards generic Provider requests, tracks health and heartbeat expiry, exposes a capability catalog, and owns motion-inhibit coordination. The long-term design also assigns it dependency resolution, fallback, residency policy, and fenced Control Authority Leases.
+The Manager discovers Providers from manifests and configuration, starts and stops them, forwards generic Provider requests, tracks health and heartbeat expiry, exposes a capability catalog, resolves declared Provider dependencies, and owns motion-inhibit coordination. A `HOT` request for one Provider starts and activates its transitive dependencies in dependency order and deduplicates shared dependencies. The Agent and Skills request the task-facing Provider or capability once; they do not replay the dependency graph as a sequence of model decisions. Fallback selection, predictive residency policy, and fully fenced Control Authority Leases remain longer-term work.
 
 Provider residency is:
 
@@ -112,9 +112,11 @@ handoff is
    liveness, readiness, and observation links without activating them.
 3. The operator enters a guarded development flow or asks an Agent to perform a
    task.
-4. The Agent or bounded Skill inspects current runtime state and requests host
-   policy authorization for required Provider activations. Development may
-   project an unresolved decision into an approval dialog.
+4. The Agent invokes the finite Skill first unless the operator explicitly
+   requested lifecycle inspection. If the Skill reports a cold dependency,
+   the host requests the task-facing Provider `HOT` once and Manager resolves
+   declared transitive dependencies. Development may project an unresolved
+   lifecycle decision into an approval dialog.
 5. For spatial initialization, the formal Initialize / Re-establish Space
    Cognition Skill selects the camera, depth, IMU, and VIO Providers. A
    deliberate re-origin is approval-gated and revokes active workcell

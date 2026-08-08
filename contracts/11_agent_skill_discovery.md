@@ -114,3 +114,16 @@ inspection or duplicate lifecycle call. A timeout never grants authority and
 must not be reported as successful activation. Skill adapters may retain a
 separate bounded data-plane check for a frame or observation that races the
 control-plane heartbeat.
+
+When the selected Provider declares dependencies, the host submits one `HOT`
+request for that task-facing Provider. Manager owns transitive dependency
+ordering and deduplication. Agent-visible recovery data may identify those
+dependencies for diagnosis, but the continuation names only the task-facing
+Provider; the model must not reproduce the dependency graph as separate
+lifecycle calls.
+
+For preview-then-approve execution, the continuation should contain only an
+opaque pending preview identifier when the host retains canonical state. The
+host resolves the full motion envelope for authorization and execution. A
+model-copied target, timing value, transform, or controller digest is not an
+authority source and must not replace the pending host record.
