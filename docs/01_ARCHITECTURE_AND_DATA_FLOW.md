@@ -2,7 +2,7 @@
 
 ## Control plane: Resource Provider Manager
 
-The Manager discovers Providers from manifests and configuration, starts and stops them, forwards generic Provider requests, tracks health and heartbeat expiry, exposes a capability catalog, and owns motion-inhibit coordination. The long-term design also assigns it dependency resolution, fallback, residency policy, and fenced Control Authority Leases.
+The Manager discovers Providers from manifests and configuration, starts and stops them, forwards generic Provider requests, tracks health and heartbeat expiry, exposes a capability catalog, resolves declared Provider dependencies, and owns motion-inhibit coordination. A `HOT` request for one Provider starts and activates its transitive dependencies in dependency order and deduplicates shared dependencies. The Agent and Skills request the task-facing Provider or capability once; they do not replay the dependency graph as a sequence of model decisions. Fallback selection, predictive residency policy, and fully fenced Control Authority Leases remain longer-term work.
 
 Provider residency is:
 
@@ -112,9 +112,11 @@ handoff is
    liveness, readiness, and observation links without activating them.
 3. The operator enters a guarded development flow or asks an Agent to perform a
    task.
-4. The Agent or bounded Skill inspects current runtime state and requests host
-   policy authorization for required Provider activations. Development may
-   project an unresolved decision into an approval dialog.
+4. The Agent invokes the finite Skill first unless the operator explicitly
+   requested lifecycle inspection. If the Skill reports a cold dependency,
+   the host requests the task-facing Provider `HOT` once and Manager resolves
+   declared transitive dependencies. Development may project an unresolved
+   lifecycle decision into an approval dialog.
 5. For spatial initialization, the formal Initialize / Re-establish Space
    Cognition Skill selects the camera, depth, IMU, and VIO Providers. A
    deliberate re-origin is approval-gated and revokes active workcell
@@ -183,6 +185,29 @@ run/approval/streaming implementation. Both pages submit only to the canonical
 `/api/streaming-runs` contract; there is no synchronous execution route or
 developer execution alias. Developer diagnostics do not change the Agent's
 eligible tools, lifecycle policy, retries, or authorization behavior.
+
+For an ordinary requested Integrated relative motion, the reference Agent host
+projects nonphysical preview and its exact execution continuation as one
+`perform_relative_effector_motion` tool call. Preparation is keyed by the SDK
+call ID and retains the opaque preview ID in host memory. A `PREVIEW_READY`
+result may proceed only through the existing canonical motion-authorization
+policy; execution then reuses the exact pending preview and retains controller
+freshness and completion checks. Dependency recovery, calibration, operator
+questions, failed previews, and every continuation other than the allowlisted
+physical commit return to normal Agent orchestration without being chained.
+The lower-level preview and execution tools remain available for explicit
+nonphysical preview and compatibility diagnostics.
+
+The general reference invariant is one Agent decision per task-facing finite
+operation. Such an operation may own several sequential internal API calls
+only when their order and continuation are mechanically determined within one
+existing responsibility boundary. Each stage remains independently bounded,
+validated, observable, and auditable. Crossing into Provider lifecycle
+recovery, calibration review, operator input, new observation, replanning, or
+uncertain physical-outcome handling ends the compound operation and returns a
+typed result to the Agent. A prompt containing several semantic operations
+therefore still produces several task-facing calls; the host does not turn a
+quest into one opaque transaction.
 
 The browser groups each backend-owned run into one user/Agent turn. Public
 reasoning-summary deltas and sanitized lifecycle events populate an expandable

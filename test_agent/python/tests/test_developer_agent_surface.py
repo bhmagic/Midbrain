@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from physical_agent_test.agent_driver import (
+    AgentSessionAuthorization,
     PrototypeAgentDriver,
     build_midbrain_runtime_snapshot,
     build_turn_safe_session_input,
@@ -29,14 +30,54 @@ class _Manager:
 
 
 class _IntegratedMotionSkill:
-    async def preview(self, *, direction: str, distance_m: float):
+    def __init__(self) -> None:
+        self.preview_count = 0
+        self.executed_preview_ids: list[str] = []
+        self.next_preview_result: dict | None = None
+
+    async def preview(self, **arguments):
+        if self.next_preview_result is not None:
+            result = self.next_preview_result
+            self.next_preview_result = None
+            return result
+        self.preview_count += 1
+        preview_id = f"preview-{self.preview_count}"
         return {
-            "direction": direction,
-            "distance_m": distance_m,
+            "status": "PREVIEW_READY",
+            "workflow_complete": False,
+            "physical_motion_authorized": False,
+            "direction": arguments.get("direction"),
+            "distance_m": arguments.get("distance_m"),
+            "preview_id": preview_id,
+            "required_next_tool": {
+                "name": "execute_integrated_motion_preview",
+                "arguments": {"preview_id": preview_id},
+            },
         }
 
     async def execute(self, **arguments):
         return arguments
+
+    async def execute_preview(self, *, preview_id: str):
+        self.executed_preview_ids.append(preview_id)
+        return {
+            "status": "MOTION_COMPLETED",
+            "physical_motion_completed": True,
+            "preview_id": preview_id,
+        }
+
+    async def pending_execution_authorization_arguments(self, preview_id):
+        return {
+            "preview_id": preview_id,
+            "motion_intent": "NEW_RELATIVE_MOVE",
+            "direction": "UP",
+            "distance_m": 0.2,
+            "requested_speed_m_s": 0.2,
+            "planned_nominal_speed_m_s": 0.2,
+            "planned_duration_s": 1.0,
+            "target_position_m": [0.1, 0.2, 0.5],
+            "orientation_policy": "POSITION_ONLY",
+        }
 
 
 class _BasicSafeHomeSkill:
@@ -207,15 +248,20 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn("set_provider_residency", tools)
         self.assertTrue(tools["set_provider_residency"].needs_approval)
         self.assertIn("preview_relative_effector_motion", tools)
+        self.assertIn("perform_relative_effector_motion", tools)
         self.assertNotIn("retry_last_integrated_motion_target", tools)
         self.assertIn("execute_integrated_motion_preview", tools)
         self.assertIn("execute_basic_safe_home", tools)
-        self.assertIn(
+        self.assertNotIn(
             "robot_arm.rebot_dm",
             tools["preview_relative_effector_motion"].description,
         )
-        self.assertIn(
+        self.assertNotIn(
             "robot_arm.primary.integrated",
+            tools["preview_relative_effector_motion"].description,
+        )
+        self.assertIn(
+            "Manager activates declared dependencies",
             tools["preview_relative_effector_motion"].description,
         )
         self.assertFalse(
@@ -224,6 +270,29 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertTrue(
             tools["execute_integrated_motion_preview"].needs_approval
         )
+        self.assertTrue(
+            callable(tools["perform_relative_effector_motion"].needs_approval)
+        )
+        self.assertEqual(
+            tools["perform_relative_effector_motion"].params_json_schema,
+            tools["preview_relative_effector_motion"].params_json_schema,
+        )
+        self.assertEqual(
+            tools[
+                "execute_integrated_motion_preview"
+            ].params_json_schema,
+            {
+                "type": "object",
+                "properties": {
+                    "preview_id": {
+                        "type": "string",
+                        "minLength": 1,
+                    },
+                },
+                "required": ["preview_id"],
+                "additionalProperties": False,
+            },
+        )
         self.assertTrue(tools["execute_basic_safe_home"].needs_approval)
         self.assertIn(
             "instead of answering with a permission request",
@@ -231,6 +300,18 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         )
         self.assertIn(
             "call set_provider_residency immediately",
+            driver.agent.instructions,
+        )
+        self.assertIn(
+            "Manager owns selection and transitive activation",
+            driver.agent.instructions,
+        )
+        self.assertIn(
+            "call perform_relative_effector_motion directly",
+            driver.agent.instructions,
+        )
+        self.assertNotIn(
+            "activate robot_arm.rebot_dm to HOT first",
             driver.agent.instructions,
         )
 
@@ -347,6 +428,233 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
 
 
 class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _relative_request() -> dict[str, object]:
+        return {
+            "direction": "UP",
+            "reference_frame": "WORLD",
+            "arm_mount_assumption": "UNKNOWN",
+            "camera_level_assumption": "UNKNOWN",
+            "fixed_vio_rig_assumption": "UNKNOWN",
+            "orientation_policy": "POSITION_ONLY",
+            "controlled_frame_yaw_delta_deg": None,
+            "distance_m": 0.2,
+            "requested_speed_m_s": None,
+        }
+
+    async def test_opaque_motion_authorization_checks_canonical_envelope(
+        self,
+    ) -> None:
+        from agents.run_context import RunContextWrapper
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=_IntegratedMotionSkill(),
+        )
+        tool = next(
+            item
+            for item in driver.agent.tools
+            if item.name == "execute_integrated_motion_preview"
+        )
+        needs_approval = tool.needs_approval
+        assert callable(needs_approval)
+        context = RunContextWrapper(
+            AgentSessionAuthorization(
+                auto_authorize_relative_motion=True,
+                max_auto_move_cm=25.0,
+                max_auto_speed_m_s=0.3,
+            )
+        )
+
+        required = await needs_approval(
+            context,
+            {"preview_id": "preview-opaque"},
+            "call-1",
+        )
+
+        self.assertFalse(required)
+
+    async def test_opaque_motion_approval_uses_host_canonical_envelope(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=_IntegratedMotionSkill(),
+        )
+        item = SimpleNamespace(
+            tool_name="execute_integrated_motion_preview",
+            tool_namespace=None,
+            raw_item={
+                "arguments": '{"preview_id":"preview-opaque"}'
+            },
+        )
+
+        approval = await driver._approval_description_with_pending(item)
+
+        self.assertEqual(approval["title"], "Move the arm UP by 20 cm?")
+        self.assertIn(
+            {"label": "Target XYZ", "value": "0.1000, 0.2000, 0.5000 m"},
+            approval["details"],
+        )
+        self.assertEqual(
+            approval["request"]["arguments"],
+            '{"preview_id":"preview-opaque"}',
+        )
+
+    async def test_prepared_motion_auto_authorizes_and_executes_same_call(
+        self,
+    ) -> None:
+        from agents.run_context import RunContextWrapper
+
+        root = Path(__file__).resolve().parents[3]
+        skill = _IntegratedMotionSkill()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=skill,
+        )
+        tool = next(
+            item
+            for item in driver.agent.tools
+            if item.name == "perform_relative_effector_motion"
+        )
+        needs_approval = tool.needs_approval
+        assert callable(needs_approval)
+        arguments = self._relative_request()
+        required = await needs_approval(
+            RunContextWrapper(
+                AgentSessionAuthorization(
+                    auto_authorize_relative_motion=True,
+                    max_auto_move_cm=25.0,
+                    max_auto_speed_m_s=0.3,
+                )
+            ),
+            arguments,
+            "call-prepared",
+        )
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                SimpleNamespace(tool_call_id="call-prepared"),
+                json.dumps(arguments),
+            )
+        )
+
+        self.assertFalse(required)
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertEqual(skill.preview_count, 1)
+        self.assertEqual(skill.executed_preview_ids, ["preview-1"])
+
+    async def test_prepared_motion_manual_approval_uses_call_canonical_state(
+        self,
+    ) -> None:
+        from agents.run_context import RunContextWrapper
+
+        root = Path(__file__).resolve().parents[3]
+        skill = _IntegratedMotionSkill()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=skill,
+        )
+        tool = next(
+            item
+            for item in driver.agent.tools
+            if item.name == "perform_relative_effector_motion"
+        )
+        needs_approval = tool.needs_approval
+        assert callable(needs_approval)
+        arguments = self._relative_request()
+        required = await needs_approval(
+            RunContextWrapper(AgentSessionAuthorization()),
+            arguments,
+            "call-manual",
+        )
+        item = SimpleNamespace(
+            tool_name="perform_relative_effector_motion",
+            tool_namespace=None,
+            raw_item={
+                "call_id": "call-manual",
+                "arguments": json.dumps(arguments),
+            },
+        )
+
+        approval = await driver._approval_description_with_pending(item)
+
+        self.assertTrue(required)
+        self.assertEqual(approval["title"], "Move the arm UP by 20 cm?")
+        self.assertEqual(
+            approval["authorization_arguments"]["preview_id"],
+            "preview-1",
+        )
+        self.assertEqual(skill.executed_preview_ids, [])
+
+    async def test_prepared_motion_does_not_chain_dependency_continuation(
+        self,
+    ) -> None:
+        from agents.run_context import RunContextWrapper
+
+        root = Path(__file__).resolve().parents[3]
+        skill = _IntegratedMotionSkill()
+        skill.next_preview_result = {
+            "status": "DEPENDENCY_UNAVAILABLE",
+            "workflow_complete": False,
+            "physical_motion_authorized": False,
+            "required_next_tool": {
+                "name": "set_provider_residency",
+                "arguments": {
+                    "provider_id": "robot_arm.primary.integrated",
+                    "action": "hot",
+                    "required_capability": (
+                        "robot.motion.arm.integrated.pos_vel.one_shot"
+                    ),
+                },
+            },
+        }
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=skill,
+        )
+        tool = next(
+            item
+            for item in driver.agent.tools
+            if item.name == "perform_relative_effector_motion"
+        )
+        needs_approval = tool.needs_approval
+        assert callable(needs_approval)
+        arguments = self._relative_request()
+        required = await needs_approval(
+            RunContextWrapper(AgentSessionAuthorization()),
+            arguments,
+            "call-dependency",
+        )
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                SimpleNamespace(tool_call_id="call-dependency"),
+                json.dumps(arguments),
+            )
+        )
+
+        self.assertFalse(required)
+        self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")
+        self.assertEqual(skill.executed_preview_ids, [])
+
     async def test_unadvertised_model_capability_does_not_false_timeout(
         self,
     ) -> None:

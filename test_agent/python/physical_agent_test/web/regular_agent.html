@@ -616,6 +616,8 @@
     }
 
     function approvalArguments(approval) {
+      const canonical = approval.authorization_arguments;
+      if (canonical && typeof canonical === "object") return canonical;
       const raw = approval.request?.arguments || {};
       if (typeof raw === "string") {
         try {
@@ -713,8 +715,10 @@
             plannedSpeedMps === 0 &&
             argumentsValue.requested_speed_m_s == null &&
             boundedYaw;
-          return approval.tool_name ===
-              "execute_integrated_motion_preview" &&
+          return [
+            "execute_integrated_motion_preview",
+            "perform_relative_effector_motion"
+          ].includes(approval.tool_name) &&
             (exactTranslation || exactCombinedPose || exactPureRotation);
         });
       if (motionEligible) {

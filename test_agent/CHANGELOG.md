@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Replace the model-copied Integrated motion execution envelope with one
+  opaque pending `preview_id`. The host recovers the canonical target, spatial
+  resolution, timing, orientation, joint-speed policy, and controller preview
+  for both session authorization and the final freshness-checked commit.
+- Remove routine runtime inspection and Agent-managed Basic-to-Integrated
+  activation from relative motion. A cold preview now returns one Integrated
+  `HOT` continuation, and Manager resolves its declared Basic dependency
+  transitively. Scene compilation likewise requests only its task-facing
+  Provider instead of replaying SAM2, camera, and Basic dependencies through
+  the model.
+- Add the call-scoped `perform_relative_effector_motion` Agent projection. It
+  prepares the existing nonphysical preview during the exact SDK tool call,
+  resolves authorization from host-retained canonical state, and executes only
+  that preview after the existing approval policy. Repeated identical commands
+  remain distinct because the binding uses both SDK call ID and opaque preview
+  ID.
+- Leave dependency recovery, calibration, operator questions, replanning, and
+  every nonmatching `required_next_tool` visible to their existing workflows;
+  there is no recursive continuation executor.
+
 ## 0.4.9 - 2026-08-05
 
 - Require the operator's documented exact FoundationPose request before the

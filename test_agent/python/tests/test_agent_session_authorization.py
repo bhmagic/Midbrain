@@ -299,6 +299,103 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                 decision,
             )
 
+    def test_motion_resume_authorization_uses_host_canonical_envelope(
+        self,
+    ) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_BOUNDED_RELATIVE_MOTION",
+            max_auto_move_cm=25.0,
+            max_auto_speed_m_s=0.3,
+        )
+        interruption = _interruption(
+            "execute_integrated_motion_preview",
+            '{"preview_id":"preview-opaque"}',
+        )
+        approval = PrototypeAgentDriver._approval_description(
+            interruption,
+            canonical_motion_arguments=_pose_motion_arguments(
+                preview_id="preview-opaque",
+            ),
+        )
+
+        _validate_automatic_agent_approval([approval], decision)
+
+        self.assertEqual(
+            approval["request"]["arguments"],
+            '{"preview_id":"preview-opaque"}',
+        )
+        self.assertEqual(
+            approval["authorization_arguments"]["distance_m"],
+            0.2,
+        )
+
+    def test_prepared_motion_uses_the_same_bounded_authorization(self) -> None:
+        decision = DeveloperApprovalDecision(
+            approve=True,
+            approval_mode="AUTO_BOUNDED_RELATIVE_MOTION",
+            max_auto_move_cm=25.0,
+            max_auto_speed_m_s=0.3,
+        )
+        interruption = _interruption(
+            "perform_relative_effector_motion",
+            '{"direction":"UP","distance_m":0.2}',
+        )
+        approval = PrototypeAgentDriver._approval_description(
+            interruption,
+            canonical_motion_arguments=_pose_motion_arguments(
+                preview_id="preview-prepared",
+            ),
+        )
+
+        _validate_automatic_agent_approval([approval], decision)
+
+        self.assertEqual(
+            approval["authorization_arguments"]["preview_id"],
+            "preview-prepared",
+        )
+
+    def test_motion_approval_fingerprint_ignores_ephemeral_preview_id(
+        self,
+    ) -> None:
+        first = PrototypeAgentDriver._approval_description(
+            _interruption(
+                "perform_relative_effector_motion",
+                '{"direction":"UP","distance_m":0.2}',
+            ),
+            canonical_motion_arguments=_pose_motion_arguments(
+                preview_id="preview-1",
+            ),
+        )
+        repeated = PrototypeAgentDriver._approval_description(
+            _interruption(
+                "execute_integrated_motion_preview",
+                '{"preview_id":"preview-2"}',
+            ),
+            canonical_motion_arguments=_pose_motion_arguments(
+                preview_id="preview-2",
+            ),
+        )
+        new_target = PrototypeAgentDriver._approval_description(
+            _interruption(
+                "perform_relative_effector_motion",
+                '{"direction":"UP","distance_m":0.2}',
+            ),
+            canonical_motion_arguments=_pose_motion_arguments(
+                preview_id="preview-3",
+                target_position_m=[0.1, 0.2, 0.7],
+            ),
+        )
+
+        self.assertEqual(
+            _approval_fingerprint(first),
+            _approval_fingerprint(repeated),
+        )
+        self.assertNotEqual(
+            _approval_fingerprint(first),
+            _approval_fingerprint(new_target),
+        )
+
     def test_motion_auto_authorization_covers_bounded_pose_yaw_only(
         self,
     ) -> None:

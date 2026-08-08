@@ -25,6 +25,7 @@ from .agent_driver import (
     AgentEventSink,
     AgentInput,
     AgentSessionAuthorization,
+    PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
     PrototypeAgentDriver,
     relative_motion_within_authorization,
 )
@@ -735,6 +736,9 @@ class DeveloperApprovalDecision(BaseModel):
 
 
 def _approval_arguments(approval: dict[str, Any]) -> dict[str, Any]:
+    canonical = approval.get("authorization_arguments")
+    if isinstance(canonical, dict):
+        return canonical
     request = approval.get("request")
     request = request if isinstance(request, dict) else {}
     raw_arguments = request.get("arguments", {})
@@ -751,10 +755,18 @@ def _approval_arguments(approval: dict[str, Any]) -> dict[str, Any]:
 
 def _approval_fingerprint(approval: dict[str, Any]) -> str:
     """Identify an exact protected operation without SDK call identifiers."""
+    tool_name = str(approval.get("tool_name") or "")
+    arguments = dict(_approval_arguments(approval))
+    if tool_name in {
+        "execute_integrated_motion_preview",
+        PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+    }:
+        arguments.pop("preview_id", None)
+        tool_name = "integrated_relative_motion_commit"
     return json.dumps(
         {
-            "tool_name": str(approval.get("tool_name") or ""),
-            "arguments": _approval_arguments(approval),
+            "tool_name": tool_name,
+            "arguments": arguments,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -771,7 +783,11 @@ def _record_approval_decisions(
 ) -> dict[str, bool]:
     decisions = dict(existing)
     for interruption in interruptions:
-        approval = PrototypeAgentDriver._approval_description(interruption)
+        approval = (
+            interruption
+            if isinstance(interruption, dict)
+            else PrototypeAgentDriver._approval_description(interruption)
+        )
         decisions[_approval_fingerprint(approval)] = bool(approved)
     return decisions
 
@@ -817,7 +833,9 @@ def _validate_automatic_agent_approval(
     if not decision.approve or decision.approval_mode == "MANUAL":
         return
     approvals = [
-        PrototypeAgentDriver._approval_description(interruption)
+        interruption
+        if isinstance(interruption, dict)
+        else PrototypeAgentDriver._approval_description(interruption)
         for interruption in interruptions
     ]
     if decision.approval_mode == "AUTO_PROVIDER_ACTIVATION":
@@ -867,7 +885,10 @@ def _validate_automatic_agent_approval(
             )
         eligible = all(
             approval.get("tool_name")
-            == "execute_integrated_motion_preview"
+            in {
+                "execute_integrated_motion_preview",
+                PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+            }
             and relative_motion_within_authorization(
                 _approval_arguments(approval),
                 max_auto_move_cm=maximum_cm,
@@ -2625,14 +2646,21 @@ async def decide_streaming_run(
             status_code=409,
             detail="autonomous agent run has no pending approvals",
         )
+    approval_descriptions = [
+        await driver._approval_description_with_pending(interruption)
+        for interruption in interruptions
+    ]
     try:
-        _validate_automatic_agent_approval(interruptions, decision)
+        _validate_automatic_agent_approval(
+            approval_descriptions,
+            decision,
+        )
     except HTTPException:
         async with pending_agent_runs_lock:
             pending_agent_runs[run_id] = entry
         raise
     approval_decisions = _record_approval_decisions(
-        interruptions,
+        approval_descriptions,
         approved=decision.approve,
         existing=entry.approval_decisions,
     )
@@ -2640,6 +2668,7 @@ async def decide_streaming_run(
         if decision.approve:
             entry.state.approve(interruption)
         else:
+            await driver.discard_pending_prepared_action(interruption)
             entry.state.reject(
                 interruption,
                 rejection_message=decision.rejection_message,
@@ -3812,6 +3841,8 @@ function updateAgentAuthorizationTicker() {
 }
 
 function agentApprovalArguments(approval) {
+  const canonical = approval.authorization_arguments;
+  if (canonical && typeof canonical === 'object') return canonical;
   const raw = (approval.request && approval.request.arguments) || {};
   if (typeof raw === 'string') {
     try {
@@ -3895,7 +3926,10 @@ function automaticDeveloperApprovalDecision(approvals) {
         direction === 'NONE' && distanceM === 0 &&
         plannedSpeedMps === 0 &&
         argumentsValue.requested_speed_m_s == null && boundedYaw;
-      return approval.tool_name === 'execute_integrated_motion_preview' &&
+      return [
+        'execute_integrated_motion_preview',
+        'perform_relative_effector_motion'
+      ].includes(approval.tool_name) &&
         (exactTranslation || exactCombinedPose || exactPureRotation);
     });
   if (motionEligible) {

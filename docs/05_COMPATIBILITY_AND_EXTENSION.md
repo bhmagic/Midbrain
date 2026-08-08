@@ -131,6 +131,46 @@ Agent adapter should:
 7. Treat browser disconnect, model timeout, cancellation, and process restart
    as explicit states. None of them proves whether a physical action completed.
 8. Preserve one stable run identity and structured terminal result.
+9. Pass only an opaque preview or plan identifier through the model when the
+   host already owns canonical execution state. Resolve authorization limits,
+   targets, timing, controller digests, and freshness checks from that pending
+   host state immediately before execution.
+
+A compatible Agent adapter may reduce one mechanically determined
+preview-to-commit model round trip with a call-scoped prepared-action
+projection. It must prepare nonphysically, retain canonical state behind an
+opaque identifier, bind that state to the exact agent tool-call identity,
+evaluate the existing authorization policy after preparation, and fail closed
+if the binding is missing or changed. Only one explicitly configured
+continuation pair may be coalesced. Do not recursively interpret
+`required_next_tool`: lifecycle recovery, calibration activation,
+re-observation, replanning, user questions, and other branches retain their
+own owning workflow and authorization boundary.
+
+When a task-facing Provider declares dependencies in Manager configuration,
+the adapter requests that Provider once. Manager resolves, orders, and
+deduplicates the transitive dependency graph. An Agent may inspect a typed
+failure after a bounded activation fails to converge, but it must not turn
+`A depends on B depends on C` into three routine model-selected lifecycle
+steps. This keeps dependency topology out of Agent prompts and permits another
+compatible Provider graph to be substituted without rewriting conversation
+logic.
+
+Treat the resulting compound operation as one Agent-facing decision boundary,
+not as one indivisible implementation API. Its internal Provider, Skill, and
+controller calls remain typed, timeout-bounded, observable, and attributable
+to their owning components. An adapter must return control when a continuation
+changes owner or requires semantic interpretation, recovery, reviewed state
+activation, new evidence, operator input, or uncertain-outcome handling.
+Independent Skills must not be collapsed merely to reduce the visible tool
+count.
+
+For current reference workflows, the generic host infrastructure now provides
+the intended readiness and exact-continuation handoff mechanics. Further
+latency or reliability work should normally be implemented by the owning
+Provider or Skill while preserving the same capability, evidence, and result
+contracts. A compatible Agent should not need custom prompts that replay a
+Provider dependency graph or a Skill's deterministic internal state machine.
 
 An adapter may use an OpenAI, Google, local, deterministic, ROS-connected, or
 other planning runtime. Manager, Fabric, Provider, Skill, safety, and evidence

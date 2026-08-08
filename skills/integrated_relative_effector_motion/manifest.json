@@ -19,10 +19,10 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "preview_relative_effector_motion",
-    "description": "Preview a relative end-effector translation, bounded controlled-frame yaw, or both from the measured pose. Activate robot_arm.rebot_dm before robot_arm.primary.integrated. World language uses +X front, +Y left, +Z up; explicit world axes require a reviewed transform, while raw arm axes use ARM_BASE_POSITIVE_* names. PRESERVE_MEASURED_CONTROLLED_FRAME retains measured POSE_6DOF orientation. APPLY_CONTROLLED_FRAME_YAW_DELTA composes intrinsic yaw about controlled +Z: positive turns left, negative turns right, and magnitude is limited to 45 degrees. Rotation-only uses direction NONE and distance_m 0. requested_speed_m_s is nominal, not constant Cartesian speed; Provider safety may lengthen duration. Visual evidence is best-effort. On PREVIEW_READY, call required_next_tool unchanged.",
+    "description": "Preview a relative end-effector translation, bounded controlled-frame yaw, or both from the measured pose. Call the preview first. If its Integrated capability is unavailable, follow required_next_tool once; Manager activates declared dependencies. World uses +X front, +Y left, +Z up. Explicit world axes require a reviewed transform; raw arm axes use ARM_BASE_POSITIVE_* names. PRESERVE_MEASURED_CONTROLLED_FRAME retains measured POSE_6DOF orientation. APPLY_CONTROLLED_FRAME_YAW_DELTA applies up to 45 degrees about controlled +Z: positive is left and negative is right. Rotation-only uses direction NONE and distance_m 0. Speed is nominal and Provider safety may lengthen duration. Visual evidence is best-effort. On PREVIEW_READY, call required_next_tool with its opaque preview ID.",
     "when_to_use": [
       "The operator requests a new relative Cartesian end-effector translation, controlled-frame head yaw, or combined pose change.",
-      "The Basic and Integrated arm Providers can be activated in dependency order.",
+      "Manager can satisfy the declared arm Provider dependencies.",
       "A fresh measured controlled-frame pose is available.",
       "Optional fixed-rig visual evidence may be collected when available."
     ],
@@ -32,7 +32,7 @@
       "The requested semantic direction cannot be resolved from an operator-confirmed mount or a measured transform."
     ],
     "side_effects": [
-      "May require approval-gated activation of the Basic and Integrated arm Providers.",
+      "May require one approval-gated task-facing Provider activation; Manager resolves declared dependencies.",
       "After fixed-rig confirmation, may non-destructively start or verify camera and VIO tracking without resetting the epoch.",
       "May capture best-effort gravity-aligned effector evidence before and after an approved move.",
       "Stages a nonphysical Integrated Controller target and preview.",
@@ -222,6 +222,14 @@
     "vio_readiness_check_may_acquire_global_motion_inhibit": false,
     "integrated_recovery_transition": "EXPLICIT_APPROVED_HOT",
     "physical_execution_tool": "execute_integrated_motion_preview",
+    "physical_execution_arguments": "OPAQUE_PENDING_PREVIEW_ID_ONLY",
+    "reference_agent_prepared_action_projection": {
+      "tool_name": "perform_relative_effector_motion",
+      "preparation_tool": "preview_relative_effector_motion",
+      "continuation_tool": "execute_integrated_motion_preview",
+      "binding": "EXACT_SDK_CALL_ID_AND_OPAQUE_PREVIEW_ID",
+      "optional_for_compatible_agent_hosts": true
+    },
     "explicit_world_axis_requires_reviewed_transform": true,
     "explicit_world_axis_may_use_arm_mount_fallback": false,
     "reviewed_world_transform_precedes_mount_fallback": true,

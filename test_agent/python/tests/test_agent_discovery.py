@@ -228,12 +228,16 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "inspect_arm_semantic_scene",
             route["allowed_tools"],
         )
-        self.assertIn(
-            "perception.sam2_scene_tracker",
+        self.assertNotIn(
+            "perception.sam2_scene_tracker HOT",
             route["instruction"],
         )
         self.assertIn(
             "world_model.arm_scene_compiler",
+            route["instruction"],
+        )
+        self.assertIn(
+            "Manager owns transitive activation",
             route["instruction"],
         )
         self.assertIn("SCENE_READY", route["instruction"])

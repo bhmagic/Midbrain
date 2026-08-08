@@ -602,11 +602,15 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn("approval.title", app)
         self.assertIn("approval.warning", app)
+        self.assertIn("approval.authorization_arguments", app)
+        self.assertIn("perform_relative_effector_motion", app)
         self.assertNotIn(
             "JSON.stringify(approval.request || {}, null, 2)",
             app,
         )
         self.assertIn("approval.title", regular)
+        self.assertIn("approval.authorization_arguments", regular)
+        self.assertIn("perform_relative_effector_motion", regular)
         self.assertIn("/api/streaming-runs/", regular)
 
     def test_regular_agent_has_bounded_session_authorization_controls(
