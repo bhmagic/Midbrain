@@ -36,6 +36,7 @@ from local_vio_provider.math3d import (
     gravity_leveled_world_from_camera_level,
     make_transform,
     matrix_to_quaternion_xyzw,
+    rotation_angle,
 )
 from local_vio_provider.prototype_backend import PoseResult
 from local_vio_provider.inertial_first_backend import InertialFirstRgbdVio
@@ -56,6 +57,8 @@ WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
 CAMERA_OPTICAL_CONVENTION_ID = (
     "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
 )
+LIVE_VIO_POSE_MODE = "live_vio"
+FIXED_RIG_INITIAL_HOLD_POSE_MODE = "fixed_rig_initial_hold"
 
 
 def require_camera_coordinate_conventions(
@@ -140,6 +143,18 @@ class LocalVioProvider:
         self.accel_offset = np.zeros(3, dtype=np.float64)
         self.color_from_imu = np.eye(4, dtype=np.float64)
         self.origin_translation_adjustment: Optional[np.ndarray] = None
+        self.pose_publication_mode = getattr(
+            args,
+            "pose_publication_mode",
+            FIXED_RIG_INITIAL_HOLD_POSE_MODE,
+        )
+        self.held_world_from_body: Optional[np.ndarray] = None
+        self.held_world_from_camera: Optional[np.ndarray] = None
+        self.held_world_from_camera_level: Optional[np.ndarray] = None
+        self.held_pose_covariance: Optional[list[float]] = None
+        self.held_pose_timestamp_us: Optional[int] = None
+        self.live_pose_drift_translation_m = 0.0
+        self.live_pose_drift_rotation_rad = 0.0
         self.last_tracking_state = "STOPPED"
         self.last_result: Optional[PoseResult] = None
         self.motion_inhibited = False
@@ -261,6 +276,13 @@ class LocalVioProvider:
         self.last_gyro_frame = -1
         self.imu_gap_count = 0
         self.origin_translation_adjustment = None
+        self.held_world_from_body = None
+        self.held_world_from_camera = None
+        self.held_world_from_camera_level = None
+        self.held_pose_covariance = None
+        self.held_pose_timestamp_us = None
+        self.live_pose_drift_translation_m = 0.0
+        self.live_pose_drift_rotation_rad = 0.0
         self.last_static_transform_epoch = None
         self.last_inertial_prediction_us = -1
         self.last_inertial_publish_monotonic = 0.0
@@ -706,6 +728,56 @@ class LocalVioProvider:
             < self.fixed_rig_attestation_until_monotonic
         )
 
+    def _select_published_pose(
+        self,
+        *,
+        world_from_body: np.ndarray,
+        world_from_camera: np.ndarray,
+        world_from_camera_level: Optional[np.ndarray],
+        covariance: list[float],
+        timestamp_us: int,
+    ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray], list[float]]:
+        if self.pose_publication_mode == LIVE_VIO_POSE_MODE:
+            self.live_pose_drift_translation_m = 0.0
+            self.live_pose_drift_rotation_rad = 0.0
+            return (
+                world_from_body,
+                world_from_camera,
+                world_from_camera_level,
+                covariance,
+            )
+
+        if self.held_world_from_body is None:
+            self.held_world_from_body = world_from_body.copy()
+            self.held_world_from_camera = world_from_camera.copy()
+            self.held_world_from_camera_level = (
+                world_from_camera_level.copy()
+                if world_from_camera_level is not None
+                else None
+            )
+            self.held_pose_covariance = list(covariance)
+            self.held_pose_timestamp_us = int(timestamp_us)
+
+        held_camera = self.held_world_from_camera
+        if held_camera is None or self.held_world_from_body is None:
+            raise RuntimeError("fixed-rig pose hold was not initialized")
+        self.live_pose_drift_translation_m = float(
+            np.linalg.norm(world_from_camera[:3, 3] - held_camera[:3, 3])
+        )
+        self.live_pose_drift_rotation_rad = float(
+            rotation_angle(held_camera[:3, :3].T @ world_from_camera[:3, :3])
+        )
+        return (
+            self.held_world_from_body.copy(),
+            held_camera.copy(),
+            (
+                self.held_world_from_camera_level.copy()
+                if self.held_world_from_camera_level is not None
+                else None
+            ),
+            list(self.held_pose_covariance or covariance),
+        )
+
     def _publish_result(self, result: PoseResult) -> None:
         observations: list[dict[str, Any]] = []
         self.sequence += 1
@@ -743,18 +815,51 @@ class LocalVioProvider:
             if self.origin_translation_adjustment is not None
             else np.eye(4, dtype=np.float64)
         )
-        world_from_body = adjustment @ raw_world_from_body
-        world_from_camera = adjustment @ result.world_from_camera
+        live_world_from_body = adjustment @ raw_world_from_body
+        live_world_from_camera = adjustment @ result.world_from_camera
         try:
-            world_from_camera_level = (
-                gravity_leveled_world_from_camera_level(world_from_camera)
+            live_world_from_camera_level = (
+                gravity_leveled_world_from_camera_level(live_world_from_camera)
             )
-            camera_level_valid = True
-            camera_level_reason = None
         except ValueError as error:
-            world_from_camera_level = None
-            camera_level_valid = False
+            live_world_from_camera_level = None
             camera_level_reason = str(error)
+        else:
+            camera_level_reason = None
+
+        publish_pose = (
+            self.origin_translation_adjustment is not None
+            and result.tracking_state in {"TRACKING", "DEGRADED"}
+        )
+        pose_covariance = self._result_covariance(result)
+        if publish_pose:
+            (
+                world_from_body,
+                world_from_camera,
+                world_from_camera_level,
+                pose_covariance,
+            ) = self._select_published_pose(
+                world_from_body=live_world_from_body,
+                world_from_camera=live_world_from_camera,
+                world_from_camera_level=live_world_from_camera_level,
+                covariance=pose_covariance,
+                timestamp_us=result.timestamp_us,
+            )
+        else:
+            world_from_body = live_world_from_body
+            world_from_camera = live_world_from_camera
+            world_from_camera_level = live_world_from_camera_level
+        camera_level_valid = world_from_camera_level is not None
+        if camera_level_valid:
+            camera_level_reason = None
+        elif (
+            self.pose_publication_mode
+            == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+            and self.held_pose_timestamp_us is not None
+        ):
+            camera_level_reason = (
+                "camera-level pose was unavailable at the fixed-rig hold instant"
+            )
         position = world_from_body[:3, 3]
         orientation = matrix_to_quaternion_xyzw(world_from_body[:3, :3])
 
@@ -772,10 +877,6 @@ class LocalVioProvider:
             )
         )
 
-        publish_pose = (
-            self.origin_translation_adjustment is not None
-            and result.tracking_state in {"TRACKING", "DEGRADED"}
-        )
         if publish_pose:
             pose_data = {
                 "world_frame": self.world_frame,
@@ -791,14 +892,28 @@ class LocalVioProvider:
                 "camera_level_invalid_reason": camera_level_reason,
                 "position_m": position.tolist(),
                 "orientation_xyzw": orientation.tolist(),
-                "linear_velocity_world_mps": result.velocity_world_mps.tolist(),
+                "linear_velocity_world_mps": (
+                    [0.0, 0.0, 0.0]
+                    if self.pose_publication_mode
+                    == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+                    else result.velocity_world_mps.tolist()
+                ),
                 "world_from_camera": {
                     "translation_m": world_from_camera[:3, 3].tolist(),
                     "rotation_xyzw": matrix_to_quaternion_xyzw(
                         world_from_camera[:3, :3]
                     ).tolist(),
                 },
-                "covariance_6x6": self._result_covariance(result),
+                "covariance_6x6": pose_covariance,
+                "pose_publication_mode": self.pose_publication_mode,
+                "published_pose_held_at_us": self.held_pose_timestamp_us,
+                "live_pose_exposed": (
+                    self.pose_publication_mode == LIVE_VIO_POSE_MODE
+                ),
+                "live_pose_drift_from_published_hold": {
+                    "translation_m": self.live_pose_drift_translation_m,
+                    "rotation_rad": self.live_pose_drift_rotation_rad,
+                },
                 "backend": self.args.backend,
                 "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
                 "tracking_state": result.tracking_state,
@@ -807,13 +922,22 @@ class LocalVioProvider:
                 "gyro_rotation_sample_count": result.gyro_rotation_sample_count,
                 "gyro_rotation_angle_rad": result.gyro_rotation_angle_rad,
                 "pose_quality": (
-                    "INERTIAL_PROPAGATION_VISUALLY_CORRECTED"
+                    "FIXED_RIG_INITIAL_POSE_HOLD"
+                    if self.pose_publication_mode
+                    == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+                    else "INERTIAL_PROPAGATION_VISUALLY_CORRECTED"
                     if result.visual_update_accepted
                     else "INERTIAL_PROPAGATION_RECENT_VISUAL"
                     if result.tracking_state == "TRACKING"
                     else "INERTIAL_PROPAGATION_VISUAL_STALE"
                 ),
-                "pose_update_mode": result.pose_update_mode,
+                "pose_update_mode": (
+                    "FIXED_RIG_INITIAL_HOLD"
+                    if self.pose_publication_mode
+                    == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+                    else result.pose_update_mode
+                ),
+                "estimator_pose_update_mode": result.pose_update_mode,
                 "visual_update_accepted": result.visual_update_accepted,
                 "visual_sensor": result.visual_sensor,
                 "visual_reprojection_rmse_px": result.visual_reprojection_rmse_px,
@@ -879,8 +1003,15 @@ class LocalVioProvider:
                             "is_static": False,
                             "authority": f"{self.provider_id}:{self.instance_id}",
                             "session_epoch": self.session_epoch,
-                            "covariance_6x6": self._result_covariance(result),
-                            "continuity": "CONTINUOUS_INERTIAL_PROPAGATION_WITHIN_EPOCH",
+                            "covariance_6x6": pose_covariance,
+                            "pose_publication_mode": self.pose_publication_mode,
+                            "published_pose_held_at_us": self.held_pose_timestamp_us,
+                            "continuity": (
+                                "FIXED_RIG_INITIAL_HOLD_WITHIN_EPOCH"
+                                if self.pose_publication_mode
+                                == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+                                else "CONTINUOUS_INERTIAL_PROPAGATION_WITHIN_EPOCH"
+                            ),
                             "tracking_state": result.tracking_state,
                         },
                         freshness_ms=500,
@@ -944,10 +1075,15 @@ class LocalVioProvider:
                                 "positive_z": "opposite gravity",
                             },
                             "covariance_6x6": (
-                                self._result_covariance(result)
+                                pose_covariance
                             ),
+                            "pose_publication_mode": self.pose_publication_mode,
+                            "published_pose_held_at_us": self.held_pose_timestamp_us,
                             "continuity": (
-                                "CONTINUOUS_GRAVITY_LEVELED_WITHIN_EPOCH"
+                                "FIXED_RIG_INITIAL_HOLD_WITHIN_EPOCH"
+                                if self.pose_publication_mode
+                                == FIXED_RIG_INITIAL_HOLD_POSE_MODE
+                                else "CONTINUOUS_GRAVITY_LEVELED_WITHIN_EPOCH"
                             ),
                             "tracking_state": result.tracking_state,
                         },
@@ -1028,6 +1164,13 @@ class LocalVioProvider:
             ),
             "backend": self.args.backend,
             "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
+            "pose_publication_mode": self.pose_publication_mode,
+            "published_pose_held_at_us": self.held_pose_timestamp_us,
+            "live_pose_exposed": self.pose_publication_mode == LIVE_VIO_POSE_MODE,
+            "live_pose_drift_from_published_hold": {
+                "translation_m": self.live_pose_drift_translation_m,
+                "rotation_rad": self.live_pose_drift_rotation_rad,
+            },
             "production_backend_target": "openvins_or_basalt_native_adapter",
             "motion_inhibited": self.motion_inhibited,
             "fixed_rig_stationary_attested": (
@@ -1320,9 +1463,18 @@ class LocalVioProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.4.1",
+                "provider_version": "0.4.2",
                 "backend": self.args.backend,
                 "backend_classification": "INERTIAL_FIRST_ERROR_STATE_FILTER_WITH_RGBD_VISUAL_UPDATES_AND_OPTIONAL_IR_FALLBACK",
+                "pose_publication_mode": self.pose_publication_mode,
+                "published_pose_held_at_us": self.held_pose_timestamp_us,
+                "live_pose_exposed": (
+                    self.pose_publication_mode == LIVE_VIO_POSE_MODE
+                ),
+                "live_pose_drift_from_published_hold": {
+                    "translation_m": self.live_pose_drift_translation_m,
+                    "rotation_rad": self.live_pose_drift_rotation_rad,
+                },
                 "world_frame": self.world_frame,
                 "camera_level_frame": self.camera_level_frame,
                 "convention_id": WORLD_CONVENTION_ID,
@@ -1458,6 +1610,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gravity-std-limit-mps2", type=float, default=0.35)
     parser.add_argument("--gravity-gyro-limit-radps", type=float, default=0.012)
     parser.add_argument("--inertial-publish-hz", type=float, default=100.0)
+    parser.add_argument(
+        "--pose-publication-mode",
+        choices=(LIVE_VIO_POSE_MODE, FIXED_RIG_INITIAL_HOLD_POSE_MODE),
+        default=FIXED_RIG_INITIAL_HOLD_POSE_MODE,
+        help=(
+            "Publish live VIO motion or hold the first valid pose for an "
+            "explicitly fixed camera rig"
+        ),
+    )
     parser.add_argument("--ir-sync-tolerance-us", type=int, default=8000)
     parser.add_argument("--ir-enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(

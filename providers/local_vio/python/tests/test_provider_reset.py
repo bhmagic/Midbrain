@@ -14,7 +14,10 @@ from orbbec_femto_provider.shared_memory_access import (
 
 
 class ProviderResetTests(unittest.TestCase):
-    def make_provider(self) -> LocalVioProvider:
+    def make_provider(
+        self,
+        pose_publication_mode: str = "fixed_rig_initial_hold",
+    ) -> LocalVioProvider:
         return LocalVioProvider(
             SimpleNamespace(
                 gravity_samples=80,
@@ -22,7 +25,50 @@ class ProviderResetTests(unittest.TestCase):
                 backend="inertial_first_rgbd_eskf",
                 manager_url="http://127.0.0.1:1",
                 fabric_url="http://127.0.0.1:2",
+                pose_publication_mode=pose_publication_mode,
             )
+        )
+
+    @staticmethod
+    def pose_result(
+        world_from_camera: np.ndarray,
+        *,
+        timestamp_us: int,
+    ) -> PoseResult:
+        return PoseResult(
+            timestamp_us=timestamp_us,
+            world_from_camera=world_from_camera,
+            velocity_world_mps=np.zeros(3),
+            tracking_state="TRACKING",
+            inlier_count=100,
+            match_count=120,
+            translation_step_m=0.0,
+            rotation_step_rad=0.0,
+            gravity_sample_count=80,
+            gravity_std_mps2=0.01,
+            gyro_delta_rad=0.0,
+            gravity_tracking_sample_count=50,
+            gravity_correction_applied=False,
+            gravity_tilt_error_rad=0.0,
+            gravity_direction_std_rad=0.0,
+            gravity_stationary_duration_s=1.0,
+            gravity_correction_mode="READY",
+            gravity_adjustment_state="READY",
+            gravity_gyro_rms_radps=0.0,
+            gravity_gyro_p95_radps=0.0,
+            gravity_gyro_noise_floor_radps=0.0,
+            gravity_gyro_effective_limit_radps=0.012,
+            rotation_source="VISUAL_INERTIAL_FUSION",
+            rotation_disagreement_rad=0.0,
+            gyro_rotation_sample_count=10,
+            gyro_rotation_angle_rad=0.0,
+            feature_preprocess_mode="RAW_BASELINE",
+            raw_keypoint_count=100,
+            normalized_keypoint_count=0,
+            frame_luma_median=100.0,
+            message=None,
+            pose_update_mode="VISUAL_CORRECTION",
+            visual_update_accepted=True,
         )
 
 
@@ -49,6 +95,74 @@ class ProviderResetTests(unittest.TestCase):
         provider._reset_session("test")
         self.assertEqual(provider.sequence, 1234)
         self.assertNotEqual(provider.session_epoch, old_epoch)
+
+    def test_fixed_rig_mode_holds_published_pose_while_reporting_live_drift(
+        self,
+    ) -> None:
+        provider = self.make_provider()
+        published_batches = []
+
+        class _Response:
+            def raise_for_status(self) -> None:
+                return None
+
+        class _Http:
+            def post(self, _url, json):
+                published_batches.append(json["observations"])
+                return _Response()
+
+        provider.http = _Http()
+        first = np.eye(4, dtype=np.float64)
+        moved = np.eye(4, dtype=np.float64)
+        moved[:3, 3] = [0.25, -0.1, 0.05]
+
+        provider._publish_result(self.pose_result(first, timestamp_us=1000))
+        provider._publish_result(self.pose_result(moved, timestamp_us=2000))
+
+        first_streams = {item["stream"]: item for item in published_batches[0]}
+        second_streams = {item["stream"]: item for item in published_batches[1]}
+        self.assertEqual(
+            first_streams["localization.body.pose"]["data"]["world_from_camera"],
+            second_streams["localization.body.pose"]["data"]["world_from_camera"],
+        )
+        self.assertEqual(
+            first_streams["transform.local_vio.body"]["data"]["translation_m"],
+            second_streams["transform.local_vio.body"]["data"]["translation_m"],
+        )
+        second_status = second_streams["localization.vio.status"]["data"]
+        self.assertFalse(second_status["live_pose_exposed"])
+        self.assertAlmostEqual(
+            second_status["live_pose_drift_from_published_hold"]["translation_m"],
+            float(np.linalg.norm(moved[:3, 3])),
+        )
+        self.assertEqual(
+            second_streams["localization.body.pose"]["data"]["pose_update_mode"],
+            "FIXED_RIG_INITIAL_HOLD",
+        )
+
+    def test_live_mode_keeps_publishing_estimator_motion(self) -> None:
+        provider = self.make_provider("live_vio")
+        first = np.eye(4, dtype=np.float64)
+        moved = np.eye(4, dtype=np.float64)
+        moved[0, 3] = 0.25
+
+        selected_first = provider._select_published_pose(
+            world_from_body=first,
+            world_from_camera=first,
+            world_from_camera_level=first,
+            covariance=[0.0] * 36,
+            timestamp_us=1000,
+        )
+        selected_moved = provider._select_published_pose(
+            world_from_body=moved,
+            world_from_camera=moved,
+            world_from_camera_level=moved,
+            covariance=[0.0] * 36,
+            timestamp_us=2000,
+        )
+
+        self.assertAlmostEqual(selected_first[1][0, 3], 0.0)
+        self.assertAlmostEqual(selected_moved[1][0, 3], 0.25)
 
 
     def test_degraded_gravity_pose_is_published_after_origin_exists(self) -> None:
@@ -185,6 +299,8 @@ class ProviderResetTests(unittest.TestCase):
 
         self.assertFalse(provider._fixed_rig_attestation_active())
         self.assertIsNone(provider.fixed_rig_attestation_skill_id)
+        self.assertIsNone(provider.held_world_from_camera)
+        self.assertIsNone(provider.held_pose_timestamp_us)
 
     def test_rgbd_copy_matches_retained_capture_pair_not_independent_latest_refs(self) -> None:
         provider = object.__new__(LocalVioProvider)

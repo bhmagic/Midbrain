@@ -70,12 +70,35 @@ If native depth and IR resolutions differ, depth is resized with nearest-neighbo
 - `transform.local_vio.body`
 - `transform.local_vio.camera_level`
 
+## Temporary fixed-rig pose hold
+
+The current Midbrain configuration starts this Provider with
+`--pose-publication-mode fixed_rig_initial_hold`. After implementing and
+testing inertial-first RGB-D/IR correction, gravity stabilization, and timing
+repairs, live camera tracking still exhibits unacceptable stationary
+random-walk and has not been qualified as a world-pose authority.
+
+For the currently mounted camera, the Provider therefore holds the first valid
+body, camera, and camera-level pose of each VIO epoch. The estimator continues
+running internally so tracking health, feature support, biases, covariance, and
+the translation/angular drift away from the held pose remain observable. The
+moving estimator transform is not exposed to Skills, Providers, or the
+development viewer in this mode.
+
+This is a temporary fixed-rig compatibility measure, not a mobile-camera
+solution. A deployment with a moving or articulated camera must not use this
+mode. General consumers should query Fabric for a resolved transform; they
+must not treat an experimental Local VIO pose as a reviewed workcell
+calibration.
+
 ## Important limitations
 
 - Camera/IMU time offset is not yet estimated online.
 - Visual updates are pose-level RGB-D/IR corrections rather than feature-level MSCKF updates.
 - Long visual outages still allow inertial drift, especially in position.
 - Hardware accuracy must be measured against a recorded trajectory or external reference.
+- Live mobile-camera pose publication is not currently qualified; the checked-in
+  configuration intentionally holds the first valid pose of each epoch.
 
 ## Stationary initialization
 

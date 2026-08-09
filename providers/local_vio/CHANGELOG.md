@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2 - 2026-08-08
+
+- Added an explicit fixed-rig publication mode that holds the first valid body,
+  camera, and camera-level pose within each VIO epoch while the estimator keeps
+  running internally.
+- Exposed only translation and angular drift magnitudes from the moving
+  estimator in held mode, preventing Skills and Providers from accidentally
+  consuming the unqualified live camera transform.
+- Made the mounted-camera configuration use the fixed-rig hold by default and
+  retained `live_vio` only as an explicit experimental opt-in.
+
 ## 0.4.1 - 2026-08-07
 
 - Matched RGB and registered-depth inputs from retained provider-local ring

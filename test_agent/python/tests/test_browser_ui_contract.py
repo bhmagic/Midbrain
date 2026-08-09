@@ -958,6 +958,12 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('id="screenAxisOverlay"', app)
         self.assertIn("refreshSpatialAxes", app)
         self.assertIn("dynamicAxisFrames", app)
+        self.assertIn('"camera_pose": camera_frame', app)
+        self.assertIn(
+            "updateCameraMarker(cameraPose && cameraPose.available ? cameraPose : null)",
+            app,
+        )
+        self.assertNotIn("poseData.world_from_camera", app)
         self.assertIn("ARM_BASE", app)
         self.assertIn("GRIPPER_TOOL", app)
         self.assertIn("ARM_JOINT", app)

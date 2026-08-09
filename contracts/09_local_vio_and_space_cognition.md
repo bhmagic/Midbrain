@@ -1,6 +1,6 @@
 # Local VIO and Initialize Space Cognition Contract
 
-Status: v0.4 working draft.
+Status: v0.5 working draft.
 
 ## Local VIO Resource Provider
 
@@ -25,6 +25,27 @@ The Z-up migration creates a new VIO epoch. Data recorded under the former
 Y-up convention is `LEGACY_Y_UP_V1` and is never silently reinterpreted.
 Hardware accelerometer calibration, axis metadata, bias/scale values,
 hardware identity, and camera/IMU extrinsics remain unchanged.
+
+## Current fixed-rig publication boundary
+
+After substantial work on RGB-D/IR visual correction, inertial propagation,
+gravity stabilization, and timestamp handling, the reference implementation's
+live camera tracking still has unqualified stationary drift. It is not a
+motion-authoritative or persistent-world localization source.
+
+The checked-in mounted-camera configuration therefore uses
+`fixed_rig_initial_hold`: the first valid pose in each VIO epoch is republished
+without motion while the estimator continues internally. Status publishes
+tracking health and scalar translation/angular drift from that hold, but does
+not expose the moving transform to general consumers. The development viewer
+uses the graph-resolved camera pose rather than reading the estimator pose
+field directly.
+
+This boundary is temporary and deliberately incompatible with a moving camera.
+`live_vio` remains an explicit experimental mode for recorded evaluation and
+future mobile-rig development. Skills and Providers must query Fabric for
+resolved transforms and must not promote experimental VIO output into a
+reviewed workcell or motion authority.
 
 ## Inertial-first estimator requirement
 

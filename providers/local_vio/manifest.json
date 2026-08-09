@@ -1,6 +1,6 @@
 {
   "provider_type": "localization.local_vio",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "display_name": "Local Inertial-First RGB-D VIO Provider",
   "manager_ids": ["localization.local_vio"],
   "ui": {
@@ -55,6 +55,14 @@
     "visual_policy": "rgbd_primary_metric_correction; synchronized_ir_depth_optional_fallback",
     "feature_preprocess": "raw_baseline_with_optional_circular_lcn_candidate",
     "gravity_pose_policy": "quiet_imu_roll_pitch_leveling; yaw_and_translation_unchanged"
+  },
+  "pose_publication_policy": {
+    "configured_mode": "FIXED_RIG_INITIAL_HOLD",
+    "live_estimator_continues_internally": true,
+    "live_pose_exposed_to_consumers": false,
+    "hold_scope": "FIRST_VALID_POSE_PER_VIO_EPOCH",
+    "mobile_camera_compatible": false,
+    "temporary_until": "HARDWARE_QUALIFIED_LIVE_CAMERA_TRACKING"
   },
   "stationary_initialization_policy": {
     "accepted_gates": [

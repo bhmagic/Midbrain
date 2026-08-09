@@ -61,6 +61,15 @@
 - Hardware-validate the 15-state inertial-first reference backend on the Femto Bolt.
 - Add a recorded-data evaluation harness with trajectory, innovation, and covariance-consistency metrics.
 - Compare the reference backend against a native Basalt adapter and an OpenVINS/MSCKF evaluation build.
+- Replace the temporary `fixed_rig_initial_hold` pose-publication policy only
+  after live RGB-D/IMU camera tracking passes recorded and physical stationary
+  drift, trajectory, outage, and reacquisition limits.
+- Add an explicit fixed/mobile/articulated camera authority state. A reviewed
+  fixed-camera transform, live VIO, and future body/head kinematics must never
+  compete as unlabeled camera-pose authorities in the same transform query.
+- Add persistent visual-map or external-anchor relocalization so mobile VIO can
+  correct world-origin and yaw drift instead of relying only on incremental
+  frame-to-frame odometry.
 - Define feature-level visual update schemas if backend diagnostics are exposed beyond pose-level corrections.
 - Define neck/body kinematic authority when articulated hardware exists.
 - Add expiry/fencing and hard enforcement to motion-inhibit and physical Control Authority Leases.

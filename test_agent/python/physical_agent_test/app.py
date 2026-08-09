@@ -1570,6 +1570,14 @@ async def spatial_axes() -> dict[str, Any]:
         ),
         None,
     )
+    camera_frame = next(
+        (
+            frame
+            for frame in frames
+            if frame["frame_id"] == settings.head_camera_frame
+        ),
+        None,
+    )
     world_semantics = {
         "FRONT": [1.0, 0.0, 0.0],
         "BACK": [-1.0, 0.0, 0.0],
@@ -1605,7 +1613,7 @@ async def spatial_axes() -> dict[str, Any]:
         }
     return {
         "schema": "physical_agent.spatial_axis_snapshot",
-        "schema_version": 2,
+        "schema_version": 3,
         "convention_id": convention_id,
         "camera_optical_convention_id": (
             "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
@@ -1620,6 +1628,7 @@ async def spatial_axes() -> dict[str, Any]:
             "positive_z": "opposite gravity",
             "gravity_direction": [0.0, 0.0, -1.0],
         },
+        "camera_pose": camera_frame,
         "frames": list(frames),
         "edges": transform_edges,
         "semantic_resolution": semantic_resolution,
@@ -3639,7 +3648,6 @@ const mapState = document.getElementById('mapState');
 const initState = document.getElementById('initState');
 const actionStatus = document.getElementById('actionStatus');
 let cloudCaptureState = 'unknown';
-let latestCameraPose = null;
 let activeAuthorizationId = null;
 const AGENT_AUTHORIZATION_STORAGE_KEY =
   'midbrain.developerAgent.sessionAuthorization.v1';
@@ -4155,7 +4163,6 @@ async function refreshStatus() {
     );
     const initializationData = (data.space_cognition && data.space_cognition.data) || {};
     const vioData = (data.vio && data.vio.data) || {};
-    const poseData = (data.body_pose && data.body_pose.data) || {};
     const cloudData = data.world_point_cloud || {};
     const systemCatalog = data.system_catalog || {};
     const catalogProviders = Array.isArray(systemCatalog.providers)
@@ -4171,8 +4178,6 @@ async function refreshStatus() {
     document.getElementById('skillCount').textContent =
       '(' + catalogSkills.length + ')';
     cloudCaptureState = cloudData.capture_state || 'unknown';
-    latestCameraPose = poseData.world_from_camera || null;
-    updateCameraMarker(latestCameraPose);
     const epoch = initializationData.session_epoch || vioData.session_epoch || 'none';
     const currentSkillState = initializationData.state || 'not published';
     const displayedAutoState = (
@@ -5102,8 +5107,11 @@ async function refreshSpatialAxes() {
     spatialAxisSnapshot = await response.json();
     const frames = Array.isArray(spatialAxisSnapshot.frames) ? spatialAxisSnapshot.frames : [];
     rebuildDynamicAxisBuffers(frames);
+    const cameraPose = spatialAxisSnapshot.camera_pose;
+    updateCameraMarker(cameraPose && cameraPose.available ? cameraPose : null);
     renderAxisControls(spatialAxisSnapshot);
   } catch (error) {
+    updateCameraMarker(null);
     axisStatus.textContent = 'Spatial axes unavailable: ' + error;
   }
 }
