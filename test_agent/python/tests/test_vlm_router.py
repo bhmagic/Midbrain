@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
+from types import SimpleNamespace
 import unittest
 
 from physical_agent_test.vlm_router import (
+    OpenAIVisionLanguageBackend,
     VisionLanguageRouter,
+    _active_client_request_id,
     reset_vlm_model_selection,
     set_vlm_model_selection,
 )
@@ -155,6 +159,14 @@ class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.failed_attempts), 1)
         self.assertTrue(result.failed_attempts[0]["retryable"])
         self.assertEqual(result.failed_attempts[0]["backend_attempt"], 1)
+        self.assertEqual(
+            result.failed_attempts[0]["client_request_id"],
+            result.request_id + "/attempt-01",
+        )
+        self.assertEqual(
+            result.client_request_id,
+            result.request_id + "/attempt-02",
+        )
 
     async def test_nonretryable_failure_falls_back_without_repeating(
         self,
@@ -202,6 +214,80 @@ class VisionLanguageRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.model_id, "large")
         self.assertEqual(first.call_count, 0)
         self.assertEqual(selected.call_count, 1)
+
+    async def test_concurrent_calls_keep_request_identity_isolated(self) -> None:
+        class _IdentityBackend(_Backend):
+            def generate(
+                self,
+                image_bytes: bytes,
+                mime_type: str,
+                prompt: str,
+            ) -> str:
+                time.sleep(0.01)
+                return str(_active_client_request_id.get())
+
+        router = VisionLanguageRouter(
+            [_IdentityBackend("identity", "vision")],
+            attempts_per_backend=1,
+        )
+        request_ids = [
+            f"arm-refinement/sample-{index:02d}/detect"
+            for index in range(1, 6)
+        ]
+
+        results = await asyncio.gather(
+            *[
+                router.generate(
+                    image_bytes=f"image-{index}".encode(),
+                    mime_type="image/jpeg",
+                    prompt="Inspect",
+                    request_id=request_id,
+                )
+                for index, request_id in enumerate(request_ids, start=1)
+            ]
+        )
+
+        self.assertEqual([result.request_id for result in results], request_ids)
+        self.assertEqual(
+            [result.text for result in results],
+            [f"{request_id}/attempt-01" for request_id in request_ids],
+        )
+        self.assertEqual(
+            [result.client_request_id for result in results],
+            [f"{request_id}/attempt-01" for request_id in request_ids],
+        )
+
+    def test_openai_backend_sends_and_records_request_identifiers(self) -> None:
+        captured: dict = {}
+
+        class _Responses:
+            @staticmethod
+            def create(**kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    output_text="coordinates",
+                    id="resp_test",
+                    _request_id="server-request-test",
+                )
+
+        backend = OpenAIVisionLanguageBackend.__new__(
+            OpenAIVisionLanguageBackend
+        )
+        backend.model_id = "gpt-test"
+        backend._client = SimpleNamespace(responses=_Responses())
+        token = _active_client_request_id.set("refinement/sample-01/attempt-01")
+        try:
+            result = backend.generate(b"image", "image/png", "Inspect")
+        finally:
+            _active_client_request_id.reset(token)
+
+        self.assertEqual(
+            captured["extra_headers"]["X-Client-Request-Id"],
+            "refinement/sample-01/attempt-01",
+        )
+        self.assertEqual(result.text, "coordinates")
+        self.assertEqual(result.response_id, "resp_test")
+        self.assertEqual(result.server_request_id, "server-request-test")
 
 
 if __name__ == "__main__":

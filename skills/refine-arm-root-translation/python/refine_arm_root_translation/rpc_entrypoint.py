@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextvars import ContextVar
 import json
 from pathlib import Path
 import sys
@@ -36,6 +37,9 @@ class LineRpcError(RuntimeError):
 class LineRpcClient:
     def __init__(self) -> None:
         self._next_id = 1
+        self._write_lock = asyncio.Lock()
+        self._pending: dict[int, asyncio.Future[Any]] = {}
+        self._response_reader: asyncio.Task[None] | None = None
 
     async def request(
         self,
@@ -44,45 +48,78 @@ class LineRpcClient:
     ) -> Any:
         request_id = self._next_id
         self._next_id += 1
+        future = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        if self._response_reader is None or self._response_reader.done():
+            self._response_reader = asyncio.create_task(self._read_responses())
         message = {
             "type": "request",
             "id": request_id,
             "method": str(method),
             "parameters": parameters,
         }
-        sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-        line = await asyncio.to_thread(sys.stdin.readline)
-        if not line:
-            raise RuntimeError("host closed the Skill RPC stream")
-        response = json.loads(line)
-        if not isinstance(response, dict) or response.get("id") != request_id:
-            raise RuntimeError("host returned a mismatched Skill RPC response")
-        if response.get("ok") is not True:
-            error = response.get("error")
-            message = (
-                str((error or {}).get("message") or error)
+        try:
+            async with self._write_lock:
+                sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+                sys.stdout.flush()
+        except BaseException:
+            self._pending.pop(request_id, None)
+            future.cancel()
+            raise
+        return await future
+
+    async def _read_responses(self) -> None:
+        try:
+            while self._pending:
+                line = await asyncio.to_thread(sys.stdin.readline)
+                if not line:
+                    raise RuntimeError("host closed the Skill RPC stream")
+                response = json.loads(line)
+                if not isinstance(response, dict):
+                    raise RuntimeError("host returned an invalid Skill RPC response")
+                request_id = response.get("id")
+                if not isinstance(request_id, int):
+                    raise RuntimeError("host returned a Skill RPC response without an ID")
+                future = self._pending.pop(request_id, None)
+                if future is None:
+                    raise RuntimeError("host returned an unknown Skill RPC response ID")
+                if future.done():
+                    continue
+                if response.get("ok") is True:
+                    future.set_result(response.get("result"))
+                else:
+                    future.set_exception(self._response_error(response))
+        except BaseException as error:
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(error)
+            self._pending.clear()
+
+    @staticmethod
+    def _response_error(response: dict[str, Any]) -> LineRpcError:
+        error = response.get("error")
+        message = (
+            str((error or {}).get("message") or error)
+            if isinstance(error, dict)
+            else str(error or "host RPC request failed")
+        )
+        return LineRpcError(
+            message,
+            error_type=(
+                str(error.get("type"))
+                if isinstance(error, dict) and error.get("type") is not None
+                else None
+            ),
+            status_code=(
+                int(error["status_code"])
                 if isinstance(error, dict)
-                else str(error or "host RPC request failed")
-            )
-            raise LineRpcError(
-                message,
-                error_type=(
-                    str(error.get("type"))
-                    if isinstance(error, dict) and error.get("type") is not None
-                    else None
-                ),
-                status_code=(
-                    int(error["status_code"])
-                    if isinstance(error, dict)
-                    and isinstance(error.get("status_code"), int)
-                    else None
-                ),
-                response_body=(
-                    error.get("response_body") if isinstance(error, dict) else None
-                ),
-            )
-        return response.get("result")
+                and isinstance(error.get("status_code"), int)
+                else None
+            ),
+            response_body=(
+                error.get("response_body") if isinstance(error, dict) else None
+            ),
+        )
 
 
 class RpcManager:
@@ -113,7 +150,14 @@ class RpcVlmClient:
         self.rpc = rpc
         self.session_dir = session_dir
         self._invocation = 0
-        self.model_id = "midbrain.vlm_router"
+        self._model_id: ContextVar[str] = ContextVar(
+            "arm_root_refinement_vlm_model_id",
+            default="midbrain.vlm_router",
+        )
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id.get()
 
     async def invoke(
         self,
@@ -121,7 +165,8 @@ class RpcVlmClient:
         prompt: str,
         images: list[dict[str, Any]],
         purpose: str,
-    ) -> str:
+        request_id: str,
+    ) -> dict[str, Any]:
         self._invocation += 1
         serialized: list[dict[str, Any]] = []
         for index, image in enumerate(images):
@@ -145,6 +190,7 @@ class RpcVlmClient:
             {
                 "prompt": str(prompt),
                 "purpose": str(purpose),
+                "request_id": str(request_id),
                 "images": serialized,
             },
         )
@@ -154,8 +200,11 @@ class RpcVlmClient:
         if isinstance(route, dict):
             selected_model = str(route.get("model_id") or "").strip()
             if selected_model:
-                self.model_id = selected_model
-        return result["text"]
+                self._model_id.set(selected_model)
+        return {
+            "text": result["text"],
+            "route": route if isinstance(route, dict) else None,
+        }
 
     @staticmethod
     def _image_suffix(media_type: str) -> str:

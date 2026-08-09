@@ -8,6 +8,12 @@
   FK, observes the neon-green gripper-rail midpoint, applies a profile-owned
   rail-center-to-controller-tip offset, preserves base rotation exactly, and
   supports one to five averaged samples plus a caller-selected adoption factor.
+  Multi-sample mode captures distinct RGB-D frames sequentially, then runs the
+  independent per-sample VLM workflows concurrently with unique
+  run/sample/phase identifiers and provider request identifiers when available
+  before one atomic update. Failed samples retain their evidence but are
+  excluded from the arithmetic mean; raw and adopted shift limits scale by the
+  accepted sample count, and a run with no accepted samples cannot update state.
   The Skill owns its hardware/VLM host bridge, schemas, effector profile,
   visual evidence, conditional second VLM review, private Python environment,
   and fail-closed timing policy; it never submits physical motion.

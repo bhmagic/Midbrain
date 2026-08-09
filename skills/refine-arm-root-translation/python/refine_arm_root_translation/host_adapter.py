@@ -46,6 +46,7 @@ class VlmRouterProtocol(Protocol):
         *,
         images: list[tuple[bytes, str]],
         prompt: str,
+        request_id: str | None = None,
     ) -> Any: ...
 
 
@@ -315,8 +316,14 @@ class ArmRootTranslationRefinementAdapter:
                 "feature_name": "MULTI_SAMPLE_REFINEMENT",
                 "requested_sample_count": int(arguments["sample_count"]),
                 "completed_sample_count": 0,
+                "accepted_sample_count": 0,
+                "excluded_sample_count": 0,
+                "accepted_sample_indexes": [],
+                "excluded_sample_indexes": [],
                 "aggregation": "NOT_STARTED_DEPENDENCY_UNAVAILABLE",
-                "threshold_scale": int(arguments["sample_count"]),
+                "aggregation_population": "NO_ACCEPTED_SAMPLES",
+                "threshold_scale": 0,
+                "threshold_scale_basis": "ACCEPTED_SAMPLE_COUNT",
                 "samples": [],
             },
             "landmark_depth_reselection": {
@@ -395,6 +402,8 @@ class ArmRootTranslationRefinementAdapter:
             )
         )
         await process.stdin.drain()
+        writer_lock = asyncio.Lock()
+        response_tasks: list[asyncio.Task[None]] = []
         try:
             while True:
                 line = await process.stdout.readline()
@@ -406,16 +415,31 @@ class ArmRootTranslationRefinementAdapter:
                     )
                 message = json.loads(line.decode("utf-8"))
                 if message.get("type") == "request":
-                    await self._answer_request(process, message)
+                    response_tasks.append(
+                        asyncio.create_task(
+                            self._answer_request(
+                                process,
+                                message,
+                                writer_lock=writer_lock,
+                            )
+                        )
+                    )
                     continue
                 if message.get("type") != "result":
                     raise RuntimeError("translation-refinement Skill emitted invalid RPC")
+                if response_tasks:
+                    await asyncio.gather(*response_tasks)
                 await process.wait()
                 if message.get("ok") is not True:
                     error = message.get("error") or {}
                     raise RuntimeError(str(error.get("message") or error))
                 return message.get("result")
         except BaseException:
+            for task in response_tasks:
+                if not task.done():
+                    task.cancel()
+            if response_tasks:
+                await asyncio.gather(*response_tasks, return_exceptions=True)
             if process.returncode is None:
                 process.kill()
                 await process.wait()
@@ -425,6 +449,8 @@ class ArmRootTranslationRefinementAdapter:
         self,
         process: asyncio.subprocess.Process,
         message: dict[str, Any],
+        *,
+        writer_lock: asyncio.Lock | None = None,
     ) -> None:
         assert process.stdin is not None
         request_id = message.get("id")
@@ -456,8 +482,13 @@ class ArmRootTranslationRefinementAdapter:
                 "ok": False,
                 "error": error_payload,
             }
-        process.stdin.write((json.dumps(response) + "\n").encode("utf-8"))
-        await process.stdin.drain()
+        if writer_lock is None:
+            process.stdin.write((json.dumps(response) + "\n").encode("utf-8"))
+            await process.stdin.drain()
+        else:
+            async with writer_lock:
+                process.stdin.write((json.dumps(response) + "\n").encode("utf-8"))
+                await process.stdin.drain()
 
     async def _dispatch(self, method: str, parameters: dict[str, Any]) -> Any:
         if method == "manager.workcell_calibrations":
@@ -761,6 +792,7 @@ class ArmRootTranslationRefinementAdapter:
         inference = await self.vlm_router.generate_images(
             images=images,
             prompt=prompt,
+            request_id=str(parameters.get("request_id") or "") or None,
         )
         return {
             "text": str(inference.text),

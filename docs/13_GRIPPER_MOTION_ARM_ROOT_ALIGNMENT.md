@@ -60,9 +60,10 @@ attachment geometry, visual descriptions, alternative landmarks, and future
 tool/effector changes outside the generic refinement mathematics.
 
 The caller selects an adoption factor from zero to one and may request one to
-five independent observations. Multi-sample mode averages raw XYZ corrections,
-scales configured delta limits by sample count, and performs at most one atomic
-Manager update. Visual evidence exposes the exact VLM inputs, selected rail
+five independent observations. Multi-sample mode averages the accepted raw XYZ
+corrections, scales configured delta limits by accepted sample count, and
+performs at most one atomic Manager update. Visual evidence exposes the exact
+VLM inputs, selected rail
 points, derived midpoint, and old/proposed base and landmark projections. Large
 raw deltas require one additional marked-image VLM review. Invalid depth,
 failed review, gross delta, identity change, stale revision, excessive capture
@@ -247,6 +248,21 @@ registered-depth visualization, and their overlap. Require it to select the
 named RGB feature and, separately, the registered-depth pixel on the same
 physical surface. Do not repair an invalid selected depth pixel by snapping to
 a coded neighbor.
+
+For multi-sample refinement, collect the requested one to five observations
+sequentially and require distinct RGB-D frame provenance. Freeze all captures
+before inference, then run the independent per-sample VLM workflows
+concurrently through the Skill-owned multiplexed host bridge. Bind every
+detection, depth-reselection, and review request to a unique run/sample/phase
+identifier and retain the router's exact image-input hash and provider
+identifiers.
+Out-of-order replies are normal and are correlated by ID, never by completion
+order. All sample workflows must finish. Samples that fail depth resolution,
+motion validation, or semantic review retain their evidence and rejection
+reason but are excluded from the arithmetic mean. The Skill rejects the whole
+invocation when no sample remains; otherwise it scales the raw and adopted
+shift limits by the accepted sample count before submitting at most one Manager
+compare-and-swap update.
 
 Calculate the raw full XYZ delta before applying the adoption factor. When a
 state update is requested and that raw delta exceeds the configured threshold,

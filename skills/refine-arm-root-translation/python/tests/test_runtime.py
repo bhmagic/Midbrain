@@ -145,7 +145,11 @@ class FakeEvidencePublisher:
 
 
 def observation_source(*, tool_z_m: float):
+    frame_number = 9
+
     async def capture():
+        nonlocal frame_number
+        frame_number += 1
         base_from_tool = np.eye(4)
         base_from_tool[0, 3] = 0.08
         base_from_tool[2, 3] = tool_z_m
@@ -171,8 +175,8 @@ def observation_source(*, tool_z_m: float):
             "runtime_landmark_bindings": {},
             "identities": copy.deepcopy(IDENTITIES),
             "provenance": {
-                "observed_at_us": 123,
-                "frame_number": 10,
+                "observed_at_us": 123 + frame_number,
+                "frame_number": frame_number,
                 "rgb_sha256": "a" * 64,
                 "registered_depth_sha256": "b" * 64,
             },
@@ -346,9 +350,15 @@ def test_multi_sample_refinement_averages_raw_vectors_and_updates_once() -> None
         responses=responses,
     )
     tool_z_values = iter((0.99, 0.98, 0.97))
+    frame_number = 20
 
     async def varying_observation():
-        return await observation_source(tool_z_m=next(tool_z_values))()
+        nonlocal frame_number
+        frame_number += 1
+        observation = await observation_source(tool_z_m=next(tool_z_values))()
+        observation["provenance"]["frame_number"] = frame_number
+        observation["provenance"]["observed_at_us"] += frame_number
+        return observation
 
     skill.observation_source = varying_observation
 
@@ -385,7 +395,7 @@ def test_multi_sample_refinement_averages_raw_vectors_and_updates_once() -> None
     assert len(evidence.calls) == 3
 
 
-def test_multi_sample_failure_aborts_without_partial_state_update() -> None:
+def test_multi_sample_failure_is_excluded_and_limits_use_accepted_count() -> None:
     skill, _, store, _ = runtime(
         tool_z_m=0.99,
         responses=[
@@ -393,15 +403,207 @@ def test_multi_sample_failure_aborts_without_partial_state_update() -> None:
             review_response("PASS"),
             detection_response(),
             review_response("FAIL"),
+            detection_response(),
+            review_response("PASS"),
         ],
+    )
+    tool_z_values = iter((0.99, 0.50, 0.97))
+    frame_number = 40
+
+    async def varying_observation():
+        nonlocal frame_number
+        frame_number += 1
+        observation = await observation_source(
+            tool_z_m=next(tool_z_values)
+        )()
+        observation["provenance"]["frame_number"] = frame_number
+        observation["provenance"]["observed_at_us"] += frame_number
+        return observation
+
+    skill.observation_source = varying_observation
+
+    result = asyncio.run(skill.run(sample_count=3))
+
+    assert result["status"] == "TRANSLATION_UPDATE_READY"
+    assert result["state_update_applied"]
+    assert len(store.swaps) == 1
+    assert store.state["revision"] == 4
+    assert result["raw_translation_delta_m"][2] == pytest.approx(0.02)
+    multi = result["multi_sample_refinement"]
+    assert multi["completed_sample_count"] == 3
+    assert multi["accepted_sample_count"] == 2
+    assert multi["excluded_sample_count"] == 1
+    assert multi["accepted_sample_indexes"] == [1, 3]
+    assert multi["excluded_sample_indexes"] == [2]
+    assert multi["threshold_scale"] == 2
+    assert multi["threshold_scale_basis"] == "ACCEPTED_SAMPLE_COUNT"
+    assert [item["included_in_aggregation"] for item in multi["samples"]] == [
+        True,
+        False,
+        True,
+    ]
+    assert "marked rail endpoints" in multi["samples"][1]["exclusion_reason"]
+    assert result["refinement_limits"]["maximum_raw_translation_delta_m"] == (
+        pytest.approx(0.2)
+    )
+    assert result["refinement_limits"][
+        "maximum_adopted_translation_delta_m"
+    ] == pytest.approx(0.05)
+    assert len(result["sample_visual_evidence"]) == 3
+    assert len(result["sample_quality_review_evidence"]) == 3
+
+
+def test_multi_sample_rejects_when_every_sample_is_excluded() -> None:
+    responses = [
+        response
+        for _ in range(3)
+        for response in (detection_response(), review_response("FAIL"))
+    ]
+    skill, _, store, _ = runtime(
+        tool_z_m=0.99,
+        responses=responses,
     )
 
     result = asyncio.run(skill.run(sample_count=3))
 
     assert result["status"] == "REJECTED_QUALITY_REVIEW"
-    assert "stopped at sample 2" in result["reason"]
-    assert result["multi_sample_refinement"]["completed_sample_count"] == 2
+    assert "excluded every sample" in result["reason"]
+    multi = result["multi_sample_refinement"]
+    assert multi["completed_sample_count"] == 3
+    assert multi["accepted_sample_count"] == 0
+    assert multi["excluded_sample_count"] == 3
+    assert multi["accepted_sample_indexes"] == []
+    assert multi["excluded_sample_indexes"] == [1, 2, 3]
+    assert multi["threshold_scale"] == 0
+    assert all(
+        not item["included_in_aggregation"] for item in multi["samples"]
+    )
+    assert len(result["sample_visual_evidence"]) == 3
+    assert len(result["sample_quality_review_evidence"]) == 3
     assert not result["state_update_applied"]
+    assert not store.swaps
+    assert store.state["revision"] == 3
+
+
+def test_multi_sample_enforces_shift_limit_from_accepted_count() -> None:
+    skill, _, store, _ = runtime(
+        tool_z_m=0.85,
+        responses=[
+            detection_response(),
+            review_response("PASS"),
+            detection_response(),
+            review_response("FAIL"),
+            detection_response(),
+            review_response("FAIL"),
+        ],
+    )
+    tool_z_values = iter((0.85, 0.50, 0.50))
+    frame_number = 70
+
+    async def varying_observation():
+        nonlocal frame_number
+        frame_number += 1
+        observation = await observation_source(
+            tool_z_m=next(tool_z_values)
+        )()
+        observation["provenance"]["frame_number"] = frame_number
+        observation["provenance"]["observed_at_us"] += frame_number
+        return observation
+
+    skill.observation_source = varying_observation
+
+    result = asyncio.run(
+        skill.run(adoption_factor=0.1, sample_count=3)
+    )
+
+    assert result["status"] == "REJECTED_DELTA_LIMIT"
+    assert "raw translation delta" in result["reason"]
+    assert result["multi_sample_refinement"]["accepted_sample_count"] == 1
+    assert result["multi_sample_refinement"]["threshold_scale"] == 1
+    assert result["refinement_limits"][
+        "maximum_raw_translation_delta_m"
+    ] == pytest.approx(0.1)
+    assert result["raw_translation_delta_norm_m"] == pytest.approx(0.15)
+    assert not result["state_update_applied"]
+    assert not store.swaps
+
+
+def test_five_sample_analysis_starts_concurrently_with_unique_request_ids() -> None:
+    class CoordinatedVlm:
+        model_id = "vlm.concurrent-test"
+
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+            self.active = 0
+            self.maximum_active = 0
+            self.started = 0
+            self.all_started = asyncio.Event()
+
+        async def invoke(self, **kwargs):
+            self.calls.append(kwargs)
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            self.started += 1
+            if self.started == 5:
+                self.all_started.set()
+            try:
+                await asyncio.wait_for(self.all_started.wait(), timeout=1.0)
+                return detection_response()
+            finally:
+                self.active -= 1
+
+    skill, _, store, _ = runtime(
+        tool_z_m=0.999,
+        responses=[],
+    )
+    vlm = CoordinatedVlm()
+    skill.vlm = vlm
+
+    result = asyncio.run(skill.run(sample_count=5))
+
+    assert result["status"] == "TRANSLATION_UPDATE_READY"
+    assert result["state_update_applied"]
+    assert len(store.swaps) == 1
+    assert vlm.maximum_active == 5
+    request_ids = [call["request_id"] for call in vlm.calls]
+    assert len(set(request_ids)) == 5
+    assert all(
+        f"/sample-{index:02d}/detect" in request_ids[index - 1]
+        for index in range(1, 6)
+    )
+    multi = result["multi_sample_refinement"]
+    assert multi["capture_execution"] == "SEQUENTIAL_DISTINCT_RGBD_FRAMES"
+    assert multi["analysis_execution"] == "CONCURRENT_PER_SAMPLE"
+
+
+def test_multi_sample_rejects_reused_frame_before_vlm_or_state_update() -> None:
+    skill, vlm, store, _ = runtime(
+        tool_z_m=0.999,
+        responses=[detection_response()] * 3,
+    )
+    source = skill.observation_source
+
+    async def repeated_frame():
+        observation = await source()
+        observation["provenance"].update(
+            {
+                "observed_at_us": 123,
+                "frame_number": 10,
+                "rgb_sha256": "a" * 64,
+                "registered_depth_sha256": "b" * 64,
+            }
+        )
+        return observation
+
+    skill.observation_source = repeated_frame
+    policy = skill.profile["capture_motion_policy"]
+    policy["maximum_transform_wait_ms"] = 5.0
+    policy["transform_retry_interval_ms"] = 1.0
+
+    with pytest.raises(RuntimeError, match="distinct RGB-D frame"):
+        asyncio.run(skill.run(sample_count=3))
+
+    assert not vlm.calls
     assert not store.swaps
     assert store.state["revision"] == 3
 

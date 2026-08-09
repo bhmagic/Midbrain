@@ -65,8 +65,8 @@ does not belong in VLM prompts or arm-alignment mathematics.
    rejected observation that shows the exact input channels and never mutates
    active alignment state. Normalize VLM transport failures returned by the
    host into the same non-mutating evidence result. Let the host own RPC/VLM
-   deadlines so a timed-out serialized request cannot desynchronize the Skill
-   protocol.
+   deadlines. Correlate every multiplexed request and response by RPC ID so a
+   timeout or out-of-order completion cannot desynchronize the Skill protocol.
 8. Register each selected depth pixel independently in 3D. For paired
    landmarks, calculate the mean of the registered 3D points, not a mean image
    pixel.
@@ -82,21 +82,32 @@ does not belong in VLM prompts or arm-alignment mathematics.
    inspect the raw channels rather than trusting the first VLM's confidence.
 11. The public multi-sample refinement mode accepts `sample_count` from one to
    five and defaults to one. Capture every sample independently and
-   sequentially. Each sample must pass exact-depth resolution, capture-motion
-   validation, and any required second VLM review. Compute the arithmetic mean
-   of the N raw XYZ correction vectors, apply the caller's adoption factor to
-   that mean once, and perform at most one atomic state update. Never update
-   between samples and never create a parent-alignment chain. Report every raw
-   vector plus component standard deviation and maximum distance from the
-   mean; do not silently discard a statistical outlier.
-12. Scale both the raw-delta and adopted-step limits by `sample_count`, so five
-   samples receive five times the base bounds. Apply these scaled bounds only
-   to the arithmetic mean after all samples pass their individual semantic
-   reviews. Let the caller reduce its adoption factor and retry from fresh
-   timestamp-coherent observations; never silently clamp a correction.
+   sequentially, require distinct RGB-D frame provenance, and freeze all
+   samples before VLM work begins. Analyze the frozen samples concurrently as
+   independent per-sample workflows. Give every detection, depth-reselection,
+   and review call a unique run/sample/phase request ID; retain that ID, the
+   exact image-input hash, selected route, provider response ID, and provider
+   request ID when available. A sample is accepted only when it passes
+   exact-depth resolution, capture-motion validation, and any required second
+   VLM review. Wait for all submitted sample workflows, exclude failed samples
+   from aggregation while retaining their evidence and rejection reasons, and
+   reject the complete invocation only when no sample is accepted. Compute the
+   arithmetic mean of the accepted raw XYZ correction vectors, apply the
+   caller's adoption factor to that mean once, and perform at most one atomic
+   state update. Never update between samples and never create a
+   parent-alignment chain. Report every raw vector, its aggregation inclusion,
+   plus component standard deviation and maximum distance from the accepted
+   mean; do not silently discard a statistical outlier that otherwise passed.
+12. Scale both the raw-delta and adopted-step limits by the accepted sample
+   count, so a five-request run with three accepted samples receives three
+   times the base bounds. Apply these scaled bounds only to the arithmetic mean
+   of the accepted samples. Let the caller reduce its adoption factor and retry
+   from fresh timestamp-coherent observations; never silently clamp a
+   correction.
 13. Treat the second VLM result only as PASS, FAIL, or UNRESOLVED. A failed or
-   unresolved review rejects the invocation; it does not return replacement
-   coordinates.
+   unresolved review rejects that sample; it does not return replacement
+   coordinates. A single-sample invocation therefore rejects, while a
+   multi-sample invocation may continue with its accepted samples.
 14. Return normalized Midbrain visual-evidence annotations for the exact image
    channels used by the VLM. Include old and proposed arm-base origins and old
    and proposed FK predictions for the selected visual landmark back-projected
@@ -162,4 +173,6 @@ The manifest owns this Skill's host-adapter and setup entrypoints. Keep the
 hardware/VLM bridge in `python/refine_arm_root_translation/host_adapter.py` and
 the numerical RPC runtime in the Skill-private `.venv`; Test Agent may provide
 only the generic host-service contract and discovery loader. Declare this Skill
-as high latency because multi-sample requests perform sequential VLM calls.
+as high latency because it still performs multiple timestamp-coherent captures,
+bounded VLM retries, optional semantic reviews, evidence publication, and final
+context revalidation even though independent sample analyses run concurrently.

@@ -1,6 +1,6 @@
 {
   "skill_type": "refine_arm_root_translation",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "display_name": "Refine Arm-Root Translation",
   "ui": {
     "observation": {
@@ -14,7 +14,7 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "refine_arm_root_translation",
-    "description": "Observe a profile-defined rigid effector landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The caller may request one to five independent samples; the Skill averages their raw corrections and performs at most one compact state update. Slow arm motion is accepted only when sampled landmark motion stays within the profile limit. Adoption defaults to one. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
+    "description": "Observe a profile-defined rigid effector landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The caller may request one to five independent samples; the Skill excludes failed samples, averages accepted raw corrections, and performs at most one compact state update. Slow arm motion is accepted only when sampled landmark motion stays within the profile limit. Adoption defaults to one. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
     "when_to_use": [
       "A valid world-to-arm-base alignment already exists and only its translation needs local refinement.",
       "A quick calibration update is useful between movements, or while the arm moves slowly enough to remain within the capture-time landmark-motion bound.",
@@ -27,8 +27,8 @@
     ],
     "side_effects": [
       "Before starting VLM work, the host verifies that the active arm provider identity, joint-state stream, and profile-selected local FK path are present and can bracket a current timestamp. A missing dependency returns a typed lifecycle recovery request without changing calibration state.",
-      "Reads one synchronized RGB and registered-depth observation plus bracketed timestamped arm FK and active calibration state.",
-      "For each requested refinement sample, calls one configured VLM route, permits one exact-depth reselection call only when the selected depth is invalid, and conditionally calls a quality-review VLM when that sample's raw translation delta exceeds the configured review threshold.",
+      "Reads one or more synchronized RGB and registered-depth observations plus bracketed timestamped arm FK and active calibration state.",
+      "Captures requested refinement samples sequentially from distinct RGB-D frames, then analyzes their independent VLM workflows concurrently. Each call carries a unique run/sample/phase request ID; a sample permits one exact-depth reselection only when needed and conditionally calls a quality-review VLM when its raw translation delta exceeds the configured review threshold.",
       "Returns a translation-only compare-and-swap update candidate and visual evidence; a Manager compare-and-swap conflict remains a structured non-applied result across the Skill process boundary; the Skill never commands, previews, or authorizes robot motion."
     ],
     "safety_class": "STATEFUL_NO_MOTION",
@@ -55,7 +55,7 @@
           "minimum": 1,
           "maximum": 5,
           "default": 1,
-          "description": "Number of independent fresh observations to average before one state update. The raw and adopted delta limits scale by this count."
+          "description": "Number of independent fresh observations to attempt before one state update. Failed samples are excluded from averaging, and the raw and adopted delta limits scale by the accepted sample count."
         },
         "landmark_id": {
           "type": [
@@ -120,8 +120,12 @@
       "default_sample_count": 1,
       "maximum_sample_count": 5,
       "aggregation": "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
+      "aggregation_population": "ACCEPTED_SAMPLES_ONLY",
+      "all_samples_excluded_policy": "REJECT_WITHOUT_STATE_UPDATE",
       "state_updates_per_invocation": 1,
-      "threshold_scale": "SAMPLE_COUNT"
+      "threshold_scale": "ACCEPTED_SAMPLE_COUNT",
+      "capture_execution": "SEQUENTIAL_DISTINCT_RGBD_FRAMES",
+      "analysis_execution": "CONCURRENT_PER_SAMPLE"
     },
     "effector_profile_pins_kinematic_attachment": true,
     "compact_active_state": true,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -45,7 +47,8 @@ class VlmClient(Protocol):
         prompt: str,
         images: list[dict[str, Any]],
         purpose: str,
-    ) -> str: ...
+        request_id: str,
+    ) -> str | dict[str, Any]: ...
 
 
 class CompactStateStore(Protocol):
@@ -162,16 +165,19 @@ class TranslationRefinementSkill:
     ) -> dict[str, Any]:
         factor = self._validate_adoption_factor(adoption_factor)
         count = self._validate_sample_count(sample_count)
+        run_id = f"arm-root-refinement-{uuid.uuid4().hex}"
         if count == 1:
             result = await self._run_single(
                 adoption_factor=factor,
                 landmark_id=landmark_id,
+                request_id_prefix=f"{run_id}/sample-01",
             )
             return self._attach_single_sample_metadata(result)
         return await self._run_multi_sample(
             adoption_factor=factor,
             sample_count=count,
             landmark_id=landmark_id,
+            run_id=run_id,
         )
 
     async def _run_single(
@@ -181,9 +187,25 @@ class TranslationRefinementSkill:
         landmark_id: str | None = None,
         apply_state_update: bool = True,
         enforce_delta_limits: bool = True,
+        state_override: dict[str, Any] | None = None,
+        observation_override: dict[str, Any] | None = None,
+        reference_images_override: list[dict[str, Any]] | None = None,
+        request_id_prefix: str | None = None,
     ) -> dict[str, Any]:
-        state = await self.state_store.snapshot()
-        observation = await self.observation_source()
+        state = (
+            copy.deepcopy(state_override)
+            if state_override is not None
+            else await self.state_store.snapshot()
+        )
+        observation = (
+            observation_override
+            if observation_override is not None
+            else await self.observation_source()
+        )
+        invocation_records: list[dict[str, Any]] = []
+        request_prefix = request_id_prefix or (
+            f"arm-root-refinement-{uuid.uuid4().hex}/sample-01"
+        )
         self._validate_capture_observation(observation, state)
         landmark = select_visual_landmark(self.profile, landmark_id)
         tool_point = resolve_tool_landmark_point(
@@ -197,7 +219,11 @@ class TranslationRefinementSkill:
         rgb = np.asarray(observation["rgb"])
         depth = np.asarray(observation["registered_depth_m"], dtype=np.float64)
         channels, overlap = build_rgbd_visual_channels(rgb, depth)
-        reference_images = await self._load_reference_images(landmark)
+        reference_images = (
+            reference_images_override
+            if reference_images_override is not None
+            else await self._load_reference_images(landmark)
+        )
         first_prompt = build_landmark_prompt(
             profile=self.profile,
             landmark=landmark,
@@ -215,6 +241,8 @@ class TranslationRefinementSkill:
                 ]
                 + reference_images,
                 purpose="EFFECTOR_LANDMARK_TRANSLATION_REFINEMENT",
+                request_id=f"{request_prefix}/detect",
+                invocation_records=invocation_records,
             )
             detection = parse_landmark_detection(
                 first_response,
@@ -253,18 +281,21 @@ class TranslationRefinementSkill:
                 landmark=landmark,
                 confidence="low",
             )
-            return {
-                "schema": "midbrain.arm_root_translation_refinement",
-                "schema_version": 1,
-                "status": "REJECTED_OBSERVATION",
-                "workflow_complete": True,
-                "eligible_for_state_update": False,
-                "reason": detection["reason"],
-                "landmark_depth_reselection": depth_reselection,
-                "visual_evidence": visual_evidence,
-                "physical_motion_submitted": False,
-                "physical_motion_authorized": False,
-            }
+            return self._attach_vlm_invocations(
+                {
+                    "schema": "midbrain.arm_root_translation_refinement",
+                    "schema_version": 1,
+                    "status": "REJECTED_OBSERVATION",
+                    "workflow_complete": True,
+                    "eligible_for_state_update": False,
+                    "reason": detection["reason"],
+                    "landmark_depth_reselection": depth_reselection,
+                    "visual_evidence": visual_evidence,
+                    "physical_motion_submitted": False,
+                    "physical_motion_authorized": False,
+                },
+                invocation_records,
+            )
         depth_retry_error: str | None = None
         retry_annotations: list[dict[str, Any]] = []
         try:
@@ -340,6 +371,8 @@ class TranslationRefinementSkill:
                     ]
                     + reference_images,
                     purpose="EFFECTOR_LANDMARK_DEPTH_RESELECTION",
+                    request_id=f"{request_prefix}/depth-reselection",
+                    invocation_records=invocation_records,
                 )
                 detection = parse_landmark_detection(
                     retry_response,
@@ -395,18 +428,21 @@ class TranslationRefinementSkill:
                 landmark=landmark,
                 confidence="low",
             )
-            return {
-                "schema": "midbrain.arm_root_translation_refinement",
-                "schema_version": 1,
-                "status": "REJECTED_OBSERVATION",
-                "workflow_complete": True,
-                "eligible_for_state_update": False,
-                "reason": depth_retry_error,
-                "landmark_depth_reselection": depth_reselection,
-                "visual_evidence": visual_evidence,
-                "physical_motion_submitted": False,
-                "physical_motion_authorized": False,
-            }
+            return self._attach_vlm_invocations(
+                {
+                    "schema": "midbrain.arm_root_translation_refinement",
+                    "schema_version": 1,
+                    "status": "REJECTED_OBSERVATION",
+                    "workflow_complete": True,
+                    "eligible_for_state_update": False,
+                    "reason": depth_retry_error,
+                    "landmark_depth_reselection": depth_reselection,
+                    "visual_evidence": visual_evidence,
+                    "physical_motion_submitted": False,
+                    "physical_motion_authorized": False,
+                },
+                invocation_records,
+            )
         if not resolved["eligible_for_translation_refinement"]:
             marked_overlap = render_marked_overlap_png(
                 overlap,
@@ -428,19 +464,22 @@ class TranslationRefinementSkill:
                 landmark=landmark,
                 confidence="low",
             )
-            return {
-                "schema": "midbrain.arm_root_translation_refinement",
-                "schema_version": 1,
-                "status": "REJECTED_OBSERVATION",
-                "workflow_complete": True,
-                "eligible_for_state_update": False,
-                "reason": "; ".join(resolved["quality_reasons"]),
-                "landmark_depth_reselection": depth_reselection,
-                "resolved_landmark": resolved,
-                "visual_evidence": visual_evidence,
-                "physical_motion_submitted": False,
-                "physical_motion_authorized": False,
-            }
+            return self._attach_vlm_invocations(
+                {
+                    "schema": "midbrain.arm_root_translation_refinement",
+                    "schema_version": 1,
+                    "status": "REJECTED_OBSERVATION",
+                    "workflow_complete": True,
+                    "eligible_for_state_update": False,
+                    "reason": "; ".join(resolved["quality_reasons"]),
+                    "landmark_depth_reselection": depth_reselection,
+                    "resolved_landmark": resolved,
+                    "visual_evidence": visual_evidence,
+                    "physical_motion_submitted": False,
+                    "physical_motion_authorized": False,
+                },
+                invocation_records,
+            )
         refinement = prepare_translation_refinement(
             active_world_from_base=state["world_from_base"],
             base_from_tool=observation["base_from_tool"],
@@ -529,6 +568,7 @@ class TranslationRefinementSkill:
         refinement["visual_evidence"] = visual_evidence
         refinement["quality_review_evidence"] = quality_review_evidence
         refinement["capture_motion"] = capture_motion
+        refinement["vlm_invocations"] = invocation_records
         refinement["alignment_image_back_projection"] = {
             "camera_model": "PINHOLE_REGISTERED_DEPTH_INTRINSICS",
             "registered_depth_grid": [int(depth.shape[0]), int(depth.shape[1])],
@@ -571,6 +611,8 @@ class TranslationRefinementSkill:
                     ]
                     + reference_images,
                     purpose="EFFECTOR_LANDMARK_MARKING_QUALITY_REVIEW",
+                    request_id=f"{request_prefix}/quality-review",
+                    invocation_records=invocation_records,
                 )
                 review = parse_quality_review(
                     review_response,
@@ -658,27 +700,79 @@ class TranslationRefinementSkill:
         adoption_factor: float,
         sample_count: int,
         landmark_id: str | None,
+        run_id: str,
     ) -> dict[str, Any]:
         source_state = await self.state_store.snapshot()
-        sample_results: list[dict[str, Any]] = []
-        for index in range(sample_count):
-            result = await self._run_single(
-                adoption_factor=adoption_factor,
-                landmark_id=landmark_id,
-                apply_state_update=False,
-                enforce_delta_limits=False,
-            )
-            sample_results.append(result)
-            if result.get("status") != "OBSERVATION_ONLY":
-                return self._multi_sample_rejection(
-                    result=result,
-                    sample_results=sample_results,
-                    requested_sample_count=sample_count,
-                    reason=(
-                        f"multi-sample refinement stopped at sample {index + 1}: "
-                        + str(result.get("reason") or result.get("status"))
-                    ),
+        landmark = select_visual_landmark(self.profile, landmark_id)
+        reference_images = await self._load_reference_images(landmark)
+        observations = await self._capture_multi_sample_observations(
+            source_state,
+            sample_count,
+            landmark,
+        )
+        sample_outcomes = await asyncio.gather(
+            *[
+                self._run_single(
+                    adoption_factor=adoption_factor,
+                    landmark_id=landmark_id,
+                    apply_state_update=False,
+                    enforce_delta_limits=False,
+                    state_override=source_state,
+                    observation_override=observation,
+                    reference_images_override=reference_images,
+                    request_id_prefix=f"{run_id}/sample-{index + 1:02d}",
                 )
+                for index, observation in enumerate(observations)
+            ],
+            return_exceptions=True,
+        )
+        sample_results: list[dict[str, Any]] = []
+        for outcome in sample_outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if not isinstance(outcome, dict):
+                raise RuntimeError("multi-sample analysis returned invalid data")
+            sample_results.append(outcome)
+        indexed_results = list(enumerate(sample_results, start=1))
+        accepted_indexed_results = [
+            (index, result)
+            for index, result in indexed_results
+            if result.get("status") == "OBSERVATION_ONLY"
+        ]
+        excluded_indexed_results = [
+            (index, result)
+            for index, result in indexed_results
+            if result.get("status") != "OBSERVATION_ONLY"
+        ]
+        accepted_sample_indexes = [
+            index for index, _ in accepted_indexed_results
+        ]
+        excluded_sample_indexes = [
+            index for index, _ in excluded_indexed_results
+        ]
+        if not accepted_indexed_results:
+            first_index, first_result = indexed_results[0]
+            return self._multi_sample_rejection(
+                result=first_result,
+                sample_results=sample_results,
+                requested_sample_count=sample_count,
+                reason=(
+                    "multi-sample refinement excluded every sample; "
+                    f"sample {first_index}: "
+                    + str(
+                        first_result.get("reason")
+                        or (first_result.get("quality_review") or {}).get(
+                            "reason"
+                        )
+                        or first_result.get("status")
+                    )
+                ),
+                included_sample_indexes=[],
+            )
+        accepted_results = [
+            result for _, result in accepted_indexed_results
+        ]
+        for index, result in accepted_indexed_results:
             if (
                 int(result.get("source_revision", -1))
                 != int(source_state["revision"])
@@ -693,14 +787,15 @@ class TranslationRefinementSkill:
                     sample_results=sample_results,
                     requested_sample_count=sample_count,
                     reason=(
-                        "active alignment changed while collecting multi-sample "
-                        "refinement observations"
+                        f"accepted sample {index} does not match the frozen "
+                        "multi-sample alignment context"
                     ),
                     status="REJECTED_CONTEXT_CHANGED",
+                    included_sample_indexes=accepted_sample_indexes,
                 )
 
         raw_deltas = np.asarray(
-            [item["raw_translation_delta_m"] for item in sample_results],
+            [item["raw_translation_delta_m"] for item in accepted_results],
             dtype=np.float64,
         )
         mean_raw_delta = np.mean(raw_deltas, axis=0)
@@ -718,18 +813,20 @@ class TranslationRefinementSkill:
         proposed_transform[:3, 3] += adopted_delta
         raw_norm_m = float(np.linalg.norm(mean_raw_delta))
         adopted_norm_m = float(np.linalg.norm(adopted_delta))
+        accepted_sample_count = len(accepted_results)
+        excluded_sample_count = len(excluded_indexed_results)
         scaled_raw_limit_m = (
-            self.maximum_raw_translation_delta_m * sample_count
+            self.maximum_raw_translation_delta_m * accepted_sample_count
         )
         scaled_adopted_limit_m = (
-            self.maximum_adopted_translation_delta_m * sample_count
+            self.maximum_adopted_translation_delta_m * accepted_sample_count
         )
         delta_limit_exceeded = adoption_factor > 0.0 and (
             raw_norm_m > scaled_raw_limit_m
             or adopted_norm_m > scaled_adopted_limit_m
         )
 
-        aggregate = copy.deepcopy(sample_results[-1])
+        aggregate = copy.deepcopy(accepted_results[-1])
         aggregate.pop("aggregate_candidate_only", None)
         aggregate["source_world_from_base"] = source_transform.tolist()
         aggregate["estimated_full_translation_m"] = (
@@ -745,13 +842,14 @@ class TranslationRefinementSkill:
             "aggregation": "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
             "samples": [
                 copy.deepcopy(item.get("observation_provenance"))
-                for item in sample_results
+                for item in accepted_results
             ],
+            "excluded_sample_indexes": excluded_sample_indexes,
         }
         aggregate["quality_review"] = {
             "required": any(
                 bool((item.get("quality_review") or {}).get("required"))
-                for item in sample_results
+                for item in accepted_results
             ),
             "threshold_m": self.review_threshold_m,
             "threshold_basis": "EACH_RAW_SAMPLE_BEFORE_AGGREGATION",
@@ -759,17 +857,18 @@ class TranslationRefinementSkill:
                 "PASS"
                 if any(
                     bool((item.get("quality_review") or {}).get("required"))
-                    for item in sample_results
+                    for item in accepted_results
                 )
                 else "NOT_RUN"
             ),
             "reason": (
-                "Every required per-sample landmark quality review passed."
+                "Every required review for an accepted sample passed; "
+                "failed samples were excluded from aggregation."
             ),
             "reviewed_point_ids": sorted(
                 {
                     str(point_id)
-                    for item in sample_results
+                    for item in accepted_results
                     for point_id in (
                         (item.get("quality_review") or {}).get(
                             "reviewed_point_ids"
@@ -780,7 +879,8 @@ class TranslationRefinementSkill:
             ),
         }
         aggregate["refinement_limits"] = {
-            "threshold_scale": sample_count,
+            "threshold_scale": accepted_sample_count,
+            "threshold_scale_basis": "ACCEPTED_SAMPLE_COUNT",
             "base_maximum_raw_translation_delta_m": (
                 self.maximum_raw_translation_delta_m
             ),
@@ -791,16 +891,29 @@ class TranslationRefinementSkill:
             "maximum_adopted_translation_delta_m": scaled_adopted_limit_m,
             "enforced_on": "ARITHMETIC_MEAN",
         }
+        accepted_index_set = set(accepted_sample_indexes)
         sample_summaries = [
-            self._sample_summary(item, index + 1)
-            for index, item in enumerate(sample_results)
+            self._sample_summary(
+                item,
+                index,
+                included_in_aggregation=index in accepted_index_set,
+            )
+            for index, item in indexed_results
         ]
         aggregate["multi_sample_refinement"] = {
             "feature_name": "MULTI_SAMPLE_REFINEMENT",
             "requested_sample_count": sample_count,
-            "completed_sample_count": sample_count,
+            "completed_sample_count": len(sample_results),
+            "accepted_sample_count": accepted_sample_count,
+            "excluded_sample_count": excluded_sample_count,
+            "accepted_sample_indexes": accepted_sample_indexes,
+            "excluded_sample_indexes": excluded_sample_indexes,
             "aggregation": "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
-            "threshold_scale": sample_count,
+            "aggregation_population": "ACCEPTED_SAMPLES_ONLY",
+            "threshold_scale": accepted_sample_count,
+            "threshold_scale_basis": "ACCEPTED_SAMPLE_COUNT",
+            "capture_execution": "SEQUENTIAL_DISTINCT_RGBD_FRAMES",
+            "analysis_execution": "CONCURRENT_PER_SAMPLE",
             "mean_raw_translation_delta_m": mean_raw_delta.tolist(),
             "component_standard_deviation_m": (
                 component_standard_deviation.tolist()
@@ -827,7 +940,7 @@ class TranslationRefinementSkill:
             for item in sample_results
         ]
         aggregate["visual_evidence_represents"] = (
-            "LAST_INDIVIDUAL_SAMPLE; aggregate XYZ is reported numerically"
+            "LAST_ACCEPTED_SAMPLE; aggregate XYZ is reported numerically"
         )
         aggregate["workflow_complete"] = True
         aggregate["state_update_applied"] = False
@@ -837,7 +950,8 @@ class TranslationRefinementSkill:
             aggregate["status"] = "OBSERVATION_ONLY"
             aggregate["eligible_for_state_update"] = False
             aggregate["reason"] = (
-                "multi-sample refinement measured an averaged correction; "
+                f"multi-sample refinement averaged {accepted_sample_count} "
+                f"accepted sample(s) and excluded {excluded_sample_count}; "
                 "adoption_factor is zero"
             )
             return aggregate
@@ -846,11 +960,11 @@ class TranslationRefinementSkill:
             aggregate["eligible_for_state_update"] = False
             aggregate["reason"] = (
                 "averaged raw translation delta exceeds the scaled "
-                "multi-sample limit"
+                "accepted-sample limit"
                 if raw_norm_m > scaled_raw_limit_m
                 else (
                     "averaged adopted translation delta exceeds the scaled "
-                    "multi-sample limit; reduce adoption_factor"
+                    "accepted-sample limit; reduce adoption_factor"
                 )
             )
             return aggregate
@@ -875,7 +989,7 @@ class TranslationRefinementSkill:
             context_revalidation = await self._revalidate_before_update(
                 {
                     "provenance": copy.deepcopy(
-                        sample_results[-1].get("observation_provenance")
+                        accepted_results[-1].get("observation_provenance")
                     )
                 },
                 source_state,
@@ -887,6 +1001,10 @@ class TranslationRefinementSkill:
             return aggregate
         aggregate["status"] = "TRANSLATION_UPDATE_READY"
         aggregate["eligible_for_state_update"] = True
+        aggregate["reason"] = (
+            f"averaged {accepted_sample_count} accepted sample(s); "
+            f"excluded {excluded_sample_count} failed sample(s)"
+        )
         aggregate["context_revalidation"] = context_revalidation
         updated_state = apply_compact_translation_update(source_state, aggregate)
         swapped = await self.state_store.compare_and_swap(
@@ -907,13 +1025,35 @@ class TranslationRefinementSkill:
         self,
         result: dict[str, Any],
     ) -> dict[str, Any]:
+        included = result.get("raw_translation_delta_m") is not None and (
+            result.get("status")
+            not in {
+                "REJECTED_OBSERVATION",
+                "REJECTED_QUALITY_REVIEW",
+                "DEPENDENCY_UNAVAILABLE",
+            }
+        )
         result["multi_sample_refinement"] = {
             "feature_name": "MULTI_SAMPLE_REFINEMENT",
             "requested_sample_count": 1,
             "completed_sample_count": 1,
+            "accepted_sample_count": int(included),
+            "excluded_sample_count": int(not included),
+            "accepted_sample_indexes": [1] if included else [],
+            "excluded_sample_indexes": [] if included else [1],
             "aggregation": "SINGLE_SAMPLE",
+            "aggregation_population": (
+                "ACCEPTED_SAMPLES_ONLY" if included else "NO_ACCEPTED_SAMPLES"
+            ),
             "threshold_scale": 1,
-            "samples": [self._sample_summary(result, 1)],
+            "threshold_scale_basis": "SINGLE_SAMPLE",
+            "samples": [
+                self._sample_summary(
+                    result,
+                    1,
+                    included_in_aggregation=included,
+                )
+            ],
         }
         return result
 
@@ -925,7 +1065,14 @@ class TranslationRefinementSkill:
         requested_sample_count: int,
         reason: str,
         status: str | None = None,
+        included_sample_indexes: list[int] | None = None,
     ) -> dict[str, Any]:
+        included = set(included_sample_indexes or [])
+        excluded = [
+            index
+            for index in range(1, len(sample_results) + 1)
+            if index not in included
+        ]
         rejected = copy.deepcopy(result)
         rejected["status"] = status or str(
             result.get("status") or "REJECTED_OBSERVATION"
@@ -938,23 +1085,66 @@ class TranslationRefinementSkill:
             "feature_name": "MULTI_SAMPLE_REFINEMENT",
             "requested_sample_count": requested_sample_count,
             "completed_sample_count": len(sample_results),
+            "accepted_sample_count": len(included),
+            "excluded_sample_count": len(excluded),
+            "accepted_sample_indexes": sorted(included),
+            "excluded_sample_indexes": excluded,
             "aggregation": "INCOMPLETE_NO_UPDATE",
-            "threshold_scale": requested_sample_count,
+            "aggregation_population": (
+                "ACCEPTED_SAMPLES_ONLY" if included else "NO_ACCEPTED_SAMPLES"
+            ),
+            "threshold_scale": len(included),
+            "threshold_scale_basis": "ACCEPTED_SAMPLE_COUNT",
+            "capture_execution": "SEQUENTIAL_DISTINCT_RGBD_FRAMES",
+            "analysis_execution": "CONCURRENT_PER_SAMPLE",
             "samples": [
-                self._sample_summary(item, index + 1)
+                self._sample_summary(
+                    item,
+                    index + 1,
+                    included_in_aggregation=(index + 1) in included,
+                )
                 for index, item in enumerate(sample_results)
             ],
         }
+        rejected["sample_visual_evidence"] = [
+            copy.deepcopy(item.get("visual_evidence"))
+            for item in sample_results
+        ]
+        rejected["sample_quality_review_evidence"] = [
+            copy.deepcopy(item.get("quality_review_evidence"))
+            for item in sample_results
+        ]
+        rejected["sample_capture_motion"] = [
+            copy.deepcopy(item.get("capture_motion"))
+            for item in sample_results
+        ]
+        rejected["sample_landmark_depth_reselection"] = [
+            copy.deepcopy(item.get("landmark_depth_reselection"))
+            for item in sample_results
+        ]
         return rejected
 
     @staticmethod
     def _sample_summary(
         result: dict[str, Any],
         sample_index: int,
+        *,
+        included_in_aggregation: bool,
     ) -> dict[str, Any]:
         return {
             "sample_index": sample_index,
             "status": result.get("status"),
+            "included_in_aggregation": included_in_aggregation,
+            "exclusion_reason": (
+                None
+                if included_in_aggregation
+                else str(
+                    result.get("reason")
+                    or (result.get("quality_review") or {}).get("reason")
+                    or result.get("status")
+                    or "unknown"
+                )
+            ),
             "raw_translation_delta_m": copy.deepcopy(
                 result.get("raw_translation_delta_m")
             ),
@@ -970,7 +1160,59 @@ class TranslationRefinementSkill:
                 result.get("observation_provenance")
             ),
             "visual_evidence": copy.deepcopy(result.get("visual_evidence")),
+            "vlm_invocations": copy.deepcopy(result.get("vlm_invocations")),
         }
+
+    async def _capture_multi_sample_observations(
+        self,
+        state: dict[str, Any],
+        sample_count: int,
+        landmark: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        policy = self.profile["capture_motion_policy"]
+        maximum_wait_s = float(policy["maximum_transform_wait_ms"]) / 1000.0
+        retry_interval_s = float(policy["transform_retry_interval_ms"]) / 1000.0
+        observations: list[dict[str, Any]] = []
+        capture_identities: set[tuple[Any, ...]] = set()
+        loop = asyncio.get_running_loop()
+        for sample_index in range(sample_count):
+            deadline = loop.time() + maximum_wait_s
+            while True:
+                observation = await self.observation_source()
+                self._validate_capture_observation(observation, state)
+                tool_point = resolve_tool_landmark_point(
+                    landmark,
+                    runtime_bindings=observation.get("runtime_landmark_bindings"),
+                )
+                self._validate_capture_motion(observation, tool_point=tool_point)
+                identity = self._capture_identity(observation)
+                if identity not in capture_identities:
+                    capture_identities.add(identity)
+                    observations.append(observation)
+                    break
+                remaining_s = deadline - loop.time()
+                if remaining_s <= 0.0:
+                    raise RuntimeError(
+                        "multi-sample refinement could not capture a distinct RGB-D "
+                        f"frame for sample {sample_index + 1}"
+                    )
+                await asyncio.sleep(min(retry_interval_s, remaining_s))
+        return observations
+
+    @staticmethod
+    def _capture_identity(observation: dict[str, Any]) -> tuple[Any, ...]:
+        provenance = observation.get("provenance") or {}
+        identity = (
+            provenance.get("frame_number"),
+            provenance.get("observed_at_us"),
+            provenance.get("rgb_sha256"),
+            provenance.get("registered_depth_sha256"),
+        )
+        if all(value is None for value in identity):
+            raise RuntimeError(
+                "multi-sample refinement requires RGB-D frame provenance"
+            )
+        return identity
 
     @staticmethod
     def _validate_adoption_factor(value: Any) -> float:
@@ -1000,15 +1242,52 @@ class TranslationRefinementSkill:
         prompt: str,
         images: list[dict[str, Any]],
         purpose: str,
+        request_id: str,
+        invocation_records: list[dict[str, Any]],
     ) -> str:
         try:
-            return await self.vlm.invoke(
+            result = await self.vlm.invoke(
                 prompt=prompt,
                 images=images,
                 purpose=purpose,
+                request_id=request_id,
             )
+            if isinstance(result, str):
+                text = result
+                route = None
+            elif isinstance(result, dict) and isinstance(result.get("text"), str):
+                text = str(result["text"])
+                route = result.get("route")
+            else:
+                raise RuntimeError("VLM client returned invalid inference data")
+            invocation_records.append(
+                {
+                    "request_id": request_id,
+                    "purpose": purpose,
+                    "route": (
+                        copy.deepcopy(route) if isinstance(route, dict) else None
+                    ),
+                }
+            )
+            return text
         except Exception as error:
+            invocation_records.append(
+                {
+                    "request_id": request_id,
+                    "purpose": purpose,
+                    "route": None,
+                    "error": str(error),
+                }
+            )
             raise RuntimeError(f"VLM call {purpose} failed: {error}") from error
+
+    @staticmethod
+    def _attach_vlm_invocations(
+        result: dict[str, Any],
+        invocation_records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result["vlm_invocations"] = invocation_records
+        return result
 
     async def _load_reference_images(
         self,

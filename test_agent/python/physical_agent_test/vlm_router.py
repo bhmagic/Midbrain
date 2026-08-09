@@ -5,6 +5,7 @@ import base64
 import hashlib
 import os
 import time
+import uuid
 from contextvars import ContextVar, Token
 from dataclasses import asdict, dataclass
 from typing import Protocol
@@ -30,6 +31,10 @@ _selected_vlm_model: ContextVar[str | None] = ContextVar(
     "selected_vlm_model",
     default=None,
 )
+_active_client_request_id: ContextVar[str | None] = ContextVar(
+    "active_vlm_client_request_id",
+    default=None,
+)
 
 
 def set_vlm_model_selection(model_id: str | None) -> Token:
@@ -41,6 +46,13 @@ def reset_vlm_model_selection(token: Token) -> None:
     _selected_vlm_model.reset(token)
 
 
+@dataclass(frozen=True)
+class BackendInference:
+    text: str
+    server_request_id: str | None = None
+    response_id: str | None = None
+
+
 class VisionLanguageBackend(Protocol):
     backend_id: str
     model_id: str
@@ -50,14 +62,14 @@ class VisionLanguageBackend(Protocol):
         image_bytes: bytes,
         mime_type: str,
         prompt: str,
-    ) -> str:
+    ) -> str | BackendInference:
         """Run one synchronous VLM inference."""
 
     def generate_images(
         self,
         images: list[tuple[bytes, str]],
         prompt: str,
-    ) -> str:
+    ) -> str | BackendInference:
         """Run one synchronous inference over multiple labeled prompt images."""
 
 
@@ -73,10 +85,13 @@ class VlmInferenceResult:
     input_sha256: str
     input_bytes: int
     mime_type: str
+    request_id: str | None = None
+    client_request_id: str | None = None
+    server_request_id: str | None = None
+    response_id: str | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)
-
 
 class GeminiVisionLanguageBackend:
     backend_id = "google.gemini"
@@ -158,14 +173,14 @@ class OpenAIVisionLanguageBackend:
         image_bytes: bytes,
         mime_type: str,
         prompt: str,
-    ) -> str:
+    ) -> BackendInference:
         return self.generate_images([(image_bytes, mime_type)], prompt)
 
     def generate_images(
         self,
         images: list[tuple[bytes, str]],
         prompt: str,
-    ) -> str:
+    ) -> BackendInference:
         content = [
             {
                 "type": "input_text",
@@ -181,20 +196,33 @@ class OpenAIVisionLanguageBackend:
                     "detail": "high",
                 }
             )
-        response = self._client.responses.create(
-            model=self.model_id,
-            input=[
+        request_id = _active_client_request_id.get()
+        request_options: dict[str, object] = {
+            "model": self.model_id,
+            "input": [
                 {
                     "role": "user",
                     "content": content,
                 }
             ],
-            max_output_tokens=1200,
+            "max_output_tokens": 1200,
+        }
+        if request_id is not None:
+            request_options["extra_headers"] = {
+                "X-Client-Request-Id": request_id,
+            }
+        response = self._client.responses.create(
+            **request_options,
         )
         text = response.output_text
         if not text:
             raise RuntimeError("OpenAI VLM returned no text")
-        return text.strip()
+        return BackendInference(
+            text=text.strip(),
+            server_request_id=str(getattr(response, "_request_id", "") or "")
+            or None,
+            response_id=str(getattr(response, "id", "") or "") or None,
+        )
 
 
 class VisionLanguageRouter:
@@ -236,10 +264,12 @@ class VisionLanguageRouter:
         image_bytes: bytes,
         mime_type: str,
         prompt: str,
+        request_id: str | None = None,
     ) -> VlmInferenceResult:
         return await self.generate_images(
             images=[(image_bytes, mime_type)],
             prompt=prompt,
+            request_id=request_id,
         )
 
     async def generate_images(
@@ -247,6 +277,7 @@ class VisionLanguageRouter:
         *,
         images: list[tuple[bytes, str]],
         prompt: str,
+        request_id: str | None = None,
     ) -> VlmInferenceResult:
         if not isinstance(images, list) or not 1 <= len(images) <= 8:
             raise ValueError("VLM input must contain one to eight images")
@@ -272,6 +303,7 @@ class VisionLanguageRouter:
             else digest.hexdigest()
         )
         failures: list[dict[str, object]] = []
+        logical_request_id = self._normalize_request_id(request_id)
         selected_model = _selected_vlm_model.get()
         backends = self.backends
         maximum_attempts = self.maximum_attempts
@@ -290,6 +322,9 @@ class VisionLanguageRouter:
         for backend in backends[:maximum_attempts]:
             for backend_attempt in range(1, self.attempts_per_backend + 1):
                 attempt_count += 1
+                client_request_id = (
+                    f"{logical_request_id}/attempt-{attempt_count:02d}"
+                )
                 report_operation_progress(
                     f"VLM_ATTEMPT_{attempt_count}_{backend.backend_id}"
                 )
@@ -312,11 +347,25 @@ class VisionLanguageRouter:
                         if len(normalized_images) == 1
                         else (normalized_images, prompt)
                     )
-                    text = await self._await_backend(
-                        asyncio.to_thread(backend_call, *call_arguments),
-                        attempt=attempt_count,
-                        backend_id=backend.backend_id,
+                    request_token = _active_client_request_id.set(
+                        client_request_id
                     )
+                    try:
+                        backend_result = await self._await_backend(
+                            asyncio.to_thread(backend_call, *call_arguments),
+                            attempt=attempt_count,
+                            backend_id=backend.backend_id,
+                        )
+                    finally:
+                        _active_client_request_id.reset(request_token)
+                    if isinstance(backend_result, BackendInference):
+                        text = backend_result.text
+                        server_request_id = backend_result.server_request_id
+                        response_id = backend_result.response_id
+                    else:
+                        text = str(backend_result)
+                        server_request_id = None
+                        response_id = None
                     report_operation_progress(
                         f"VLM_ATTEMPT_{attempt_count}_COMPLETED"
                     )
@@ -335,6 +384,10 @@ class VisionLanguageRouter:
                             if len(normalized_images) == 1
                             else "multipart/mixed"
                         ),
+                        request_id=logical_request_id,
+                        client_request_id=client_request_id,
+                        server_request_id=server_request_id,
+                        response_id=response_id,
                     )
                 except Exception as error:
                     retryable = self._is_retryable_failure(error)
@@ -349,6 +402,7 @@ class VisionLanguageRouter:
                             "model_id": backend.model_id,
                             "attempt": attempt_count,
                             "backend_attempt": backend_attempt,
+                            "client_request_id": client_request_id,
                             "retryable": retryable,
                             "error": error_text,
                         }
@@ -371,6 +425,21 @@ class VisionLanguageRouter:
                 for failure in failures
             )
         )
+
+    @staticmethod
+    def _normalize_request_id(request_id: str | None) -> str:
+        value = str(request_id or "").strip()
+        if not value:
+            value = f"midbrain-vlm-{uuid.uuid4().hex}"
+        try:
+            value.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError(
+                "VLM request_id must contain only ASCII characters"
+            ) from error
+        if len(value) > 480:
+            raise ValueError("VLM request_id must contain at most 480 characters")
+        return value
 
     @staticmethod
     def _is_retryable_failure(error: Exception) -> bool:

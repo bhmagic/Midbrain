@@ -91,8 +91,14 @@
         "feature_name",
         "requested_sample_count",
         "completed_sample_count",
+        "accepted_sample_count",
+        "excluded_sample_count",
+        "accepted_sample_indexes",
+        "excluded_sample_indexes",
         "aggregation",
+        "aggregation_population",
         "threshold_scale",
+        "threshold_scale_basis",
         "samples"
       ],
       "properties": {
@@ -107,6 +113,28 @@
           "minimum": 0,
           "maximum": 5
         },
+        "accepted_sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "excluded_sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "accepted_sample_indexes": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 1, "maximum": 5}
+        },
+        "excluded_sample_indexes": {
+          "type": "array",
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "integer", "minimum": 1, "maximum": 5}
+        },
         "aggregation": {
           "enum": [
             "SINGLE_SAMPLE",
@@ -115,10 +143,22 @@
             "NOT_STARTED_DEPENDENCY_UNAVAILABLE"
           ]
         },
+        "aggregation_population": {
+          "enum": ["ACCEPTED_SAMPLES_ONLY", "NO_ACCEPTED_SAMPLES"]
+        },
         "threshold_scale": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 5
+        },
+        "threshold_scale_basis": {
+          "enum": ["ACCEPTED_SAMPLE_COUNT", "SINGLE_SAMPLE"]
+        },
+        "capture_execution": {
+          "const": "SEQUENTIAL_DISTINCT_RGBD_FRAMES"
+        },
+        "analysis_execution": {
+          "const": "CONCURRENT_PER_SAMPLE"
         },
         "mean_raw_translation_delta_m": {"$ref": "#/$defs/vector3"},
         "component_standard_deviation_m": {"$ref": "#/$defs/vector3"},
@@ -140,6 +180,8 @@
       "required": [
         "sample_index",
         "status",
+        "included_in_aggregation",
+        "exclusion_reason",
         "raw_translation_delta_m",
         "raw_translation_delta_norm_m",
         "quality_review",
@@ -151,6 +193,8 @@
       "properties": {
         "sample_index": {"type": "integer", "minimum": 1, "maximum": 5},
         "status": {"type": ["string", "null"]},
+        "included_in_aggregation": {"type": "boolean"},
+        "exclusion_reason": {"type": ["string", "null"]},
         "raw_translation_delta_m": {
           "oneOf": [{"$ref": "#/$defs/vector3"}, {"type": "null"}]
         },
@@ -162,7 +206,23 @@
         "landmark_depth_reselection": {"type": ["object", "null"]},
         "capture_motion": {"type": ["object", "null"]},
         "observation_provenance": {"type": ["object", "null"]},
-        "visual_evidence": {"type": ["object", "null"]}
+        "visual_evidence": {"type": ["object", "null"]},
+        "vlm_invocations": {
+          "type": ["array", "null"],
+          "maxItems": 3,
+          "items": {"$ref": "#/$defs/vlm_invocation"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "vlm_invocation": {
+      "type": "object",
+      "required": ["request_id", "purpose", "route"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1, "maxLength": 480},
+        "purpose": {"type": "string", "minLength": 1},
+        "route": {"type": ["object", "null"]},
+        "error": {"type": "string"}
       },
       "additionalProperties": false
     },

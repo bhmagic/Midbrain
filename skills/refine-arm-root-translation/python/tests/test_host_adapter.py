@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,7 +151,7 @@ class _Spatial:
 
 
 class _Vlm:
-    async def generate_images(self, *, images, prompt):
+    async def generate_images(self, *, images, prompt, request_id=None):
         return SimpleNamespace(
             text="{}",
             as_dict=lambda: {"image_count": len(images), "prompt": prompt},
@@ -280,6 +281,7 @@ class _EndToEndFabric(_Fabric):
 class _EndToEndSpatial(_Spatial):
     def __init__(self) -> None:
         super().__init__()
+        self.capture_count = 0
         self.frame = SimpleNamespace(
             **{
                 **vars(self.frame),
@@ -294,12 +296,23 @@ class _EndToEndSpatial(_Spatial):
             }
         )
 
+    async def prepare_context(self, **kwargs):
+        self.capture_count += 1
+        self.frame.frame_number += 1
+        self.frame.timestamp_us += self.capture_count
+        bundle = self.frame.observations["bundle"]["data"]
+        bundle["rgb"]["global_timestamp_us"] = self.frame.timestamp_us
+        bundle["depth_aligned_to_rgb"]["global_timestamp_us"] = (
+            self.frame.timestamp_us + 1_000
+        )
+        return await super().prepare_context(**kwargs)
+
 
 class _DetectionVlm:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate_images(self, *, images, prompt):
+    async def generate_images(self, *, images, prompt, request_id=None):
         self.calls += 1
         response = {
             "schema": "midbrain.effector_landmark_detection",
@@ -331,10 +344,42 @@ class _DetectionVlm:
             text=json.dumps(response),
             as_dict=lambda: {
                 "model_id": "vlm.test",
+                "request_id": request_id,
                 "image_count": len(images),
                 "prompt_length": len(prompt),
             },
         )
+
+
+class _ConcurrentDetectionVlm(_DetectionVlm):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = 0
+        self.maximum_active = 0
+        self.request_ids: list[str] = []
+        self.completion_order: list[str] = []
+        self.all_started = asyncio.Event()
+
+    async def generate_images(self, *, images, prompt, request_id=None):
+        value = str(request_id)
+        self.request_ids.append(value)
+        self.active += 1
+        self.maximum_active = max(self.maximum_active, self.active)
+        if self.active == 5:
+            self.all_started.set()
+        try:
+            await asyncio.wait_for(self.all_started.wait(), timeout=1.0)
+            sample_index = int(value.split("/sample-")[1].split("/")[0])
+            await asyncio.sleep((6 - sample_index) * 0.03)
+            result = await super().generate_images(
+                images=images,
+                prompt=prompt,
+                request_id=request_id,
+            )
+            self.completion_order.append(value)
+            return result
+        finally:
+            self.active -= 1
 
 
 class _UnavailableLocalTransformFabric(_EndToEndFabric):
@@ -650,6 +695,51 @@ class ArmRootTranslationRefinementAdapterTests(
             np.allclose(proposed["translation_m"], [0.0, 0.0, 0.001])
         )
         self.assertEqual(proposed["rotation_xyzw"], [0.0, 0.0, 0.0, 1.0])
+
+    async def test_private_venv_rpc_multiplexes_five_vlm_calls(self) -> None:
+        workspace = Path(__file__).resolve().parents[4]
+        skill_root = workspace / "skills" / "refine-arm-root-translation"
+        skill_python = skill_root / ".venv" / "Scripts" / "python.exe"
+        if not skill_python.is_file():
+            self.skipTest("translation-refinement private venv is not installed")
+        manager = _EndToEndManager()
+        vlm = _ConcurrentDetectionVlm()
+        adapter = ArmRootTranslationRefinementAdapter(
+            skill_root=skill_root,
+            profile_path=(
+                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
+            ),
+            manager=manager,
+            fabric=_EndToEndFabric(),
+            spatial=_EndToEndSpatial(),
+            vlm_router=vlm,
+            visual_evidence_store=_Evidence(),
+        )
+
+        result = await adapter.run(sample_count=5)
+
+        self.assertEqual(result["status"], "TRANSLATION_UPDATE_READY")
+        self.assertTrue(result["state_update_applied"])
+        self.assertEqual(vlm.maximum_active, 5)
+        self.assertEqual(len(set(vlm.request_ids)), 5)
+        self.assertIn("/sample-05/detect", vlm.completion_order[0])
+        self.assertIn("/sample-01/detect", vlm.completion_order[-1])
+        self.assertEqual(len(manager.requests), 1)
+        sample_routes = [
+            sample["vlm_invocations"][0]["route"]["request_id"]
+            for sample in result["multi_sample_refinement"]["samples"]
+        ]
+        self.assertEqual(set(sample_routes), set(vlm.request_ids))
+        for index, route in enumerate(sample_routes, start=1):
+            self.assertIn(f"/sample-{index:02d}/detect", route)
+        schema = json.loads(
+            (
+                skill_root
+                / "schemas"
+                / "arm_root_translation_refinement.v1.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        validate(instance=result, schema=schema)
 
     async def test_missing_arm_transform_returns_recoverable_dependency(
         self,
