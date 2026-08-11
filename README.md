@@ -1,3 +1,5 @@
+![Midbrain - Runtime system for autonomous robot agents](docs/assets/midbrain-banner.png)
+
 # Midbrain
 
 **An agentic runtime for autonomous, interoperable robots**
