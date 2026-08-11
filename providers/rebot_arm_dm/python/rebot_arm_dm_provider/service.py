@@ -12,6 +12,7 @@ import uuid
 import numpy as np
 
 from .calibration import SessionRecorder, fit_two_parameter_friction
+from .assembly import RobotAssemblyConfiguration
 from .controller import ArmController, CommandEnvelope, JointCommand, ProviderState, LeasePermissionError
 from .fabric import PlatformPublisher
 from .kinematics import RebotKinematics
@@ -23,13 +24,21 @@ class ArmProviderService:
                  calibration_path: str|Path, listen_host: str, listen_port: int,
                  manager_url: str|None = None, fabric_url: str|None = None,
                  allow_hardware_calibration: bool = False, simulation: bool = False,
-                 read_only: bool = False):
+                 read_only: bool = False,
+                 assembly: RobotAssemblyConfiguration|None = None):
         self.configuration=configuration; self.controller=controller; self.kinematics=kinematics
         self.calibration_path=Path(calibration_path); self.listen_host=listen_host; self.listen_port=listen_port
         self.control_url=f"http://{listen_host}:{listen_port}"; self.instance_id=str(uuid.uuid4()); self.boot_id=str(uuid.uuid4())
         self.publisher=PlatformPublisher("robot_arm.rebot_dm",self.instance_id,self.boot_id,manager_url,fabric_url)
         self.allow_hardware_calibration=allow_hardware_calibration; self.simulation=simulation
         self.read_only=read_only
+        self.assembly=assembly
+        if self.assembly is not None:
+            self.controller.configure_resource_groups(
+                str(self.assembly.selection["arm_resource_id"]),
+                self.assembly.resource_groups(),
+                self.assembly.inactive_joint_names,
+            )
         self.shutdown_event=threading.Event(); self.httpd:ThreadingHTTPServer|None=None
         self.platform_threads:list[threading.Thread]=[]; self.model_published=False
         self.manager_registered=False
@@ -118,6 +127,7 @@ class ArmProviderService:
         )
         joint_output = self.publisher.output_status("robot_arm.joint_state")
         transform_output = self.publisher.output_status("robot_arm.transforms.local")
+        assembly_output = self.publisher.output_status("robot_arm.assembly_state")
         joint_output_ready = bool(
             controller_ready
             and isinstance(joint_output["age_ms"], (int, float))
@@ -151,14 +161,33 @@ class ArmProviderService:
                     "robot_arm.transforms.local": transform_output_ready,
                     "robot_arm.gravity_float": controller_ready,
                     "robot_arm.control.impedance": motion_allowed,
+                    "robot_arm.assembly_state": self.assembly is not None,
+                    "robot_arm.control.joint_group.v1": bool(
+                        motion_allowed and self.assembly is not None
+                    ),
+                    "robot_arm.control.concurrent_disjoint_groups.v1": bool(
+                        motion_allowed and self.assembly is not None
+                    ),
                 },
                 "publication_outputs": {
                     "robot_arm.joint_state": joint_output,
                     "robot_arm.transforms.local": transform_output,
+                    "robot_arm.assembly_state": assembly_output,
                 },
                 "held_control_authority_leases": [],
                 "provider_local_control_lease": lease,
+                "provider_local_control_leases": state.get(
+                    "resource_group_leases", []
+                ),
+                "resource_groups": (
+                    self.assembly.resource_groups()
+                    if self.assembly is not None
+                    else []
+                ),
                 "manager_authority_lease_supported": False,
+                "provider_group_control_supported": bool(
+                    self.assembly is not None
+                ),
                 "midbrain_contract_status": "RUNTIME_ALIGNED_AUTHORITY_API_PENDING",
                 "audited_midbrain_commit": "e226a09",
                 "last_successful_output_timestamp_us": (
@@ -206,6 +235,7 @@ class ArmProviderService:
             int(payload["fencing_generation"]),
             float(payload.get("mass_kg", 0.0)),
             payload.get("com_tool_m", [0.0, 0.0, 0.0]),
+            str(payload.get("resource_id") or "") or None,
         )
         return {"status": "payload_updated", "payload": value}
 
@@ -259,6 +289,15 @@ class ArmProviderService:
                         self.configuration.calibration_revision,
                         5000,
                     )
+                    if self.assembly is not None:
+                        self.publisher.publish(
+                            "robot_arm.assembly_state",
+                            "midbrain.robot_assembly_state",
+                            self.assembly.public_state(),
+                            self.configuration.model["frames"]["base"],
+                            self.assembly.fingerprint,
+                            5000,
+                        )
                 except Exception:
                     pass
                 next_model = now + 2.0
@@ -328,10 +367,21 @@ class ArmProviderService:
         if not isinstance(request_payload, dict):
             request_payload = {}
         if action == "gravity_float":
-            self.controller.request_gravity_float(
-                str(request_payload.get("reason", "manager request"))
-            )
-            result = {"status": "gravity_float"}
+            resource_id = str(request_payload.get("resource_id") or "").strip()
+            if resource_id:
+                self.controller.request_group_float(
+                    resource_id,
+                    str(request_payload.get("reason", "manager request")),
+                )
+                result = {
+                    "status": "group_gravity_float",
+                    "resource_id": resource_id,
+                }
+            else:
+                self.controller.request_gravity_float(
+                    str(request_payload.get("reason", "manager request"))
+                )
+                result = {"status": "gravity_float"}
         elif action == "safe_home":
             max_velocity_rad_s = request_payload.get("max_velocity_rad_s")
             success = self.controller.safe_home(
@@ -405,24 +455,52 @@ class ArmProviderService:
             self.controller.enable()
         # Acquire ownership before changing the motor state. This prevents a
         # rejected contender from disturbing the current lease holder.
-        lease = self.controller.acquire_lease(
-            str(payload.get("holder", "runtime_controller")),
-            int(payload.get("duration_ms", self.configuration.model["control"]["lease_timeout_ms"])),
-        )
-        self.controller.request_gravity_float("operational lease acquisition")
+        resource_id = str(payload.get("resource_id") or "").strip()
+        with self.controller.ingress_lock:
+            control_was_active = bool(
+                self.controller.lease is not None
+                or self.controller.group_leases
+            )
+        if resource_id:
+            lease = self.controller.acquire_group_lease(
+                resource_id,
+                str(payload.get("holder", "runtime_controller")),
+                int(payload.get("duration_ms", self.configuration.model["control"]["lease_timeout_ms"])),
+            )
+        else:
+            lease = self.controller.acquire_lease(
+                str(payload.get("holder", "runtime_controller")),
+                int(payload.get("duration_ms", self.configuration.model["control"]["lease_timeout_ms"])),
+            )
+        if not control_was_active:
+            self.controller.request_gravity_float("operational lease acquisition")
         return {
             "lease_id": lease.lease_id,
             "fencing_generation": lease.fencing_generation,
+            "resource_id": lease.resource_id,
             "expires_in_ms": int((lease.expires_monotonic-time.monotonic())*1000),
         }
 
     def release_operational_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.controller.release_lease(
-            str(payload["lease_id"]),
-            int(payload["fencing_generation"]),
-            fallback_to_float=True,
-        )
-        return {"status": "released_gravity_float"}
+        resource_id = str(payload.get("resource_id") or "").strip()
+        if resource_id:
+            siblings_remain = self.controller.release_group_lease(
+                resource_id,
+                str(payload["lease_id"]),
+                int(payload["fencing_generation"]),
+            )
+            if not siblings_remain:
+                status = "released_gravity_float"
+            else:
+                status = "released_group_sibling_control_retained"
+        else:
+            self.controller.release_lease(
+                str(payload["lease_id"]),
+                int(payload["fencing_generation"]),
+                fallback_to_float=True,
+            )
+            status = "released_gravity_float"
+        return {"status": status, "resource_id": resource_id or self.controller.resource_root}
 
     def acquire_lease(self,payload:dict[str,Any]) -> dict[str,Any]:
         if self.read_only:
@@ -438,11 +516,21 @@ class ArmProviderService:
 
     def renew_lease(self,payload:dict[str,Any]) -> dict[str,Any]:
         started=time.monotonic()
-        lease=self.controller.renew_lease(str(payload["lease_id"]),int(payload["fencing_generation"]),int(payload.get("duration_ms",700)))
+        resource_id=str(payload.get("resource_id") or "").strip()
+        lease=(
+            self.controller.renew_group_lease(
+                resource_id,
+                str(payload["lease_id"]),
+                int(payload["fencing_generation"]),
+                int(payload.get("duration_ms",700)),
+            )
+            if resource_id
+            else self.controller.renew_lease(str(payload["lease_id"]),int(payload["fencing_generation"]),int(payload.get("duration_ms",700)))
+        )
         elapsed_ms=(time.monotonic()-started)*1000.0
         if elapsed_ms>100.0:
             print(f"[basic-ingress] slow endpoint=lease-renew elapsed_ms={elapsed_ms:.1f}")
-        return {"lease_id":lease.lease_id,"fencing_generation":lease.fencing_generation,"expires_in_ms":int((lease.expires_monotonic-time.monotonic())*1000),"ingress_latency_ms":elapsed_ms}
+        return {"lease_id":lease.lease_id,"fencing_generation":lease.fencing_generation,"resource_id":lease.resource_id,"expires_in_ms":int((lease.expires_monotonic-time.monotonic())*1000),"ingress_latency_ms":elapsed_ms}
 
     def command(self,payload:dict[str,Any]) -> dict[str,Any]:
         started=time.monotonic()
@@ -451,13 +539,17 @@ class ArmProviderService:
             index=int(raw["joint_index"]); mode=str(raw["mode"]); values=dict(raw.get("values",{}))
             commands[index]=JointCommand(mode,values)
         timeout_ms=int(payload.get("timeout_ms",250))
+        resource_id=str(payload.get("resource_id") or "").strip()
         envelope=CommandEnvelope(str(payload.get("command_id",uuid.uuid4())),str(payload["lease_id"]),int(payload["fencing_generation"]),
-                                 commands,time.monotonic()+timeout_ms/1000.0)
-        self.controller.submit(envelope)
+                                 commands,time.monotonic()+timeout_ms/1000.0,resource_id=resource_id or None)
+        if resource_id:
+            self.controller.submit_group(envelope)
+        else:
+            self.controller.submit(envelope)
         elapsed_ms=(time.monotonic()-started)*1000.0
         if elapsed_ms>100.0:
             print(f"[basic-ingress] slow endpoint=command elapsed_ms={elapsed_ms:.1f}")
-        return {"accepted":True,"command_id":envelope.command_id,"state":self.controller.state.value,"ingress_latency_ms":elapsed_ms}
+        return {"accepted":True,"command_id":envelope.command_id,"resource_id":resource_id or self.controller.resource_root,"state":self.controller.state.value,"ingress_latency_ms":elapsed_ms}
 
     def run_experiment(self,payload:dict[str,Any]) -> dict[str,Any]:
         if not self.simulation and not self.allow_hardware_calibration:
@@ -721,6 +813,8 @@ class ArmProviderService:
 
         self.configuration.calibration["calibration_revision"]=f"cal-{time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())}-{uuid.uuid4().hex[:6]}"
         self.configuration.save_calibration(self.calibration_path)
+        if self.assembly is not None:
+            self.assembly.update_calibration_binding(self.configuration.calibration)
 
         # Publish the updated intrinsic model immediately; normal publication
         # continues periodically afterward.
@@ -791,6 +885,10 @@ class ArmProviderService:
                 try:
                     if self.path=='/health': return self._json(200,service.health())
                     if self.path=='/v1/arm/model': return self._json(200,service.configuration.public_model())
+                    if self.path=='/v1/arm/assembly':
+                        if service.assembly is None:
+                            return self._json(404,{"error":"no robot assembly selection is active"})
+                        return self._json(200,service.assembly.public_state())
                     if self.path=='/v1/arm/state':
                         state=service.controller.snapshot()
                         if 'positions_rad' in state: state['kinematic_points_m']=service.kinematics.points(state['positions_rad'])

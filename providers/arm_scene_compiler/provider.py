@@ -34,14 +34,11 @@ def load_config(path: Path) -> dict[str, Any]:
     required = {
         "point_cloud_streams",
         "semantic_assertion_streams",
-        "link_frames",
-        "segment_radii_m",
+        "assembly_state_stream",
     }
     missing = sorted(required - value.keys())
     if missing:
         raise ValueError("scene compiler configuration is missing: " + ", ".join(missing))
-    if len(value["link_frames"]) != len(value["segment_radii_m"]) + 1:
-        raise ValueError("link_frames must contain one more entry than segment_radii_m")
     return value
 
 

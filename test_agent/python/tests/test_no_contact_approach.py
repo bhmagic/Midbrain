@@ -233,7 +233,7 @@ class NoContactPlanTests(unittest.TestCase):
         self.assertTrue(plan["workflow_complete"])
         self.assertIsNone(plan["controller_plan_request"])
 
-    def test_uncertainty_can_expand_standoff(self):
+    def test_uncertainty_is_reported_without_adding_clearance(self):
         uncertain = item()
         uncertain["location"]["uncertainty_radius_m"] = 0.09
         plan = build_no_contact_correction_plan(
@@ -243,7 +243,19 @@ class NoContactPlanTests(unittest.TestCase):
             iteration_index=0,
         )
 
-        self.assertAlmostEqual(plan["effective_standoff_m"], 0.11)
+        self.assertAlmostEqual(plan["effective_standoff_m"], 0.05)
+        self.assertAlmostEqual(plan["combined_uncertainty_m"], 0.095)
+
+    def test_zero_work_object_standoff_is_valid(self):
+        plan = build_no_contact_correction_plan(
+            item_location=item(),
+            effector_location=effector(),
+            requested_standoff_m=0.0,
+            iteration_index=0,
+        )
+
+        self.assertEqual(plan["effective_standoff_m"], 0.0)
+        self.assertEqual(plan["requested_standoff_m"], 0.0)
 
     def test_no_descent_policy_never_descends_toward_lower_item(self):
         plan = build_no_contact_correction_plan(
@@ -526,10 +538,11 @@ def _canonical_sha256(value):
 
 
 class AcceptedFakeIntegrated(FakeIntegrated):
-    def __init__(self):
+    def __init__(self, *, closest_safe: bool = False):
         super().__init__()
         self.commit = None
         self.release_count = 0
+        self.closest_safe = bool(closest_safe)
 
     async def preview_transit_path(self, request):
         self.request = request
@@ -550,9 +563,33 @@ class AcceptedFakeIntegrated(FakeIntegrated):
             "physical_motion_authorized": False,
             "control_state_unchanged": True,
             "lease_unchanged": True,
+            "goal_reached": not self.closest_safe,
+            "closest_safe": self.closest_safe,
+            "motion_outcome": (
+                "CLOSEST_SAFE" if self.closest_safe else "GOAL_REACHED"
+            ),
             "plan_id": "no-contact-preview-1",
             "selected_plan": {
                 "planning_valid": True,
+                "goal_reached": not self.closest_safe,
+                "closest_safe": self.closest_safe,
+                "closest_safe_reason": (
+                    "REQUESTED_GOAL_BLOCKED_BY_SEMANTIC_GEOMETRY"
+                    if self.closest_safe
+                    else None
+                ),
+                "blocking_object_ids": (
+                    ["table"] if self.closest_safe else []
+                ),
+                "blocking_object_types": (
+                    ["KEEP_OUT"] if self.closest_safe else []
+                ),
+                "remaining_position_to_goal_m": (
+                    0.012 if self.closest_safe else 0.0
+                ),
+                "executed_controlled_displacement_m": (
+                    0.288 if self.closest_safe else 0.3
+                ),
                 "preview": {
                     "collision_free": True,
                     "preview_id": "no-contact-preview-1",
@@ -858,13 +895,13 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             plan["required_next_tool"]["arguments"],
-            {"plan_id": "no-contact-preview-1"},
+            {},
         )
         canonical = await adapter.pending_execution_authorization_arguments(
             "no-contact-preview-1"
         )
         self.assertIsNotNone(canonical)
-        self.assertAlmostEqual(canonical["distance_m"], 0.3)
+        self.assertAlmostEqual(canonical["distance_m"], 0.4)
         self.assertGreater(canonical["distance_m"], 0.2)
         self.assertEqual(canonical["motion_intent"], "NEW_RELATIVE_MOVE")
         self.assertEqual(canonical["direction"], "TARGET_VECTOR")
@@ -872,9 +909,7 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
             canonical["orientation_policy"],
             "PRESERVE_CURRENT",
         )
-        execution = await adapter.execute_preview(
-            **plan["required_next_tool"]["arguments"]
-        )
+        execution = await adapter.execute_current_preview()
 
         self.assertEqual(plan["status"], "CONTROLLER_PREVIEW_READY")
         self.assertEqual(execution["status"], "COMPLETED")
@@ -920,9 +955,7 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
             question="approach the toilet paper",
             object_id="toilet-paper",
         )
-        execution = await adapter.execute_preview(
-            **plan["required_next_tool"]["arguments"]
-        )
+        execution = await adapter.execute_current_preview()
 
         self.assertEqual(plan["status"], "CONTROLLER_PREVIEW_READY")
         self.assertIn(
@@ -942,15 +975,55 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
         self.assertIsNotNone(integrated.commit)
-        replay = await adapter.execute_preview(
-            **plan["required_next_tool"]["arguments"]
+        replay = await adapter.execute_current_preview()
+        self.assertEqual(
+            replay["status"],
+            "NO_CONTACT_CURRENT_PREVIEW_UNAVAILABLE",
         )
-        self.assertEqual(replay["status"], "NO_CONTACT_PREVIEW_NOT_PENDING")
         self.assertFalse(replay["motion_submitted"])
         self.assertEqual(
             replay["required_next_tool"]["name"],
             "plan_no_contact_item_approach",
         )
+
+    async def test_closest_safe_execution_is_a_graceful_terminal_result(self):
+        now_us = time.time_ns() // 1000
+        integrated = AcceptedFakeIntegrated(closest_safe=True)
+        adapter = NoContactItemApproachAdapter(
+            FakeLocator(
+                preview_item(
+                    (0.6, 0.0, 0.25),
+                    observed_at_us=now_us - 20_000,
+                )
+            ),
+            FakeLocator(preview_effector(observed_at_us=now_us - 10_000)),
+            scene_inspector=FakeSceneInspector(current_scene(now_us=now_us)),
+            manager=FakeManager(),
+            integrated=integrated,
+            authorization_store=AuthorizationStore("a" * 32),
+        )
+
+        plan = await adapter.run(
+            question="approach the toilet paper",
+            object_id="toilet-paper",
+        )
+        execution = await adapter.execute_current_preview()
+
+        self.assertTrue(plan["closest_safe"])
+        self.assertEqual(execution["status"], "COMPLETED_CLOSEST_SAFE")
+        self.assertTrue(execution["workflow_complete"])
+        self.assertTrue(execution["closest_safe"])
+        self.assertFalse(execution["post_move_reobservation_required"])
+        self.assertIsNone(execution["required_next_tool"])
+        self.assertEqual(
+            execution["next_action"],
+            "STOP_AT_NO_CONTACT_BOUNDARY_REQUEST_COMPLETE",
+        )
+        self.assertEqual(
+            execution["closest_safe_report"]["blocking_object_types"],
+            ["KEEP_OUT"],
+        )
+        self.assertAlmostEqual(execution["executed_step_m"], 0.288)
 
     async def test_stale_scene_commit_is_reobserved_replanned_and_retried(self):
         now_us = time.time_ns() // 1000
@@ -968,9 +1041,7 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
             question="approach the toilet paper",
             object_id="toilet-paper",
         )
-        execution = await adapter.execute_preview(
-            **plan["required_next_tool"]["arguments"]
-        )
+        execution = await adapter.execute_current_preview()
 
         self.assertEqual(execution["status"], "COMPLETED")
         self.assertEqual(integrated.commit_calls, 2)

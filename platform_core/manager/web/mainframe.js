@@ -1,6 +1,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+let effectorCatalog = null;
+let effectorSelectionDirty = false;
 
 function setLamp(id, tone) {
   const lamp = $(id);
@@ -120,6 +122,129 @@ function summarizeSkills(items) {
   return `${running} running · ${unavailable} unavailable`;
 }
 
+function effectorKey(profile) {
+  return JSON.stringify([profile.profile_id, profile.profile_revision]);
+}
+
+function selectedEffectorProfile() {
+  if (!effectorCatalog) {
+    return null;
+  }
+  const key = $("effectorSelect").value;
+  return (effectorCatalog.profiles || []).find((profile) => effectorKey(profile) === key) || null;
+}
+
+function renderEffectorDetails(profile) {
+  if (!profile) {
+    $("effectorActiveProfile").textContent = "Unavailable";
+    $("effectorMass").textContent = "Unavailable";
+    $("effectorCom").textContent = "Unavailable";
+    $("effectorInertialQualification").textContent = "Unavailable";
+    $("effectorColliderCount").textContent = "Unavailable";
+    $("effectorProfileFile").textContent = "Unavailable";
+    return;
+  }
+  const inertial = profile.inertial || {};
+  const com = Array.isArray(inertial.center_of_mass_m)
+    ? inertial.center_of_mass_m.map((value) => Number(value).toFixed(4)).join(", ")
+    : "unknown";
+  $("effectorActiveProfile").textContent = `${profile.display_name} · ${profile.profile_revision}`;
+  $("effectorMass").textContent = `${Number(inertial.mass_kg || 0).toFixed(3)} kg`;
+  $("effectorCom").textContent = `[${com}] m in ${inertial.reference_frame || "unknown frame"}`;
+  $("effectorInertialQualification").textContent = inertial.qualification || "unspecified";
+  $("effectorColliderCount").textContent = `${profile.collision_primitive_count || 0} profile-owned primitives`;
+  $("effectorProfileFile").textContent = profile.profile_file || "unknown";
+}
+
+function updateEffectorActionState() {
+  const profile = selectedEffectorProfile();
+  const confirmed = $("effectorPhysicalConfirmation").checked;
+  $("selectEffectorButton").disabled = !profile || !confirmed || Boolean(profile.active);
+  renderEffectorDetails(profile);
+}
+
+function renderEffectorCatalog(data) {
+  effectorCatalog = data;
+  const select = $("effectorSelect");
+  const previousValue = select.value;
+  select.replaceChildren();
+  for (const profile of data.profiles || []) {
+    const option = document.createElement("option");
+    option.value = effectorKey(profile);
+    const mass = Number(profile.inertial?.mass_kg || 0).toFixed(3);
+    option.textContent = `${profile.display_name} · ${mass} kg${profile.active ? " · ACTIVE" : ""}`;
+    select.append(option);
+  }
+  select.disabled = select.options.length === 0;
+  if (effectorSelectionDirty && [...select.options].some((option) => option.value === previousValue)) {
+    select.value = previousValue;
+  } else {
+    const active = (data.profiles || []).find((profile) => profile.active);
+    if (active) {
+      select.value = effectorKey(active);
+    }
+  }
+  const active = (data.profiles || []).find((profile) => profile.active);
+  renderEffectorDetails(effectorSelectionDirty ? selectedEffectorProfile() : active);
+  $("effectorActionStatus").textContent = data.status === "SELECTED_RESTART_REQUIRED"
+    ? "Selection saved. Restart the affected arm Providers to load this profile."
+    : "Profile edits and selections take effect only after the affected arm Providers restart.";
+  $("effectorActionStatus").className = data.status === "SELECTED_RESTART_REQUIRED"
+    ? "activation-status warning-text"
+    : "activation-status";
+  updateEffectorActionState();
+}
+
+async function refreshEffectorCatalog() {
+  try {
+    const response = await fetch("/v1/ui/robot-assembly/effectors", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `Effector catalog returned ${response.status}`);
+    }
+    renderEffectorCatalog(data);
+  } catch (error) {
+    $("effectorActionStatus").textContent = error.message;
+    $("effectorActionStatus").className = "activation-status danger-text";
+    renderEffectorDetails(null);
+  }
+}
+
+async function selectEffector() {
+  const profile = selectedEffectorProfile();
+  if (!profile || !$("effectorPhysicalConfirmation").checked) {
+    return;
+  }
+  $("selectEffectorButton").disabled = true;
+  $("effectorActionStatus").textContent = "Saving static assembly selection...";
+  $("effectorActionStatus").className = "activation-status warning-text";
+  try {
+    const response = await fetch("/v1/ui/robot-assembly/effectors", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        profile_id: profile.profile_id,
+        profile_revision: profile.profile_revision,
+        physical_effector_confirmed: true,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const blockers = (data.blocking_providers || [])
+        .map((item) => item.provider_id)
+        .join(", ");
+      throw new Error(`${data.error || `Selection returned ${response.status}`}${blockers ? `: ${blockers}` : ""}`);
+    }
+    effectorSelectionDirty = false;
+    $("effectorPhysicalConfirmation").checked = false;
+    renderEffectorCatalog(data);
+  } catch (error) {
+    $("effectorActionStatus").textContent = error.message;
+    $("effectorActionStatus").className = "activation-status danger-text";
+    updateEffectorActionState();
+  }
+}
+
 async function refresh() {
   $("refreshState").textContent = "Refreshing";
   try {
@@ -165,6 +290,7 @@ async function refresh() {
 
     renderProviders(providers);
     renderSkills(skills);
+    await refreshEffectorCatalog();
     $("observedAt").textContent = `Observed ${new Date(data.observed_at).toLocaleString()}`;
     $("refreshState").textContent = "Live";
   } catch (error) {
@@ -176,5 +302,12 @@ async function refresh() {
 }
 
 $("refreshButton").addEventListener("click", refresh);
+$("effectorSelect").addEventListener("change", () => {
+  effectorSelectionDirty = true;
+  $("effectorPhysicalConfirmation").checked = false;
+  updateEffectorActionState();
+});
+$("effectorPhysicalConfirmation").addEventListener("change", updateEffectorActionState);
+$("selectEffectorButton").addEventListener("click", selectEffector);
 refresh();
 window.setInterval(refresh, 2000);

@@ -52,7 +52,7 @@
     }
   },
   "required_capabilities": [
-    "robot.motion.arm.integrated.transit.authorized_staged"
+    "robot_arm.motion.free_space.preview_commit.v1"
   ],
   "result_policy": {
     "decision_specific": true,

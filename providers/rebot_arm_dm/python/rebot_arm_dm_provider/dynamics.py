@@ -52,7 +52,7 @@ class RebotDynamics:
     def payload_potential_energy(self, positions_rad: Any) -> float:
         if self.payload_mass_kg <= 0.0:
             return 0.0
-        tool = self.kinematics.frames(positions_rad)[-1]
+        tool = self.kinematics.controlled_frame(positions_rad)
         local = np.ones(4, dtype=float)
         local[:3] = self.payload_com_tool_m
         world = tool @ local

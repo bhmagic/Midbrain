@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/robot_collision_geometry_profile.v1.schema.json",
+  "title": "Midbrain Robot Collision Geometry Profile v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "profile_id",
+    "profile_revision",
+    "display_name",
+    "qualification",
+    "robot_compatibility",
+    "polyline_point_frames",
+    "polyline_capsules",
+    "frame_primitives",
+    "capability_qualification",
+    "invalidation_conditions"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.robot_collision_geometry_profile"},
+    "schema_version": {"const": 1},
+    "profile_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "profile_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 240},
+    "qualification": {
+      "enum": ["DEVELOPMENT", "SOFTWARE_TESTED", "PHYSICALLY_QUALIFIED"]
+    },
+    "robot_compatibility": {
+      "type": "object",
+      "required": ["model_id", "model_revision"],
+      "properties": {
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "model_revision": {"type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "additionalProperties": false
+    },
+    "mounted_effector_compatibility": {
+      "type": "object",
+      "required": ["profile_id", "profile_revision"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "profile_revision": {"type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "additionalProperties": false,
+      "description": "Optional legacy constraint for a collision profile that includes mounted-effector geometry. Arm-only profiles omit it; the mounted-effector profile owns its own primitives."
+    },
+    "polyline_point_frames": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"type": "string", "minLength": 1, "maxLength": 200},
+      "uniqueItems": true,
+      "description": "Ordered frames whose origins form the kinematic collision polyline; capsule segment i connects point i to point i+1."
+    },
+    "polyline_capsules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["segment_index", "radius_m", "source"],
+        "properties": {
+          "segment_index": {"type": "integer", "minimum": 0},
+          "radius_m": {"type": "number", "exclusiveMinimum": 0},
+          "source": {"type": "string", "minLength": 1, "maxLength": 240}
+        },
+        "additionalProperties": false
+      }
+    },
+    "frame_primitives": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/framePrimitive"},
+      "description": "Additional arm-owned geometry expressed in named assembly frames. Mounted-effector geometry belongs in the mounted-effector profile. Consumers must fail closed when they do not support a nonempty primitive set."
+    },
+    "capability_qualification": {
+      "type": "object",
+      "required": ["external_obstacle_avoidance", "self_collision", "runtime_attachments"],
+      "properties": {
+        "external_obstacle_avoidance": {"$ref": "#/$defs/capabilityState"},
+        "self_collision": {"$ref": "#/$defs/capabilityState"},
+        "runtime_attachments": {"$ref": "#/$defs/capabilityState"}
+      },
+      "additionalProperties": false
+    },
+    "invalidation_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+      "items": false
+    },
+    "positiveVector3": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number", "exclusiveMinimum": 0},
+        {"type": "number", "exclusiveMinimum": 0},
+        {"type": "number", "exclusiveMinimum": 0}
+      ],
+      "items": false
+    },
+    "transform": {
+      "type": "object",
+      "required": ["translation_m", "rpy_rad"],
+      "properties": {
+        "translation_m": {"$ref": "#/$defs/vector3"},
+        "rpy_rad": {"$ref": "#/$defs/vector3"}
+      },
+      "additionalProperties": false
+    },
+    "framePrimitive": {
+      "type": "object",
+      "required": ["primitive_id", "frame_id", "transform", "shape", "qualification"],
+      "properties": {
+        "primitive_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "transform": {"$ref": "#/$defs/transform"},
+        "shape": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "radius_m"],
+              "properties": {
+                "type": {"const": "SPHERE"},
+                "radius_m": {"type": "number", "exclusiveMinimum": 0}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "radius_m", "length_m", "axis"],
+              "properties": {
+                "type": {"const": "CAPSULE"},
+                "radius_m": {"type": "number", "exclusiveMinimum": 0},
+                "length_m": {"type": "number", "minimum": 0},
+                "axis": {"enum": ["X", "Y", "Z"]}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "size_m"],
+              "properties": {
+                "type": {"const": "BOX"},
+                "size_m": {"$ref": "#/$defs/positiveVector3"}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 240}
+      },
+      "additionalProperties": false
+    },
+    "capabilityState": {
+      "type": "object",
+      "required": ["status", "note"],
+      "properties": {
+        "status": {
+          "enum": ["NOT_IMPLEMENTED", "DEVELOPMENT", "SOFTWARE_TESTED", "PHYSICALLY_QUALIFIED", "RUNTIME_REQUIRED"]
+        },
+        "note": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

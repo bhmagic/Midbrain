@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Remove the retired target-edit/one-shot Agent route and expose only the
+  signed path-plan/path-commit workflow. Free-space execution authorization is
+  autonomous, and the model cannot select or replay a preview from an older
+  turn.
+- Request Integrated lifecycle recovery through the canonical free-space
+  preview/commit capability instead of the retired POS_VEL one-shot alias.
+- Render the active assembly profile's complete mounted-effector sphere set in
+  the main 3D view instead of the former hard-coded single tool marker.
 - Replace the model-copied Integrated motion execution envelope with one
   opaque pending `preview_id`. The host recovers the canonical target, spatial
   resolution, timing, orientation, joint-speed policy, and controller preview

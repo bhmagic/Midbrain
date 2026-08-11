@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
+import json
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +40,14 @@ _PRESERVE_MEASURED_ORIENTATION = "PRESERVE_MEASURED_CONTROLLED_FRAME"
 _APPLY_CONTROLLED_FRAME_YAW_DELTA = (
     "APPLY_CONTROLLED_FRAME_YAW_DELTA"
 )
+_APPLY_CONTROLLED_FRAME_RPY_DELTA = "APPLY_CONTROLLED_FRAME_RPY_DELTA"
+_SET_ARM_BASE_RPY = "SET_ARM_BASE_RPY"
+_POSE_ORIENTATION_POLICIES = {
+    _PRESERVE_MEASURED_ORIENTATION,
+    _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+    _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+    _SET_ARM_BASE_RPY,
+}
 MAX_CONTROLLED_FRAME_YAW_DELTA_DEG = 45.0
 DEFAULT_RELATIVE_DURATION_S = 3.0
 MIN_RELATIVE_DURATION_S = 0.05
@@ -57,9 +68,20 @@ _AGGREGATE_JOINT_TRAVEL_REASON = (
 _POLICY_CLASSIFICATION_POSITION_RESIDUAL_CEILING_M = 0.0015
 _POLICY_CLASSIFICATION_ORIENTATION_RESIDUAL_CEILING_RAD = 0.035
 _BASIC_MOTION_CAPABILITY = "robot.motion.arm.basic"
-_INTEGRATED_ONE_SHOT_CAPABILITY = (
-    "robot.motion.arm.integrated.pos_vel.one_shot"
+_INTEGRATED_FREE_SPACE_CAPABILITY = (
+    "robot_arm.motion.free_space.preview_commit.v1"
 )
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class IntegratedPreviewRejected(RuntimeError):
@@ -79,18 +101,22 @@ class IntegratedMotionClientProtocol(Protocol):
     async def state(self) -> dict[str, Any]:
         """Return the current Integrated Controller state."""
 
-    async def preview_direct_motion(
+    async def preview_transit_path(
         self,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """Stage and preview a nonphysical Cartesian target."""
+        """Plan one controller-owned collision-aware transit path."""
 
-    async def engage_staged_motion(self) -> dict[str, Any]:
-        """Execute the currently staged and previewed target."""
+    async def commit_transit_path(
+        self,
+        request: dict[str, Any],
+        *,
+        authorization_assertion: str,
+    ) -> dict[str, Any]:
+        """Commit one exact signed transit path."""
 
-    async def trigger_one_shot_motion(self) -> dict[str, Any]:
-        """Pulse and release the Integrated one-shot commit input."""
-
+    async def release_transit_path(self) -> dict[str, Any]:
+        """Release a retained signed transit path."""
 
 class IntegratedRelativeMotionAdapter:
     """Resolve, preview, and approve one relative Cartesian motion."""
@@ -113,6 +139,7 @@ class IntegratedRelativeMotionAdapter:
         calibration_activation_continuation: (
             Callable[[], dict[str, Any] | None] | None
         ) = None,
+        authorization_store: Any | None = None,
     ):
         self.client = client
         self.spatial_resolver = spatial_resolver
@@ -131,6 +158,7 @@ class IntegratedRelativeMotionAdapter:
         self.calibration_activation_continuation = (
             calibration_activation_continuation
         )
+        self.authorization_store = authorization_store
         self._pending: dict[str, dict[str, Any]] = {}
         self._root_alignment_correspondences: list[dict[str, Any]] = []
         self._root_alignment_identity: tuple[str, str] | None = None
@@ -207,8 +235,9 @@ class IntegratedRelativeMotionAdapter:
     async def preview(
         self,
         *,
-        direction: str,
-        distance_m: float,
+        direction: str | None = None,
+        distance_m: float | None = None,
+        translation_vector_m: list[float] | None = None,
         requested_speed_m_s: float | None = None,
         reference_frame: str = "WORLD",
         arm_mount_assumption: str = "UNKNOWN",
@@ -216,8 +245,34 @@ class IntegratedRelativeMotionAdapter:
         fixed_vio_rig_assumption: str = "UNKNOWN",
         orientation_policy: str = _POSITION_ONLY,
         controlled_frame_yaw_delta_deg: float | None = None,
+        controlled_frame_rpy_delta_deg: list[float] | None = None,
+        target_orientation_rpy_rad: list[float] | None = None,
     ) -> dict[str, Any]:
-        distance = float(distance_m)
+        normalized_translation_vector: list[float] | None = None
+        if translation_vector_m is not None:
+            if direction not in {None, "", "VECTOR"} or distance_m is not None:
+                raise ValueError(
+                    "translation_vector_m cannot be combined with direction or distance_m"
+                )
+            try:
+                normalized_translation_vector = [
+                    float(value) for value in translation_vector_m
+                ]
+            except (TypeError, ValueError):
+                normalized_translation_vector = []
+            if (
+                len(normalized_translation_vector) != 3
+                or not all(math.isfinite(value) for value in normalized_translation_vector)
+            ):
+                raise ValueError("translation_vector_m must contain three finite values")
+            distance = float(np.linalg.norm(normalized_translation_vector))
+            direction = "VECTOR"
+        else:
+            if distance_m is None:
+                distance = 0.0
+                direction = "NONE" if direction in {None, ""} else direction
+            else:
+                distance = float(distance_m)
         if (
             not math.isfinite(distance)
             or distance < 0.0
@@ -283,11 +338,11 @@ class IntegratedRelativeMotionAdapter:
             _POSITION_ONLY,
             _PRESERVE_MEASURED_ORIENTATION,
             _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+            _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+            _SET_ARM_BASE_RPY,
         }:
             raise ValueError(
-                "orientation_policy must be POSITION_ONLY or "
-                "PRESERVE_MEASURED_CONTROLLED_FRAME or "
-                "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+                "unsupported orientation_policy"
             )
         if (distance == 0.0) != (normalized_direction_input == "NONE"):
             raise ValueError(
@@ -317,25 +372,76 @@ class IntegratedRelativeMotionAdapter:
                 "controlled_frame_yaw_delta_deg must be null unless "
                 "orientation_policy is APPLY_CONTROLLED_FRAME_YAW_DELTA"
             )
-        if distance == 0.0 and (
-            normalized_orientation_policy
-            != _APPLY_CONTROLLED_FRAME_YAW_DELTA
-        ):
+        normalized_rpy_delta_deg: list[float] | None = None
+        if normalized_orientation_policy == _APPLY_CONTROLLED_FRAME_RPY_DELTA:
+            try:
+                normalized_rpy_delta_deg = [
+                    float(value) for value in (controlled_frame_rpy_delta_deg or [])
+                ]
+            except (TypeError, ValueError):
+                normalized_rpy_delta_deg = []
+            if (
+                len(normalized_rpy_delta_deg) != 3
+                or not all(math.isfinite(value) for value in normalized_rpy_delta_deg)
+                or max(abs(value) for value in normalized_rpy_delta_deg) > 180.0
+                or float(np.linalg.norm(normalized_rpy_delta_deg)) < 1e-9
+            ):
+                raise ValueError(
+                    "controlled_frame_rpy_delta_deg must contain a nonzero finite roll, pitch, yaw delta with each component in [-180, 180]"
+                )
+        elif controlled_frame_rpy_delta_deg is not None:
             raise ValueError(
-                "rotation-only motion requires "
-                "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+                "controlled_frame_rpy_delta_deg is only valid for APPLY_CONTROLLED_FRAME_RPY_DELTA"
+            )
+        normalized_absolute_rpy: list[float] | None = None
+        if normalized_orientation_policy == _SET_ARM_BASE_RPY:
+            try:
+                normalized_absolute_rpy = [
+                    float(value) for value in (target_orientation_rpy_rad or [])
+                ]
+            except (TypeError, ValueError):
+                normalized_absolute_rpy = []
+            if (
+                len(normalized_absolute_rpy) != 3
+                or not all(math.isfinite(value) for value in normalized_absolute_rpy)
+            ):
+                raise ValueError(
+                    "target_orientation_rpy_rad must contain three finite values for SET_ARM_BASE_RPY"
+                )
+        elif target_orientation_rpy_rad is not None:
+            raise ValueError(
+                "target_orientation_rpy_rad is only valid for SET_ARM_BASE_RPY"
+            )
+        if distance == 0.0 and normalized_orientation_policy not in {
+            _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+            _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+            _SET_ARM_BASE_RPY,
+        }:
+            raise ValueError(
+                "rotation-only motion requires an orientation-changing policy"
             )
         motion_intent = (
             "NEW_RELATIVE_ROTATION"
             if distance == 0.0
             else "NEW_RELATIVE_POSE_MOVE"
             if normalized_orientation_policy
-            == _APPLY_CONTROLLED_FRAME_YAW_DELTA
+            in {
+                _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+                _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+                _SET_ARM_BASE_RPY,
+            }
             else "NEW_RELATIVE_MOVE"
         )
         readiness: dict[str, Any] | None = None
         try:
-            if distance == 0.0:
+            if normalized_translation_vector is not None:
+                resolution = await self._resolve_translation_vector(
+                    normalized_translation_vector,
+                    reference_frame=reference_frame,
+                    arm_mount_assumption=arm_mount_assumption,
+                    camera_level_assumption=camera_level_assumption,
+                )
+            elif distance == 0.0:
                 resolution = SpatialResolution(
                     direction="NONE",
                     reference_frame="CONTROLLED_FRAME",
@@ -768,11 +874,7 @@ class IntegratedRelativeMotionAdapter:
         ]
         target_orientation_rpy_rad: list[float] | None = None
         if (
-            normalized_orientation_policy
-            in {
-                _PRESERVE_MEASURED_ORIENTATION,
-                _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-            }
+            normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
         ):
             measured_orientation = measured.get("rpy_rad")
             if not _is_finite_vector(measured_orientation):
@@ -796,6 +898,13 @@ class IntegratedRelativeMotionAdapter:
                         math.radians(float(normalized_yaw_delta_deg)),
                     )
                 )
+            elif normalized_orientation_policy == _APPLY_CONTROLLED_FRAME_RPY_DELTA:
+                target_orientation_rpy_rad = _apply_controlled_frame_rpy_delta(
+                    measured_orientation,
+                    normalized_rpy_delta_deg,
+                )
+            elif normalized_orientation_policy == _SET_ARM_BASE_RPY:
+                target_orientation_rpy_rad = list(normalized_absolute_rpy or [])
             else:
                 target_orientation_rpy_rad = [
                     float(value) for value in measured_orientation
@@ -805,11 +914,23 @@ class IntegratedRelativeMotionAdapter:
                 MIN_RELATIVE_DURATION_S,
                 requested_duration_s,
             )
+            controller_requested_speed_m_s = (
+                float(requested_speed)
+                if requested_speed is not None
+                else max(
+                    0.01,
+                    distance / controller_requested_duration_s
+                    if distance > 0.0
+                    else 0.05,
+                )
+            )
             preview, preview_id = await self._stage_target(
                 target,
                 target_orientation_rpy_rad=target_orientation_rpy_rad,
                 orientation_policy=normalized_orientation_policy,
                 duration_s=controller_requested_duration_s,
+                requested_speed_m_s=controller_requested_speed_m_s,
+                spatial_resolution=resolution.as_dict(),
             )
         except IntegratedPreviewRejected as error:
             policy_limit_diagnostics = (
@@ -837,13 +958,11 @@ class IntegratedRelativeMotionAdapter:
                 "controlled_frame_yaw_delta_deg": (
                     normalized_yaw_delta_deg
                 ),
+                "controlled_frame_rpy_delta_deg": normalized_rpy_delta_deg,
+                "translation_vector_m": normalized_translation_vector,
                 "start_orientation_rpy_rad": (
                     [float(value) for value in measured.get("rpy_rad", [])]
-                    if normalized_orientation_policy
-                    in {
-                        _PRESERVE_MEASURED_ORIENTATION,
-                        _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-                    }
+                    if normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
                     else None
                 ),
                 "target_orientation_rpy_rad": (
@@ -879,19 +998,35 @@ class IntegratedRelativeMotionAdapter:
                     }
                 )
             return result
-        preview_plan = preview.get("preview")
+        if not isinstance(preview.get("preview_contract"), dict):
+            raise RuntimeError(
+                "Integrated Controller returned no signed path contract"
+            )
+        selected_plan = preview.get("selected_plan")
+        selected_plan = (
+            selected_plan if isinstance(selected_plan, dict) else {}
+        )
+        preview_plan = selected_plan.get("preview")
         preview_plan = (
             preview_plan if isinstance(preview_plan, dict) else {}
         )
+        speed_schedule = selected_plan.get("speed_schedule")
+        speed_schedule = (
+            speed_schedule if isinstance(speed_schedule, dict) else {}
+        )
         try:
-            planned_duration_s = float(preview_plan.get("duration_s"))
+            planned_duration_s = float(
+                speed_schedule.get(
+                    "duration_s",
+                    preview_plan.get("duration_s"),
+                )
+            )
         except (TypeError, ValueError):
             planned_duration_s = math.nan
         if (
             not math.isfinite(planned_duration_s)
             or planned_duration_s < MIN_RELATIVE_DURATION_S
             or planned_duration_s > MAX_RELATIVE_DURATION_S
-            or planned_duration_s + 1e-9 < requested_duration_s
         ):
             raise RuntimeError(
                 "Integrated Controller preview returned an invalid or "
@@ -901,7 +1036,7 @@ class IntegratedRelativeMotionAdapter:
         timing_safety_limited = (
             planned_duration_s > requested_duration_s + 1e-9
         )
-        joint_speed_policy = preview_plan.get("joint_speed_policy")
+        joint_speed_policy = speed_schedule.get("joint_speed_policy")
         joint_speed_policy = (
             joint_speed_policy
             if isinstance(joint_speed_policy, dict)
@@ -963,13 +1098,11 @@ class IntegratedRelativeMotionAdapter:
             "target_position_m": target,
             "orientation_policy": normalized_orientation_policy,
             "controlled_frame_yaw_delta_deg": normalized_yaw_delta_deg,
+            "controlled_frame_rpy_delta_deg": normalized_rpy_delta_deg,
+            "translation_vector_m": normalized_translation_vector,
             "start_orientation_rpy_rad": (
                 [float(value) for value in measured.get("rpy_rad", [])]
-                if normalized_orientation_policy
-                in {
-                    _PRESERVE_MEASURED_ORIENTATION,
-                    _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-                }
+                if normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
                 else None
             ),
             "target_orientation_rpy_rad": (
@@ -980,6 +1113,37 @@ class IntegratedRelativeMotionAdapter:
             "created_monotonic": time.monotonic(),
             "visual_verification": visual_context,
             "visual_baseline_status": visual_baseline_status,
+            "controller_preview": copy.deepcopy(preview),
+            "controller_preview_authority": {
+                "plan_id": preview_id,
+                "request_sha256": (
+                    preview.get("preview_contract") or {}
+                ).get("request_sha256"),
+                "preview_sha256": (
+                    preview.get("preview_contract") or {}
+                ).get("preview_sha256"),
+                "controller_provider_id": (
+                    preview.get("preview_contract") or {}
+                ).get("controller_provider_id"),
+                "controller_provider_instance_id": (
+                    preview.get("preview_contract") or {}
+                ).get("controller_provider_instance_id"),
+                "controller_boot_id": (
+                    preview.get("preview_contract") or {}
+                ).get("controller_boot_id"),
+                "controller_configuration_sha256": (
+                    preview.get("preview_contract") or {}
+                ).get("controller_configuration_sha256"),
+                "issued_at_us": (
+                    preview.get("preview_contract") or {}
+                ).get("issued_at_us"),
+                "expires_at_us": (
+                    preview.get("preview_contract") or {}
+                ).get("expires_at_us"),
+                "scene_revision": (
+                    preview.get("preview_contract") or {}
+                ).get("scene_revision"),
+            },
         }
         async with self._lock:
             self._pending = {
@@ -1018,27 +1182,36 @@ class IntegratedRelativeMotionAdapter:
             "orientation_policy": normalized_orientation_policy,
             "orientation_reference_frame": (
                 "CONTROLLED_FRAME"
-                if normalized_yaw_delta_deg is not None
+                if normalized_orientation_policy
+                in {
+                    _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+                    _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+                }
+                else "ARM_BASE"
+                if normalized_orientation_policy == _SET_ARM_BASE_RPY
                 else None
             ),
             "controlled_frame_yaw_delta_deg": normalized_yaw_delta_deg,
+            "controlled_frame_rpy_delta_deg": normalized_rpy_delta_deg,
+            "translation_vector_m": normalized_translation_vector,
             "target_orientation_rpy_rad": (
                 list(target_orientation_rpy_rad)
                 if target_orientation_rpy_rad is not None
                 else None
             ),
             "preview_id": preview_id,
-            "approval_required": True,
-            "next_tool": "execute_integrated_motion_preview",
+            "approval_required": False,
+            "next_tool": "HOST_INTERNAL_SIGNED_PATH_COMMIT",
             "required_next_tool": {
-                "name": "execute_integrated_motion_preview",
+                "name": "HOST_INTERNAL_SIGNED_PATH_COMMIT",
                 "arguments": {"preview_id": preview_id},
             },
             "message": (
                 "The exact IK target is previewed but has not moved. Do not "
-                "answer the operator yet. Call required_next_tool with its "
-                "opaque preview ID to present operator approval. The host "
-                "recovers the canonical motion envelope."
+                "answer the operator yet. The call-scoped autonomous host "
+                "policy owns the opaque continuation, recovers the canonical "
+                "motion envelope, and commits it without a human approval "
+                "dialog."
             ),
             "integrated_preview": preview,
             "visual_verification": (
@@ -1050,6 +1223,79 @@ class IntegratedRelativeMotionAdapter:
                 }
             ),
         }
+
+    async def _resolve_translation_vector(
+        self,
+        vector: list[float],
+        *,
+        reference_frame: str,
+        arm_mount_assumption: str,
+        camera_level_assumption: str,
+    ) -> SpatialResolution:
+        """Resolve one complete translation vector without axis decomposition of motion."""
+
+        source = np.asarray(vector, dtype=float)
+        magnitude = float(np.linalg.norm(source))
+        if source.shape != (3,) or not np.all(np.isfinite(source)) or magnitude <= 0.0:
+            raise ValueError("translation_vector_m must be a nonzero finite 3-vector")
+        normalized_frame = str(reference_frame or "WORLD").strip().upper()
+        if normalized_frame == "ARM_BASE":
+            return SpatialResolution(
+                direction="VECTOR",
+                reference_frame="ARM_BASE",
+                vector_arm_base=tuple(float(value) for value in source / magnitude),
+                provenance={
+                    "resolution_source": "EXPLICIT_ARM_BASE_VECTOR",
+                    "arm_base_frame": self.spatial_resolver.arm_base_frame,
+                    "resolved_at_us": time.time_ns() // 1000,
+                    "source_vector_m": source.tolist(),
+                    "transform_path": [],
+                    "operator_attestation": None,
+                },
+            )
+        if normalized_frame == "WORLD":
+            basis_directions = ("POSITIVE_X", "POSITIVE_Y", "POSITIVE_Z")
+        elif normalized_frame == "CAMERA_LEVEL":
+            basis_directions = ("FRONT", "LEFT", "UP")
+        else:
+            raise ValueError(
+                "translation vector reference_frame must be WORLD, CAMERA_LEVEL, or ARM_BASE"
+            )
+        basis = [
+            await self.spatial_resolver.resolve(
+                direction=direction,
+                reference_frame=normalized_frame,
+                arm_mount_assumption=arm_mount_assumption,
+                camera_level_assumption=camera_level_assumption,
+            )
+            for direction in basis_directions
+        ]
+        arm_vector = sum(
+            float(source[index]) * np.asarray(item.vector_arm_base, dtype=float)
+            for index, item in enumerate(basis)
+        )
+        arm_magnitude = float(np.linalg.norm(arm_vector))
+        if arm_magnitude <= 1e-12:
+            raise ValueError("resolved translation vector is degenerate")
+        first_provenance = basis[0].provenance
+        return SpatialResolution(
+            direction="VECTOR",
+            reference_frame=normalized_frame,
+            vector_arm_base=tuple(float(value) for value in arm_vector / arm_magnitude),
+            provenance={
+                "resolution_source": "COMPOSED_TRANSLATION_VECTOR_BASIS",
+                "arm_base_frame": self.spatial_resolver.arm_base_frame,
+                "source_frame": first_provenance.get("source_frame"),
+                "world_frame": first_provenance.get("world_frame"),
+                "session_epoch": first_provenance.get("session_epoch"),
+                "resolved_at_us": first_provenance.get("resolved_at_us"),
+                "source_vector_m": source.tolist(),
+                "basis_directions": list(basis_directions),
+                "basis_resolutions": [item.as_dict() for item in basis],
+                "transform_path": list(first_provenance.get("transform_path") or []),
+                "operator_attestation": first_provenance.get("operator_attestation"),
+            },
+        )
 
     @staticmethod
     def _best_effort_visual_unavailable(
@@ -1257,13 +1503,13 @@ class IntegratedRelativeMotionAdapter:
                         "provider_id": "robot_arm.primary.integrated",
                         "action": "hot",
                         "required_capability": (
-                            _INTEGRATED_ONE_SHOT_CAPABILITY
+                            _INTEGRATED_FREE_SPACE_CAPABILITY
                         ),
                     },
                 },
                 "message": (
-                    "Integrated lost its Basic lease and requires an explicit "
-                    "approved HOT transition even though its process is "
+                    "Integrated lost its Basic lease and requires a fresh HOT "
+                    "transition even though its process is "
                     "already running. Call required_next_tool unchanged, then "
                     "create a fresh preview. This transition reacquires "
                     "authority but does not itself move the arm."
@@ -1279,7 +1525,7 @@ class IntegratedRelativeMotionAdapter:
             "required_provider": {
                 "provider_id": "robot_arm.primary.integrated",
                 "required_residency": "HOT",
-                "required_capability": _INTEGRATED_ONE_SHOT_CAPABILITY,
+                "required_capability": _INTEGRATED_FREE_SPACE_CAPABILITY,
             },
             "manager_resolved_dependencies": [
                 {
@@ -1294,13 +1540,14 @@ class IntegratedRelativeMotionAdapter:
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
                     "required_capability": (
-                        _INTEGRATED_ONE_SHOT_CAPABILITY
+                        _INTEGRATED_FREE_SPACE_CAPABILITY
                     ),
                 },
             },
             "message": (
                 "The controller dependency is unavailable. Do not call this "
-                "preview tool again yet. Request Integrated HOT with approval; "
+                "motion tool again yet. Request Integrated HOT; the host "
+                "authorizes task-required activation autonomously, and "
                 "Manager resolves and activates its declared Basic dependency "
                 "transitively. Then create a fresh preview."
             ),
@@ -1314,54 +1561,69 @@ class IntegratedRelativeMotionAdapter:
         target_orientation_rpy_rad: list[float] | None,
         orientation_policy: str,
         duration_s: float,
+        requested_speed_m_s: float | None = None,
+        spatial_resolution: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         target_payload: dict[str, Any] = {"position_m": target}
         if target_orientation_rpy_rad is not None:
             target_payload["rpy_rad"] = list(
                 target_orientation_rpy_rad
             )
-        preview = await self.client.preview_direct_motion(
+        ik_mode = (
+            "POSE_6DOF"
+            if orientation_policy in _POSE_ORIENTATION_POLICIES
+            else "POSITION_3DOF"
+        )
+        if self.authorization_store is None:
+            raise RuntimeError(
+                "autonomous signed free-space authorization is unavailable"
+            )
+        resolution = copy.deepcopy(spatial_resolution or {})
+        provenance = resolution.get("provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        resolved_at_us = int(
+            provenance.get("resolved_at_us") or time.time_ns() // 1000
+        )
+        request_context = {
+            "context_kind": "AUTONOMOUS_FREE_SPACE_KINEMATIC",
+            "spatial_resolution_sha256": _canonical_sha256(resolution),
+            "spatial_resolution_resolved_at_us": resolved_at_us,
+            "spatial_resolution": resolution,
+        }
+        preview = await self.client.preview_transit_path(
             {
-                "command": {
-                    "command_type": "CARTESIAN_TARGET",
-                    "target": target_payload,
-                    "settings": {
-                        "execution_mode": "TRANSIT_SPEED",
-                        "interaction_mode": "ONE_SHOT",
-                        "ik_mode": (
-                            "POSE_6DOF"
-                            if orientation_policy
-                            in {
-                                _PRESERVE_MEASURED_ORIENTATION,
-                                _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-                            }
-                            else "POSITION_3DOF"
-                        ),
-                        "duration_s": duration_s,
-                    },
-                },
-                "related_skill_id": (
-                    "test_agent.relative_effector_motion.v1"
-                ),
+                "target": target_payload,
+                "requested_speed_m_s": float(requested_speed_m_s or 0.05),
+                "ik_mode": ik_mode,
                 "allowed_contact_object_ids": [],
                 "permit_pushable_contact": False,
+                "final_state": "FLOAT",
+                "request_context": request_context,
             }
         )
-        plan = preview.get("preview")
-        plan = plan if isinstance(plan, dict) else {}
-        preview_id = str(
-            preview.get("plan_id") or plan.get("preview_id") or ""
-        ).strip()
+        selected = preview.get("selected_plan")
+        selected = selected if isinstance(selected, dict) else {}
+        selected_preview = selected.get("preview")
+        selected_preview = (
+            selected_preview if isinstance(selected_preview, dict) else {}
+        )
+        contract = preview.get("preview_contract")
+        contract = contract if isinstance(contract, dict) else {}
+        preview_id = str(preview.get("plan_id") or "").strip()
         if (
             preview.get("status") != "PLANNED"
-            or plan.get("planning_valid") is not True
+            or selected.get("planning_valid") is not True
+            or selected_preview.get("collision_free") is not True
+            or contract.get("request_context_complete") is not True
+            or not str(contract.get("request_sha256") or "").strip()
+            or not str(contract.get("preview_sha256") or "").strip()
             or not preview_id
         ):
             raise IntegratedPreviewRejected(
-                "Integrated Controller rejected the requested IK preview: "
-                + _preview_rejection_reason(preview, plan),
+                "Integrated Controller rejected the requested path preview: "
+                + _preview_rejection_reason(preview, selected),
                 response=preview,
-                plan=plan,
+                plan=selected,
             )
         return preview, preview_id
 
@@ -1406,6 +1668,10 @@ class IntegratedRelativeMotionAdapter:
             "controlled_frame_yaw_delta_deg": pending[
                 "controlled_frame_yaw_delta_deg"
             ],
+            "controlled_frame_rpy_delta_deg": pending.get(
+                "controlled_frame_rpy_delta_deg"
+            ),
+            "translation_vector_m": pending.get("translation_vector_m"),
             "target_orientation_rpy_rad": (
                 list(target_orientation)
                 if target_orientation is not None
@@ -1449,7 +1715,7 @@ class IntegratedRelativeMotionAdapter:
         )
         if arguments is None:
             raise RuntimeError(
-                "the approved IK preview is missing, expired, or already used"
+                "the pending IK/path preview is missing, expired, or already used"
             )
         return await self.execute(**arguments)
 
@@ -1474,6 +1740,8 @@ class IntegratedRelativeMotionAdapter:
         target_position_m: list[float],
         orientation_policy: str = _POSITION_ONLY,
         controlled_frame_yaw_delta_deg: float | None = None,
+        controlled_frame_rpy_delta_deg: list[float] | None = None,
+        translation_vector_m: list[float] | None = None,
         target_orientation_rpy_rad: list[float] | None = None,
     ) -> dict[str, Any]:
         normalized_preview_id = str(preview_id or "").strip()
@@ -1486,14 +1754,23 @@ class IntegratedRelativeMotionAdapter:
         ).strip().upper()
         if normalized_orientation_policy not in {
             _POSITION_ONLY,
-            _PRESERVE_MEASURED_ORIENTATION,
-            _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+            *_POSE_ORIENTATION_POLICIES,
         }:
             raise ValueError("unsupported orientation_policy")
         normalized_yaw_delta_deg = (
             None
             if controlled_frame_yaw_delta_deg is None
             else float(controlled_frame_yaw_delta_deg)
+        )
+        normalized_rpy_delta_deg = (
+            None
+            if controlled_frame_rpy_delta_deg is None
+            else [float(value) for value in controlled_frame_rpy_delta_deg]
+        )
+        normalized_translation_vector = (
+            None
+            if translation_vector_m is None
+            else [float(value) for value in translation_vector_m]
         )
         normalized_requested_speed = (
             None
@@ -1541,11 +1818,7 @@ class IntegratedRelativeMotionAdapter:
             else [float(value) for value in target_orientation_rpy_rad]
         )
         if (
-            normalized_orientation_policy
-            in {
-                _PRESERVE_MEASURED_ORIENTATION,
-                _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-            }
+            normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
             and not _is_finite_vector(target_orientation)
         ):
             raise ValueError(
@@ -1576,6 +1849,23 @@ class IntegratedRelativeMotionAdapter:
                 "controlled_frame_yaw_delta_deg must be null unless the "
                 "orientation policy applies a controlled-frame yaw delta"
             )
+        if normalized_orientation_policy == _APPLY_CONTROLLED_FRAME_RPY_DELTA:
+            if (
+                not _is_finite_vector(normalized_rpy_delta_deg)
+                or float(np.linalg.norm(normalized_rpy_delta_deg)) < 1e-9
+            ):
+                raise ValueError(
+                    "controlled_frame_rpy_delta_deg must contain a nonzero finite vector"
+                )
+        elif normalized_rpy_delta_deg is not None:
+            raise ValueError(
+                "controlled_frame_rpy_delta_deg does not match orientation_policy"
+            )
+        if normalized_direction == "VECTOR":
+            if not _is_finite_vector(normalized_translation_vector):
+                raise ValueError("translation_vector_m must contain three finite values")
+        elif normalized_translation_vector is not None:
+            raise ValueError("translation_vector_m is only valid with direction VECTOR")
         resolved_vector = [
             float(value) for value in resolved_direction_arm_base
         ]
@@ -1600,8 +1890,11 @@ class IntegratedRelativeMotionAdapter:
             != (normalized_direction == "NONE")
             or (
                 normalized_direction == "NONE"
-                and normalized_orientation_policy
-                != _APPLY_CONTROLLED_FRAME_YAW_DELTA
+                and normalized_orientation_policy not in {
+                    _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+                    _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+                    _SET_ARM_BASE_RPY,
+                }
             )
             or (
                 normalized_distance > 0.0
@@ -1620,13 +1913,13 @@ class IntegratedRelativeMotionAdapter:
             pending = self._pending.get(normalized_preview_id)
         if pending is None:
             raise RuntimeError(
-                "the approved IK preview is missing, expired, or already used"
+                "the pending IK/path preview is missing, expired, or already used"
             )
         if time.monotonic() - pending["created_monotonic"] > self.approval_ttl_s:
             async with self._lock:
                 if self._pending.get(normalized_preview_id) is pending:
                     self._pending.pop(normalized_preview_id, None)
-            raise RuntimeError("the approved IK preview has expired")
+            raise RuntimeError("the pending IK/path preview has expired")
         if (
             str(motion_intent or "").strip().upper()
             != pending["motion_intent"]
@@ -1643,6 +1936,16 @@ class IntegratedRelativeMotionAdapter:
             or not _optional_float_equal(
                 normalized_yaw_delta_deg,
                 pending["controlled_frame_yaw_delta_deg"],
+                tolerance=1e-9,
+            )
+            or not _optional_vector_equal(
+                normalized_rpy_delta_deg,
+                pending.get("controlled_frame_rpy_delta_deg"),
+                tolerance=1e-9,
+            )
+            or not _optional_vector_equal(
+                normalized_translation_vector,
+                pending.get("translation_vector_m"),
                 tolerance=1e-9,
             )
             or not _optional_float_equal(
@@ -1715,7 +2018,7 @@ class IntegratedRelativeMotionAdapter:
             )
         ):
             raise RuntimeError(
-                "approved IK arguments do not match the stored preview"
+                "canonical IK/path arguments do not match the stored preview"
             )
 
         stored_resolution = pending["spatial_resolution"]
@@ -1725,6 +2028,49 @@ class IntegratedRelativeMotionAdapter:
         )
         if normalized_direction == "NONE":
             current_vector = (0.0, 0.0, 0.0)
+        elif normalized_direction == "VECTOR":
+            try:
+                current_resolution = await self._resolve_translation_vector(
+                    normalized_translation_vector or [],
+                    reference_frame=normalized_reference_frame,
+                    arm_mount_assumption=(
+                        "CONFIRMED_X_FORWARD_Z_UP"
+                        if resolution_source
+                        == "OPERATOR_ATTESTED_IDENTITY_ROTATION"
+                        else "UNKNOWN"
+                    ),
+                    camera_level_assumption=(
+                        "CONFIRMED_GRAVITY_LEVELED"
+                        if normalized_reference_frame == "CAMERA_LEVEL"
+                        else "UNKNOWN"
+                    ),
+                )
+            except SpatialResolutionRequired as required:
+                raise RuntimeError(
+                    "spatial evidence became invalid before commit: "
+                    + str(required.payload.get("message") or required)
+                ) from required
+            current_vector = current_resolution.vector_arm_base
+            if (
+                str(stored_provenance.get("session_epoch") or "")
+                != str(current_resolution.provenance.get("session_epoch") or "")
+                or _path_identity(stored_provenance.get("transform_path"))
+                != _path_identity(
+                    current_resolution.provenance.get("transform_path")
+                )
+                or any(
+                    not math.isclose(
+                        current_vector[index],
+                        pending["resolved_direction_arm_base"][index],
+                        rel_tol=0.0,
+                        abs_tol=1e-7,
+                    )
+                    for index in range(3)
+                )
+            ):
+                raise RuntimeError(
+                    "spatial vector resolution changed before commit; request a fresh preview"
+                )
         else:
             try:
                 current_resolution = await self.spatial_resolver.resolve(
@@ -1744,7 +2090,7 @@ class IntegratedRelativeMotionAdapter:
                 )
             except SpatialResolutionRequired as required:
                 raise RuntimeError(
-                    "spatial evidence became invalid before approval: "
+                    "spatial evidence became invalid before commit: "
                     + str(required.payload.get("message") or required)
                 ) from required
             current_vector = current_resolution.vector_arm_base
@@ -1771,7 +2117,7 @@ class IntegratedRelativeMotionAdapter:
                 )
             ):
                 raise RuntimeError(
-                    "spatial resolution changed before approval; request a "
+                    "spatial resolution changed before commit; request a "
                     "fresh preview"
                 )
 
@@ -1819,11 +2165,7 @@ class IntegratedRelativeMotionAdapter:
                 "approval; request a fresh preview and before image"
             )
         if (
-            normalized_orientation_policy
-            in {
-                _PRESERVE_MEASURED_ORIENTATION,
-                _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-            }
+            normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
         ):
             measured_orientation = measured.get("rpy_rad")
             if (
@@ -1839,228 +2181,174 @@ class IntegratedRelativeMotionAdapter:
                     "the preview; request a fresh POSE_6DOF "
                     "preview"
                 )
-        mismatch_reasons = _controller_preview_mismatch_reasons(
-            planning=planning,
-            model_view=model_view,
-            controller_preview_id=pending["controller_preview_id"],
-            planned_duration_s=pending["planned_duration_s"],
-            target_position_m=target,
-            orientation_policy=normalized_orientation_policy,
-            target_orientation_rpy_rad=target_orientation,
+        return await self._execute_signed_transit(
+            normalized_preview_id,
+            pending,
+            resolved_vector=resolved_vector,
+            target=target,
+            target_orientation=target_orientation,
         )
-        controller_preview_refreshed = False
-        if mismatch_reasons:
-            refreshed, refreshed_preview_id = await self._stage_target(
-                target,
-                target_orientation_rpy_rad=target_orientation,
-                orientation_policy=normalized_orientation_policy,
-                duration_s=pending["planned_duration_s"],
-            )
-            refreshed_plan = refreshed.get("preview")
-            refreshed_plan = (
-                refreshed_plan
-                if isinstance(refreshed_plan, dict)
-                else {}
-            )
-            try:
-                refreshed_duration_s = float(
-                    refreshed_plan.get("duration_s")
-                )
-            except (TypeError, ValueError):
-                refreshed_duration_s = math.nan
-            if (
-                not math.isfinite(refreshed_duration_s)
-                or refreshed_duration_s + 1e-9
-                < pending["planned_duration_s"]
-                or refreshed_duration_s > MAX_RELATIVE_DURATION_S
-            ):
-                raise RuntimeError(
-                    "Integrated Controller refreshed the approved target "
-                    "with an invalid or faster trajectory duration"
-                )
-            pending["controller_preview_id"] = refreshed_preview_id
-            pending["active_planned_duration_s"] = refreshed_duration_s
-            state = await self.client.state()
-            planning = state.get("planning")
-            planning = planning if isinstance(planning, dict) else {}
-            model_view = state.get("model_view")
-            model_view = model_view if isinstance(model_view, dict) else {}
-            mismatch_reasons = _controller_preview_mismatch_reasons(
-                planning=planning,
-                model_view=model_view,
-                controller_preview_id=refreshed_preview_id,
-                planned_duration_s=refreshed_duration_s,
-                target_position_m=target,
-                orientation_policy=normalized_orientation_policy,
-                target_orientation_rpy_rad=target_orientation,
-            )
-            controller_preview_refreshed = True
-        if mismatch_reasons:
-            raise RuntimeError(
-                "Integrated Controller could not hold the approved target "
-                "long enough to commit it after one bounded refresh "
-                f"({', '.join(mismatch_reasons)})"
-            )
-        starting_commit_count = int(state.get("commit_count") or 0)
-        starting_completed = (state.get("trajectory") or {}).get(
-            "last_completed"
-        )
-        engagement = await self.client.engage_staged_motion()
-        if engagement.get("status") != "engaged_target_edit":
-            raise RuntimeError(
-                "Integrated Controller did not enter target-edit engagement"
-            )
-        trigger = await self.client.trigger_one_shot_motion()
-        if trigger.get("physical_motion_authorized") is not True:
-            raise RuntimeError(
-                "Integrated Controller did not accept the approved one-shot "
-                "commit trigger"
-            )
-        async with self._lock:
-            if self._pending.get(normalized_preview_id) is pending:
-                self._pending.pop(normalized_preview_id, None)
 
-        deadline = time.monotonic() + 15.0
-        saw_active_trajectory = False
-        terminal_state: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            current = await self.client.state()
-            trajectory = current.get("trajectory")
-            trajectory = trajectory if isinstance(trajectory, dict) else {}
-            saw_active_trajectory = bool(
-                saw_active_trajectory or trajectory.get("active")
-            )
-            commit_count = int(current.get("commit_count") or 0)
-            completed = trajectory.get("last_completed")
-            if (
-                commit_count > starting_commit_count
-                and not trajectory.get("active")
-                and isinstance(completed, dict)
-                and completed != starting_completed
-            ):
-                terminal_state = current
-                break
-            if current.get("health") in {"FAULTED", "UNHEALTHY"}:
-                raise RuntimeError(
-                    "Integrated Controller faulted during approved motion: "
-                    f"{current.get('fault_reason') or current.get('last_error')}"
+    async def _execute_signed_transit(
+        self,
+        preview_id: str,
+        pending: dict[str, Any],
+        *,
+        resolved_vector: list[float],
+        target: list[float],
+        target_orientation: list[float] | None,
+    ) -> dict[str, Any]:
+        """Autonomously commit one exact controller-owned free-space path."""
+
+        if self.authorization_store is None:
+            raise RuntimeError("autonomous signed-transit policy is unavailable")
+        authority = pending.get("controller_preview_authority")
+        if not isinstance(authority, dict):
+            raise RuntimeError("signed transit preview authority is missing")
+        remaining_s = (
+            int(authority.get("expires_at_us") or 0)
+            - time.time_ns() // 1000
+        ) / 1_000_000.0
+        if remaining_s <= 0.2:
+            raise RuntimeError("signed transit preview expired before commit")
+        decision = self.authorization_store.create(
+            requester_type="SKILL",
+            requester_id="integrated-relative-effector-motion",
+            decision_type="PHYSICAL_OBSERVATION_POSE",
+            title="Execute autonomous free-space pose motion",
+            summary=(
+                "Execute one exact controller-owned collision-checked "
+                "free-space path."
+            ),
+            proposed_action=copy.deepcopy(pending["controller_preview"]),
+            evidence={
+                "spatial_resolution": copy.deepcopy(
+                    pending["spatial_resolution"]
                 )
-            await asyncio.sleep(0.1)
-        if terminal_state is None:
-            phase = (
-                "trajectory remained active"
-                if saw_active_trajectory
-                else "controller did not start a trajectory"
-            )
-            raise RuntimeError(
-                "approved Integrated motion did not reach a terminal state "
-                f"within 15 seconds: {phase}"
-            )
-        completion = terminal_state["trajectory"]["last_completed"]
-        completion_success = completion.get("completion_success") is True
-        completion_outcome = str(
-            completion.get("completion_outcome") or "UNKNOWN"
+            },
+            safety={
+                "physical_motion": True,
+                "approval_executes_action": False,
+                "controller_preview_required": True,
+                "controller_preview_authority": copy.deepcopy(authority),
+                "contact_policy": "NO_CONTACT",
+                "human_approval_required": False,
+            },
+            expires_in_s=min(120.0, remaining_s - 0.1),
         )
-        controller_duration_s = completion.get("duration_s")
-        controller_duration_s = (
-            float(controller_duration_s)
-            if isinstance(controller_duration_s, (int, float))
-            and math.isfinite(float(controller_duration_s))
-            else None
+        approved = self.authorization_store.resolve(
+            decision["decision_id"],
+            resolution="APPROVED",
+            resolved_by="autonomous-free-space-policy",
+            note=(
+                "The host autonomously approved this exact, fresh, "
+                "collision-checked free-space path."
+            ),
+        )
+        issued = self.authorization_store.issue_execution_assertion(
+            approved["decision_id"]
+        )
+        async with self._lock:
+            if self._pending.get(preview_id) is pending:
+                self._pending.pop(preview_id, None)
+        commit = await self.client.commit_transit_path(
+            {
+                "plan_id": authority["plan_id"],
+                "request_sha256": authority["request_sha256"],
+                "preview_sha256": authority["preview_sha256"],
+                "decision_id": approved["decision_id"],
+                "authorization_assertion_sha256": issued[
+                    "assertion_sha256"
+                ],
+            },
+            authorization_assertion=issued["assertion"],
+        )
+        terminal_state, completion = await self._wait_signed_transit_terminal(
+            plan_id=preview_id,
+            commit_result=commit,
+        )
+        controller_preview = pending["controller_preview"]
+        selected_plan = controller_preview.get("selected_plan")
+        selected_plan = (
+            selected_plan if isinstance(selected_plan, dict) else {}
+        )
+        closest_safe = bool(controller_preview.get("closest_safe"))
+        actual_distance_m = float(
+            selected_plan.get(
+                "executed_controlled_displacement_m",
+                pending["distance_m"],
+            )
         )
         visual_verification: dict[str, Any] | None = None
         if isinstance(pending.get("visual_verification"), dict):
-            terminal_model_view = terminal_state.get("model_view")
-            terminal_model_view = (
-                terminal_model_view
-                if isinstance(terminal_model_view, dict)
-                else {}
-            )
-            terminal_measured = terminal_model_view.get(
-                "measured_controlled_frame"
-            )
-            terminal_measured = (
-                terminal_measured
-                if isinstance(terminal_measured, dict)
-                else {}
-            )
-            controller_after_position = terminal_measured.get(
-                "position_m"
-            )
-            if not _is_finite_vector(controller_after_position):
-                controller_after_position = completion.get(
-                    "controlled_goal_position_m"
-                )
-            if not _is_finite_vector(controller_after_position):
-                controller_after_position = pending["target_position_m"]
-            visual_verification = (
-                await self._complete_visual_verification(
-                    pending["visual_verification"],
-                    commanded_distance_m=pending["distance_m"],
-                    controller_before_arm_base_m=pending[
-                        "start_position_m"
-                    ],
-                    controller_after_arm_base_m=controller_after_position,
-                )
+            model_view = terminal_state.get("model_view")
+            model_view = model_view if isinstance(model_view, dict) else {}
+            measured = model_view.get("measured_controlled_frame")
+            measured = measured if isinstance(measured, dict) else {}
+            after_position = measured.get("position_m")
+            if not _is_finite_vector(after_position):
+                after_position = target
+            visual_verification = await self._complete_visual_verification(
+                pending["visual_verification"],
+                commanded_distance_m=actual_distance_m,
+                controller_before_arm_base_m=pending["start_position_m"],
+                controller_after_arm_base_m=after_position,
             )
         elif isinstance(pending.get("visual_baseline_status"), dict):
-            visual_verification = dict(
-                pending["visual_baseline_status"]
-            )
+            visual_verification = dict(pending["visual_baseline_status"])
         visually_confirmed = (
             visual_verification is not None
-            and visual_verification.get("status")
-            == "VISUALLY_CONFIRMED"
+            and visual_verification.get("status") == "VISUALLY_CONFIRMED"
         )
-        has_commanded_yaw = normalized_yaw_delta_deg is not None
-        visual_motion_confirmed = visually_confirmed and not has_commanded_yaw
-        if completion_success and visually_confirmed and has_commanded_yaw:
+        has_commanded_orientation = pending["orientation_policy"] in {
+            _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+            _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+            _SET_ARM_BASE_RPY,
+        }
+        if closest_safe:
+            result_status = "MOTION_COMPLETED_CLOSEST_SAFE"
+        elif visually_confirmed and has_commanded_orientation:
             result_status = (
                 "MOTION_COMPLETED_TRANSLATION_VISUALLY_CONFIRMED_"
                 "ORIENTATION_UNVERIFIED"
             )
-        elif completion_success and visually_confirmed:
+        elif visually_confirmed:
             result_status = "MOTION_COMPLETED_VISUALLY_CONFIRMED"
         elif (
-            completion_success
-            and visual_verification is not None
+            visual_verification is not None
             and visual_verification.get("status")
             == "BEFORE_EVIDENCE_UNAVAILABLE"
         ):
             result_status = "MOTION_COMPLETED_VISUAL_CHECK_UNAVAILABLE"
         elif (
-            completion_success
-            and visual_verification is not None
-            and visual_verification.get("status") in {
+            visual_verification is not None
+            and visual_verification.get("status")
+            not in {
                 "SKIPPED_FIXED_RIG_NOT_CONFIRMED",
                 "SKIPPED_ROTATION_ONLY_NO_ORIENTATION_EVIDENCE",
             }
         ):
-            result_status = "MOTION_COMPLETED"
-        elif completion_success and visual_verification is not None:
             result_status = "MOTION_COMPLETED_VISUAL_CHECK_INCONCLUSIVE"
-        elif completion_success:
-            result_status = "MOTION_COMPLETED"
         else:
-            result_status = "MOTION_FINISHED_WITHOUT_CONFIRMED_ARRIVAL"
-        result = {
+            result_status = "MOTION_COMPLETED"
+        controller_duration_s = float(
+            commit.get("planned_duration_s")
+            or pending["planned_duration_s"]
+        )
+        return {
             "status": result_status,
+            "workflow_complete": True,
             "physical_motion_requested": True,
-            "physical_motion_completed": completion_success,
-            "visual_motion_confirmed": visual_motion_confirmed,
-            "visual_translation_confirmed": visually_confirmed,
-            "visual_orientation_confirmed": (
-                False if has_commanded_yaw else None
-            ),
+            "physical_motion_completed": True,
             "motion_intent": pending["motion_intent"],
-            "preview_id": normalized_preview_id,
-            "controller_preview_id": pending["controller_preview_id"],
-            "controller_preview_refreshed": controller_preview_refreshed,
-            "direction": normalized_direction,
-            "reference_frame": normalized_reference_frame,
+            "preview_id": preview_id,
+            "controller_preview_id": preview_id,
+            "controller_preview_refreshed": False,
+            "direction": pending["direction"],
+            "reference_frame": pending["reference_frame"],
             "resolved_direction_arm_base": resolved_vector,
             "spatial_resolution": pending["spatial_resolution"],
-            "distance_m": pending["distance_m"],
+            "distance_m": actual_distance_m,
             "original_request_distance_m": pending[
                 "original_request_distance_m"
             ],
@@ -2071,6 +2359,27 @@ class IntegratedRelativeMotionAdapter:
                 "planned_nominal_speed_m_s"
             ],
             "timing_safety_limited": pending["timing_safety_limited"],
+            "target_position_m": target,
+            "orientation_policy": pending["orientation_policy"],
+            "orientation_reference_frame": (
+                "CONTROLLED_FRAME"
+                if pending["orientation_policy"]
+                in {
+                    _APPLY_CONTROLLED_FRAME_YAW_DELTA,
+                    _APPLY_CONTROLLED_FRAME_RPY_DELTA,
+                }
+                else "ARM_BASE"
+                if pending["orientation_policy"] == _SET_ARM_BASE_RPY
+                else None
+            ),
+            "controlled_frame_yaw_delta_deg": pending[
+                "controlled_frame_yaw_delta_deg"
+            ],
+            "controlled_frame_rpy_delta_deg": pending.get(
+                "controlled_frame_rpy_delta_deg"
+            ),
+            "translation_vector_m": pending.get("translation_vector_m"),
+            "target_orientation_rpy_rad": target_orientation,
             "requested_peak_joint_speed_rad_s": pending[
                 "requested_peak_joint_speed_rad_s"
             ],
@@ -2082,11 +2391,7 @@ class IntegratedRelativeMotionAdapter:
             ],
             "controller_duration_s": controller_duration_s,
             "timing": {
-                "semantics": (
-                    "DEFAULT_DURATION_WITH_JOINT_RATE_SAFETY"
-                    if pending["distance_m"] == 0.0
-                    else "NOMINAL_AVERAGE_ENDPOINT_SPEED"
-                ),
+                "semantics": "CONTROLLER_OWNED_SIGNED_PATH",
                 "constant_cartesian_speed": False,
                 "requested_speed_m_s": pending["requested_speed_m_s"],
                 "requested_duration_s": pending["requested_duration_s"],
@@ -2099,76 +2404,141 @@ class IntegratedRelativeMotionAdapter:
                 ],
                 "controller_duration_s": controller_duration_s,
             },
-            "target_position_m": target,
-            "orientation_policy": normalized_orientation_policy,
-            "orientation_reference_frame": (
-                "CONTROLLED_FRAME"
-                if normalized_yaw_delta_deg is not None
+            "final_state": str(commit.get("final_state") or "").upper(),
+            "goal_reached": not closest_safe,
+            "closest_safe": closest_safe,
+            "closest_safe_report": (
+                {
+                    "reason": selected_plan.get("closest_safe_reason"),
+                    "blocking_object_ids": selected_plan.get(
+                        "blocking_object_ids", []
+                    ),
+                    "blocking_object_types": selected_plan.get(
+                        "blocking_object_types", []
+                    ),
+                    "remaining_position_to_goal_m": selected_plan.get(
+                        "remaining_position_to_goal_m"
+                    ),
+                    "message": (
+                        "Stopped at the closest collision-free point. "
+                        "Contact work requires a different skill and controller."
+                    ),
+                }
+                if closest_safe
                 else None
             ),
-            "controlled_frame_yaw_delta_deg": (
-                normalized_yaw_delta_deg
-            ),
-            "target_orientation_rpy_rad": target_orientation,
-            "engagement": engagement,
-            "one_shot_trigger": trigger,
+            "authorization": {
+                "decision_id": approved["decision_id"],
+                "issuer": issued["claims"]["issuer"],
+                "resolved_by": issued["claims"]["resolved_by"],
+                "human_approval_required": False,
+            },
+            "commit": commit,
             "completion": completion,
             "visual_verification": visual_verification,
+            "visual_motion_confirmed": (
+                visually_confirmed and not has_commanded_orientation
+            ),
+            "visual_translation_confirmed": visually_confirmed,
+            "visual_orientation_confirmed": (
+                False if has_commanded_orientation else None
+            ),
             "message": (
-                "The controller confirmed the combined pose target, and the "
-                "gravity-aligned before/after evidence confirmed its "
-                "translation. The visual check did not measure or confirm "
-                "the commanded controlled-frame yaw."
+                "The controller stopped at the closest collision-free point; "
+                "the requested goal would require contact."
+                if closest_safe
+                else "The controller confirmed the combined pose target, and "
+                "the before/after evidence confirmed its translation. The "
+                "visual check did not measure or confirm orientation."
+                if visually_confirmed and has_commanded_orientation
+                else "The controller and before/after evidence both confirmed "
+                "the autonomous free-space motion."
+                if visually_confirmed
+                else "The controller confirmed autonomous free-space arrival; "
+                "the optional visual check was unavailable."
                 if (
-                    completion_success
-                    and visually_confirmed
-                    and has_commanded_yaw
-                )
-                else
-                "The controller and the gravity-aligned before/after visual "
-                "evidence both confirmed the approved motion."
-                if completion_success and visually_confirmed
-                else "The controller confirmed completion. The optional "
-                "visual check was unavailable and did not define or veto "
-                "the arm motion."
-                if (
-                    completion_success
-                    and visual_verification is not None
+                    visual_verification is not None
                     and visual_verification.get("status")
                     == "BEFORE_EVIDENCE_UNAVAILABLE"
                 )
-                else "The controller confirmed completion. Visual checking "
-                "was skipped because the fixed camera/IMU rig was not "
-                "confirmed."
-                if (
-                    completion_success
-                    and visual_verification is not None
-                    and visual_verification.get("status")
-                    == "SKIPPED_FIXED_RIG_NOT_CONFIRMED"
-                )
-                else "The controller confirmed completion. The positional "
-                "before/after visual check was not applied to this "
-                "rotation-only motion because it does not measure "
-                "controlled-frame orientation."
-                if (
-                    completion_success
-                    and visual_verification is not None
-                    and visual_verification.get("status")
-                    == (
-                        "SKIPPED_ROTATION_ONLY_NO_ORIENTATION_EVIDENCE"
-                    )
-                )
-                else "The controller confirmed completion, but the "
-                "before/after visual check was inconclusive."
-                if completion_success and visual_verification is not None
-                else "The Integrated Controller confirmed completion of the "
-                "approved motion."
-                if completion_success
-                else "The controller finished the attempt but did not "
-                f"confirm target arrival ({completion_outcome})."
+                else "The controller confirmed autonomous free-space arrival."
             ),
         }
-        return result
+
+    async def _wait_signed_transit_terminal(
+        self,
+        *,
+        plan_id: str,
+        commit_result: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if commit_result.get("status") != "EXECUTING":
+            raise RuntimeError(
+                "Integrated did not enter EXECUTING after signed transit commit"
+            )
+        planned_duration_s = float(
+            commit_result.get("planned_duration_s") or 0.0
+        )
+        final_state = str(
+            commit_result.get("final_state") or ""
+        ).strip().upper()
+        if final_state not in {"FLOAT", "FIXED", "WAIT_FOR_NEXT"}:
+            raise RuntimeError("signed transit returned an invalid final state")
+        deadline = time.monotonic() + min(
+            75.0,
+            max(12.0, planned_duration_s + 15.0),
+        )
+        try:
+            while time.monotonic() < deadline:
+                state = await self.client.state()
+                planning = state.get("planning")
+                planning = planning if isinstance(planning, dict) else {}
+                active = planning.get("authorized_transit")
+                active = active if isinstance(active, dict) else None
+                if active is not None:
+                    if str(active.get("plan_id") or "") != plan_id:
+                        raise RuntimeError(
+                            "Integrated reports a different active transit"
+                        )
+                    status = str(active.get("status") or "").upper()
+                    if status in {"FAILED", "CANCELLED"}:
+                        raise RuntimeError(
+                            "signed transit failed: "
+                            f"{active.get('error') or status}"
+                        )
+                    expected = {
+                        "FIXED": "HOLDING_FINAL",
+                        "WAIT_FOR_NEXT": "WAITING_NEXT",
+                    }.get(final_state)
+                    if expected is not None and status == expected:
+                        return state, copy.deepcopy(active)
+                else:
+                    completed = planning.get("last_authorized_transit")
+                    if isinstance(completed, dict):
+                        status = str(completed.get("status") or "").upper()
+                        if status in {"FAILED", "CANCELLED"}:
+                            raise RuntimeError(
+                                "signed transit failed: "
+                                f"{completed.get('error') or status}"
+                            )
+                        if final_state == "FLOAT" and status == "COMPLETED_FLOAT":
+                            if (
+                                (state.get("safety") or {}).get(
+                                    "float_confirmed"
+                                )
+                                is not True
+                            ):
+                                raise RuntimeError(
+                                    "signed transit completed without verified float"
+                                )
+                            return state, copy.deepcopy(completed)
+                await asyncio.sleep(0.1)
+            raise TimeoutError("signed transit did not reach its final state")
+        except Exception:
+            try:
+                await self.client.release_transit_path()
+            except Exception:
+                pass
+            raise
 
     async def _complete_visual_verification(
         self,
@@ -2668,71 +3038,6 @@ def _first_finite_nonnegative_number(*values: Any) -> float | None:
     return None
 
 
-def _controller_preview_mismatch_reasons(
-    *,
-    planning: dict[str, Any],
-    model_view: dict[str, Any],
-    controller_preview_id: str,
-    planned_duration_s: float,
-    target_position_m: list[float],
-    orientation_policy: str,
-    target_orientation_rpy_rad: list[float] | None,
-) -> list[str]:
-    current_preview = planning.get("last_preview")
-    current_preview = (
-        current_preview if isinstance(current_preview, dict) else {}
-    )
-    staged = model_view.get("staged_controlled_frame")
-    staged = staged if isinstance(staged, dict) else {}
-    staged_position = staged.get("position_m")
-    reasons: list[str] = []
-    if str(current_preview.get("preview_id") or "") != controller_preview_id:
-        reasons.append("controller_preview_id")
-    if current_preview.get("planning_valid") is not True:
-        reasons.append("planning_valid")
-    if current_preview.get("target_revision") != planning.get(
-        "target_revision"
-    ):
-        reasons.append("target_revision")
-    try:
-        current_duration_s = float(current_preview.get("duration_s"))
-    except (TypeError, ValueError):
-        current_duration_s = math.nan
-    if not math.isclose(
-        current_duration_s,
-        planned_duration_s,
-        rel_tol=0.0,
-        abs_tol=1e-9,
-    ):
-        reasons.append("duration_s")
-    if (
-        not _is_finite_vector(staged_position)
-        or any(
-            not math.isclose(
-                float(staged_position[index]),
-                target_position_m[index],
-                rel_tol=0.0,
-                abs_tol=1e-8,
-            )
-            for index in range(3)
-        )
-    ):
-        reasons.append("staged_position_m")
-    if orientation_policy in {
-        _PRESERVE_MEASURED_ORIENTATION,
-        _APPLY_CONTROLLED_FRAME_YAW_DELTA,
-    } and (
-        not _is_finite_vector(staged.get("rpy_rad"))
-        or _rpy_angular_distance(
-            staged["rpy_rad"],
-            target_orientation_rpy_rad,
-        )
-        > 1e-7
-    ):
-        reasons.append("staged_orientation_rpy_rad")
-    return reasons
-
-
 def _path_identity(path: Any) -> tuple[tuple[Any, ...], ...]:
     fields = (
         "from_frame",
@@ -2883,6 +3188,25 @@ def _apply_controlled_frame_yaw_delta(
         (0.0, 0.0, 1.0),
     )
     return _matrix_rpy(_matrix_multiply(current, controlled_yaw))
+
+
+def _apply_controlled_frame_rpy_delta(
+    measured_rpy_rad: Any,
+    controlled_frame_rpy_delta_deg: Any,
+) -> list[float]:
+    """Postmultiply Rz(yaw) Ry(pitch) Rx(roll) in the controlled frame."""
+
+    if not _is_finite_vector(controlled_frame_rpy_delta_deg):
+        raise ValueError("controlled-frame RPY delta must contain three finite values")
+    delta_rad = [
+        math.radians(float(value)) for value in controlled_frame_rpy_delta_deg
+    ]
+    return _matrix_rpy(
+        _matrix_multiply(
+            _rpy_matrix(measured_rpy_rad),
+            _rpy_matrix(delta_rad),
+        )
+    )
 
 
 def _rpy_angular_distance(left: Any, right: Any) -> float:

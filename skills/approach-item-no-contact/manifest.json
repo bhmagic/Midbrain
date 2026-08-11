@@ -1,22 +1,23 @@
 {
   "skill_type": "approach_item_no_contact",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "display_name": "Plan No-Contact Item Approach",
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "plan_no_contact_item_approach",
-    "description": "Locate one visible item and the effector front in parallel, express both in rebot_arm_base, and plan an uncertainty-aware Cartesian correction to the requested no-contact destination. When the runtime supplies the canonical scene and Integrated controller, the adapter also requests a shadow preview and returns an exact separately authorized execution continuation. The default correction reaches the destination in one planned motion; both landmarks are observed again for residual realignment. This planning Skill never submits or authorizes motion.",
+    "description": "Locate one visible item and the effector front in parallel, express both in rebot_arm_base, and plan a Cartesian correction to the requested no-contact boundary. Wording such as reach, touch, until reaching, or until touching describes the boundary destination and is not contact authorization. Observation uncertainty remains explicit evidence instead of becoming a hidden clearance margin. The default extra WORK_OBJECT standoff is 0 mm; Integrated prevents intersection, keeps 10 mm from KEEP_OUT obstacles, and may truncate at closest-safe. The adapter requests a shadow preview and returns an exact autonomously signed execution continuation. Both landmarks are observed again for residual realignment. This planning Skill never submits motion.",
     "when_to_use": [
       "The robot should move close to a visible item without touching or pushing it.",
+      "The robot should reach or move until touching a visible item, interpreted as stopping at the no-contact boundary.",
       "An Agent needs one correction from current visual item and effector evidence.",
       "A previous correction completed and both landmarks must be realigned."
     ],
     "when_not_to_use": [
       "The item has only bearing evidence and no metric or task-plane point.",
       "The camera-to-arm-base calibration is unavailable or stale.",
-      "The request intends contact, grasping, pushing, or force work."
+      "The request explicitly requires sustained force work such as grasping, pushing, pressing, cutting, or scraping."
     ],
     "side_effects": [
       "Reads synchronized RGB-D and arm-base transform evidence for two parallel locator calls.",
@@ -49,9 +50,10 @@
         },
         "requested_standoff_m": {
           "type": "number",
-          "minimum": 0.03,
+          "minimum": 0.0,
           "maximum": 0.5,
-          "default": 0.1
+          "default": 0.0,
+          "description": "Extra requested standoff from the work object. Defaults to zero; Integrated semantic collision geometry prevents contact and may return closest-safe."
         },
         "iteration_index": {
           "type": "integer",
@@ -114,7 +116,11 @@
     "physical_motion_authorized": false,
     "destination_move_requires_residual_reobservation": true,
     "allowed_contact_object_ids": [],
-    "permit_pushable_contact": false
+    "permit_pushable_contact": false,
+    "work_object_extra_clearance_m": 0.0,
+    "keep_out_clearance_m": 0.01,
+    "contact_intersection_permitted": false,
+    "boundary_wording_is_contact_authorization": false
   },
   "published_streams": []
 }

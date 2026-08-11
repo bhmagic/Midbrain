@@ -18,7 +18,7 @@ from rebot_arm_integrated.service import IntegratedService
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="reBot Arm MIT Cartesian bring-up controller")
+    parser = argparse.ArgumentParser(description="Arm Integrated free-space controller")
     parser.add_argument("--config", default=str(ROOT / "config/controller.json"))
     parser.add_argument("--manager-url", default=os.getenv("PHYSICAL_AGENT_MANAGER_URL", "http://127.0.0.1:7001"))
     parser.add_argument("--fabric-url", default=os.getenv("PHYSICAL_AGENT_FABRIC_URL", "http://127.0.0.1:7002"))
@@ -32,7 +32,7 @@ def main():
     repair = ensure_controller_config(ROOT, Path(args.config))
     config = repair.config
     if repair.repaired:
-        print(f"[staged-config] replaced obsolete Integrated configuration from {repair.source}")
+        print(f"[free-space-config] replaced obsolete Integrated configuration from {repair.source}")
     if args.basic_url:
         config["basic_controller_url"] = args.basic_url
 
@@ -50,7 +50,7 @@ def main():
             return
         stopping = True
         source = "operator request" if signum is None else f"signal {signum}"
-        print(f"Arm Integrated staged controller: shutdown requested by {source}; floating and releasing its fenced Basic lease...")
+        print(f"Arm Integrated free-space controller: shutdown requested by {source}; floating and releasing its fenced Basic lease...")
         service.shutdown()
 
     signal.signal(signal.SIGINT, stop)
@@ -69,25 +69,17 @@ def main():
                 if not retryable or time.monotonic() >= startup_deadline:
                     raise
                 basic.clear_lease()
-                print(f"[staged-startup] Basic Controller not ready: {exc}; retrying...")
+                print(f"[free-space-startup] Basic Controller not ready: {exc}; retrying...")
                 time.sleep(0.5)
-        print(f"Arm Integrated motion prototype UI: {service.control_url}")
-        print("PRESS_MIT ONE_SHOT and HOLD_LB are marked usable.")
-        print("TRANSIT_SPEED/POS_VEL ONE_SHOT accepts IK-valid free-space requests up to 1.2 m; joint, scene, and motor limits remain authoritative.")
-        print("TRANSIT_SPEED HOLD_LB and CONTACT_WORK/POS_TOR ONE_SHOT remain GUI-only experimental/unstable modes and are not advertised through capability discovery.")
-        print("Physical arm motion uses Engage plus LB; Basic MIT support runs at 50 Hz and latched motor endpoints refresh at 10 Hz.")
-        print("ONE_SHOT: LB rising edge commits once.")
-        print("HOLD_LB: replan toward the staged target while held; LB release returns to gravity-float.")
-        print("Selectable 3-DoF position IK and 6-DoF pose IK are available.")
-        print("Fabric can update the staged Cartesian target, but it does not bypass GUI Engage + Xbox LB authority.")
-        print("Tool acting-point offset and fenced Basic payload gravity compensation are enabled.")
-        print("Semantic sphere collision previews and float torque-baseline capture are enabled without granting motion authority.")
-        print("Gripper MIT/POS_TOR endpoint tests are available on RB/RT and latch after release.")
-        print("CONTACT_WORK requires 6-DoF, a separately captured float baseline, and a JOINT_6, WRENCH_6, or ISOTROPIC_2 budget.")
+        print(f"Arm Integrated read-only developer UI: {service.control_url}")
+        print("Physical free-space motion uses only the signed path-plan/path-commit boundary.")
+        print("Position-only, orientation-only, arbitrary 3D, and combined 6-DoF goals are supported.")
+        print("The direct path or its closest-safe prefix is evaluated; general obstacle rerouting is not implemented.")
+        print("Contact, gripping, manual target staging, runtime settings, gamepad teleoperation, and Fabric command input are not exposed.")
         while not service.shutdown_event.wait(0.25):
             pass
     except Exception as exc:
-        print(f"Integrated staged controller failed: {exc}", file=sys.stderr)
+        print(f"Integrated free-space controller failed: {exc}", file=sys.stderr)
         try:
             service.shutdown()
         except Exception:

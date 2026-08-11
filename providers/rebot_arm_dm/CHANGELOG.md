@@ -23,6 +23,12 @@ work.
 
 ## Unreleased
 
+- Let fixed-tool profiles mark replaced effector joints inactive. Inactive
+  motors are excluded from resource leases, MotorBridge registration, feedback
+  freshness, mode transitions, and commands while retaining an explicit
+  `INACTIVE_NOT_INSTALLED` legacy state slot.
+- Recompute terminal-link standard-gravity weight from the selected effector
+  mass instead of retaining the previous effector's derived value.
 - Updated the requested installed-arm POS_SPEED/`POS_VEL` cap vector to
   5 rad/s for J1–J3 and 10 rad/s for J4–J6 and the gripper. These are command
   caps inside the documented motor envelope, not continuous-duty whole-arm

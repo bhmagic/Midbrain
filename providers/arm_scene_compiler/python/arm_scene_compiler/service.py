@@ -13,8 +13,8 @@ from orbbec_femto_provider.shared_memory_access import CameraSharedMemory
 
 from .compiler import (
     build_layered_scene,
+    build_profile_self_exclusion_spheres,
     build_scene_observation,
-    build_self_exclusion_spheres,
 )
 
 
@@ -359,22 +359,28 @@ class SceneCompilerEngine:
                 if isinstance(value, dict)
             )
         )
+        collision_geometry = self._current_profile_collision_geometry(
+            now_us=now_us,
+            observed_at_us=int(source.get("observed_at_us") or now_us),
+            max_extrapolation_us=max_extrapolation_us,
+        )
         source_key = (
             str(source.get("provider_instance_id") or source.get("provider_id") or ""),
             str(source.get("boot_id") or ""),
             int(source.get("sequence") or 0),
             semantic_source_key,
+            collision_geometry["assembly_fingerprint"],
         )
         if not force and source_key == self.last_source_key:
             return None
         observed_at_us = int(source.get("observed_at_us") or 0)
-        link_centers = self._current_link_centers(
-            observed_at_us=observed_at_us,
-            max_extrapolation_us=max_extrapolation_us,
-        )
-        self_spheres, self_revision = build_self_exclusion_spheres(
+        link_centers = collision_geometry["link_centers_m"]
+        effector_spheres = collision_geometry["effector_spheres"]
+        self_spheres, self_revision = build_profile_self_exclusion_spheres(
             link_centers,
-            [float(value) for value in self.config["segment_radii_m"]],
+            collision_geometry["segment_radii_m"],
+            effector_spheres,
+            assembly_fingerprint=collision_geometry["assembly_fingerprint"],
             maximum_spacing_m=float(self.config.get("self_filter_spacing_m", 0.025)),
         )
         self_filter_ready_at_us = time.time_ns() // 1000
@@ -389,7 +395,9 @@ class SceneCompilerEngine:
         scene_revision = f"scene-{self.boot_id[:8]}-{self.sequence:012d}"
         scene = build_layered_scene(
             raw_points_arm_base_m=points_base,
-            gripper_center_arm_base_m=link_centers[-1],
+            gripper_center_arm_base_m=collision_geometry[
+                "controlled_frame_center_m"
+            ],
             self_exclusion_spheres=self_spheres,
             self_filter_revision=self_revision,
             semantic_objects=semantic_objects,
@@ -413,6 +421,21 @@ class SceneCompilerEngine:
             publish_unclaimed_pushable_geometry=bool(
                 self.config.get("publish_unclaimed_pushable_geometry", False)
             ),
+            robot_collision_geometry={
+                "frame_id": str(
+                    self.config.get("arm_base_frame") or "rebot_arm_base"
+                ),
+                "assembly_fingerprint": collision_geometry[
+                    "assembly_fingerprint"
+                ],
+                "collision_geometry_profile_revision": collision_geometry[
+                    "collision_geometry_profile_revision"
+                ],
+                "mounted_effector_profile_revision": collision_geometry[
+                    "mounted_effector_profile_revision"
+                ],
+                "effector_spheres": effector_spheres,
+            },
             scene_revision=scene_revision,
         )
         scene_built_at_us = time.time_ns() // 1000
@@ -559,19 +582,27 @@ class SceneCompilerEngine:
             reverse=True,
         )
 
-    def _current_link_centers(
+    def _current_frame_transforms(
         self,
+        frames: list[str],
         *,
         observed_at_us: int,
         max_extrapolation_us: int,
-    ) -> np.ndarray:
+    ) -> dict[str, dict[str, Any]]:
         base_frame = str(self.config.get("arm_base_frame") or "rebot_arm_base")
-        frames = [str(value) for value in self.config.get("link_frames") or []]
-        if len(frames) < 2 or frames[0] != base_frame:
-            raise ValueError("link_frames must start at arm_base_frame")
-        centers = [np.zeros(3, dtype=np.float64)]
+        normalized_frames = [str(value).strip() for value in frames]
+        if not normalized_frames or any(not value for value in normalized_frames):
+            raise ValueError("collision frame IDs must be non-empty")
+        if len(normalized_frames) != len(set(normalized_frames)):
+            raise ValueError("collision frame IDs must be unique")
+        transforms: dict[str, dict[str, Any]] = {
+            base_frame: {
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        }
 
-        def query(frame: str) -> np.ndarray:
+        def query(frame: str) -> tuple[str, dict[str, Any]]:
             transform = self.fabric.transform(
                 from_frame=frame,
                 to_frame=base_frame,
@@ -581,11 +612,14 @@ class SceneCompilerEngine:
             translation = np.asarray(transform.get("translation_m"), dtype=np.float64)
             if translation.shape != (3,) or not np.all(np.isfinite(translation)):
                 raise RuntimeError(f"ARM_SELF_FILTER_TRANSFORM_INVALID: {frame}")
-            return translation
+            _quaternion_rotation_xyzw(transform.get("rotation_xyzw"))
+            return frame, transform
 
-        query_frames = frames[1:]
+        query_frames = [
+            frame for frame in normalized_frames if frame != base_frame
+        ]
         workers = min(
-            len(query_frames),
+            max(1, len(query_frames)),
             max(
                 1,
                 int(self.config.get("self_filter_transform_workers", 8)),
@@ -595,8 +629,156 @@ class SceneCompilerEngine:
             max_workers=workers,
             thread_name_prefix="arm-self-filter-transform",
         ) as executor:
-            centers.extend(executor.map(query, query_frames))
-        return np.asarray(centers, dtype=np.float64)
+            transforms.update(executor.map(query, query_frames))
+        return transforms
+
+    def _current_profile_collision_geometry(
+        self,
+        *,
+        now_us: int,
+        observed_at_us: int,
+        max_extrapolation_us: int,
+    ) -> dict[str, Any]:
+        stream = str(
+            self.config.get("assembly_state_stream")
+            or "robot_arm.assembly_state"
+        )
+        observation = self.fabric.latest_optional(stream)
+        if observation is None or not _is_fresh(
+            observation,
+            now_us=now_us,
+            maximum_age_ms=int(
+                self.config.get("assembly_state_max_age_ms", 5000)
+            ),
+        ):
+            raise RuntimeError(
+                "ASSEMBLY_COLLISION_PROFILE_UNAVAILABLE: no fresh active assembly"
+            )
+        assembly = observation.get("data")
+        if not isinstance(assembly, dict):
+            raise RuntimeError(
+                "ASSEMBLY_COLLISION_PROFILE_INVALID: assembly data is absent"
+            )
+        fingerprint = str(assembly.get("assembly_fingerprint") or "").strip()
+        collision = assembly.get("collision_geometry")
+        collision = collision if isinstance(collision, dict) else {}
+        effector = assembly.get("mounted_effector")
+        effector = effector if isinstance(effector, dict) else {}
+        point_frames = collision.get("polyline_point_frames")
+        capsules = collision.get("polyline_capsules")
+        primitives = effector.get("collision_primitives")
+        controlled = effector.get("controlled_frame")
+        controlled = controlled if isinstance(controlled, dict) else {}
+        controlled_frame = str(controlled.get("frame_id") or "").strip()
+        if (
+            not fingerprint
+            or not isinstance(point_frames, list)
+            or len(point_frames) < 2
+            or not isinstance(capsules, list)
+            or len(capsules) != len(point_frames) - 1
+            or not isinstance(primitives, list)
+            or not controlled_frame
+        ):
+            raise RuntimeError(
+                "ASSEMBLY_COLLISION_PROFILE_INVALID: incomplete profile geometry"
+            )
+        ordered_capsules = sorted(
+            capsules,
+            key=lambda value: int(value.get("segment_index", -1)),
+        )
+        if [int(value.get("segment_index", -1)) for value in ordered_capsules] != list(
+            range(len(ordered_capsules))
+        ):
+            raise RuntimeError(
+                "ASSEMBLY_COLLISION_PROFILE_INVALID: capsule indices are not contiguous"
+            )
+        radii = [float(value.get("radius_m") or 0.0) for value in ordered_capsules]
+        if any(not math.isfinite(value) or value <= 0.0 for value in radii):
+            raise RuntimeError(
+                "ASSEMBLY_COLLISION_PROFILE_INVALID: capsule radii are invalid"
+            )
+        frame_ids = [str(value).strip() for value in point_frames]
+        primitive_frames: list[str] = []
+        for primitive in primitives:
+            if not isinstance(primitive, dict):
+                raise RuntimeError(
+                    "ASSEMBLY_COLLISION_PROFILE_INVALID: primitive is not an object"
+                )
+            primitive_frame = str(primitive.get("frame_id") or "").strip()
+            if primitive_frame != controlled_frame:
+                raise RuntimeError(
+                    "ASSEMBLY_COLLISION_PROFILE_INVALID: effector primitive is not in the controlled frame"
+                )
+            primitive_frames.append(primitive_frame)
+        transforms = self._current_frame_transforms(
+            list(dict.fromkeys([*frame_ids, controlled_frame, *primitive_frames])),
+            observed_at_us=observed_at_us,
+            max_extrapolation_us=max_extrapolation_us,
+        )
+        centers = np.asarray(
+            [transforms[frame]["translation_m"] for frame in frame_ids],
+            dtype=np.float64,
+        )
+        effector_spheres: list[dict[str, Any]] = []
+        primitive_ids: set[str] = set()
+        for primitive in primitives:
+            primitive_id = str(primitive.get("primitive_id") or "").strip()
+            shape = primitive.get("shape")
+            shape = shape if isinstance(shape, dict) else {}
+            primitive_transform = primitive.get("transform")
+            primitive_transform = (
+                primitive_transform
+                if isinstance(primitive_transform, dict)
+                else {}
+            )
+            if (
+                not primitive_id
+                or primitive_id in primitive_ids
+                or shape.get("type") != "SPHERE"
+            ):
+                raise RuntimeError(
+                    "ASSEMBLY_COLLISION_PROFILE_INVALID: effector sphere identity or type is invalid"
+                )
+            offset = np.asarray(
+                primitive_transform.get("translation_m"),
+                dtype=np.float64,
+            )
+            radius = float(shape.get("radius_m") or 0.0)
+            if (
+                offset.shape != (3,)
+                or not np.all(np.isfinite(offset))
+                or not math.isfinite(radius)
+                or radius <= 0.0
+            ):
+                raise RuntimeError(
+                    "ASSEMBLY_COLLISION_PROFILE_INVALID: effector sphere geometry is invalid"
+                )
+            primitive_ids.add(primitive_id)
+            frame_transform = transforms[controlled_frame]
+            center = transform_points(offset.reshape(1, 3), frame_transform)[0]
+            effector_spheres.append(
+                {
+                    "primitive_id": primitive_id,
+                    "center_m": center.tolist(),
+                    "radius_m": radius,
+                    "profile_translation_m": offset.tolist(),
+                }
+            )
+        return {
+            "assembly_fingerprint": fingerprint,
+            "collision_geometry_profile_revision": str(
+                collision.get("profile_revision") or ""
+            ),
+            "mounted_effector_profile_revision": str(
+                effector.get("profile_revision") or ""
+            ),
+            "link_centers_m": centers,
+            "controlled_frame_center_m": list(
+                transforms[controlled_frame]["translation_m"]
+            ),
+            "segment_radii_m": radii,
+            "effector_spheres": effector_spheres,
+        }
 
     def _semantic_objects(
         self,

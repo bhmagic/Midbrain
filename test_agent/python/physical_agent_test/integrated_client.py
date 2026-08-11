@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx
@@ -48,54 +47,6 @@ class IntegratedControllerClient:
         if not isinstance(result, dict):
             raise RuntimeError("Integrated state returned a non-object result")
         return result
-
-    async def preview_direct_motion(
-        self,
-        request: dict[str, Any],
-    ) -> dict[str, Any]:
-        response = await self._client.post(
-            f"{self.base_url}/v1/motion/plan",
-            json=request,
-        )
-        response.raise_for_status()
-        result = response.json()
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                "Integrated direct preview returned a non-object result"
-            )
-        return result
-
-    async def engage_staged_motion(self) -> dict[str, Any]:
-        response = await self._client.post(
-            f"{self.base_url}/v1/engage",
-            json={"enabled": True},
-        )
-        response.raise_for_status()
-        result = response.json()
-        if not isinstance(result, dict):
-            raise RuntimeError("Integrated engage returned a non-object result")
-        return result
-
-    async def trigger_one_shot_motion(self) -> dict[str, Any]:
-        pressed_response = await self._client.post(
-            f"{self.base_url}/v1/teleop",
-            json={"lb": True},
-        )
-        pressed_response.raise_for_status()
-        pressed = pressed_response.json()
-        try:
-            await asyncio.sleep(0.05)
-        finally:
-            released_response = await self._client.post(
-                f"{self.base_url}/v1/teleop",
-                json={"lb": False},
-            )
-            released_response.raise_for_status()
-        if not isinstance(pressed, dict):
-            raise RuntimeError(
-                "Integrated one-shot trigger returned a non-object result"
-            )
-        return pressed
 
     async def commit_transit_path(
         self,

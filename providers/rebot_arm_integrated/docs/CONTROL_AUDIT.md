@@ -26,6 +26,14 @@ Pending events are copied asynchronously to
 replayed after restart. A Fabric outage does not block direct controller
 submission.
 
+The provider-local record always retains the exact canonical request and
+normalized result. If one serialized event exceeds the configured Fabric copy
+budget, asynchronous replay publishes a bounded projection containing the
+original event and result SHA-256 digests, byte counts, result keys, and stable
+audit identity. The cursor advances only after that projection is accepted.
+This prevents one oversized historical planning result from blocking all later
+audit copies without weakening the exact append-only local record.
+
 Each endpoint response reports whether the `SUBMITTED` and `ACCEPTED` local
 copies persisted and includes any post-action audit error. The default
 `SHADOW_BEST_EFFORT` mode reports local write failures but does not reject
@@ -47,7 +55,8 @@ sequence `261`, zero pending records, and no local or Fabric audit errors. The
 installation template intentionally remains in shadow so strict local storage
 is not imposed on unvalidated installations.
 
-`POST /v1/motion/plan` is the initial direct planning boundary. It stages and
-previews a target in one provider call, returns a plan ID and normalized target,
-and cannot authorize physical motion. Collision preview remains diagnostic in
-this phase.
+`POST /v1/motion/path-plan` is the sole Agent-facing planning boundary. It
+records a nonphysical controller-owned path and binds request, preview, scene,
+assembly, and context digests. Only `/v1/motion/path-commit` can consume that
+exact unexpired plan with a signed one-time assertion. No alternate planning
+or execution surface is exposed.

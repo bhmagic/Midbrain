@@ -7,6 +7,7 @@ from arm_scene_compiler.compiler import (
     ARM_BASE_ROI,
     GRIPPER_ROI,
     build_layered_scene,
+    build_profile_self_exclusion_spheres,
     build_self_exclusion_spheres,
 )
 
@@ -74,6 +75,70 @@ def test_self_filter_removes_robot_geometry_before_voxelization() -> None:
     assert scene["production"]["self_points_removed"] == 1
     assert len(scene["spheres"]) == 1
     assert scene["spheres"][0]["type"] == "PUSHABLE"
+
+
+def test_profile_self_filter_includes_mounted_effector_spheres() -> None:
+    centers = np.asarray(
+        [[0.0, 0.0, index * 0.1] for index in range(7)],
+        dtype=np.float64,
+    )
+    spheres, revision = build_profile_self_exclusion_spheres(
+        centers,
+        [0.04] * 6,
+        [
+            {
+                "primitive_id": "rear",
+                "center_m": [0.0, 0.0, 0.5],
+                "radius_m": 0.035,
+            }
+        ],
+        assembly_fingerprint="assembly-1",
+    )
+
+    effector = next(
+        value for value in spheres if value.get("primitive_id") == "rear"
+    )
+    assert effector["sphere_id"] == "self:effector:rear"
+    assert effector["geometry_owner"] == "MOUNTED_EFFECTOR_PROFILE"
+    assert revision.startswith("self-filter-")
+
+
+def test_profile_self_filter_removes_sam2_cells_on_effector_geometry() -> None:
+    centers = np.asarray(
+        [[0.0, 0.0, index * 0.1] for index in range(7)],
+        dtype=np.float64,
+    )
+    self_spheres, revision = build_profile_self_exclusion_spheres(
+        centers,
+        [0.02] * 6,
+        [
+            {
+                "primitive_id": "rear",
+                "center_m": [0.1, 0.0, 0.5],
+                "radius_m": 0.035,
+            }
+        ],
+        assembly_fingerprint="assembly-1",
+    )
+    scene = build_layered_scene(
+        raw_points_arm_base_m=[],
+        gripper_center_arm_base_m=[0.0, 0.0, 0.7],
+        self_exclusion_spheres=self_spheres,
+        self_filter_revision=revision,
+        semantic_objects=[
+            {
+                "sphere_id": "sam2-tool-cell",
+                "object_id": "workpiece",
+                "center_m": [0.1, 0.0, 0.5],
+                "radius_m": 0.02,
+                "type": "WORKPIECE",
+                "semantic_source": "SAM2_TRACKED_WORKPIECE",
+            }
+        ],
+    )
+
+    assert scene["spheres"] == []
+    assert scene["production"]["sam2_semantic_self_cells_removed"] == 1
 
 
 def test_self_filter_accounts_for_generated_voxel_sphere_radius() -> None:

@@ -31,7 +31,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "Orbbec support package installation failed."
 }
 
-& $python -m pip install -e (Join-Path $provider "python")
+$providerPackage = "$(Join-Path $provider 'python')[test]"
+& $python -m pip install -e $providerPackage
 if ($LASTEXITCODE -ne 0) {
     throw "FoundationPose Provider package installation failed."
 }

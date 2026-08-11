@@ -121,6 +121,59 @@ class AuthorizationStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already issued"):
             store.issue_execution_assertion(created["decision_id"])
 
+    def test_autonomous_free_space_policy_uses_distinct_signed_issuer(self) -> None:
+        secret = "s" * 32
+        store = AuthorizationStore(signing_secret=secret)
+        authority = {
+            "plan_id": "plan-autonomous",
+            "request_sha256": "request-sha",
+            "preview_sha256": "preview-sha",
+            "controller_provider_id": "robot_arm.primary.integrated",
+            "controller_provider_instance_id": "instance-1",
+            "controller_boot_id": "boot-1",
+            "controller_configuration_sha256": "config-sha",
+            "issued_at_us": 1,
+            "expires_at_us": 10**18,
+            "scene_revision": "scene-1",
+            "lease_snapshot": {},
+        }
+        created = store.create(
+            requester_type="skill",
+            requester_id="free-space-motion",
+            decision_type="PHYSICAL_OBSERVATION_POSE",
+            title="Execute autonomous free-space motion",
+            summary="Execute one exact collision-checked plan.",
+            proposed_action={"plan_id": "plan-autonomous"},
+            evidence={},
+            safety={"controller_preview_authority": authority},
+        )
+        store.resolve(
+            created["decision_id"],
+            resolution="APPROVED",
+            resolved_by="autonomous-free-space-policy",
+        )
+
+        issued = store.issue_execution_assertion(created["decision_id"])
+        claims = verify_transit_execution_assertion(
+            issued["assertion"],
+            secret,
+            provider_id="robot_arm.primary.integrated",
+            provider_instance_id="instance-1",
+            boot_id="boot-1",
+            configuration_sha256="config-sha",
+            plan_id="plan-autonomous",
+            request_sha256="request-sha",
+            preview_sha256="preview-sha",
+            scene_revision="scene-1",
+            preview_expires_at_us=10**18,
+        )
+
+        self.assertEqual(claims["issuer"], "physical-agent-autonomy")
+        self.assertEqual(
+            claims["resolved_by"],
+            "autonomous-free-space-policy",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

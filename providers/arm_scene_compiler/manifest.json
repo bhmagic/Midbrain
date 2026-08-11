@@ -17,6 +17,7 @@
   ],
   "required_capabilities": [
     "camera.point_cloud.xyz",
+    "robot_arm.assembly_state",
     "robot_arm.transforms.local"
   ],
   "optional_capabilities": [
@@ -28,6 +29,7 @@
   ],
   "consumed_streams": [
     "camera.point_cloud.xyz.frame_ref",
+    "robot_arm.assembly_state",
     "robot_arm.scene.point_cloud",
     "robot_arm.scene.semantic_assertions",
     "transform.robot_arm.local"

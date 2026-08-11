@@ -1,0 +1,120 @@
+{
+  "schema": "midbrain.mounted_effector_profile",
+  "schema_version": 1,
+  "profile_id": "rebot_b601_dm.bare_gripper",
+  "profile_revision": "rebot-b601-dm-bare-gripper-v2",
+  "display_name": "reBot B601-DM Bare Gripper",
+  "assembly_type": "REPLACEABLE_EFFECTOR",
+  "qualification": "DEVELOPMENT",
+  "robot_compatibility": {
+    "model_id": "rebot_arm_b601_dm",
+    "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
+    "terminal_frame": "link6"
+  },
+  "kinematic_attachment": {
+    "parent_frame": "link6",
+    "child_frame": "end_link",
+    "transform": {
+      "translation_m": [0.0, 0.0, 0.15539],
+      "rpy_rad": [0.0, -1.5708, 3.1415]
+    },
+    "qualification": "NOMINAL_URDF",
+    "source_reference": "config/arm_model.json#/fixed_tool"
+  },
+  "controlled_frame": {
+    "frame_id": "rebot_arm_tool",
+    "parent_frame": "end_link",
+    "transform": {
+      "translation_m": [0.0, 0.0, 0.0],
+      "rpy_rad": [0.0, 0.0, 0.0]
+    },
+    "semantic_role": "FREE_SPACE_CONTROLLED_FRAME"
+  },
+  "acting_frames": [
+    {
+      "frame_id": "rebot_arm_grip_center",
+      "parent_frame": "rebot_arm_tool",
+      "transform": {
+        "translation_m": [0.0, 0.0, 0.0],
+        "rpy_rad": [0.0, 0.0, 0.0]
+      },
+      "semantic_roles": ["GRIP_CENTER", "TOOL_CENTER_POINT"],
+      "qualification": "USER_CONFIRMED_CURRENT_IK_FK_GRIPPER_TIP_POINT"
+    }
+  ],
+  "collision_primitives": [
+    {
+      "primitive_id": "bare_gripper_tip",
+      "frame_id": "rebot_arm_tool",
+      "transform": {
+        "translation_m": [-0.005, 0.0, 0],
+        "rpy_rad": [0.0, 0.0, 0.0]
+      },
+      "shape": {"type": "SPHERE", "radius_m": 0.005},
+      "qualification": "USER_SPECIFIED"
+    },
+    {
+      "primitive_id": "bare_gripper_front_body",
+      "frame_id": "rebot_arm_tool",
+      "transform": {
+        "translation_m": [-0.03, 0.0, 0.00],
+        "rpy_rad": [0.0, 0.0, 0.0]
+      },
+      "shape": {"type": "SPHERE", "radius_m": 0.015},
+      "qualification": "USER_SPECIFIED"
+    },
+    {
+      "primitive_id": "bare_gripper_mid_body",
+      "frame_id": "rebot_arm_tool",
+      "transform": {
+        "translation_m": [ -0.09, 0.0, 0.0],
+        "rpy_rad": [0.0, 0.0, 0.0]
+      },
+      "shape": {"type": "SPHERE", "radius_m": 0.035},
+      "qualification": "USER_SPECIFIED"
+    },
+    {
+      "primitive_id": "bare_gripper_rear_body",
+      "frame_id": "rebot_arm_tool",
+      "transform": {
+        "translation_m": [-0.15, 0.0, 0.0],
+        "rpy_rad": [0.0, 0.0, 0.0]
+      },
+      "shape": {"type": "SPHERE", "radius_m": 0.035},
+      "qualification": "USER_SPECIFIED"
+    }
+  ],
+  "inertial": {
+    "reference_frame": "end_link",
+    "mass_kg": 0.45,
+    "center_of_mass_m": [-0.0737654295815033, -0.0000095080995865868, 0.00000704327840286845],
+    "inertia_kg_m2": {
+      "ixx": 0.00037354,
+      "ixy": -0.00000011,
+      "ixz": 0.0000005,
+      "iyy": 0.0001583,
+      "iyz": 0.00000348,
+      "izz": 0.00045353
+    },
+    "qualification": "NOMINAL_URDF"
+  },
+  "inactive_joint_names": [],
+  "actuator_groups": [
+    {
+      "group_id": "gripper",
+      "resource_id": "robot_arm.primary/gripper",
+      "joint_names": ["gripper"],
+      "capabilities": [
+        "robot_effector.grip.position.v1",
+        "robot_effector.grip.force_limited.v1"
+      ]
+    }
+  ],
+  "invalidation_conditions": [
+    "Effector replacement or remount",
+    "Robot model or terminal-frame revision change",
+    "Any structural modification to the gripper",
+    "A held object is not declared as runtime attachment state",
+    "Physical measurement shows the gripper exceeds a declared collision sphere"
+  ]
+}

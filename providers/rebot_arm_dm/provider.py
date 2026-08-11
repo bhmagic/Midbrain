@@ -12,6 +12,7 @@ PYTHON=ROOT/'python'
 if str(PYTHON) not in sys.path: sys.path.insert(0,str(PYTHON))
 
 from rebot_arm_dm_provider.controller import ArmController
+from rebot_arm_dm_provider.assembly import RobotAssemblyConfiguration
 from rebot_arm_dm_provider.dynamics import RebotDynamics
 from rebot_arm_dm_provider.hardware import MotorBridgeBackend, SimulationBackend
 from rebot_arm_dm_provider.kinematics import RebotKinematics
@@ -23,6 +24,8 @@ def parse_args():
     parser=argparse.ArgumentParser(description="reBot Arm DM Basic Controller")
     parser.add_argument('--config',default=str(ROOT/'config'/'arm_model.json'))
     parser.add_argument('--calibration',default=str(ROOT/'config'/'arm_calibration.json'))
+    parser.add_argument('--assembly-config',default=None)
+    parser.add_argument('--workspace-root',default=str(ROOT.parents[1]))
     parser.add_argument('--port',default='COM3'); parser.add_argument('--baudrate',type=int,default=921600)
     parser.add_argument('--simulate',action='store_true'); parser.add_argument('--allow-hardware-calibration',action='store_true'); parser.add_argument('--read-only',action='store_true')
     parser.add_argument('--listen-host',default='127.0.0.1'); parser.add_argument('--listen-port',type=int,default=8791)
@@ -31,12 +34,30 @@ def parse_args():
 
 
 def main() -> int:
-    args=parse_args(); configuration=ArmConfiguration.load(args.config,args.calibration)
+    args=parse_args()
+    assembly = None
+    model_path = args.config
+    calibration_path = args.calibration
+    if args.assembly_config:
+        assembly = RobotAssemblyConfiguration.load(args.assembly_config, args.workspace_root)
+        if assembly.selection["arm_provider"]["provider_id"] != "robot_arm.rebot_dm":
+            raise ValueError("selected assembly does not bind the reBot Arm DM Basic Controller")
+        model_path = str(assembly.model_path)
+        calibration_path = str(assembly.calibration_path)
+    configuration=(
+        ArmConfiguration(
+            assembly.normalized_arm_model(),
+            assembly.profiles["calibration"],
+        )
+        if assembly is not None
+        else ArmConfiguration.load(model_path,calibration_path)
+    )
     kinematics=RebotKinematics(configuration.model); dynamics=RebotDynamics(configuration,kinematics)
     backend=SimulationBackend(configuration,dynamics.calibrated_gravity_torque) if args.simulate else MotorBridgeBackend(configuration,args.port,args.baudrate)
     controller=ArmController(configuration,backend,dynamics)
-    service=ArmProviderService(configuration,controller,kinematics,args.calibration,args.listen_host,args.listen_port,
-                               args.manager_url,args.fabric_url,args.allow_hardware_calibration,args.simulate,args.read_only)
+    service=ArmProviderService(configuration,controller,kinematics,calibration_path,args.listen_host,args.listen_port,
+                               args.manager_url,args.fabric_url,args.allow_hardware_calibration,args.simulate,args.read_only,
+                               assembly)
     shutdown_started = False
     shutdown_lock = threading.Lock()
 

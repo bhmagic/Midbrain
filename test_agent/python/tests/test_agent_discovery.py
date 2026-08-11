@@ -79,8 +79,11 @@ class _NoContactApproachSkill:
             "motion_submitted": False,
         }
 
-    async def execute_preview(self, **arguments):
-        return arguments
+    async def execute_current_preview(self):
+        return {"status": "COMPLETED"}
+
+    async def begin_agent_turn(self):
+        return None
 
 
 class _ReviewedExecutionSkill:
@@ -211,6 +214,21 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("do not invent one", route["instruction"])
 
+    def test_move_until_work_object_uses_no_contact_approach(self) -> None:
+        route = deterministic_intent_tool_route(
+            "move the hand down 50 mm five times until reaching the work object"
+        )
+
+        self.assertEqual(route["route"], "NO_CONTACT_ITEM_APPROACH")
+        self.assertIn(
+            "COMPLETED_CLOSEST_SAFE",
+            route["instruction"],
+        )
+        self.assertIn("boundary target", route["instruction"])
+        self.assertIn("neither contact authorization", route["instruction"])
+        self.assertIn("zero extra WORK_OBJECT clearance", route["instruction"])
+        self.assertIn("10 mm", route["instruction"])
+
     def test_explicit_obstacle_route_uses_declared_scene_policy(self) -> None:
         route = deterministic_intent_tool_route(
             "The only obstacle is the table; do not collide with it."
@@ -258,8 +276,8 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "inspect_arm_semantic_scene",
                 "locate_effector_front",
                 "locate_item",
+                "perform_relative_effector_motion",
                 "plan_no_contact_item_approach",
-                "preview_relative_effector_motion",
                 "refine_arm_root_translation",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
@@ -270,7 +288,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         relative_motion = next(
             descriptor
             for descriptor in descriptors
-            if descriptor.tool_name == "preview_relative_effector_motion"
+            if descriptor.tool_name == "perform_relative_effector_motion"
         )
         self.assertEqual(
             [
@@ -541,12 +559,12 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             '{"question":"approach the toilet paper"}',
         )
         parsed = json.loads(result)
-        self.assertEqual(parsed["requested_standoff_m"], 0.1)
+        self.assertEqual(parsed["requested_standoff_m"], 0.0)
         self.assertEqual(parsed["maximum_step_m"], 1.2)
         self.assertFalse(parsed["physical_motion_authorized"])
         self.assertFalse(parsed["motion_submitted"])
 
-    def test_no_contact_execution_schema_accepts_only_opaque_plan_id(
+    def test_no_contact_execution_schema_accepts_no_model_plan_identifier(
         self,
     ) -> None:
         driver = PrototypeAgentDriver(
@@ -566,12 +584,13 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             tool.params_json_schema["required"],
-            ["plan_id"],
+            [],
         )
         self.assertEqual(
-            set(tool.params_json_schema["properties"]),
-            {"plan_id"},
+            tool.params_json_schema["properties"],
+            {},
         )
+        self.assertFalse(tool.needs_approval)
 
     async def test_reviewed_execution_manifest_exposes_only_decision_id(
         self,

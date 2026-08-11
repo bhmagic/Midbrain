@@ -101,6 +101,69 @@ def build_self_exclusion_spheres(
     return spheres, "self-filter-" + _stable_token(revision_basis)
 
 
+def build_profile_self_exclusion_spheres(
+    link_centers_arm_base_m: Any,
+    segment_radii_m: list[float],
+    effector_spheres_arm_base: list[dict[str, Any]],
+    *,
+    assembly_fingerprint: str,
+    maximum_spacing_m: float = 0.025,
+) -> tuple[list[dict[str, Any]], str]:
+    """Build one profile-bound self filter for arm capsules and the effector."""
+
+    arm_spheres, _ = build_self_exclusion_spheres(
+        link_centers_arm_base_m,
+        segment_radii_m,
+        maximum_spacing_m=maximum_spacing_m,
+    )
+    fingerprint = str(assembly_fingerprint or "").strip()
+    if not fingerprint:
+        raise ValueError("assembly_fingerprint must be non-empty")
+    effector_spheres: list[dict[str, Any]] = []
+    primitive_ids: set[str] = set()
+    for index, primitive in enumerate(effector_spheres_arm_base):
+        if not isinstance(primitive, dict):
+            raise ValueError("effector self-exclusion spheres must be objects")
+        primitive_id = str(primitive.get("primitive_id") or "").strip()
+        center = _point(
+            primitive.get("center_m"),
+            f"effector self sphere {index} center_m",
+        )
+        radius = float(primitive.get("radius_m") or 0.0)
+        if not primitive_id or primitive_id in primitive_ids:
+            raise ValueError(
+                "effector self-exclusion sphere IDs must be non-empty and unique"
+            )
+        if not math.isfinite(radius) or radius <= 0.0:
+            raise ValueError(
+                "effector self-exclusion sphere radii must be positive and finite"
+            )
+        primitive_ids.add(primitive_id)
+        effector_spheres.append(
+            {
+                "sphere_id": f"self:effector:{primitive_id}",
+                "primitive_id": primitive_id,
+                "center_m": center.tolist(),
+                "radius_m": radius,
+                "geometry_owner": "MOUNTED_EFFECTOR_PROFILE",
+            }
+        )
+    spheres = [*arm_spheres, *effector_spheres]
+    revision_basis = {
+        "assembly_fingerprint": fingerprint,
+        "spheres": [
+            {
+                "sphere_id": value["sphere_id"],
+                "center_m": np.round(value["center_m"], 6).tolist(),
+                "radius_m": float(value["radius_m"]),
+            }
+            for value in spheres
+        ],
+        "maximum_spacing_m": float(maximum_spacing_m),
+    }
+    return spheres, "self-filter-" + _stable_token(revision_basis)
+
+
 def _apply_self_filter(
     points: np.ndarray,
     spheres: list[dict[str, Any]],
@@ -294,6 +357,7 @@ def build_layered_scene(
     maximum_spheres: int = 20_000,
     self_filter_margin_m: float = 0.01,
     publish_unclaimed_pushable_geometry: bool = False,
+    robot_collision_geometry: dict[str, Any] | None = None,
     scene_revision: str | None = None,
 ) -> dict[str, Any]:
     """Compile simultaneous gripper/base ROI layers into contract version 2."""
@@ -419,6 +483,7 @@ def build_layered_scene(
             },
         ],
         "spheres": spheres,
+        "robot_collision_geometry": dict(robot_collision_geometry or {}),
         "production": {
             "default_unclassified_type": "PUSHABLE",
             "keep_out_requires_user_or_upstream_description": True,

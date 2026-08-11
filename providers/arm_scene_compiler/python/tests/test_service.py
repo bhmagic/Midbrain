@@ -10,6 +10,55 @@ import arm_scene_compiler.service as service_module
 from arm_scene_compiler.service import SceneCompilerEngine
 
 
+def _assembly_observation() -> dict[str, Any]:
+    now_us = time.time_ns() // 1000
+    return {
+        "schema": "physical_agent.robot_assembly_state",
+        "schema_version": 1,
+        "stream": "robot_arm.assembly_state",
+        "provider_id": "robot_arm.rebot_dm",
+        "provider_instance_id": "arm-instance",
+        "boot_id": "arm-boot",
+        "sequence": 1,
+        "observed_at_us": now_us,
+        "freshness_ms": 5000,
+        "expires_at_us": now_us + 5_000_000,
+        "coordinate_frame": "rebot_arm_base",
+        "valid": True,
+        "data": {
+            "assembly_fingerprint": "test-assembly-fingerprint",
+            "collision_geometry": {
+                "profile_revision": "test-arm-capsules-v2",
+                "polyline_point_frames": [
+                    "rebot_arm_base",
+                    "link1",
+                    "link2",
+                    "link3",
+                    "link4",
+                    "link5",
+                    "link6",
+                ],
+                "polyline_capsules": [
+                    {"segment_index": index, "radius_m": 0.04}
+                    for index in range(6)
+                ],
+            },
+            "mounted_effector": {
+                "profile_revision": "test-effector-v1",
+                "controlled_frame": {"frame_id": "rebot_arm_tool"},
+                "collision_primitives": [
+                    {
+                        "primitive_id": "test-effector-rear",
+                        "frame_id": "rebot_arm_tool",
+                        "transform": {"translation_m": [0.0, 0.0, -0.1]},
+                        "shape": {"type": "SPHERE", "radius_m": 0.035},
+                    }
+                ],
+            },
+        },
+    }
+
+
 class FakePointReader:
     def __init__(self, points_by_stream: dict[str, Any]) -> None:
         self.points_by_stream = points_by_stream
@@ -23,7 +72,10 @@ class FakePointReader:
 
 class FakeFabric:
     def __init__(self, observations: dict[str, dict[str, Any]]) -> None:
-        self.observations = observations
+        self.observations = {
+            "robot_arm.assembly_state": _assembly_observation(),
+            **observations,
+        }
         self.published: list[dict[str, Any]] = []
         self.link_z = {
             "link1": 0.1,
@@ -76,17 +128,8 @@ def _config() -> dict[str, Any]:
         "arm_base_frame": "rebot_arm_base",
         "point_cloud_streams": ["external.points", "camera.points"],
         "semantic_assertion_streams": ["semantic.objects"],
-        "link_frames": [
-            "rebot_arm_base",
-            "link1",
-            "link2",
-            "link3",
-            "link4",
-            "link5",
-            "link6",
-            "rebot_arm_tool",
-        ],
-        "segment_radii_m": [0.04] * 7,
+        "assembly_state_stream": "robot_arm.assembly_state",
+        "assembly_state_max_age_ms": 5000,
         "point_cloud_max_age_ms": 1000,
         "semantic_assertion_max_age_ms": 5000,
         "maximum_transform_extrapolation_us": 750000,
@@ -120,6 +163,14 @@ def test_engine_falls_back_from_unusable_external_cloud_to_camera() -> None:
     result = engine.compile_once()
     assert result is not None
     assert result["data"]["production"]["source_provenance"]["point_stream"] == "camera.points"
+    assert result["data"]["robot_collision_geometry"]["effector_spheres"] == [
+        {
+            "primitive_id": "test-effector-rear",
+            "center_m": [0.0, 0.0, 0.6],
+            "radius_m": 0.035,
+            "profile_translation_m": [0.0, 0.0, -0.1],
+        }
+    ]
     assert fabric.published == [result]
 
 
@@ -236,7 +287,7 @@ def test_engine_never_publishes_a_scene_that_expired_during_compile(
     started_us = int(points["observed_at_us"])
     ticks_ns = iter(
         [
-            *(started_us * 1000 for _ in range(5)),
+            *(started_us * 1000 for _ in range(6)),
             (started_us + 2_100_000) * 1000,
         ]
     )

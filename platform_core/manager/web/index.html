@@ -66,6 +66,38 @@
       </div>
     </section>
 
+    <section class="effector-panel" aria-labelledby="effectorHeading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">STATIC ROBOT ASSEMBLY</p>
+          <h2 id="effectorHeading">Mounted effector</h2>
+        </div>
+        <p class="section-note">Select only the tool physically mounted on the arm. The arm Provider and every dependent Provider must be stopped; the new profile is loaded on their next start.</p>
+      </div>
+      <div class="effector-grid">
+        <div class="effector-control">
+          <label for="effectorSelect">Installed compatible profile</label>
+          <select id="effectorSelect" disabled>
+            <option>Loading mounted-effector profiles...</option>
+          </select>
+          <label class="confirm-check effector-confirm" for="effectorPhysicalConfirmation">
+            <input id="effectorPhysicalConfirmation" type="checkbox">
+            <span>I confirm this profile matches the effector physically mounted on the arm.</span>
+          </label>
+          <button id="selectEffectorButton" class="secondary-button" type="button" disabled>Select effector</button>
+          <p id="effectorActionStatus" class="activation-status">Reading the active assembly selection.</p>
+        </div>
+        <dl class="effector-details">
+          <div><dt>Active profile</dt><dd id="effectorActiveProfile">Checking</dd></div>
+          <div><dt>MIT-float mass</dt><dd id="effectorMass">Checking</dd></div>
+          <div><dt>Center of mass</dt><dd id="effectorCom">Checking</dd></div>
+          <div><dt>Inertial qualification</dt><dd id="effectorInertialQualification">Checking</dd></div>
+          <div><dt>Collision primitives</dt><dd id="effectorColliderCount">Checking</dd></div>
+          <div><dt>Profile file</dt><dd id="effectorProfileFile">Checking</dd></div>
+        </dl>
+      </div>
+    </section>
+
     <section class="component-section" aria-labelledby="providerHeading">
       <div class="section-heading">
         <div>

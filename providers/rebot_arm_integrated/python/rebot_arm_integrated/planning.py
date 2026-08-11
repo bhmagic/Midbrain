@@ -21,6 +21,8 @@ class PlanPreview:
     samples: tuple[np.ndarray, ...]
     minimum_clearance_m: float | None
     collision_free: bool
+    collision_count: int
+    first_collision_sample_index: int | None
     collisions: tuple[dict[str, Any], ...]
 
     def snapshot(self, *, include_samples: bool = False) -> dict[str, Any]:
@@ -33,6 +35,10 @@ class PlanPreview:
             "sample_count": len(self.samples),
             "minimum_clearance_m": self.minimum_clearance_m,
             "collision_free": self.collision_free,
+            "collision_count": self.collision_count,
+            "first_collision_sample_index": (
+                self.first_collision_sample_index
+            ),
             "collisions": list(self.collisions),
         }
         if include_samples:
@@ -67,12 +73,14 @@ class CartesianContinuitySolution:
 def build_transit_frame_candidates(
     start_frame: np.ndarray,
     goal_frame: np.ndarray,
-    *,
-    workspace: dict[str, Any],
-    clearance_margin_m: float,
-    lateral_escape_m: float,
 ) -> tuple[tuple[str, tuple[np.ndarray, ...]], ...]:
-    """Build controller-owned Cartesian path shapes for shadow evaluation."""
+    """Build the direct free-space path evaluated by the controller.
+
+    General obstacle rerouting is intentionally not implemented. If this path
+    meets classified geometry, the controller may execute only its closest
+    collision-free prefix and must report that the requested goal was not
+    reached.
+    """
 
     start = np.asarray(start_frame, dtype=float)
     goal = np.asarray(goal_frame, dtype=float)
@@ -81,92 +89,7 @@ def build_transit_frame_candidates(
     if not np.all(np.isfinite(start)) or not np.all(np.isfinite(goal)):
         raise ValueError("transit frames must be finite")
 
-    enforce_cartesian_bounds = bool(
-        workspace.get("enforce_cartesian_bounds", True)
-    )
-    if enforce_cartesian_bounds:
-        z_min = float(workspace["z_min_m"])
-        z_max = float(workspace["z_max_m"])
-        y_limit = float(workspace["abs_y_max_m"])
-        clearance_z = float(
-            np.clip(
-                max(start[2, 3], goal[2, 3]) + float(clearance_margin_m),
-                z_min,
-                z_max,
-            )
-        )
-    else:
-        clearance_z = float(
-            max(start[2, 3], goal[2, 3]) + float(clearance_margin_m)
-        )
-        y_limit = float(
-            max(abs(start[1, 3]), abs(goal[1, 3]))
-            + 2.0 * float(lateral_escape_m)
-        )
-
-    def frame_at(position: np.ndarray, *, goal_orientation: bool = False) -> np.ndarray:
-        output = start.copy()
-        output[:3, 3] = np.asarray(position, dtype=float)
-        if goal_orientation:
-            output[:3, :3] = goal[:3, :3]
-        return output
-
-    def compact(frames: list[np.ndarray]) -> tuple[np.ndarray, ...]:
-        output: list[np.ndarray] = []
-        for frame in frames:
-            if output and np.allclose(output[-1], frame, rtol=0.0, atol=1e-12):
-                continue
-            output.append(frame)
-        return tuple(output)
-
-    direct = ("DIRECT", (goal.copy(),))
-    clearance = (
-        "CLEARANCE_Z_THEN_XY",
-        compact(
-            [
-                frame_at(np.array([start[0, 3], start[1, 3], clearance_z])),
-                frame_at(np.array([goal[0, 3], goal[1, 3], clearance_z])),
-                goal.copy(),
-            ]
-        ),
-    )
-    positive_room = y_limit - max(start[1, 3], goal[1, 3])
-    negative_room = y_limit + min(start[1, 3], goal[1, 3])
-    directions = (1.0, -1.0) if positive_room >= negative_room else (-1.0, 1.0)
-    lateral_candidates: list[tuple[str, tuple[np.ndarray, ...]]] = []
-    for direction in directions:
-        edge = max(start[1, 3], goal[1, 3]) if direction > 0 else min(
-            start[1, 3], goal[1, 3]
-        )
-        escape_y = float(
-            np.clip(
-                edge + direction * float(lateral_escape_m),
-                -y_limit,
-                y_limit,
-            )
-        )
-        label = (
-            "CLEARANCE_WITH_POSITIVE_Y_SINGULARITY_ESCAPE"
-            if direction > 0
-            else "CLEARANCE_WITH_NEGATIVE_Y_SINGULARITY_ESCAPE"
-        )
-        lateral_candidates.append(
-            (
-                label,
-                compact(
-                    [
-                        frame_at(
-                            np.array([start[0, 3], start[1, 3], clearance_z])
-                        ),
-                        frame_at(np.array([start[0, 3], escape_y, clearance_z])),
-                        frame_at(np.array([goal[0, 3], escape_y, clearance_z])),
-                        frame_at(np.array([goal[0, 3], goal[1, 3], clearance_z])),
-                        frame_at(goal[:3, 3], goal_orientation=True),
-                    ]
-                ),
-            )
-        )
-    return (direct, clearance, *lateral_candidates)
+    return (("DIRECT", (goal.copy(),)),)
 
 
 def controller_owned_duration(
@@ -409,6 +332,64 @@ def solve_cartesian_continuity_adaptive(
         count = min(maximum, count * 2)
 
 
+def _configuration_collision_geometry(
+    kinematics: ArmKinematics,
+    q: np.ndarray,
+    link_radii_m: Iterable[float],
+    tool_to_control: np.ndarray | None,
+    effector_spheres: tuple[dict[str, Any], ...],
+) -> tuple[list[np.ndarray], tuple[float, ...], list[dict[str, Any]]]:
+    frame_result = kinematics.evaluate(q)
+    all_points = list(frame_result.points)
+    radii = tuple(float(value) for value in link_radii_m)
+    if not radii or len(radii) > len(all_points) - 1:
+        raise ValueError("collision radii do not match the evaluated kinematic chain")
+    collision_points = [point.copy() for point in all_points[: len(radii) + 1]]
+    controlled_frame: np.ndarray | None = None
+    if len(radii) == len(all_points) - 1 and tool_to_control is not None:
+        controlled_frame = kinematics.controlled_frame(q, tool_to_control)
+        collision_points[-1] = controlled_frame[:3, 3].copy()
+    runtime_spheres: list[dict[str, Any]] = []
+    if effector_spheres:
+        if tool_to_control is None:
+            raise ValueError(
+                "effector collision spheres require a controlled-frame transform"
+            )
+        if controlled_frame is None:
+            controlled_frame = kinematics.controlled_frame(q, tool_to_control)
+        for primitive in effector_spheres:
+            primitive_id = str(primitive.get("primitive_id", "")).strip()
+            offset = np.asarray(primitive.get("translation_m", []), dtype=float)
+            try:
+                radius = float(primitive.get("radius_m"))
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "effector collision sphere radius must be positive and finite"
+                ) from error
+            if not primitive_id:
+                raise ValueError("effector collision sphere ID must be non-empty")
+            if offset.shape != (3,) or not np.all(np.isfinite(offset)):
+                raise ValueError(
+                    "effector collision sphere translation must contain three finite values"
+                )
+            if not np.isfinite(radius) or radius <= 0.0:
+                raise ValueError(
+                    "effector collision sphere radius must be positive and finite"
+                )
+            center = (
+                controlled_frame[:3, :3] @ offset
+                + controlled_frame[:3, 3]
+            )
+            runtime_spheres.append(
+                {
+                    "primitive_id": primitive_id,
+                    "center_m": center,
+                    "radius_m": radius,
+                }
+            )
+    return collision_points, radii, runtime_spheres
+
+
 def build_waypoint_preview(
     kinematics: ArmKinematics,
     q_waypoints: Iterable[Iterable[float]],
@@ -419,7 +400,10 @@ def build_waypoint_preview(
     sample_count: int = 81,
     allowed_contact_object_ids: set[str] | None = None,
     permit_pushable_contact: bool = False,
+    clearance_margin_by_type_m: dict[str, float] | None = None,
     maximum_collision_details: int = 128,
+    tool_to_control: np.ndarray | None = None,
+    effector_spheres: Iterable[dict[str, Any]] | None = None,
 ) -> PlanPreview:
     waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
     if len(waypoints) < 2 or any(item.shape != (6,) or not np.all(np.isfinite(item)) for item in waypoints):
@@ -433,14 +417,27 @@ def build_waypoint_preview(
     minimum_clearance: float | None = None
     collisions: list[dict[str, Any]] = []
     collision_count = 0
+    first_collision_sample_index: int | None = None
+    configured_effector_spheres = tuple(effector_spheres or ())
     if scene is not None:
         for sample_index, q in enumerate(samples):
+            collision_points, radii, runtime_spheres = (
+                _configuration_collision_geometry(
+                    kinematics,
+                    q,
+                    link_radii_m,
+                    tool_to_control,
+                    configured_effector_spheres,
+                )
+            )
             report = configuration_clearance(
-                kinematics.evaluate(q).points,
+                collision_points,
                 scene,
-                link_radii_m,
+                radii,
+                robot_spheres=runtime_spheres,
                 allowed_contact_object_ids=allowed_contact_object_ids,
                 permit_pushable_contact=permit_pushable_contact,
+                clearance_margin_by_type_m=clearance_margin_by_type_m,
                 maximum_collision_details=max(
                     0,
                     int(maximum_collision_details) - len(collisions),
@@ -450,6 +447,11 @@ def build_waypoint_preview(
             if clearance is not None:
                 minimum_clearance = clearance if minimum_clearance is None else min(minimum_clearance, clearance)
             collision_count += int(report.get("collision_count") or 0)
+            if (
+                first_collision_sample_index is None
+                and int(report.get("collision_count") or 0) > 0
+            ):
+                first_collision_sample_index = sample_index
             collisions.extend({"sample_index": sample_index, **item} for item in report["collisions"])
     return PlanPreview(
         str(uuid.uuid4()),
@@ -460,8 +462,69 @@ def build_waypoint_preview(
         tuple(samples),
         minimum_clearance,
         collision_count == 0,
+        collision_count,
+        first_collision_sample_index,
         tuple(collisions),
     )
+
+
+def closest_collision_free_prefix(
+    kinematics: ArmKinematics,
+    preview: PlanPreview,
+    *,
+    scene: SceneSnapshot,
+    link_radii_m: Iterable[float],
+    allowed_contact_object_ids: set[str] | None = None,
+    permit_pushable_contact: bool = False,
+    clearance_margin_by_type_m: dict[str, float] | None = None,
+    tool_to_control: np.ndarray | None = None,
+    effector_spheres: Iterable[dict[str, Any]] | None = None,
+    boundary_iterations: int = 24,
+) -> tuple[np.ndarray, ...]:
+    """Return the sampled path prefix immediately before first contact."""
+
+    if preview.collision_free:
+        return tuple(sample.copy() for sample in preview.samples)
+    first_blocked = preview.first_collision_sample_index
+    if first_blocked is None or first_blocked <= 0:
+        return ()
+    prefix = [sample.copy() for sample in preview.samples[:first_blocked]]
+    low = prefix[-1].copy()
+    high = preview.samples[first_blocked].copy()
+    radii = tuple(float(value) for value in link_radii_m)
+    configured_effector_spheres = tuple(effector_spheres or ())
+
+    def collision_free(q: np.ndarray) -> bool:
+        collision_points, checked_radii, runtime_spheres = (
+            _configuration_collision_geometry(
+                kinematics,
+                q,
+                radii,
+                tool_to_control,
+                configured_effector_spheres,
+            )
+        )
+        report = configuration_clearance(
+            collision_points,
+            scene,
+            checked_radii,
+            robot_spheres=runtime_spheres,
+            allowed_contact_object_ids=allowed_contact_object_ids,
+            permit_pushable_contact=permit_pushable_contact,
+            clearance_margin_by_type_m=clearance_margin_by_type_m,
+            maximum_collision_details=0,
+        )
+        return bool(report["collision_free"])
+
+    for _ in range(max(1, int(boundary_iterations))):
+        middle = (low + high) * 0.5
+        if collision_free(middle):
+            low = middle
+        else:
+            high = middle
+    if not np.allclose(prefix[-1], low, rtol=0.0, atol=1e-12):
+        prefix.append(low)
+    return tuple(prefix)
 
 
 def build_direct_preview(
@@ -475,21 +538,37 @@ def build_direct_preview(
     sample_count: int = 81,
     allowed_contact_object_ids: set[str] | None = None,
     permit_pushable_contact: bool = False,
+    clearance_margin_by_type_m: dict[str, float] | None = None,
     maximum_collision_details: int = 128,
+    tool_to_control: np.ndarray | None = None,
+    effector_spheres: Iterable[dict[str, Any]] | None = None,
 ) -> PlanPreview:
     segment = QuinticJointSegment.create(q_start, q_goal, duration_s)
     samples = tuple(item[0] for item in segment.sampled(sample_count))
     minimum_clearance: float | None = None
     collisions: list[dict[str, Any]] = []
     collision_count = 0
+    first_collision_sample_index: int | None = None
+    configured_effector_spheres = tuple(effector_spheres or ())
     if scene is not None:
         for sample_index, q in enumerate(samples):
+            collision_points, radii, runtime_spheres = (
+                _configuration_collision_geometry(
+                    kinematics,
+                    q,
+                    link_radii_m,
+                    tool_to_control,
+                    configured_effector_spheres,
+                )
+            )
             report = configuration_clearance(
-                kinematics.evaluate(q).points,
+                collision_points,
                 scene,
-                link_radii_m,
+                radii,
+                robot_spheres=runtime_spheres,
                 allowed_contact_object_ids=allowed_contact_object_ids,
                 permit_pushable_contact=permit_pushable_contact,
+                clearance_margin_by_type_m=clearance_margin_by_type_m,
                 maximum_collision_details=max(
                     0,
                     int(maximum_collision_details) - len(collisions),
@@ -501,6 +580,11 @@ def build_direct_preview(
             for collision in report["collisions"]:
                 collisions.append({"sample_index": sample_index, **collision})
             collision_count += int(report.get("collision_count") or 0)
+            if (
+                first_collision_sample_index is None
+                and int(report.get("collision_count") or 0) > 0
+            ):
+                first_collision_sample_index = sample_index
     return PlanPreview(
         str(uuid.uuid4()),
         None if scene is None else scene.revision,
@@ -510,5 +594,7 @@ def build_direct_preview(
         samples,
         minimum_clearance,
         collision_count == 0,
+        collision_count,
+        first_collision_sample_index,
         tuple(collisions),
     )

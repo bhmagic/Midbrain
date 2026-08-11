@@ -26,6 +26,7 @@ class BasicLease:
     fencing_generation: int
     expires_monotonic: float
     holder: str
+    resource_id: str | None = None
 
 
 class BasicControllerClient:
@@ -53,6 +54,7 @@ class BasicControllerClient:
         self.safety_http = JsonHttpClient(safety_timeout)
         self._lease_lock = threading.RLock()
         self.lease: BasicLease | None = None
+        self.resource_id: str | None = None
 
     @staticmethod
     def _lease_error(exc: HttpStatusError) -> LeaseLostError:
@@ -90,11 +92,27 @@ class BasicControllerClient:
     def model(self) -> dict[str, Any]:
         return self.state_http.get(f"{self.base_url}/v1/arm/model")
 
+    def assembly(self) -> dict[str, Any]:
+        return self.state_http.get(f"{self.base_url}/v1/arm/assembly")
+
+    def bind_resource(self, resource_id: str) -> None:
+        normalized = str(resource_id).strip()
+        if not normalized:
+            raise ValueError("Basic control resource_id must be non-empty")
+        with self._lease_lock:
+            if self.lease is not None:
+                raise RuntimeError("cannot change Basic resource while leased")
+            self.resource_id = normalized
+
     def acquire(self, holder: str, duration_ms: int) -> BasicLease:
         try:
             data = self.lease_http.post(
                 f"{self.base_url}/v1/control/lease",
-                {"holder": holder, "duration_ms": duration_ms},
+                {
+                    "holder": holder,
+                    "duration_ms": duration_ms,
+                    "resource_id": self.resource_id,
+                },
             )
         except HttpStatusError as exc:
             if exc.status_code == 404:
@@ -110,6 +128,7 @@ class BasicControllerClient:
             int(data["fencing_generation"]),
             time.monotonic() + int(data.get("expires_in_ms", duration_ms)) / 1000.0,
             holder,
+            str(data.get("resource_id") or self.resource_id or "") or None,
         )
         with self._lease_lock:
             self.lease = lease
@@ -126,6 +145,7 @@ class BasicControllerClient:
                     "lease_id": lease.lease_id,
                     "fencing_generation": lease.fencing_generation,
                     "duration_ms": duration_ms,
+                    "resource_id": lease.resource_id,
                 },
             )
         except HttpStatusError as exc:
@@ -156,6 +176,7 @@ class BasicControllerClient:
                     "lease_id": lease.lease_id,
                     "fencing_generation": lease.fencing_generation,
                     "timeout_ms": timeout_ms,
+                    "resource_id": lease.resource_id,
                     "commands": commands,
                 },
             )
@@ -178,6 +199,7 @@ class BasicControllerClient:
                     "fencing_generation": lease.fencing_generation,
                     "mass_kg": float(mass_kg),
                     "com_tool_m": [float(value) for value in com_tool_m],
+                    "resource_id": lease.resource_id,
                 },
             )
         except HttpStatusError as exc:
@@ -189,7 +211,13 @@ class BasicControllerClient:
     def float(self, reason: str = "integrated controller idle") -> dict[str, Any]:
         return self.safety_http.post(
             f"{self.base_url}/v1/control/request",
-            {"action": "gravity_float", "payload": {"reason": reason}},
+            {
+                "action": "gravity_float",
+                "payload": {
+                    "reason": reason,
+                    "resource_id": self.resource_id,
+                },
+            },
         )
 
     def safe_home_stop(self) -> dict[str, Any]:
@@ -206,6 +234,7 @@ class BasicControllerClient:
                     "lease_id": lease.lease_id,
                     "fencing_generation": lease.fencing_generation,
                     "reason": reason,
+                    "resource_id": lease.resource_id,
                 },
             )
         except HttpStatusError as exc:

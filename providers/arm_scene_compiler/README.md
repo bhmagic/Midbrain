@@ -21,8 +21,10 @@ rate or permit missing required `KEEP_OUT` coverage.
   minimum sphere radius.
 - `ARM_BASE_1P2M` covers 1.2 m around the arm-base origin and has a 60 mm
   minimum sphere radius.
-- Current link capsules are sampled into self-exclusion spheres before scene
-  voxelization.
+- The fresh `robot_arm.assembly_state` selects the arm capsule profile and the
+  mounted-effector sphere profile. Both are transformed at the observation
+  timestamp and sampled into one profile-bound self-exclusion filter before
+  point-cloud voxelization or SAM2 semantic-cell publication.
 - Unclaimed point-cloud geometry is non-blocking `PUSHABLE` telemetry and is
   omitted from controller geometry by default. Only explicitly described
   `KEEP_OUT` assertions become blocking spheres.
@@ -49,8 +51,10 @@ HOT compilation requires all of the following to be fresh at the same time:
 
 - a configured point-cloud stream;
 - a timestamped transform from the point-cloud frame to `rebot_arm_base`;
-- the current Basic arm transform chain from `rebot_arm_base` through
-  `rebot_arm_tool`; and
+- the current Basic `robot_arm.assembly_state`, including its assembly
+  fingerprint, arm collision profile, and mounted-effector profile;
+- the current Basic transform chain for every collision-profile frame and the
+  mounted controlled frame; and
 - for semantic-only depth fallback, at least one unexpired explicit semantic
   assertion.
 

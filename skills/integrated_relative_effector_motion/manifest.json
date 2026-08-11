@@ -1,7 +1,7 @@
 {
   "skill_type": "integrated_relative_effector_motion",
-  "version": "0.4.2",
-  "display_name": "Integrated Relative End-Effector Motion",
+  "version": "0.6.0",
+  "display_name": "Integrated Free-Space End-Effector Motion",
   "ui": {
     "observation": {
       "kind": "MANAGER_HOSTED",
@@ -18,27 +18,28 @@
   "agent_discovery": {
     "schema_version": 1,
     "discoverable": true,
-    "tool_name": "preview_relative_effector_motion",
-    "description": "Preview a relative end-effector translation, bounded controlled-frame yaw, or both from the measured pose. Call the preview first. If its Integrated capability is unavailable, follow required_next_tool once; Manager activates declared dependencies. World uses +X front, +Y left, +Z up. Explicit world axes require a reviewed transform; raw arm axes use ARM_BASE_POSITIVE_* names. PRESERVE_MEASURED_CONTROLLED_FRAME retains measured POSE_6DOF orientation. APPLY_CONTROLLED_FRAME_YAW_DELTA applies up to 45 degrees about controlled +Z: positive is left and negative is right. Rotation-only uses direction NONE and distance_m 0. Speed is nominal and Provider safety may lengthen duration. Visual evidence is best-effort. On PREVIEW_READY, call required_next_tool with its opaque preview ID.",
+    "tool_name": "perform_relative_effector_motion",
+    "description": "Perform one measured-start free-space end-effector pose move through the controller-owned signed path-plan/path-commit boundary. Fresh scenes are collision-checked; PUSHABLE is ignored, KEEP_OUT adds 10 mm, and WORK_OBJECT adds 0 mm while intersection remains forbidden. Translation accepts a signed axis or arbitrary 3D vector; orientation may be preserved, changed by controlled-frame RPY, or set in arm-base RPY. The host owns the exact preview continuation and autonomous authorization; the Agent cannot select or replay a plan ID.",
     "when_to_use": [
-      "The operator requests a new relative Cartesian end-effector translation, controlled-frame head yaw, or combined pose change.",
+      "The operator requests a collision-checked free-space Cartesian translation, orientation change, or combined pose change.",
       "Manager can satisfy the declared arm Provider dependencies.",
       "A fresh measured controlled-frame pose is available.",
       "Optional fixed-rig visual evidence may be collected when available."
     ],
     "when_not_to_use": [
       "The request is safe-home, gravity float, emergency stop, or raw joint control.",
-      "The collision scene or required controller state is unavailable and the operator does not accept that limitation.",
+      "The request intentionally makes contact, cuts, pushes, or grips; those actions belong to separate contact or grip controllers.",
+      "The arm is holding an object whose runtime attachment revision, payload, and collision geometry have not been declared to the free-space controller.",
       "The requested semantic direction cannot be resolved from an operator-confirmed mount or a measured transform."
     ],
     "side_effects": [
-      "May require one approval-gated task-facing Provider activation; Manager resolves declared dependencies.",
+      "May autonomously request task-facing Provider activation; Manager resolves declared dependencies.",
       "After fixed-rig confirmation, may non-destructively start or verify camera and VIO tracking without resetting the epoch.",
-      "May capture best-effort gravity-aligned effector evidence before and after an approved move.",
-      "Stages a nonphysical Integrated Controller target and preview.",
-      "Does not itself authorize or execute physical motion."
+      "May capture best-effort gravity-aligned effector evidence before and after an autonomous signed move.",
+      "Creates an exact nonphysical Integrated Controller path preview.",
+      "Autonomously authorizes and executes only that call-scoped signed free-space preview."
     ],
-    "safety_class": "STATEFUL_NO_MOTION",
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
     "expected_latency": "MEDIUM",
     "required_permissions": [
       "robot.arm.state.read",
@@ -48,31 +49,38 @@
       "type": "object",
       "properties": {
         "direction": {
-          "type": "string",
-          "enum": [
-            "NONE",
-            "UP",
-            "DOWN",
-            "FRONT",
-            "BACK",
-            "LEFT",
-            "RIGHT",
-            "NORTH",
-            "SOUTH",
-            "EAST",
-            "WEST",
-            "POSITIVE_X",
-            "NEGATIVE_X",
-            "POSITIVE_Y",
-            "NEGATIVE_Y",
-            "POSITIVE_Z",
-            "NEGATIVE_Z",
-            "ARM_BASE_POSITIVE_X",
-            "ARM_BASE_NEGATIVE_X",
-            "ARM_BASE_POSITIVE_Y",
-            "ARM_BASE_NEGATIVE_Y",
-            "ARM_BASE_POSITIVE_Z",
-            "ARM_BASE_NEGATIVE_Z"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "NONE",
+                "UP",
+                "DOWN",
+                "FRONT",
+                "BACK",
+                "LEFT",
+                "RIGHT",
+                "NORTH",
+                "SOUTH",
+                "EAST",
+                "WEST",
+                "POSITIVE_X",
+                "NEGATIVE_X",
+                "POSITIVE_Y",
+                "NEGATIVE_Y",
+                "POSITIVE_Z",
+                "NEGATIVE_Z",
+                "ARM_BASE_POSITIVE_X",
+                "ARM_BASE_NEGATIVE_X",
+                "ARM_BASE_POSITIVE_Y",
+                "ARM_BASE_NEGATIVE_Y",
+                "ARM_BASE_POSITIVE_Z",
+                "ARM_BASE_NEGATIVE_Z"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "reference_frame": {
@@ -120,10 +128,12 @@
           "enum": [
             "POSITION_ONLY",
             "PRESERVE_MEASURED_CONTROLLED_FRAME",
-            "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+            "APPLY_CONTROLLED_FRAME_YAW_DELTA",
+            "APPLY_CONTROLLED_FRAME_RPY_DELTA",
+            "SET_ARM_BASE_RPY"
           ],
           "default": "POSITION_ONLY",
-          "description": "Use PRESERVE_MEASURED_CONTROLLED_FRAME when the operator asks to keep the effector head, pointing direction, attitude, or full 3D orientation during translation. Use APPLY_CONTROLLED_FRAME_YAW_DELTA for a bounded intrinsic turn about the measured controlled-frame +Z axis. Both policies bind an exact POSE_6DOF target."
+          "description": "PRESERVE_MEASURED_CONTROLLED_FRAME retains the measured attitude. APPLY_CONTROLLED_FRAME_YAW_DELTA is the bounded legacy yaw policy. APPLY_CONTROLLED_FRAME_RPY_DELTA postmultiplies one conventional Rz(yaw) Ry(pitch) Rx(roll) delta onto the measured controlled frame. SET_ARM_BASE_RPY binds an absolute arm-base RPY target. Every non-position policy binds an exact POSE_6DOF target."
         },
         "controlled_frame_yaw_delta_deg": {
           "anyOf": [
@@ -139,11 +149,72 @@
           "default": null,
           "description": "Required and nonzero only for APPLY_CONTROLLED_FRAME_YAW_DELTA. This is intrinsic yaw about the measured controlled +Z axis: positive turns controlled +X toward +Y (left), and negative turns it toward -Y (right)."
         },
+        "controlled_frame_rpy_delta_deg": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number",
+                "minimum": -180.0,
+                "maximum": 180.0
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required and nonzero only for APPLY_CONTROLLED_FRAME_RPY_DELTA. Values are controlled-frame-relative roll, pitch, and yaw deltas in degrees. The exact composition is R_target = R_measured Rz(yaw) Ry(pitch) Rx(roll)."
+        },
+        "target_orientation_rpy_rad": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required only for SET_ARM_BASE_RPY. This is the exact absolute roll, pitch, yaw target in radians in the configured arm-base frame."
+        },
         "distance_m": {
-          "type": "number",
-          "minimum": 0.0,
-          "maximum": 1.2,
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.2
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Translation distance. Use exactly 0 with direction NONE for rotation-only motion; positive free-space translations must be from 0.001 to 1.2 m."
+        },
+        "translation_vector_m": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number",
+                "minimum": -1.2,
+                "maximum": 1.2
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "One arbitrary relative displacement vector [x, y, z] in reference_frame, in meters. Its norm must be 0.001 to 1.2 m. Do not also provide direction or distance_m. The controller plans it as one combined Cartesian goal, not three axis moves."
         },
         "requested_speed_m_s": {
           "anyOf": [
@@ -159,14 +230,11 @@
           "description": "Optional nominal average endpoint speed. The adapter requests distance_m / requested_speed_m_s seconds; the Provider may lengthen the trajectory for joint-rate safety. This is not constant instantaneous Cartesian velocity."
         }
       },
-      "required": [
-        "direction",
-        "distance_m"
-      ],
+      "required": [],
       "additionalProperties": false
     },
     "execution_adapter": {
-      "adapter_id": "skill.integrated_relative_effector_motion.preview.v1",
+      "adapter_id": "skill.integrated_relative_effector_motion.perform.v1",
       "kind": "IN_PROCESS_BOUND_INSTANCE",
       "invocation_requires_approval": false
     }
@@ -175,13 +243,13 @@
     "robot_arm.joint_state",
     "robot_arm.gravity_float",
     "robot_arm.control.operational_api_v2",
-    "robot.motion.arm.integrated.plan.direct.nonphysical",
-    "robot_arm.integrated.position_3dof_ik"
+    "robot_arm.motion.free_space.preview_commit.v1",
+    "robot_arm.integrated.position_3dof_ik",
+    "robot_arm.integrated.pose_6dof_ik"
   ],
   "optional_capabilities": [
     "localization.vio.local_pose",
     "world.transforms.timestamped",
-    "robot_arm.integrated.pose_6dof_ik",
     "robot_arm.integrated.semantic_scene_consumer"
   ],
   "route_policy": {
@@ -201,7 +269,10 @@
         "reason": "Owns Cartesian IK preview and one-shot motion execution."
       }
     ],
-    "preview_then_approve": true,
+    "required_resources_by_capability": {
+      "robot_arm.motion.free_space.preview_commit.v1": "robot_arm.primary/arm"
+    },
+    "preview_then_autonomous_policy_authorization": true,
     "orientation_preservation": "MEASURED_CONTROLLED_FRAME_RPY_WITH_POSE_6DOF",
     "controlled_frame_yaw_delta": {
       "composition": "R_TARGET_EQUALS_R_MEASURED_TIMES_RZ_DELTA",
@@ -210,9 +281,26 @@
       "maximum_absolute_degrees": 45.0,
       "rotation_only_direction": "NONE"
     },
+    "controlled_frame_rpy_delta": {
+      "composition": "R_TARGET_EQUALS_R_MEASURED_TIMES_RZ_YAW_RY_PITCH_RX_ROLL",
+      "units": "DEGREES",
+      "maximum_absolute_component_degrees": 180.0,
+      "rotation_only_direction": "NONE"
+    },
+    "absolute_arm_base_orientation": {
+      "representation": "ROLL_PITCH_YAW_RADIANS",
+      "frame": "CONFIGURED_ARM_BASE",
+      "rotation_only_direction": "NONE"
+    },
+    "translation_vector": {
+      "representation": "RELATIVE_XYZ_METERS",
+      "maximum_norm_m": 1.2,
+      "planned_as_single_cartesian_goal": true
+    },
     "motion_intents": {
       "translation": "NEW_RELATIVE_MOVE",
       "combined_translation_and_yaw": "NEW_RELATIVE_POSE_MOVE",
+      "combined_translation_and_orientation": "NEW_RELATIVE_POSE_MOVE",
       "rotation_only": "NEW_RELATIVE_ROTATION"
     },
     "before_after_visual_verification": "BEST_EFFORT_WHEN_FIXED_RIG_CONFIRMED",
@@ -221,12 +309,14 @@
     "vio_readiness_check_may_reset_epoch": false,
     "vio_readiness_check_may_acquire_global_motion_inhibit": false,
     "integrated_recovery_transition": "EXPLICIT_APPROVED_HOT",
-    "physical_execution_tool": "execute_integrated_motion_preview",
-    "physical_execution_arguments": "OPAQUE_PENDING_PREVIEW_ID_ONLY",
+    "physical_execution_tool": "perform_relative_effector_motion",
+    "physical_execution_arguments": "CALL_SCOPED_HOST_OWNED_CONTINUATION",
+    "physical_execution_maturity": "AUTONOMOUS_SIGNED_PATH_PLAN_PATH_COMMIT",
+    "autonomous_execution_boundary": "SIGNED_PATH_PLAN_PATH_COMMIT_ONLY",
     "reference_agent_prepared_action_projection": {
       "tool_name": "perform_relative_effector_motion",
-      "preparation_tool": "preview_relative_effector_motion",
-      "continuation_tool": "execute_integrated_motion_preview",
+      "preparation_tool": "HOST_INTERNAL_CONTROLLER_PATH_PLAN",
+      "continuation_tool": "HOST_INTERNAL_SIGNED_PATH_COMMIT",
       "binding": "EXACT_SDK_CALL_ID_AND_OPAQUE_PREVIEW_ID",
       "optional_for_compatible_agent_hosts": true
     },

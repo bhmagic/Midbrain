@@ -3,35 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>reBot Arm Integrated Prototype</title>
+  <title>Arm Integrated Free-Space Controller</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main>
     <header>
       <div>
-        <h1>reBot Arm Integrated Motion Prototype</h1>
-        <p>Physical test controller: target editing is non-physical; GUI Engage + Xbox LB authorizes movement.</p>
+        <h1>Arm Integrated Free-Space Controller</h1>
+        <p>Read-only inspection of controller-owned signed free-space planning and execution.</p>
       </div>
       <span id="healthBadge" class="badge bad">Loading</span>
     </header>
 
     <section class="warning">
-      <strong>Hardware maturity:</strong> PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED/POS_VEL ONE_SHOT is usable for IK-valid free-space requests up to 1.2 m, subject to actual arm reach and joint/scene limits. TRANSIT_SPEED HOLD_LB and CONTACT_WORK/POS_TOR ONE_SHOT remain experimental and unstable, are available only for operator GUI testing, and are excluded from upstream capability discovery.
+      This Provider owns non-contact arm motion only. Intentional contact, cutting, pushing, gripping, undeclared held objects, manual target staging, and gamepad teleoperation are outside this interface.
     </section>
 
     <section class="grid two">
       <article>
-        <h2>Physical authority</h2>
-        <div class="kv"><span>Engage</span><strong id="engageStatus">—</strong></div>
-        <div class="kv"><span>Xbox LB</span><strong id="lbStatus">—</strong></div>
+        <h2>Runtime</h2>
+        <div class="kv"><span>Role</span><strong id="controllerRole">—</strong></div>
         <div class="kv"><span>Control state</span><strong id="controlState">—</strong></div>
-        <div class="kv"><span>Lease</span><strong id="leaseStatus">—</strong></div>
-        <div class="kv"><span>Midbrain</span><strong id="platformStatus">—</strong></div>
-        <div class="kv"><span>Fabric upstream target</span><strong id="fabricInputStatus">—</strong></div>
+        <div class="kv"><span>Arm lease</span><strong id="leaseStatus">—</strong></div>
+        <div class="kv"><span>Manager and Fabric</span><strong id="platformStatus">—</strong></div>
+        <div class="kv"><span>Semantic scene</span><strong id="sceneStatus">—</strong></div>
+        <div class="kv"><span>Assembly</span><strong id="assemblyStatus">—</strong></div>
         <div class="buttonRow">
-          <button id="engageButton" class="danger">Engage physical control</button>
-          <button id="floatButton">Float / disengage</button>
+          <button id="floatButton">Request gravity float</button>
           <button id="safeTerminateButton" class="danger">Safe terminate</button>
         </div>
         <p id="terminationStatus" class="muted"></p>
@@ -39,201 +38,47 @@
       </article>
 
       <article>
-        <h2>Execution and IK</h2>
-        <label>Execution backend
-          <select id="executionMode">
-            <option value="PRESS_MIT">PRESS_MIT — usable (ONE_SHOT + HOLD_LB)</option>
-            <option value="TRANSIT_SPEED">TRANSIT_SPEED — ordinary ONE_SHOT; continuous experimental</option>
-            <option value="CONTACT_WORK">CONTACT_WORK — experimental / unstable POS_TOR</option>
-          </select>
-        </label>
-        <label>Interaction
-          <select id="interactionMode">
-            <option value="ONE_SHOT">ONE_SHOT — LB click</option>
-            <option value="HOLD_LB">HOLD_LB — continuous replan</option>
-          </select>
-        </label>
-        <label>IK
-          <select id="ikMode">
-            <option value="POSITION_3DOF">3-DoF position</option>
-            <option value="POSE_6DOF">6-DoF pose</option>
-          </select>
-        </label>
-        <label>One-shot duration (s)<input id="duration" type="number" min="0.05" max="60" step="0.05"></label>
-        <label>Hold-LB replan interval (s)<input id="replanInterval" type="number" min="0.05" max="1" step="0.01"></label>
-        <label>Kp multiplier<input id="kpMultiplier" type="number" min="1" max="10" step="0.1"></label>
-        <div class="buttonRow">
-          <button id="applyMotionSettings">Apply settings</button>
-          <button id="baselineButton">Capture float torque baseline (manual)</button>
-        </div>
-        <label>CONTACT_WORK budget input
-          <select id="contactBudgetMode">
-            <option value="JOINT_6">JOINT_6 — direct J1–J6 torque budgets</option>
-            <option value="WRENCH_6">WRENCH_6 — Fx/Fy/Fz + Tx/Ty/Tz</option>
-            <option value="ISOTROPIC_2">ISOTROPIC_2 — force/torque magnitude in any direction</option>
-          </select>
-        </label>
-        <label>JOINT_6 external torque budgets (Nm, J1-J6)</label>
-        <div class="sixFields">
-          <input id="contactBudget1" type="number" min="0.01" step="0.05" placeholder="J1">
-          <input id="contactBudget2" type="number" min="0.01" step="0.05" placeholder="J2">
-          <input id="contactBudget3" type="number" min="0.01" step="0.05" placeholder="J3">
-          <input id="contactBudget4" type="number" min="0.01" step="0.05" placeholder="J4">
-          <input id="contactBudget5" type="number" min="0.01" step="0.05" placeholder="J5">
-          <input id="contactBudget6" type="number" min="0.01" step="0.05" placeholder="J6">
-        </div>
-        <label>WRENCH_6 force (N) and torque (Nm), controlled-frame XYZ</label>
-        <div class="sixFields">
-          <input id="wrenchFx" type="number" min="0" step="0.1" placeholder="Fx">
-          <input id="wrenchFy" type="number" min="0" step="0.1" placeholder="Fy">
-          <input id="wrenchFz" type="number" min="0" step="0.1" placeholder="Fz">
-          <input id="wrenchTx" type="number" min="0" step="0.05" placeholder="Tx">
-          <input id="wrenchTy" type="number" min="0" step="0.05" placeholder="Ty">
-          <input id="wrenchTz" type="number" min="0" step="0.05" placeholder="Tz">
-        </div>
-        <label>ISOTROPIC_2 force magnitude (N) / torque magnitude (Nm)</label>
-        <div class="buttonRow">
-          <input id="isotropicForce" type="number" min="0" step="0.1" placeholder="Force XYZ">
-          <input id="isotropicTorque" type="number" min="0" step="0.05" placeholder="Torque XYZ">
-        </div>
-        <button id="applyContactBudgets">Apply selected contact budget</button>
-        <div class="kv"><span>Physical POS_TOR ceilings Nm</span><strong id="contactCeilings">—</strong></div>
-        <div class="kv"><span>Effective joint budgets Nm</span><strong id="effectiveContactBudget">—</strong></div>
-        <div class="kv"><span>Calculated POS_TOR ratios</span><strong id="contactRatios">—</strong></div>
-        <div class="kv"><span>Live torque residual Nm</span><strong id="contactResidual">—</strong></div>
-        <p id="contactStatus" class="muted"></p>
-        <p class="muted">Discovery status: PRESS_MIT ONE_SHOT and HOLD_LB are usable. TRANSIT_SPEED ONE_SHOT is usable for IK-valid free-space requests up to 1.2 m. TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental/unstable GUI tests and are not advertised to upstream capability discovery.</p>
-        <p class="muted">For CONTACT_WORK, capture the floating torque baseline as one command, then separately Engage and use LB for force execution; LB does not recapture automatically. TRANSIT_SPEED ONE_SHOT returns to float after stable arrival. HOLD_LB release requests float.</p>
-      </article>
-    </section>
-
-    <section class="gripperPanel">
-      <h2>Gripper hardware test</h2>
-      <p>Hold RB to OPEN or RT to CLOSE. Releasing RB/RT latches and maintains the last MIT or POS_TOR endpoint so the gripper keeps holding. Float/LT or Safe terminate explicitly releases that latch. New gripper input is interlocked while an arm trajectory is active.</p>
-      <div class="grid two">
-        <article>
-          <div class="kv"><span>Selected backend</span><strong id="gripperBackend">—</strong></div>
-          <div class="kv"><span>Requested / active</span><strong id="gripperAction">—</strong></div>
-          <div class="kv"><span>Measured / target rad</span><strong id="gripperPosition">—</strong></div>
-          <div class="kv"><span>Measured torque Nm</span><strong id="gripperTorque">—</strong></div>
-          <div class="buttonRow">
-            <button id="gripperOpenButton">Hold OPEN (RB)</button>
-            <button id="gripperCloseButton" class="danger">Hold CLOSE (RT)</button>
-            <button id="gripperStopButton">Latch current endpoint</button>
-          </div>
-          <p id="gripperError" class="error"></p>
-        </article>
-        <article>
-          <label>Gripper backend
-            <select id="gripperMode">
-              <option value="MIT">MIT / impedance</option>
-              <option value="POS_TOR">POS_TOR / effort-limited position</option>
-            </select>
-          </label>
-          <div class="threeFields">
-            <label>Open target rad<input id="gripperOpenTarget" type="number" step="0.01"></label>
-            <label>Closed target rad<input id="gripperClosedTarget" type="number" step="0.01"></label>
-            <label>Velocity rad/s<input id="gripperVelocity" type="number" min="0.01" step="0.01"></label>
-            <label>POS_TOR ratio<input id="gripperTorqueRatio" type="number" min="0.01" max="1" step="0.01"></label>
-            <label>MIT Kp<input id="gripperKp" type="number" min="0.01" step="0.1"></label>
-            <label>MIT Kd<input id="gripperKd" type="number" min="0" step="0.1"></label>
-          </div>
-          <button id="applyGripperSettings">Apply gripper settings</button>
-          <p class="muted">Basic currently caps this test at 0.7 rad/s, POS_TOR ratio 0.2, MIT Kp 8, and MIT Kd 1. Invalid settings are rejected before transmission.</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="grid two">
-      <article>
-        <h2>Controlled point / tool offset</h2>
-        <p class="muted">Offset is tool → acting point. This lets IK control a tool tip or another acting point rather than the bare tool origin.</p>
-        <div class="sixFields">
-          <label>X m<input id="offsetX" type="number" step="0.001"></label>
-          <label>Y m<input id="offsetY" type="number" step="0.001"></label>
-          <label>Z m<input id="offsetZ" type="number" step="0.001"></label>
-          <label>Roll rad<input id="offsetRoll" type="number" step="0.01"></label>
-          <label>Pitch rad<input id="offsetPitch" type="number" step="0.01"></label>
-          <label>Yaw rad<input id="offsetYaw" type="number" step="0.01"></label>
-        </div>
-        <button id="applyOffset">Apply offset and recapture target</button>
-      </article>
-
-      <article>
-        <h2>Held tool payload</h2>
-        <p class="muted">Mass and COM are used by Basic for gravity feed-forward during MIT motion and gravity-float.</p>
-        <label>Mass kg<input id="payloadMass" type="number" min="0" step="0.01"></label>
-        <div class="threeFields">
-          <label>COM X m<input id="payloadX" type="number" step="0.001"></label>
-          <label>COM Y m<input id="payloadY" type="number" step="0.001"></label>
-          <label>COM Z m<input id="payloadZ" type="number" step="0.001"></label>
-        </div>
-        <button id="applyPayload">Apply payload model</button>
-      </article>
-    </section>
-
-    <section>
-      <h2>Effective MIT gains</h2>
-      <table>
-        <thead><tr><th>Joint</th><th>Base Kp</th><th>Requested Kp</th><th>Effective Kp</th><th>Base Kd</th><th>Requested Kd</th><th>Effective Kd</th><th>Tracking effort cap Nm</th></tr></thead>
-        <tbody id="gainRows"></tbody>
-      </table>
-    </section>
-
-    <section class="grid two">
-      <article>
-        <h2>Top view: base X/Y</h2>
-        <canvas id="topView" width="720" height="420"></canvas>
-      </article>
-      <article>
-        <h2>Side view: base X/Z</h2>
-        <canvas id="sideView" width="720" height="420"></canvas>
+        <h2>Free-space policy</h2>
+        <div class="kv"><span>Execution API</span><strong>/v1/motion/path-plan → path-commit</strong></div>
+        <div class="kv"><span>Planner</span><strong>Direct or closest-safe direct prefix</strong></div>
+        <div class="kv"><span>General rerouting</span><strong>Not implemented</strong></div>
+        <div class="kv"><span>WORK_OBJECT margin</span><strong>0 mm; intersection forbidden</strong></div>
+        <div class="kv"><span>KEEP_OUT margin</span><strong>10 mm</strong></div>
+        <div class="kv"><span>PUSHABLE</span><strong>Ignored by current policy</strong></div>
+        <div class="kv"><span>Effector geometry</span><strong id="effectorGeometry">—</strong></div>
       </article>
     </section>
 
     <section class="grid two">
       <article>
-        <h2>Cartesian target</h2>
-        <div class="kv"><span>Measured controlled frame</span><strong id="measuredControl">—</strong></div>
-        <div class="kv"><span>Staged controlled frame</span><strong id="targetControl">—</strong></div>
-        <div class="kv"><span>Last committed</span><strong id="committedControl">—</strong></div>
-        <div class="kv"><span>Position residual</span><strong id="positionResidual">—</strong></div>
-        <div class="kv"><span>Orientation residual</span><strong id="orientationResidual">—</strong></div>
-        <div class="kv"><span>1.2 m request envelope</span><strong id="clampStatus">—</strong></div>
-        <div class="kv"><span>Segment duration</span><strong id="trajectoryDuration">—</strong></div>
-        <div class="kv"><span>Progress</span><strong id="trajectoryProgress">—</strong></div>
-        <div class="kv"><span>Frames sent / skipped</span><strong id="trajectoryFrames">—</strong></div>
-        <div class="kv"><span>Live replans</span><strong id="replans">—</strong></div>
+        <h2>Current path</h2>
+        <div class="kv"><span>Plan</span><strong id="planStatus">—</strong></div>
+        <div class="kv"><span>Trajectory</span><strong id="trajectoryStatus">—</strong></div>
+        <div class="kv"><span>Completion</span><strong id="completionStatus">—</strong></div>
       </article>
       <article>
-        <h2>Xbox mapping</h2>
-        <p>Left stick L/R → base X; Left stick U/D → base Y; D-pad U/D → base Z.</p>
-        <p>6-DoF only: Right stick L/R → base-Z yaw; Right stick U/D → base-Y pitch; B/X → ± base-X roll.</p>
-        <p>LB: click in ONE_SHOT; hold in HOLD_LB. RB: hold gripper OPEN. RT: hold gripper CLOSE. LT: immediate float. Y: cycle execution mode. Left-stick click: capture torque baseline while floating.</p>
-        <p>Hold View + Menu for 2 seconds: launch the authoritative safe-home termination script.</p>
-        <p id="gamepadStatus" class="muted">No gamepad detected.</p>
-        <p class="muted">Fabric updates the same staged target but never bypasses Engage + LB in this bring-up release.</p>
+        <h2>Capability surface</h2>
+        <pre id="capabilities">Loading…</pre>
       </article>
     </section>
 
     <section>
       <h2>Joint telemetry</h2>
       <table>
-        <thead><tr><th>Joint</th><th>Measured rad</th><th>Commanded rad</th><th>Goal rad</th><th>Commanded rad/s</th><th>Rate cap rad/s</th><th>Torque Nm</th></tr></thead>
+        <thead><tr><th>Joint</th><th>Measured rad</th><th>Commanded rad</th><th>Goal rad</th><th>Rate rad/s</th><th>Rate cap rad/s</th><th>Torque Nm</th></tr></thead>
         <tbody id="jointRows"></tbody>
       </table>
-      <p>Maximum measured/commanded tracking error: <strong id="trackingError">—</strong></p>
+      <p>Maximum tracking error: <strong id="trackingError">—</strong></p>
     </section>
 
     <section>
       <h2>Diagnostics</h2>
-      <pre id="diagnostics"></pre>
+      <pre id="diagnostics">Loading…</pre>
     </section>
 
     <section>
       <h2>Exact controller submission timeline</h2>
-      <p class="muted">Provider-local append-only copies are written before each controlled target call. Fabric delivery is shown separately.</p>
-      <pre id="controlAuditTimeline">Loading audit timelineâ€¦</pre>
+      <pre id="controlAuditTimeline">Loading…</pre>
     </section>
   </main>
   <script src="/app.js"></script>

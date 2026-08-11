@@ -45,6 +45,40 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+CANONICAL_TEXT_EXTENSIONS = {
+    ".bat", ".c", ".cc", ".cfg", ".cmake", ".cmd", ".cpp", ".css",
+    ".csv", ".env", ".example", ".gitattributes", ".gitignore", ".h",
+    ".hpp", ".html", ".ini", ".js", ".json", ".jsx", ".lock", ".md",
+    ".obj", ".ps1", ".py", ".rs", ".schema", ".sh", ".sha256", ".step",
+    ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
+}
+CANONICAL_TEXT_NAMES = {
+    "cargo.lock", "cargo.toml", "cmakelists.txt", "dockerfile", "license",
+    "notice", "version",
+}
+
+
+def manifest_sha256(path: Path) -> str:
+    """Match the repository manifest generator's cross-platform text hashing."""
+
+    if (
+        path.suffix.lower() not in CANONICAL_TEXT_EXTENSIONS
+        and path.name.lower() not in CANONICAL_TEXT_NAMES
+    ):
+        return sha256(path)
+    data = path.read_bytes()
+    if data.startswith(b"\xef\xbb\xbf"):
+        bom, payload, encoding = b"\xef\xbb\xbf", data[3:], "utf-8"
+    elif data.startswith(b"\xff\xfe"):
+        bom, payload, encoding = b"\xff\xfe", data[2:], "utf-16-le"
+    elif data.startswith(b"\xfe\xff"):
+        bom, payload, encoding = b"\xfe\xff", data[2:], "utf-16-be"
+    else:
+        bom, payload, encoding = b"", data, "utf-8"
+    text = payload.decode(encoding, errors="replace").replace("\r\n", "\n")
+    return hashlib.sha256(bom + text.encode(encoding)).hexdigest()
+
+
 
 def validate_release_version(root: Path) -> str:
     version = (root / "VERSION").read_text(encoding="utf-8-sig").strip()
@@ -184,7 +218,7 @@ def validate_default_manifest(root: Path) -> None:
         path = profile_root / relative
         if not path.is_file():
             raise RuntimeError(f"Manifest file is missing: {relative}")
-        actual = sha256(path)
+        actual = manifest_sha256(path)
         if actual.lower() != expected.lower():
             raise RuntimeError(
                 f"Manifest checksum mismatch for {relative}: {actual} != {expected}"

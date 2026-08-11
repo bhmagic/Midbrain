@@ -32,11 +32,15 @@
     "robot_arm.fabric_publication",
     "robot_arm.gravity_float",
     "robot_arm.intrinsic_model",
+    "robot_arm.assembly_profile_resolution.v1",
+    "robot_arm.assembly_state",
     "robot_arm.joint_state",
     "robot_arm.manager_registration",
     "robot_arm.safe_home",
     "robot_arm.transforms.local",
     "robot_arm.control.operational_api_v2",
+    "robot_arm.control.joint_group.v1",
+    "robot_arm.control.concurrent_disjoint_groups.v1",
     "robot_arm.midbrain.motion_inhibit_consumer",
     "robot_arm.midbrain.capability_readiness",
     "robot_arm.payload_gravity_compensation",
@@ -51,6 +55,7 @@
   ],
   "published_streams": [
     "robot_arm.model",
+    "robot_arm.assembly_state",
     "robot_arm.joint_state",
     "transform.robot_arm.<child>_from_<parent>"
   ],
@@ -92,6 +97,7 @@
     "ctrl_c_behavior": "SAFE_HOME_THEN_DISABLE_THEN_EXIT",
     "runtime_lease_acquisition": "CONFLICT_ON_VALID_OWNER; NO_SILENT_REPLACEMENT",
     "runtime_lease_release": "EXACT_LEASE_ID_AND_FENCING_GENERATION_REQUIRED",
+    "actuator_group_authority": "ROOT_CONFLICTS_WITH_ALL_GROUPS; DISJOINT_ARM_AND_GRIPPER_GROUPS_MAY_RUN_CONCURRENTLY; EVERY_COMMAND_IS_MEMBERSHIP_CHECKED",
     "manager_disconnect": "REVOKE_PROVIDER_LOCAL_LEASE_AND_GRAVITY_FLOAT",
     "global_motion_inhibit": "BLOCK_NEW_OPERATIONAL_LEASES_RENEWS_AND_COMMANDS; REVOKE_ACTIVE_LEASE",
     "motor_endpoint_output": "CHANGED_ENDPOINT_IMMEDIATE; UNCHANGED_POS_VEL_POS_TOR_AT_10HZ",
@@ -115,6 +121,8 @@
     "The supplied hard limits are observations from the provided Unity bridge and must be verified on the physical assembly.",
     "DM-J4310 hardware revision and true configured TMAX must be confirmed per installed motor.",
     "The calibration collision guard is not an operational workspace planner.",
+    "The capsule collision profile is software-tested but not physically qualified and does not implement self-collision.",
+    "Basic publishes the selected static assembly but does not yet host authoritative runtime held-object attachment state.",
     "Total host power loss cannot execute safe-home without independent hardware power or braking.",
     "Friction-only calibration retains factory mass, center-of-mass, inertia, and gravity parameters.",
     "Windows user-space scheduling is not hard real-time; loop overrun telemetry must be reviewed before active manipulation."
@@ -125,7 +133,7 @@
   ],
   "midbrain_conformance": {
     "runtime_compatibility": "AUDITED_AGAINST_MAIN_E226A09",
-    "manager_authority_lease": "BLOCKED_BY_PLATFORM_API_GAP",
+    "manager_authority_lease": "MANAGER_HIERARCHY_ADVISORY; PROVIDER_LOCAL_GROUP_FENCING_ENFORCED",
     "provider_local_fencing": true,
     "full_physical_control_contract": false
   },

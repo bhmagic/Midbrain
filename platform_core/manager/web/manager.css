@@ -160,7 +160,8 @@ h2 {
 .metric-card,
 .data-panel,
 .component-section,
-.agent-panel {
+.agent-panel,
+.effector-panel {
   border: 1px solid var(--border);
   background: rgba(19, 19, 19, 0.94);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.16);
@@ -219,7 +220,8 @@ h2 {
 }
 
 .agent-panel,
-.component-section {
+.component-section,
+.effector-panel {
   margin-top: 16px;
   border-radius: 12px;
   padding: 24px;
@@ -230,6 +232,91 @@ h2 {
   grid-template-columns: minmax(250px, 0.8fr) minmax(420px, 1.2fr);
   align-items: center;
   gap: 30px;
+}
+
+.effector-panel {
+  margin-top: 16px;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.effector-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.2fr);
+  gap: 30px;
+  margin-top: 20px;
+}
+
+.effector-control {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.effector-control > label:first-child {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.effector-control select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+}
+
+.effector-control select:focus {
+  border-color: var(--secondary);
+  outline: 2px solid rgba(189, 189, 189, 0.18);
+}
+
+.effector-control .secondary-button {
+  justify-self: start;
+}
+
+.effector-control .secondary-button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.effector-confirm {
+  margin-top: 4px;
+}
+
+.effector-details {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--border);
+}
+
+.effector-details div {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 16px;
+  padding: 11px 13px;
+  background: var(--surface-raised);
+}
+
+.effector-details dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.effector-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.75rem;
 }
 
 .agent-links {
@@ -635,6 +722,10 @@ pre {
   }
 
   .agent-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .effector-grid {
     grid-template-columns: 1fr;
   }
 

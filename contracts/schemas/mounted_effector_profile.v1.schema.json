@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/mounted_effector_profile.v1.schema.json",
+  "title": "Midbrain Mounted Effector Profile v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "profile_id",
+    "profile_revision",
+    "display_name",
+    "assembly_type",
+    "qualification",
+    "robot_compatibility",
+    "kinematic_attachment",
+    "controlled_frame",
+    "acting_frames",
+    "collision_primitives",
+    "inertial",
+    "inactive_joint_names",
+    "actuator_groups",
+    "invalidation_conditions"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.mounted_effector_profile"},
+    "schema_version": {"const": 1},
+    "profile_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "profile_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 240},
+    "assembly_type": {
+      "enum": ["FIXED_EFFECTOR", "REPLACEABLE_EFFECTOR", "MOUNTED_TOOL"]
+    },
+    "qualification": {
+      "enum": ["DEVELOPMENT", "SOFTWARE_TESTED", "PHYSICALLY_QUALIFIED"]
+    },
+    "robot_compatibility": {
+      "type": "object",
+      "required": ["model_id", "model_revision", "terminal_frame"],
+      "properties": {
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "model_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+        "terminal_frame": {"type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "additionalProperties": false
+    },
+    "kinematic_attachment": {
+      "type": "object",
+      "required": ["parent_frame", "child_frame", "transform", "qualification"],
+      "properties": {
+        "parent_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "child_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "transform": {"$ref": "#/$defs/transform"},
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 240},
+        "source_reference": {"type": "string", "minLength": 1, "maxLength": 500}
+      },
+      "additionalProperties": false
+    },
+    "controlled_frame": {
+      "type": "object",
+      "required": ["frame_id", "parent_frame", "transform", "semantic_role"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "parent_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "transform": {"$ref": "#/$defs/transform"},
+        "semantic_role": {"const": "FREE_SPACE_CONTROLLED_FRAME"}
+      },
+      "additionalProperties": false
+    },
+    "acting_frames": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/actingFrame"}
+    },
+    "collision_primitives": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/framePrimitive"},
+      "description": "Collision geometry owned by this mounted effector and expressed in its named assembly frames. Replacing the effector replaces these primitives with it."
+    },
+    "inertial": {
+      "type": "object",
+      "required": ["reference_frame", "mass_kg", "center_of_mass_m", "inertia_kg_m2", "qualification"],
+      "properties": {
+        "reference_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "mass_kg": {"type": "number", "minimum": 0},
+        "center_of_mass_m": {"$ref": "#/$defs/vector3"},
+        "inertia_kg_m2": {
+          "type": "object",
+          "required": ["ixx", "ixy", "ixz", "iyy", "iyz", "izz"],
+          "properties": {
+            "ixx": {"type": "number", "minimum": 0},
+            "ixy": {"type": "number"},
+            "ixz": {"type": "number"},
+            "iyy": {"type": "number", "minimum": 0},
+            "iyz": {"type": "number"},
+            "izz": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 240}
+      },
+      "additionalProperties": false
+    },
+    "actuator_groups": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/actuatorGroup"}
+    },
+    "inactive_joint_names": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 200},
+      "uniqueItems": true,
+      "description": "Model joints physically unavailable under this mounted effector. They are excluded from both the arm command group and active effector actuator groups."
+    },
+    "invalidation_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "vector3": {
+      "type": "array",
+      "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+      "items": false
+    },
+    "positiveVector3": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "number", "exclusiveMinimum": 0},
+        {"type": "number", "exclusiveMinimum": 0},
+        {"type": "number", "exclusiveMinimum": 0}
+      ],
+      "items": false
+    },
+    "transform": {
+      "type": "object",
+      "required": ["translation_m", "rpy_rad"],
+      "properties": {
+        "translation_m": {"$ref": "#/$defs/vector3"},
+        "rpy_rad": {"$ref": "#/$defs/vector3"}
+      },
+      "additionalProperties": false
+    },
+    "actingFrame": {
+      "type": "object",
+      "required": ["frame_id", "parent_frame", "transform", "semantic_roles"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "parent_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "transform": {"$ref": "#/$defs/transform"},
+        "semantic_roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["GRIP_CENTER", "TOOL_CENTER_POINT", "CONTACT_POINT", "CUTTING_EDGE", "VISUAL_LANDMARK"]
+          },
+          "uniqueItems": true
+        },
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 240}
+      },
+      "additionalProperties": false
+    },
+    "framePrimitive": {
+      "type": "object",
+      "required": ["primitive_id", "frame_id", "transform", "shape", "qualification"],
+      "properties": {
+        "primitive_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "transform": {"$ref": "#/$defs/transform"},
+        "shape": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "radius_m"],
+              "properties": {
+                "type": {"const": "SPHERE"},
+                "radius_m": {"type": "number", "exclusiveMinimum": 0}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "radius_m", "length_m", "axis"],
+              "properties": {
+                "type": {"const": "CAPSULE"},
+                "radius_m": {"type": "number", "exclusiveMinimum": 0},
+                "length_m": {"type": "number", "minimum": 0},
+                "axis": {"enum": ["X", "Y", "Z"]}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "size_m"],
+              "properties": {
+                "type": {"const": "BOX"},
+                "size_m": {"$ref": "#/$defs/positiveVector3"}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 240}
+      },
+      "additionalProperties": false
+    },
+    "actuatorGroup": {
+      "type": "object",
+      "required": ["group_id", "resource_id", "joint_names", "capabilities"],
+      "properties": {
+        "group_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "resource_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "joint_names": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "maxLength": 200},
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "maxLength": 240},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

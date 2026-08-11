@@ -50,7 +50,7 @@ class _IntegratedMotionSkill:
             "distance_m": arguments.get("distance_m"),
             "preview_id": preview_id,
             "required_next_tool": {
-                "name": "execute_integrated_motion_preview",
+                "name": "HOST_INTERNAL_SIGNED_PATH_COMMIT",
                 "arguments": {"preview_id": preview_id},
             },
         }
@@ -223,7 +223,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn("inspect_midbrain_runtime", tools)
         self.assertIn("set_provider_residency", tools)
         self.assertFalse(tools["inspect_midbrain_runtime"].needs_approval)
-        self.assertTrue(tools["set_provider_residency"].needs_approval)
+        self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
         self.assertIn(
             "Never answer by asking for conversational permission",
             driver.agent.instructions,
@@ -246,52 +246,28 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
 
         self.assertIn("inspect_midbrain_runtime", tools)
         self.assertIn("set_provider_residency", tools)
-        self.assertTrue(tools["set_provider_residency"].needs_approval)
-        self.assertIn("preview_relative_effector_motion", tools)
+        self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
         self.assertIn("perform_relative_effector_motion", tools)
         self.assertNotIn("retry_last_integrated_motion_target", tools)
-        self.assertIn("execute_integrated_motion_preview", tools)
+        self.assertNotIn("preview_relative_effector_motion", tools)
+        self.assertNotIn("execute_integrated_motion_preview", tools)
         self.assertIn("execute_basic_safe_home", tools)
         self.assertNotIn(
             "robot_arm.rebot_dm",
-            tools["preview_relative_effector_motion"].description,
+            tools["perform_relative_effector_motion"].description,
         )
         self.assertNotIn(
             "robot_arm.primary.integrated",
-            tools["preview_relative_effector_motion"].description,
-        )
-        self.assertIn(
-            "Manager activates declared dependencies",
-            tools["preview_relative_effector_motion"].description,
+            tools["perform_relative_effector_motion"].description,
         )
         self.assertFalse(
-            tools["preview_relative_effector_motion"].needs_approval
+            tools["perform_relative_effector_motion"].needs_approval
         )
-        self.assertTrue(
-            tools["execute_integrated_motion_preview"].needs_approval
-        )
-        self.assertTrue(
-            callable(tools["perform_relative_effector_motion"].needs_approval)
-        )
-        self.assertEqual(
-            tools["perform_relative_effector_motion"].params_json_schema,
-            tools["preview_relative_effector_motion"].params_json_schema,
-        )
-        self.assertEqual(
-            tools[
-                "execute_integrated_motion_preview"
-            ].params_json_schema,
-            {
-                "type": "object",
-                "properties": {
-                    "preview_id": {
-                        "type": "string",
-                        "minLength": 1,
-                    },
-                },
-                "required": ["preview_id"],
-                "additionalProperties": False,
-            },
+        self.assertIn(
+            "translation_vector_m",
+            tools["perform_relative_effector_motion"].params_json_schema[
+                "properties"
+            ],
         )
         self.assertTrue(tools["execute_basic_safe_home"].needs_approval)
         self.assertIn(
@@ -342,7 +318,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         )
     def test_motion_approval_explains_immediate_one_shot_commit(self) -> None:
         item = SimpleNamespace(
-            tool_name="execute_integrated_motion_preview",
+            tool_name="perform_relative_effector_motion",
             tool_namespace=None,
             raw_item={
                 "arguments": (
@@ -366,7 +342,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn(
             {
                 "label": "Trigger",
-                "value": "Immediate approved MIT one-shot commit",
+                "value": "Autonomous signed free-space path commit",
             },
             approval["details"],
         )
@@ -442,11 +418,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             "requested_speed_m_s": None,
         }
 
-    async def test_opaque_motion_authorization_checks_canonical_envelope(
-        self,
-    ) -> None:
-        from agents.run_context import RunContextWrapper
-
+    async def test_raw_motion_continuation_tools_are_not_exposed(self) -> None:
         root = Path(__file__).resolve().parents[3]
         driver = PrototypeAgentDriver(
             _PointingSkill(),
@@ -455,59 +427,9 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             eligible_tool_names={"identify_pointed_object"},
             integrated_motion_skill=_IntegratedMotionSkill(),
         )
-        tool = next(
-            item
-            for item in driver.agent.tools
-            if item.name == "execute_integrated_motion_preview"
-        )
-        needs_approval = tool.needs_approval
-        assert callable(needs_approval)
-        context = RunContextWrapper(
-            AgentSessionAuthorization(
-                auto_authorize_relative_motion=True,
-                max_auto_move_cm=25.0,
-                max_auto_speed_m_s=0.3,
-            )
-        )
-
-        required = await needs_approval(
-            context,
-            {"preview_id": "preview-opaque"},
-            "call-1",
-        )
-
-        self.assertFalse(required)
-
-    async def test_opaque_motion_approval_uses_host_canonical_envelope(
-        self,
-    ) -> None:
-        root = Path(__file__).resolve().parents[3]
-        driver = PrototypeAgentDriver(
-            _PointingSkill(),
-            "gpt-5.6-terra",
-            workspace_root=root,
-            eligible_tool_names={"identify_pointed_object"},
-            integrated_motion_skill=_IntegratedMotionSkill(),
-        )
-        item = SimpleNamespace(
-            tool_name="execute_integrated_motion_preview",
-            tool_namespace=None,
-            raw_item={
-                "arguments": '{"preview_id":"preview-opaque"}'
-            },
-        )
-
-        approval = await driver._approval_description_with_pending(item)
-
-        self.assertEqual(approval["title"], "Move the arm UP by 20 cm?")
-        self.assertIn(
-            {"label": "Target XYZ", "value": "0.1000, 0.2000, 0.5000 m"},
-            approval["details"],
-        )
-        self.assertEqual(
-            approval["request"]["arguments"],
-            '{"preview_id":"preview-opaque"}',
-        )
+        names = {item.name for item in driver.agent.tools}
+        self.assertNotIn("preview_relative_effector_motion", names)
+        self.assertNotIn("execute_integrated_motion_preview", names)
 
     async def test_prepared_motion_auto_authorizes_and_executes_same_call(
         self,
@@ -528,20 +450,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             for item in driver.agent.tools
             if item.name == "perform_relative_effector_motion"
         )
-        needs_approval = tool.needs_approval
-        assert callable(needs_approval)
         arguments = self._relative_request()
-        required = await needs_approval(
-            RunContextWrapper(
-                AgentSessionAuthorization(
-                    auto_authorize_relative_motion=True,
-                    max_auto_move_cm=25.0,
-                    max_auto_speed_m_s=0.3,
-                )
-            ),
-            arguments,
-            "call-prepared",
-        )
 
         result = json.loads(
             await tool.on_invoke_tool(
@@ -550,12 +459,12 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertFalse(required)
+        self.assertFalse(tool.needs_approval)
         self.assertEqual(result["status"], "MOTION_COMPLETED")
         self.assertEqual(skill.preview_count, 1)
         self.assertEqual(skill.executed_preview_ids, ["preview-1"])
 
-    async def test_prepared_motion_manual_approval_uses_call_canonical_state(
+    async def test_prepared_motion_executes_without_session_approval(
         self,
     ) -> None:
         from agents.run_context import RunContextWrapper
@@ -574,32 +483,17 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             for item in driver.agent.tools
             if item.name == "perform_relative_effector_motion"
         )
-        needs_approval = tool.needs_approval
-        assert callable(needs_approval)
         arguments = self._relative_request()
-        required = await needs_approval(
-            RunContextWrapper(AgentSessionAuthorization()),
-            arguments,
-            "call-manual",
-        )
-        item = SimpleNamespace(
-            tool_name="perform_relative_effector_motion",
-            tool_namespace=None,
-            raw_item={
-                "call_id": "call-manual",
-                "arguments": json.dumps(arguments),
-            },
+        result = json.loads(
+            await tool.on_invoke_tool(
+                SimpleNamespace(tool_call_id="call-autonomous"),
+                json.dumps(arguments),
+            )
         )
 
-        approval = await driver._approval_description_with_pending(item)
-
-        self.assertTrue(required)
-        self.assertEqual(approval["title"], "Move the arm UP by 20 cm?")
-        self.assertEqual(
-            approval["authorization_arguments"]["preview_id"],
-            "preview-1",
-        )
-        self.assertEqual(skill.executed_preview_ids, [])
+        self.assertFalse(tool.needs_approval)
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertEqual(skill.executed_preview_ids, ["preview-1"])
 
     async def test_prepared_motion_does_not_chain_dependency_continuation(
         self,
@@ -618,7 +512,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
                     "required_capability": (
-                        "robot.motion.arm.integrated.pos_vel.one_shot"
+                        "robot_arm.motion.free_space.preview_commit.v1"
                     ),
                 },
             },
@@ -635,14 +529,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             for item in driver.agent.tools
             if item.name == "perform_relative_effector_motion"
         )
-        needs_approval = tool.needs_approval
-        assert callable(needs_approval)
         arguments = self._relative_request()
-        required = await needs_approval(
-            RunContextWrapper(AgentSessionAuthorization()),
-            arguments,
-            "call-dependency",
-        )
 
         result = json.loads(
             await tool.on_invoke_tool(
@@ -651,7 +538,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertFalse(required)
+        self.assertFalse(tool.needs_approval)
         self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")
         self.assertEqual(skill.executed_preview_ids, [])
 
@@ -678,7 +565,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
                 return [
                     {
                         "capability": (
-                            "robot.motion.arm.integrated.pos_vel.one_shot"
+                            "robot_arm.motion.free_space.preview_commit.v1"
                         ),
                         "provider_id": "robot_arm.primary.integrated",
                         "available": True,
@@ -720,7 +607,7 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["readiness"]["capability_advertised"])
         self.assertIsNone(result["readiness"]["capability_ready"])
         self.assertIn(
-            "robot.motion.arm.integrated.pos_vel.one_shot",
+            "robot_arm.motion.free_space.preview_commit.v1",
             result["readiness"]["advertised_capabilities"],
         )
         self.assertIn("advisory model guess", result["agent_instruction"])

@@ -35,6 +35,7 @@ class ControlLease:
     fencing_generation: int
     holder: str
     expires_monotonic: float
+    resource_id: str = "robot_arm.primary"
 
     def valid(self, lease_id: str, generation: int, now: float) -> bool:
         return self.lease_id == lease_id and self.fencing_generation == generation and now < self.expires_monotonic
@@ -62,6 +63,7 @@ class CommandEnvelope:
     commands: dict[int, JointCommand]
     deadline_monotonic: float
     created_monotonic: float = field(default_factory=time.monotonic)
+    resource_id: str | None = None
 
 
 class ArmController:
@@ -101,6 +103,14 @@ class ArmController:
         self.lease: ControlLease | None = None
         self.fencing_generation = 0
         self.pending: CommandEnvelope | None = None
+        self.resource_root = "robot_arm.primary"
+        self.resource_joint_indices: dict[str, frozenset[int]] = {}
+        self.inactive_joint_indices: frozenset[int] = frozenset()
+        self.active_joint_indices: tuple[int, ...] = tuple(
+            range(len(configuration.joints))
+        )
+        self.group_leases: dict[str, ControlLease] = {}
+        self.group_pending: dict[str, CommandEnvelope] = {}
         self.last_applied_command_id: str | None = None
         self.last_valid_command_monotonic = 0.0
         self.command_submission_count = 0
@@ -198,6 +208,96 @@ class ArmController:
         self.latched_endpoint_frames_sent = 0
         self.latched_endpoint_frames_suppressed = 0
 
+    def configure_resource_groups(
+        self,
+        resource_root: str,
+        groups: list[dict[str, Any]],
+        inactive_joint_names: tuple[str, ...] | list[str] = (),
+    ) -> None:
+        """Install disjoint active groups and unavailable model joints."""
+
+        names_to_indices = {
+            joint.name: joint.index for joint in self.configuration.joints
+        }
+        mapping: dict[str, frozenset[int]] = {}
+        claimed: set[int] = set()
+        normalized_root = str(resource_root).strip()
+        if not normalized_root:
+            raise ValueError("resource_root must be non-empty")
+        normalized_inactive_names = [
+            str(name).strip() for name in inactive_joint_names
+        ]
+        if (
+            any(not name for name in normalized_inactive_names)
+            or len(set(normalized_inactive_names)) != len(normalized_inactive_names)
+            or any(name not in names_to_indices for name in normalized_inactive_names)
+        ):
+            raise ValueError("inactive joints must be unique configured joint names")
+        inactive_indices = frozenset(
+            names_to_indices[name] for name in normalized_inactive_names
+        )
+        for group in groups:
+            resource_id = str(group.get("resource_id", "")).strip()
+            if not resource_id.startswith(normalized_root + "/"):
+                raise ValueError(
+                    "resource group must be a child of the controller resource root"
+                )
+            joint_names = [str(value) for value in group.get("joint_names", [])]
+            if not joint_names or any(name not in names_to_indices for name in joint_names):
+                raise ValueError("resource group contains an unknown or empty joint set")
+            indices = frozenset(names_to_indices[name] for name in joint_names)
+            if claimed.intersection(indices):
+                raise ValueError("resource groups must have disjoint joint membership")
+            if resource_id in mapping:
+                raise ValueError("resource group IDs must be unique")
+            mapping[resource_id] = indices
+            claimed.update(indices)
+        if claimed.intersection(inactive_indices):
+            raise ValueError("inactive joints cannot belong to actuator groups")
+        configured_indices = set(range(len(self.configuration.joints)))
+        if claimed.union(inactive_indices) != configured_indices:
+            raise ValueError(
+                "actuator groups plus inactive joints must account for every configured joint"
+            )
+        configure_backend = getattr(self.backend, "configure_inactive_joints", None)
+        if not callable(configure_backend):
+            raise RuntimeError("hardware backend cannot configure inactive joints")
+        backend_inactive = frozenset(
+            getattr(self.backend, "inactive_joint_indices", frozenset())
+        )
+        if backend_inactive != inactive_indices:
+            configure_backend(inactive_indices)
+        with self.ingress_lock:
+            if self.lease is not None or self.group_leases:
+                raise RuntimeError("resource groups cannot change while control is leased")
+            self.resource_root = normalized_root
+            self.resource_joint_indices = mapping
+            self.inactive_joint_indices = inactive_indices
+            self.active_joint_indices = tuple(sorted(claimed))
+
+    def _all_leases_status_ingress_locked(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        leases = ([self.lease] if self.lease is not None else []) + list(
+            self.group_leases.values()
+        )
+        return [
+            {
+                "lease_id": lease.lease_id,
+                "fencing_generation": lease.fencing_generation,
+                "holder": lease.holder,
+                "resource_id": lease.resource_id,
+                "active": now < lease.expires_monotonic,
+                "expires_in_ms": max(
+                    0, int((lease.expires_monotonic - now) * 1000)
+                ),
+            }
+            for lease in leases
+        ]
+
+    def _clear_group_authority_ingress_locked(self) -> None:
+        self.group_leases.clear()
+        self.group_pending.clear()
+
     def _reset_gripper_velocity_guard_locked(self) -> None:
         self.gripper_velocity_guard_active = False
         self.gripper_velocity_guard_hold_position_rad = float("nan")
@@ -205,7 +305,14 @@ class ArmController:
         self.gripper_velocity_guard_resume_rad_s = None
 
 
-    def set_payload(self, lease_id: str, generation: int, mass_kg: float, com_tool_m: Any) -> dict[str, Any]:
+    def set_payload(
+        self,
+        lease_id: str,
+        generation: int,
+        mass_kg: float,
+        com_tool_m: Any,
+        resource_id: str | None = None,
+    ) -> dict[str, Any]:
         """Update the tool payload under the same fenced operational lease as motion."""
         now = time.monotonic()
         with self.ingress_lock:
@@ -215,13 +322,28 @@ class ArmController:
                     self.operational_control_block_reason,
                     self._lease_status_ingress_locked(),
                 )
-            current = self.lease
+            normalized_resource = str(resource_id or "").strip()
+            current = (
+                self.group_leases.get(normalized_resource)
+                if normalized_resource
+                else self.lease
+            )
             if current is None:
                 raise LeasePermissionError("NO_ACTIVE_LEASE", "payload update requires an active operational lease", self._lease_status_ingress_locked())
             if now >= current.expires_monotonic:
                 raise LeasePermissionError("LEASE_EXPIRED", "payload update used an expired lease", self._lease_status_ingress_locked())
             if current.lease_id != lease_id or current.fencing_generation != generation:
                 raise LeasePermissionError("STALE_LEASE", "payload update used a stale lease", self._lease_status_ingress_locked())
+            if normalized_resource:
+                arm_indices = set(range(min(6, len(self.configuration.joints))))
+                if not arm_indices.issubset(
+                    self.resource_joint_indices.get(normalized_resource, frozenset())
+                ):
+                    raise LeasePermissionError(
+                        "RESOURCE_SCOPE_VIOLATION",
+                        "payload dynamics may only be changed by the arm actuator group",
+                        {"resource_id": normalized_resource},
+                    )
         with self.lock:
             self.dynamics.set_payload(mass_kg, com_tool_m)
             payload = self.dynamics.payload_snapshot()
@@ -293,12 +415,20 @@ class ArmController:
             previous_lease = self.lease
             self.lease = None
             self.pending = None
+            previous_group_leases = list(self.group_leases.values())
+            self._clear_group_authority_ingress_locked()
             self.fencing_generation += 1
             if previous_lease is not None:
                 self._record_lease_event_ingress_locked(
                     "REVOKED",
                     "explicit HOT fault recovery fenced previous authority",
                     lease=previous_lease,
+                )
+            for group_lease in previous_group_leases:
+                self._record_lease_event_ingress_locked(
+                    "REVOKED",
+                    "explicit HOT fault recovery fenced actuator-group authority",
+                    lease=group_lease,
                 )
 
         try:
@@ -404,6 +534,7 @@ class ArmController:
             "reason": reason,
             "observed_at_us": time.time_ns()//1000,
             "holder": None if source is None else source.holder,
+            "resource_id": None if source is None else source.resource_id,
             "lease_id": None if source is None else source.lease_id,
             "fencing_generation": None if source is None else source.fencing_generation,
             "requested_lease_id": requested_lease_id,
@@ -420,6 +551,7 @@ class ArmController:
             or int(self.configuration.model["control"]["lease_timeout_ms"])
         ) / 1000.0
         expired: ControlLease | None = None
+        expired_group_command_removed = False
         with self.ingress_lock:
             blocked_reason = self.operational_control_block_reason
             if blocked_reason is None and self.state == ProviderState.SAFE_HOME:
@@ -438,6 +570,35 @@ class ArmController:
                 )
             now = time.monotonic()
             current = self.lease
+            for resource_id, group_lease in list(self.group_leases.items()):
+                if now >= group_lease.expires_monotonic:
+                    self.group_leases.pop(resource_id, None)
+                    expired_group_command_removed = (
+                        self.group_pending.pop(resource_id, None) is not None
+                        or expired_group_command_removed
+                    )
+            active_groups = [
+                lease
+                for lease in self.group_leases.values()
+                if now < lease.expires_monotonic
+            ]
+            if active_groups:
+                holders = ", ".join(
+                    f"{lease.resource_id}={lease.holder}"
+                    for lease in active_groups
+                )
+                reason = (
+                    "root control conflicts with active actuator-group leases: "
+                    + holders
+                )
+                self._record_lease_event_ingress_locked(
+                    "ACQUIRE_REJECTED", reason
+                )
+                raise LeasePermissionError(
+                    "ACTIVE_LEASE_CONFLICT",
+                    reason,
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
             if current is not None and now < current.expires_monotonic:
                 reason = (
                     f"control is already leased to {current.holder}; "
@@ -462,16 +623,116 @@ class ArmController:
             # and the later request can silently replace the first one.
             self.fencing_generation += 1
             lease = ControlLease(
-                str(uuid.uuid4()), self.fencing_generation, holder, now + timeout
+                str(uuid.uuid4()),
+                self.fencing_generation,
+                holder,
+                now + timeout,
+                self.resource_root,
             )
             self.lease = lease
             self._record_lease_event_ingress_locked(
                 "ACQUIRED", f"lease acquired for {int(timeout*1000)} ms", lease=lease
             )
-        if expired is not None:
+        if expired is not None or expired_group_command_removed:
             with self.lock:
                 self._enter_gravity_float_locked(
-                    "expired lease cleared before acquisition",
+                    "expired authority cleared before root acquisition",
+                    immediate=True,
+                    apply_now=True,
+                )
+        return lease
+
+    def acquire_group_lease(
+        self,
+        resource_id: str,
+        holder: str,
+        duration_ms: int | None = None,
+    ) -> ControlLease:
+        """Acquire one exact disjoint actuator group without disturbing siblings."""
+
+        normalized_resource = str(resource_id).strip()
+        timeout = (
+            duration_ms
+            or int(self.configuration.model["control"]["lease_timeout_ms"])
+        ) / 1000.0
+        expired_command_removed = False
+        expired_root_command_removed = False
+        with self.ingress_lock:
+            blocked_reason = self.operational_control_block_reason
+            if blocked_reason is None and self.state == ProviderState.SAFE_HOME:
+                blocked_reason = "safe-home owns exclusive hardware control"
+            if blocked_reason is not None:
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    blocked_reason,
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if normalized_resource not in self.resource_joint_indices:
+                raise LeasePermissionError(
+                    "UNKNOWN_RESOURCE_GROUP",
+                    f"unknown actuator resource group {normalized_resource!r}",
+                    {"available_resources": sorted(self.resource_joint_indices)},
+                )
+            now = time.monotonic()
+            if self.lease is not None:
+                if now < self.lease.expires_monotonic:
+                    reason = (
+                        f"group control conflicts with root lease held by {self.lease.holder}"
+                    )
+                    raise LeasePermissionError(
+                        "ACTIVE_LEASE_CONFLICT",
+                        reason,
+                        {"active_leases": self._all_leases_status_ingress_locked()},
+                    )
+                expired_root = self.lease
+                self.lease = None
+                expired_root_command_removed = self.pending is not None
+                self.pending = None
+                self._record_lease_event_ingress_locked(
+                    "EXPIRED",
+                    "expired root lease cleared during group acquisition",
+                    lease=expired_root,
+                )
+            current = self.group_leases.get(normalized_resource)
+            if current is not None and now < current.expires_monotonic:
+                reason = (
+                    f"{normalized_resource} is already leased to {current.holder}"
+                )
+                raise LeasePermissionError(
+                    "ACTIVE_LEASE_CONFLICT",
+                    reason,
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if current is not None:
+                self.group_leases.pop(normalized_resource, None)
+                expired_command_removed = (
+                    self.group_pending.pop(normalized_resource, None) is not None
+                )
+                self._record_lease_event_ingress_locked(
+                    "EXPIRED", "expired actuator-group lease cleared", lease=current
+                )
+            self.fencing_generation += 1
+            lease = ControlLease(
+                str(uuid.uuid4()),
+                self.fencing_generation,
+                str(holder),
+                now + timeout,
+                normalized_resource,
+            )
+            self.group_leases[normalized_resource] = lease
+            self._record_lease_event_ingress_locked(
+                "ACQUIRED",
+                f"actuator-group lease acquired for {int(timeout * 1000)} ms",
+                lease=lease,
+            )
+            sibling_commands_remain = bool(self.group_pending)
+        if (
+            expired_root_command_removed
+            or (expired_command_removed and not sibling_commands_remain)
+        ):
+            with self.lock:
+                self._enter_gravity_float_locked(
+                    "expired actuator-group authority replaced",
                     immediate=True,
                     apply_now=True,
                 )
@@ -521,6 +782,50 @@ class ArmController:
             raise LeasePermissionError("LEASE_EXPIRED",expired_reason,{"active":False,"current_holder":None,"current_generation":None,"expires_in_ms":None})
         raise RuntimeError("unreachable lease renewal state")
 
+    def renew_group_lease(
+        self,
+        resource_id: str,
+        lease_id: str,
+        generation: int,
+        duration_ms: int | None = None,
+    ) -> ControlLease:
+        now = time.monotonic()
+        timeout = (
+            duration_ms
+            or int(self.configuration.model["control"]["lease_timeout_ms"])
+        ) / 1000.0
+        normalized_resource = str(resource_id).strip()
+        with self.ingress_lock:
+            current = self.group_leases.get(normalized_resource)
+            if current is None:
+                raise LeasePermissionError(
+                    "NO_ACTIVE_LEASE",
+                    f"no active lease exists for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if now >= current.expires_monotonic:
+                self._record_lease_event_ingress_locked(
+                    "RENEW_REJECTED",
+                    "actuator-group lease expired; control loop will apply safe fallback",
+                    lease=current,
+                )
+                raise LeasePermissionError(
+                    "LEASE_EXPIRED",
+                    f"lease for {normalized_resource} expired",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if (
+                current.lease_id != lease_id
+                or current.fencing_generation != generation
+            ):
+                raise LeasePermissionError(
+                    "STALE_LEASE",
+                    f"lease for {normalized_resource} is stale",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            current.expires_monotonic = now + timeout
+            return current
+
     def release_lease(self, lease_id: str, generation: int, *, fallback_to_float: bool = True) -> None:
         """Release only the exact fenced lease supplied by its owner."""
         with self.ingress_lock:
@@ -555,10 +860,54 @@ class ArmController:
             with self.lock:
                 self._enter_gravity_float_locked("lease released", immediate=True, apply_now=True)
 
+    def release_group_lease(
+        self,
+        resource_id: str,
+        lease_id: str,
+        generation: int,
+    ) -> bool:
+        """Release one group and return whether sibling group authority remains."""
+
+        normalized_resource = str(resource_id).strip()
+        with self.ingress_lock:
+            current = self.group_leases.get(normalized_resource)
+            if current is None:
+                raise LeasePermissionError(
+                    "NO_ACTIVE_LEASE",
+                    f"no active lease exists for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if (
+                current.lease_id != lease_id
+                or current.fencing_generation != generation
+            ):
+                raise LeasePermissionError(
+                    "STALE_LEASE",
+                    f"release used a stale lease for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            self.group_leases.pop(normalized_resource, None)
+            self.group_pending.pop(normalized_resource, None)
+            self.fencing_generation += 1
+            self._record_lease_event_ingress_locked(
+                "RELEASED", "actuator-group lease released", lease=current
+            )
+            siblings_remain = bool(self.group_leases)
+            sibling_commands_remain = bool(self.group_pending)
+        if not sibling_commands_remain:
+            with self.lock:
+                self._enter_gravity_float_locked(
+                    "actuator-group lease released",
+                    immediate=True,
+                    apply_now=True,
+                )
+        return siblings_remain
+
     def request_position_hold(self, reason: str = "requested", positions: np.ndarray | list[float] | None = None, velocity_limit: float = 0.12) -> None:
         """Hold every joint using the motor-side position/velocity mode."""
         with self.ingress_lock:
             self.pending=None
+            self.group_pending.clear()
         with self.lock:
             if self.feedback is None:
                 raise RuntimeError("joint feedback is unavailable")
@@ -616,6 +965,16 @@ class ArmController:
             raise LeasePermissionError("LEASE_EXPIRED",reason,{"active":False,"current_holder":None,"current_generation":None,"expires_in_ms":None})
         if envelope.deadline_monotonic <= now:
             raise TimeoutError("command deadline has expired")
+        submitted_indices = {int(index) for index in envelope.commands}
+        inactive_submitted = submitted_indices.intersection(
+            self.inactive_joint_indices
+        )
+        if inactive_submitted:
+            raise LeasePermissionError(
+                "RESOURCE_SCOPE_VIOLATION",
+                f"inactive joint indices cannot be commanded: {sorted(inactive_submitted)}",
+                {"inactive_joint_indices": sorted(self.inactive_joint_indices)},
+            )
         state=self.state
         if state in {
             ProviderState.SAFE_HOME,
@@ -644,20 +1003,143 @@ class ArmController:
             self.last_submitted_modes=sorted({command.mode for command in envelope.commands.values()})
             self.last_valid_command_monotonic=time.monotonic()
 
+    def submit_group(self, envelope: CommandEnvelope) -> None:
+        """Submit a latest-value command fenced to one configured joint group."""
+
+        resource_id = str(envelope.resource_id or "").strip()
+        now = time.monotonic()
+        with self.ingress_lock:
+            if self.operational_control_block_reason is not None:
+                raise LeasePermissionError(
+                    "OPERATIONAL_CONTROL_BLOCKED",
+                    self.operational_control_block_reason,
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            current = self.group_leases.get(resource_id)
+            if current is None:
+                raise LeasePermissionError(
+                    "NO_ACTIVE_LEASE",
+                    f"command has no active lease for {resource_id}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if now >= current.expires_monotonic:
+                self._record_lease_event_ingress_locked(
+                    "COMMAND_REJECTED",
+                    "actuator-group lease expired; control loop will apply safe fallback",
+                    lease=current,
+                    requested_lease_id=envelope.lease_id,
+                    requested_generation=envelope.fencing_generation,
+                )
+                raise LeasePermissionError(
+                    "LEASE_EXPIRED",
+                    f"lease for {resource_id} expired",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if (
+                current.lease_id != envelope.lease_id
+                or current.fencing_generation != envelope.fencing_generation
+            ):
+                raise LeasePermissionError(
+                    "STALE_LEASE",
+                    f"command used a stale lease for {resource_id}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            allowed_indices = self.resource_joint_indices[resource_id]
+        if envelope.deadline_monotonic <= now:
+            raise TimeoutError("command deadline has expired")
+        state = self.state
+        if state in {
+            ProviderState.SAFE_HOME,
+            ProviderState.FAULTED,
+            ProviderState.EMERGENCY_DISABLED,
+            ProviderState.DISCONNECTED,
+        }:
+            raise RuntimeError(f"commands are blocked in {state.value}")
+        submitted_indices = {int(index) for index in envelope.commands}
+        if not submitted_indices or not submitted_indices.issubset(allowed_indices):
+            raise LeasePermissionError(
+                "RESOURCE_SCOPE_VIOLATION",
+                f"{resource_id} may command only joint indices {sorted(allowed_indices)}",
+                {"submitted_joint_indices": sorted(submitted_indices)},
+            )
+        envelope.commands = {
+            int(index): JointCommand(
+                command.mode,
+                self.configuration.validate_joint_command(
+                    int(index), command.mode, command.values
+                ),
+            )
+            for index, command in envelope.commands.items()
+        }
+        with self.ingress_lock:
+            current = self.group_leases.get(resource_id)
+            if (
+                current is None
+                or current.lease_id != envelope.lease_id
+                or current.fencing_generation != envelope.fencing_generation
+            ):
+                raise LeasePermissionError(
+                    "STALE_LEASE",
+                    "actuator-group lease changed while the command was validated",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if envelope.deadline_monotonic <= time.monotonic():
+                raise TimeoutError("command deadline has expired")
+            previous = self.group_pending.get(resource_id)
+            if previous is not None and previous.command_id != envelope.command_id:
+                self.pending_replacement_count += 1
+                self.last_replaced_command_id = previous.command_id
+            self.group_pending[resource_id] = envelope
+            self.command_submission_count += 1
+            self.last_submitted_command_id = envelope.command_id
+            self.last_submitted_modes = sorted(
+                {command.mode for command in envelope.commands.values()}
+            )
+            self.last_valid_command_monotonic = time.monotonic()
+
     def request_gravity_float(self, reason: str = "requested") -> None:
         with self.ingress_lock:
             if self.operational_control_block_reason is not None:
                 self.safe_home_cancel_event.set()
             self.pending=None
+            self.group_pending.clear()
         with self.lock:
             self._enter_gravity_float_locked(reason, immediate=True, apply_now=True)
+
+    def request_group_float(self, resource_id: str, reason: str = "requested") -> None:
+        """Relinquish one group's command while preserving sibling command owners."""
+
+        normalized_resource = str(resource_id).strip()
+        with self.ingress_lock:
+            if normalized_resource not in self.group_leases:
+                raise LeasePermissionError(
+                    "NO_ACTIVE_LEASE",
+                    f"no active lease exists for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            self.group_pending.pop(normalized_resource, None)
+            sibling_commands_remain = bool(self.group_pending)
+        if not sibling_commands_remain:
+            with self.lock:
+                self._enter_gravity_float_locked(
+                    reason,
+                    immediate=True,
+                    apply_now=True,
+                )
 
     def revoke_lease(self, reason: str = "lease revoked") -> None:
         """Fence the current controller and immediately enter gravity-float."""
         with self.ingress_lock:
             revoked=self.lease
-            self.lease=None; self.pending=None; self.fencing_generation += 1
+            revoked_groups=list(self.group_leases.values())
+            self.lease=None; self.pending=None
+            self._clear_group_authority_ingress_locked()
+            self.fencing_generation += 1
             self._record_lease_event_ingress_locked("REVOKED",reason,lease=revoked)
+            for group_lease in revoked_groups:
+                self._record_lease_event_ingress_locked(
+                    "REVOKED", reason, lease=group_lease
+                )
         with self.lock:
             self._enter_gravity_float_locked(reason, immediate=True, apply_now=True)
 
@@ -693,6 +1175,8 @@ class ArmController:
         if self.feedback is None:
             return
         for index, mode in enumerate(self.active_command_modes):
+            if index in self.inactive_joint_indices:
+                continue
             if mode is None or mode == "IMPEDANCE":
                 continue
             position=float(self.feedback.positions_rad[index])
@@ -708,7 +1192,10 @@ class ArmController:
 
     def emergency_disable(self, reason: str) -> None:
         with self.ingress_lock:
+            self.lease=None
             self.pending=None
+            self._clear_group_authority_ingress_locked()
+            self.fencing_generation += 1
         with self.lock:
             self.backend.disable(); self.state=ProviderState.EMERGENCY_DISABLED; self.health="FAULTED"; self.last_error=reason
 
@@ -735,7 +1222,7 @@ class ArmController:
         """Send one fully supported MIT frame for all joints."""
         assert self.feedback is not None
         gravity=self._gravity_with_payload_locked(self.feedback.positions_rad)
-        for index in range(7):
+        for index in self.active_joint_indices:
             feedforward=float(gravity[index]) if index < 6 else 0.0
             self.backend.send_impedance(
                 index,float(target[index]),0.0,float(kp[index]),float(kd[index]),feedforward
@@ -839,14 +1326,23 @@ class ArmController:
                     return False
                 self.operational_control_block_reason=block_reason
                 active_lease=self.lease
+                active_group_leases=list(self.group_leases.values())
                 self.lease=None
                 self.pending=None
-                if active_lease is not None:
+                self._clear_group_authority_ingress_locked()
+                if active_lease is not None or active_group_leases:
                     self.fencing_generation += 1
+                if active_lease is not None:
                     self._record_lease_event_ingress_locked(
                         "REVOKED",
                         "safe-home preempted operational control",
                         lease=active_lease,
+                    )
+                for group_lease in active_group_leases:
+                    self._record_lease_event_ingress_locked(
+                        "REVOKED",
+                        "safe-home preempted actuator-group control",
+                        lease=group_lease,
                     )
             with self.lock:
                 self.safe_home_attempt_sequence += 1
@@ -966,6 +1462,7 @@ class ArmController:
                 return True
         with self.ingress_lock:
             self.pending=None
+            self.group_pending.clear()
         homed=self.safe_home()
         if not homed:
             with self.lock:
@@ -993,6 +1490,7 @@ class ArmController:
         with self.ingress_lock:
             self.lease=None
             self.pending=None
+            self._clear_group_authority_ingress_locked()
         return True
 
     def graceful_stop(self) -> bool:
@@ -1035,14 +1533,23 @@ class ArmController:
             except Exception as error:
                 with self.ingress_lock:
                     failed_lease = self.lease
+                    failed_group_leases = list(self.group_leases.values())
                     self.lease = None
                     self.pending=None
-                    if failed_lease is not None:
+                    self._clear_group_authority_ingress_locked()
+                    if failed_lease is not None or failed_group_leases:
                         self.fencing_generation += 1
+                    if failed_lease is not None:
                         self._record_lease_event_ingress_locked(
                             "REVOKED",
                             "control-loop fault fenced operational authority",
                             lease=failed_lease,
+                        )
+                    for group_lease in failed_group_leases:
+                        self._record_lease_event_ingress_locked(
+                            "REVOKED",
+                            "control-loop fault fenced actuator-group authority",
+                            lease=group_lease,
                         )
                 with self.lock:
                     self.health="FAULTED"
@@ -1092,8 +1599,48 @@ class ArmController:
                 self.lease=None; self.pending=None
             elif self.pending is not None and now>=self.pending.deadline_monotonic:
                 self.pending=None; command_expired=True
+            for resource_id, lease in list(self.group_leases.items()):
+                if now >= lease.expires_monotonic:
+                    self.group_leases.pop(resource_id, None)
+                    if self.group_pending.pop(resource_id, None) is not None:
+                        command_expired = True
+                    self._record_lease_event_ingress_locked(
+                        "EXPIRED",
+                        f"actuator-group lease expired for {resource_id}",
+                        lease=lease,
+                    )
+            for resource_id, envelope in list(self.group_pending.items()):
+                if now >= envelope.deadline_monotonic:
+                    self.group_pending.pop(resource_id, None)
+                    command_expired = True
             pending=self.pending
-            no_active_lease=self.lease is None
+            if pending is None and self.group_pending:
+                group_envelopes = list(self.group_pending.values())
+                combined_commands: dict[int, JointCommand] = {}
+                for envelope in group_envelopes:
+                    overlap = set(combined_commands).intersection(envelope.commands)
+                    if overlap:
+                        raise RuntimeError(
+                            f"actuator-group commands overlap at joints {sorted(overlap)}"
+                        )
+                    combined_commands.update(envelope.commands)
+                pending = CommandEnvelope(
+                    command_id="group:" + "+".join(
+                        sorted(envelope.command_id for envelope in group_envelopes)
+                    ),
+                    lease_id="group-composite",
+                    fencing_generation=max(
+                        envelope.fencing_generation
+                        for envelope in group_envelopes
+                    ),
+                    commands=combined_commands,
+                    deadline_monotonic=min(
+                        envelope.deadline_monotonic
+                        for envelope in group_envelopes
+                    ),
+                    resource_id=self.resource_root,
+                )
+            no_active_lease=self.lease is None and not self.group_leases
 
         with self.lock:
             self.feedback=None
@@ -1105,7 +1652,7 @@ class ArmController:
             self.feedback=feedback
             if lease_expired_reason is not None:
                 self._enter_gravity_float_locked("lease expired", immediate=True, apply_now=True)
-            elif command_expired:
+            elif command_expired and pending is None:
                 self._enter_gravity_float_locked("command expired", immediate=True, apply_now=True)
             elif pending is not None:
                 self.state=ProviderState.CALIBRATION_MANUAL
@@ -1132,7 +1679,7 @@ class ArmController:
             return
         # Every joint not explicitly commanded remains in high-kp measured-target gravity support.
         for index,joint in enumerate(self.configuration.joints):
-            if index in envelope.commands:
+            if index in self.inactive_joint_indices or index in envelope.commands:
                 continue
             calibration=self.configuration.calibration_by_name[joint.name]
             # Recapture every uncommanded joint at its measured pose. This includes
@@ -1320,13 +1867,20 @@ class ArmController:
         Endpoint motion starts only after every requested mode is confirmed.
         """
         desired_modes=[
-            envelope.commands[index].mode if index in envelope.commands else "IMPEDANCE"
+            (
+                None
+                if index in self.inactive_joint_indices
+                else envelope.commands[index].mode
+                if index in envelope.commands
+                else "IMPEDANCE"
+            )
             for index in range(7)
         ]
         signature=tuple(desired_modes)
         transitions=[
             index for index,desired in enumerate(desired_modes)
-            if self.active_command_modes[index] is not None
+            if desired is not None
+            and self.active_command_modes[index] is not None
             and self.active_command_modes[index] != desired
         ]
         if not transitions:
@@ -1341,7 +1895,7 @@ class ArmController:
         try:
             # Refresh every already-known mode before the potentially blocking
             # register operation. The selected joint is always changed last.
-            for index in range(7):
+            for index in self.active_joint_indices:
                 if index == selected:
                     continue
                 current_mode=self.active_command_modes[index] or "IMPEDANCE"
@@ -1370,7 +1924,7 @@ class ArmController:
     def _apply_position_hold_locked(self) -> None:
         """Continuously hold all joints with POS_VEL; no MIT commands are sent."""
         assert self.feedback is not None
-        for index in range(len(self.configuration.joints)):
+        for index in self.active_joint_indices:
             self.backend.send_position_velocity(index, float(self.hold_reference[index]), self.position_hold_velocity_limit)
             self.active_command_modes[index] = "POSITION_VELOCITY_LIMITED"
             self.mit_moving_target[index] = float(self.hold_reference[index])
@@ -1383,13 +1937,14 @@ class ArmController:
         gravity=(1-alpha)*self.float_start_gravity+alpha*desired_gravity
         transition_indices=[
             index for index,mode in enumerate(self.active_command_modes)
+            if index not in self.inactive_joint_indices
             if mode not in (None,"IMPEDANCE")
         ]
         selected=transition_indices[0] if transition_indices else None
         # Refresh every non-selected joint before one potentially blocking mode
         # change. Motor-side joints retain a captured-position hold until their
         # individual transition into gravity-supported MIT is confirmed.
-        order=[index for index in range(len(self.configuration.joints)) if index != selected]
+        order=[index for index in self.active_joint_indices if index != selected]
         if selected is not None:
             order.append(selected)
         for index in order:
@@ -1430,7 +1985,9 @@ class ArmController:
                 "fencing_generation":self.lease.fencing_generation,
                 "holder":self.lease.holder,
                 "expires_in_ms":max(0,int((self.lease.expires_monotonic-time.monotonic())*1000)),
+                "resource_id":self.lease.resource_id,
             }
+            group_leases=self._all_leases_status_ingress_locked()
             lease_diagnostics={
                 "current":self._lease_status_ingress_locked(),
                 "last_event":dict(self.last_lease_event),
@@ -1457,6 +2014,13 @@ class ArmController:
                 "per_joint_feedback_generation":list(feedback.feedback_generations),
             },
             "last_applied_command_id":self.last_applied_command_id,"lease":lease,
+            "resource_group_leases":group_leases,
+            "active_joint_indices":list(self.active_joint_indices),
+            "inactive_joint_indices":sorted(self.inactive_joint_indices),
+            "inactive_joint_names":[
+                self.configuration.joints[index].name
+                for index in sorted(self.inactive_joint_indices)
+            ],
             "active_command_modes":list(self.active_command_modes),
             "float_transition_pending_joint_indices":[
                 index for index,mode in enumerate(self.active_command_modes)
@@ -1465,6 +2029,10 @@ class ArmController:
             "command_ingress":{
                 "semantics":"LATEST_VALID_ENVELOPE_REPLACES_PREVIOUS",
                 "pending_command_id":None if self.pending is None else self.pending.command_id,
+                "pending_group_command_ids":{
+                    resource_id: envelope.command_id
+                    for resource_id, envelope in self.group_pending.items()
+                },
                 "last_submitted_command_id":self.last_submitted_command_id,
                 "last_replaced_command_id":self.last_replaced_command_id,
                 "last_submitted_modes":list(self.last_submitted_modes),

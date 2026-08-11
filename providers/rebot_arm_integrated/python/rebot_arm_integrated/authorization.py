@@ -37,7 +37,7 @@ def verify_transit_execution_assertion(
     preview_expires_at_us: int,
     now_us: int | None = None,
 ) -> dict[str, Any]:
-    """Verify one UI-issued assertion against one exact controller preview."""
+    """Verify one host-issued assertion against one exact controller preview."""
 
     if len(secret.encode("utf-8")) < 32:
         raise AuthorizationAssertionError(
@@ -75,7 +75,6 @@ def verify_transit_execution_assertion(
 
     expected_text = {
         "schema": "physical_agent.authorization_execution_assertion",
-        "issuer": "physical-agent-ui",
         "audience": provider_id,
         "action": "EXECUTE_TRANSIT_PATH",
         "resolution": "APPROVED",
@@ -92,6 +91,19 @@ def verify_transit_execution_assertion(
             raise AuthorizationAssertionError(
                 f"authorization assertion does not match {field}"
             )
+    issuer = str(payload.get("issuer") or "")
+    resolved_by = str(payload.get("resolved_by") or "").strip()
+    if issuer not in {"physical-agent-ui", "physical-agent-autonomy"}:
+        raise AuthorizationAssertionError(
+            "authorization assertion issuer is unsupported"
+        )
+    if (
+        issuer == "physical-agent-autonomy"
+        and resolved_by != "autonomous-free-space-policy"
+    ):
+        raise AuthorizationAssertionError(
+            "autonomous authorization assertion has an invalid resolver"
+        )
     if payload.get("schema_version") != 1:
         raise AuthorizationAssertionError(
             "authorization assertion schema version is unsupported"
@@ -102,7 +114,6 @@ def verify_transit_execution_assertion(
         )
     assertion_id = str(payload.get("assertion_id") or "").strip()
     decision_id = str(payload.get("decision_id") or "").strip()
-    resolved_by = str(payload.get("resolved_by") or "").strip()
     if not assertion_id or not decision_id or not resolved_by:
         raise AuthorizationAssertionError(
             "authorization assertion identity is incomplete"

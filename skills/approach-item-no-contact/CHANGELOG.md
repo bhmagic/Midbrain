@@ -2,9 +2,18 @@
 
 ## Unreleased
 
-- Return an opaque execution `plan_id`; the host retrieves all motion and
-  controller-integrity fields from the pending preview instead of requiring an
-  Agent to reproduce floating-point values and digests.
+- Treat reach/touch/until-reaching language as a no-contact boundary target,
+  preserve the Integrated 0 mm WORK_OBJECT and 10 mm KEEP_OUT margins, and
+  report closest-safe as graceful completion rather than refusal.
+- Default the extra WORK_OBJECT standoff to 0 mm and leave observation
+  uncertainty explicit instead of silently adding it as a second clearance
+  margin. Integrated semantic collision geometry remains responsible for
+  preventing contact and returning the closest-safe reachable point.
+- Resolve the exact signed no-contact continuation through the autonomous
+  free-space policy without a human motion-approval interruption.
+- Keep the exact execution plan identifier entirely in current-turn host
+  state. The Agent receives an argument-free continuation, so it cannot copy,
+  select, or replay an older plan identifier.
 
 - Make the default correction span the complete 1.2 m arm ROI, so an ordinary
   request plans to the no-contact destination instead of stopping after an

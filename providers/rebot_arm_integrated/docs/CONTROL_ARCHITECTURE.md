@@ -1,182 +1,126 @@
-# Integrated arm control architecture
+# Integrated free-space control architecture
 
-This document is the working design for the prototype. It separates planning from physical release so that path, force, and input behavior can be tested without treating a successful software test as permission to move the arm.
+Integrated owns non-contact Cartesian arm movement. It converts an arbitrary
+3D translation, orientation-only goal, or combined 6-DoF goal into one
+controller-owned path. Intentional contact and gripper actuation are separate
+controller domains.
 
-## Terminology
+## Separation of duty
 
-- `PRESS_MIT`, `TRANSIT_SPEED`, and `CONTACT_WORK` are Integrated execution
-  profiles, not Basic command modes.
-- Their Basic modes are `IMPEDANCE`, `POSITION_VELOCITY_LIMITED`, and
-  `POSITION_EFFORT_LIMITED` respectively.
-- MIT, `POS_VEL`, and `FORCE_POS` are Damiao/MotorBridge names. Integrated
-  commonly calls the effort-limited backend `POS_TOR`.
-- `POS_SPEED` describes speed-cap selection for transit; it is not a motor
-  mode.
-- The controlled frame is the IK target frame. A task action point may be
-  represented by that frame, but “action point” is not an API synonym for it.
+| Component | Responsibility |
+|---|---|
+| Agent Skill | Resolve task intent and reference frames; never invent joint paths or replay a plan ID |
+| Integrated Provider | IK, direct-path planning, collision checking, timing, signed commit, measured completion |
+| Basic Provider | Hardware transport, group fencing, motor modes/limits, gravity support, assembly publication |
+| Scene compiler | Produce canonical semantic collision geometry and filter current robot/tool geometry |
+| Contact controller | Future force-guided cutting, pushing, pressing, and moment-to-moment visual steering |
+| Grip controller | Future gripper actuation, grasp verification, and held-object attachment publication |
 
-See the [Basic terminology mapping](../../rebot_arm_dm/README.md#command-terminology)
-for the hardware-facing source of truth.
+Integrated leases only the assembly-selected arm group. A grip controller may
+eventually lease a disjoint gripper group concurrently. Any held object must be
+published as versioned runtime attachment geometry before Integrated may move
+the arm.
 
-## Non-negotiable safety invariants
+## Configuration and profiles
 
-- A Fabric observation may stage a Cartesian target, tool transform, payload, execution mode, or semantic scene. It never grants physical motion authority.
-- Direct control calls are recorded in the provider-local audit outbox before
-  submission. Fabric receives a later shadow copy and is not a synchronous
-  dependency of the control path.
-- Motion requires a local operator action. The current physical path remains GUI Engage plus Xbox LB. Preview, mode selection, and scene updates do not imply engagement.
-- Gravity-float is the immediate fallback. The already proven safe-home PowerShell path is the authoritative termination path.
-- Low force, low torque, low Kp, or slow motion is not assumed safe. A low load-bearing Kp can let the arm fall under its own weight.
-- Transport uncertainty, stale physical feedback, lost lease, Midbrain motion inhibit, or Basic FAULTED state blocks new commands and requests float where the lease is still valid.
-- The controller does not automatically retry physical work after a fault or safety fallback. The operator must inspect state and authorize a new attempt.
+The central robot assembly selection references Provider-owned files for:
 
-## Authority coordination shadow
+- arm model and calibration;
+- mounted-effector transform, controlled frame, inertial properties, and
+  collision primitives; and
+- arm collision capsules and resource groups.
 
-Integrated evaluates Manager task authority, operational-writer activity, and
-the Basic residency lease through the versioned
-`physical_agent.authority_coordination_state` schema. Manager and Basic
-fencing generations live in distinct namespaces; equal numbers do not
-establish lineage. Holding a Basic lease while HOT and idle is standby, not an
-active upstream writer.
+Basic resolves and validates those files, then publishes one assembly state
+and fingerprint. Integrated does not load a second private arm model or permit
+runtime replacement of the selected controlled-frame or payload profile.
 
-When an operational writer is active, a coordinated state requires its exact
-upstream owner and Manager authority lease ID. The current execution boundary
-does not yet supply those fields, so an active writer under simultaneous
-Manager authority is intentionally reported as `DUAL_LAYER_UNCORRELATED` with
-`AUTHORITY_LINEAGE_NOT_BOUND`. The state and disagreement counters are exposed
-through `/health`, `/v1/state`, and `/v1/capabilities`. The evaluator is
-strictly shadow-only: it cannot replace the Basic lease, change mode, or submit
-motor commands.
+Path rate, joint-speed ceilings, duration bounds, collision sampling, and idle
+behavior are controller configuration. Hardware motor limits and gravity
+support remain Basic/profile data. Agent prompts and Skills do not own either
+class of limit.
 
-## Execution modes
+## Motion transaction
 
-| Integrated mode | Basic backend | Command semantics | Intended use | Current release gate |
-|---|---|---|---|---|
-| `PRESS_MIT` + `ONE_SHOT` | `IMPEDANCE` | Stream time-indexed setpoints and float after completion | General reviewed one-shot motion | **USABLE; advertised** |
-| `PRESS_MIT` + `HOLD_LB` | `IMPEDANCE` | Replan changed targets while LB remains held; release floats | Operator-supervised continuous target following | **USABLE; advertised** |
-| `TRANSIT_SPEED` + `ONE_SHOT` | `POSITION_VELOCITY_LIMITED` | One endpoint plus bounded velocity limits; float after stable arrival | Ordinary free-space transit | **USABLE; advertised for IK-valid requests up to 1.2 m** |
-| `TRANSIT_SPEED` + `HOLD_LB` | `POSITION_VELOCITY_LIMITED` | Replace only changed endpoints while held | Endpoint-overwrite research | **EXPERIMENTAL / UNSTABLE; not advertised** |
-| `CONTACT_WORK` + `ONE_SHOT` | `POSITION_EFFORT_LIMITED` | One-shot endpoint using a separately captured posture baseline, physical-ceiling saturation, and timed float completion independent of arrival | 6-DoF force/torque research | **EXPERIMENTAL / UNSTABLE; not advertised** |
+1. `/v1/motion/path-plan` captures the current measured start, assembly,
+   controller identity, configuration, goal, timing policy, and usable scene.
+2. The planner interpolates Cartesian position and orientation, solves each IK
+   waypoint from the preceding joint solution, and samples arm capsules plus
+   mounted-effector spheres across joint segments.
+3. The response contains immutable request and preview digests and a short
+   expiry. Planning is nonphysical.
+4. The host autonomously authorizes that exact no-contact path and issues a
+   single-use signed assertion.
+5. `/v1/motion/path-commit` revalidates identity, assembly, measured start,
+   lease, inhibit, limits, path geometry, and the newest usable scene before
+   motor submission.
+6. Completion reports measured arrival, physical outcome, final state, and
+   whether the requested destination or only a closest-safe boundary was
+   reached.
 
-`GET /v1/capabilities` exposes the callable provider operation map. The provider heartbeat places only advertised capabilities in `details.capability_readiness`, which is the source consumed by the Manager's `GET /v1/capabilities`. The two experimental profiles remain accessible to the local hardware-test GUI but have no Manager-discoverable motion capability.
+The model-facing tool performs this transaction inside one call-scoped host
+coordinator. It never exposes a separate execution tool with a selectable plan
+ID. A new Agent turn discards any unconsumed no-contact continuation.
 
-Basic's `POSITION_VELOCITY_LIMITED` and `POSITION_EFFORT_LIMITED` endpoint
-modes must not receive a high-rate series of moving endpoints. Basic uses
-latest-envelope-wins ingress, and the motor protocol treats these as endpoint
-commands. Replacing endpoints before the motor settles can repeatedly restart
-its target behavior and produce bounce or reversal. MIT is different because
-each frame is intentionally a cyclic spring setpoint.
+## IK and trajectory backends
 
-TRANSIT_SPEED reads Basic's POS_SPEED caps (currently 5 rad/s for J1-J3 and 10 rad/s for J4-J6) and uses them consistently for duration and synchronized endpoint limits. Requested Cartesian speed is converted into per-joint demand; above 10 rad/s requires explicit authentication and at or above 20 rad/s is rejected. A rejected continuous replan does not revoke the last valid endpoint: Integrated retains and refreshes the last Basic-accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`. This prevents an input-validation failure from causing an unrelated POS_VEL-to-float motor-mode transition.
+Integrated supports position-only 3-DoF IK and complete pose 6-DoF IK. A
+multi-axis translation is one vector goal; it is not decomposed into
+single-axis moves. Controlled-frame RPY deltas compose onto the measured
+controlled orientation; absolute RPY goals are expressed in `rebot_arm_base`.
 
-Motor mode changes are staged one joint per Basic control tick. Before each potentially blocking register-10 confirmation, Basic refreshes the captured-position or gravity-supported hold for every other joint. Missing register-10 confirmation receives the same bounded serial retry as Windows transport timeouts. The POS_VEL endpoint remains withheld until all requested modes are confirmed. TRANSIT_SPEED ONE_SHOT requests float only after stable measured arrival. Gravity-float is not considered confirmed while Basic reports any pending motor-mode transition, and Integrated allows up to eight seconds for the staged transition to finish.
+Signed paths may execute through Basic `IMPEDANCE` or
+`POSITION_VELOCITY_LIMITED`, selected by controller policy. Basic motor limits,
+configured POS_SPEED ceilings, and the requested path duration jointly bound
+effective joint rates. Requested Cartesian speed is a nominal average endpoint
+speed, not constant instantaneous Cartesian velocity.
 
-The gripper input begins with a joint-7-only request at a 10 Hz Provider
-keepalive while Basic continues its 50 Hz MIT support loop. Basic also limits
-unchanged motor-side `POS_VEL`/`FORCE_POS` endpoint frames to 10 Hz. RB selects
-the configured open endpoint at approximately -4.887 rad and RT selects close
-at approximately -0.349 rad. The GUI can select gripper MIT or `POS_TOR`, which
-maps to Basic `POSITION_EFFORT_LIMITED`. Releasing the input latches that
-endpoint and keeps refreshing it. Each later arm command envelope includes
-joint 7 with the same latched endpoint, so Basic's latest-envelope rule cannot
-overwrite the gripper hold. LT, Float, or Safe terminate releases it. Starting
-a different gripper action is blocked while an arm trajectory is active.
+Endpoint modes receive one synchronized goal rather than a high-rate series of
+moving endpoints. Impedance mode receives the sampled trajectory stream. Basic
+stages motor-mode changes and preserves gravity-supported control for other
+joints during transition.
 
-## Planning and semantic objects
+## Semantic collision policy
 
-Every candidate path receives an immutable preview ID, target revision, preview
-scene revision, joint start/goal, duration, sampled configurations, minimum
-clearance, and collision list. A target, tool-offset, or settings change
-invalidates the preview. A newer accepted compiler scene instead triggers a
-whole-path collision recheck at commit; safe stored waypoints may continue and
-the audit records both preview and commit scene revisions.
+The scene uses stable base-frame spheres and object IDs:
 
-`POST /v1/motion/plan` combines target staging and preview in one direct
-provider call. It remains `SHADOW_NONPHYSICAL`; singularity diagnostics and
-speed/path-shaping policy stay controller-owned and are not interpreted as
-Skill-level motion authority.
+- `KEEP_OUT`: blocking, with 10 mm extra clearance;
+- `WORK_OBJECT`: blocking at the geometric boundary, with 0 mm extra
+  clearance; and
+- `PUSHABLE`: ignored by the current temporary free-space policy.
 
-The scene input uses base-frame spheres with stable sphere and object IDs:
+`WORKPIECE` is normalized to the controller's `WORK_OBJECT` representation.
+Classification never authorizes contact. Unclaimed depth remains non-blocking
+`PUSHABLE` telemetry under the current explicit policy.
 
-- `KEEP_OUT`: contact is never permitted.
-- `PUSHABLE`: avoid first; contact requires an explicit per-preview policy.
-- `WORK_OBJECT`: contact is permitted only when that object ID is explicitly named by the work request.
+The scene compiler uses the active assembly's arm capsules and effector spheres
+for robot-self exclusion, preventing the selected tool from reappearing as a
+work object. It publishes those exact sphere revisions with the scene so the
+controller and main 3D viewer share one geometry source.
 
-The controller and Fabric validator now implement the canonical scene-policy
-boundary:
+A fresh scene is checked at plan and commit. A missing or stale scene is
+recorded as scene-blind operation under the current policy rather than causing
+a semantic-only refusal. A newly detected collision still invalidates the
+commit.
 
-- Accept `WORKPIECE` as the contract term and normalize it to the controller's
-  existing `WORK_OBJECT` collision-policy representation.
-- Unknown objects default to `KEEP_OUT`; a task-selected manipulation target
-  defaults to `WORKPIECE`.
-- A VLM may emit a pushability hint, but only the upstream Agent or finite Skill
-  may assert task-scoped `PUSHABLE` contact permission.
-- `WORKPIECE` is contact-eligible at the declared acting frame by default.
-  Explicit `NO_CONTACT`/standoff wording takes precedence, and non-acting link
-  contact remains prohibited.
-- Compile only geometry within 0.5 m of the measured gripper/controlled frame
-  or 1.2 m of `rebot_arm_base`. Use minimum sphere radii of 20 mm in the gripper
-  region and 60 mm elsewhere in the arm region. Inflate smaller geometry rather
-  than deleting it, and voxelize/merge redundant samples before publication.
-- The HOT `world_model.arm_scene_compiler` Provider is the single live owner.
-  It applies ROI, minimum-size, semantic-default, and current robot-self-filter
-  preconditions; merges Fabric-hosted point clouds and slower semantic
-  assertions; and publishes monotonic, short-lived canonical revisions. Camera
-  or perception Skills must not overwrite the controller scene independently.
-  A metric `locate_item` result refreshes a short-lived `WORKPIECE` assertion.
-  Empty/material-limited depth can degrade to semantic-only output only while
-  an explicit assertion remains fresh; it never implies that unobserved space
-  is clear.
+## Route selection
 
-Fabric validates contract version 2, base frame, canonical ROI layers, exact
-minimum sphere sizes, explicit canonical type/scope, unique sphere IDs, and
-in-ROI centers before accepting a scene envelope. This is a data-plane
-contract, not collision-authority by itself; Integrated still revalidates the
-fresh exact scene at authorized commit.
+The current planner evaluates the direct Cartesian path only. It does not
+generate clearance-Z, lateral, or other synthetic detours. If the direct path
+is blocked after a nonempty safe prefix, Integrated may select that prefix and
+report `CLOSEST_SAFE`. If the start is already unsafe or no executable prefix
+exists, it rejects without motion.
 
-The optional preview diagnostic interpolates Cartesian position and orientation, solves each waypoint from the preceding joint solution, and samples the resulting joint segments against conservative link capsules. It reports low Jacobian singular values, large waypoint jumps, excessive endpoint joint displacement, and excessive aggregate joint travel. It does not block hardware execution. This is continuity analysis, not obstacle-route search.
+General obstacle rerouting remains an explicit future module. It should be
+added as a bounded planner behind the same immutable preview/commit contract,
+not as Agent-generated waypoints.
 
-Signed transit requests select a controller-owned final state. `FLOAT` returns
-to verified gravity float, `FIXED` retains the endpoint until release, and
-`WAIT_FOR_NEXT` retains it for a bounded consecutive-motion window. The latter
-avoids a float/reacquire/mode-transition discontinuity between iterative
-corrections while preserving fresh measured-start, authorization, and scene
-revalidation for every chained path.
+## Final states and fallback
 
-`WAIT_FOR_NEXT` accepts a successor only after measured arrival. In-flight
-successor queuing is outside the implemented interface; its design and
-promotion gates belong in the
-[active roadmap](../../../docs/09_LIMITATIONS_AND_ROADMAP.md#controller-owned-multistep-routing).
+A signed plan selects `FLOAT`, `FIXED`, or bounded `WAIT_FOR_NEXT` as its final
+state. Consecutive correction plans still require a fresh measured start and a
+new signed assertion. An expired wait returns to gravity float.
 
-The physical DM serial loop and Integrated MIT stream default to 50 Hz for the next operator test. Reducing only Integrated would not reduce the actual motor traffic because Basic retransmits the current seven-joint command on every internal tick. Basic therefore exposes completed/attempted command frames, feedback requests and polls, mode switches, I/O error count, and measured rates.
-
-## Torque baseline model
-
-Baseline capture and CONTACT_WORK execution are separate operator actions. The capture command confirms gravity-float and records steady samples for 0.5 seconds. Capture is rejected if velocity or median absolute torque deviation exceeds configured per-joint limits. The later Engage + LB action uses the stored baseline, subject to the configured 20 cm baseline-relative posture check, and does not recapture automatically.
-
-For joint `i`, the expected no-contact torque at the current pose is `tau_expected[i] = tau_baseline[i] + gravity_current[i] - gravity_baseline[i]`. The estimated external residual is `tau_external[i] = tau_measured[i] - tau_expected[i]`.
-
-This subtraction compensates only for the change represented by Basic's calibrated arm-plus-payload gravity model. It does not make the result a Cartesian force measurement and does not remove friction, cable forces, sensor bias, acceleration torque, model error, or tool dynamics. Directional end-effector force reasoning therefore also needs the Jacobian and a reviewed uncertainty margin.
-
-Effort-limit ratios are computed from expected absolute torque plus the
-operator-entered external torque budget and margin, divided by configured
-motor `TMAX`. The budget can be a direct six-joint vector, a controlled-frame
-six-axis wrench box, or isotropic force and torque magnitude balls. Wrench
-boxes map through `abs(J_controlled^T) * wrench_limits`; isotropic limits use
-the corresponding Jacobian row 2-norms multiplied by the force and torque
-magnitudes. A required ratio above the reviewed physical-test cap saturates at
-that cap rather than rejecting the task.
-
-Integrated sends zero extra MIT feed-forward because Basic owns calibrated arm-plus-payload gravity torque. Height loss during rotation can therefore indicate an incorrect/missing payload model, gravity-model error, torque clamping, MIT tracking saturation, stale feedback, or serial loss. The state now reports Basic gravity torque, payload torque, clamp flags, hardware I/O counters, and controlled-frame height error so the next physical run can distinguish these cases.
-
-If a CONTACT_WORK residual exceeds an operator-entered joint budget, the
-affected `POSITION_EFFORT_LIMITED` allowance rises to its reviewed physical
-ceiling and the same endpoint remains active until the configured one-shot
-duration expires. The event and joints are exposed as saturation telemetry.
-Timed completion then requests gravity float; explicit Float/LT and
-authoritative safe termination remain available earlier.
-
-Operator controls and the bounded test sequence live in
-[Physical testing](PHYSICAL_TEST.md). Remaining qualification belongs in
-[Validation](../VALIDATION.md), so release work is not copied into this
-architecture reference.
+Transport uncertainty, lost lease, stale feedback, inhibit, Basic fault,
+changed assembly, collision, or execution failure blocks new commands and
+requests float when authority remains valid. The Provider does not
+automatically retry physical motion after a safety fallback.

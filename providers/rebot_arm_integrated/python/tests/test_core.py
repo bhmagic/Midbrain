@@ -47,6 +47,18 @@ def load_config() -> dict:
     return json.loads((INTEGRATED_ROOT / "config_templates" / "controller.default.json").read_text())
 
 
+def relax_physical_gates_for_motion_unit_tests(
+    config: dict,
+    *,
+    include_legacy_contact_backend: bool = False,
+) -> None:
+    """Keep lower-level motion tests independent of production authorization gates."""
+    config["safety"]["preview_required_execution_modes"] = []
+    config["safety"]["scene_required_execution_modes"] = []
+    if include_legacy_contact_backend:
+        config["safety"]["physically_enabled_execution_modes"].append(CONTACT_WORK)
+
+
 def load_public_model() -> dict:
     model_path = BASIC_ROOT / "config" / "arm_model.json"
     calibration_path = BASIC_ROOT / "config" / "arm_calibration.json"
@@ -158,8 +170,19 @@ class FakeBasic:
         return {"status": "safe_home_then_stop"}
 
 
-def prepared_controller(*, short_trajectory: bool = False) -> tuple[IntegratedController, FakeBasic]:
+def prepared_controller(
+    *,
+    short_trajectory: bool = False,
+    embedded_contact: bool = False,
+    embedded_gripper: bool = False,
+) -> tuple[IntegratedController, FakeBasic]:
     config = load_config()
+    relax_physical_gates_for_motion_unit_tests(
+        config,
+        include_legacy_contact_backend=embedded_contact,
+    )
+    config["role_policy"]["embedded_contact_enabled"] = embedded_contact
+    config["role_policy"]["embedded_gripper_enabled"] = embedded_gripper
     if short_trajectory:
         config["runtime"]["duration_s"] = 0.25
         config["trajectory"]["send_rate_hz"] = 100.0
@@ -194,6 +217,25 @@ class ConfigTests(unittest.TestCase):
             config["scene_input"][
                 "ignore_pushable_for_collision_planning"
             ]
+        )
+        self.assertEqual(
+            config["scene_input"]["clearance_margin_by_type_m"],
+            {"KEEP_OUT": 0.01, "PUSHABLE": 0.0, "WORK_OBJECT": 0.0},
+        )
+        self.assertEqual(config["role_policy"]["role"], "FREE_SPACE")
+        self.assertFalse(config["role_policy"]["embedded_contact_enabled"])
+        self.assertFalse(config["role_policy"]["embedded_gripper_enabled"])
+        self.assertEqual(
+            config["safety"]["physically_enabled_execution_modes"],
+            [PRESS_MIT, TRANSIT_SPEED],
+        )
+        self.assertEqual(
+            config["safety"]["preview_required_execution_modes"],
+            [PRESS_MIT, TRANSIT_SPEED],
+        )
+        self.assertEqual(
+            config["safety"]["scene_required_execution_modes"],
+            [],
         )
         self.assertEqual(
             config["contact"]["task_torque_budget_nm"],
@@ -270,7 +312,11 @@ class ConfigTests(unittest.TestCase):
             result = ensure_controller_config(root, active_path)
 
             self.assertTrue(result.repaired)
-            self.assertEqual(result.config["managed_policy_revision"], 6)
+            self.assertEqual(result.config["managed_policy_revision"], 9)
+            self.assertEqual(
+                result.config["manager_authority"]["resource_id"],
+                "ASSEMBLY_ARM_GROUP",
+            )
             self.assertFalse(
                 result.config["workspace"]["enforce_cartesian_bounds"]
             )
@@ -458,6 +504,167 @@ class SafeTerminationTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_hot_entry_binds_selected_assembly_arm_group_and_profiles(self):
+        from rebot_arm_dm_provider.assembly import RobotAssemblyConfiguration
+
+        assembly = RobotAssemblyConfiguration.load(
+            PACKAGE_ROOT.parent
+            / "config"
+            / "robot_assemblies"
+            / "primary_manipulator.example.json",
+            PACKAGE_ROOT.parent,
+        ).public_state()
+
+        class AssemblyBasic(FakeBasic):
+            def __init__(self):
+                super().__init__()
+                self.bound_resource_id = None
+
+            def assembly(self):
+                return copy.deepcopy(assembly)
+
+            def bind_resource(self, resource_id):
+                self.bound_resource_id = str(resource_id)
+
+            def acquire(self, holder, duration_ms):
+                lease = super().acquire(holder, duration_ms)
+                self.lease.resource_id = self.bound_resource_id
+                lease.resource_id = self.bound_resource_id
+                return lease
+
+        basic = AssemblyBasic()
+        controller = IntegratedController(load_config(), basic)
+        controller.enter_hot()
+        controller.update_platform_status(
+            True,
+            True,
+            {},
+            motion_inhibited=False,
+        )
+
+        self.assertEqual(
+            basic.bound_resource_id,
+            "robot_arm.primary/arm",
+        )
+        self.assertEqual(
+            controller.assembly_fingerprint,
+            assembly["assembly_fingerprint"],
+        )
+        self.assertEqual(
+            controller.collision_link_radii_m.tolist(),
+            [0.07, 0.065, 0.06, 0.05, 0.045, 0.04],
+        )
+        self.assertEqual(
+            controller.collision_effector_spheres,
+            [
+                {
+                    "primitive_id": "temporary_gripper_envelope_tip",
+                    "translation_m": [-0.005, 0.0, -0.07],
+                    "radius_m": 0.005,
+                },
+                {
+                    "primitive_id": "temporary_gripper_envelope_front",
+                    "translation_m": [-0.03, 0.0, -0.07],
+                    "radius_m": 0.015,
+                },
+                {
+                    "primitive_id": "temporary_gripper_envelope_middle",
+                    "translation_m": [-0.09, 0.0, -0.07],
+                    "radius_m": 0.035,
+                },
+                {
+                    "primitive_id": "temporary_gripper_envelope_rear",
+                    "translation_m": [-0.15, 0.0, -0.07],
+                    "radius_m": 0.035,
+                },
+            ],
+        )
+        snapshot = controller.snapshot()
+        self.assertTrue(
+            snapshot["capability_readiness"][
+                "robot_arm.motion.free_space.preview_commit.v1"
+            ]
+        )
+        self.assertEqual(
+            snapshot["resource_groups"][0]["resource_id"],
+            "robot_arm.primary/arm",
+        )
+
+        assembly["assembly_fingerprint"] = "replacement-assembly"
+        with self.assertRaisesRegex(RuntimeError, "changed after Integrated bound"):
+            controller.preview_transit_path(
+                target_delta_m=[0.01, 0.0, 0.0],
+                target_rpy_rad=None,
+                requested_speed_m_s=0.03,
+            )
+
+    def test_assembly_binding_fails_closed_for_unsupported_frame_primitives(self):
+        from rebot_arm_dm_provider.assembly import RobotAssemblyConfiguration
+
+        assembly = RobotAssemblyConfiguration.load(
+            PACKAGE_ROOT.parent
+            / "config"
+            / "robot_assemblies"
+            / "primary_manipulator.example.json",
+            PACKAGE_ROOT.parent,
+        ).public_state()
+        assembly["collision_geometry"]["frame_primitives"] = [
+            {
+                "primitive_id": "future-knife",
+                "frame_id": "rebot_arm_tool",
+                "transform": {
+                    "translation_m": [0.0, 0.0, 0.0],
+                    "rpy_rad": [0.0, 0.0, 0.0],
+                },
+                "shape": {
+                    "type": "BOX",
+                    "size_m": [0.1, 0.02, 0.002],
+                },
+                "qualification": "DEVELOPMENT",
+            }
+        ]
+        basic = FakeBasic()
+        controller = IntegratedController(load_config(), basic)
+
+        with self.assertRaisesRegex(RuntimeError, "does not yet support arm-owned frame primitives"):
+            controller._bind_assembly_runtime(assembly, basic.model())
+
+    def test_assembly_binding_fails_closed_for_unsupported_effector_shape(self):
+        from rebot_arm_dm_provider.assembly import RobotAssemblyConfiguration
+
+        assembly = RobotAssemblyConfiguration.load(
+            PACKAGE_ROOT.parent
+            / "config"
+            / "robot_assemblies"
+            / "primary_manipulator.example.json",
+            PACKAGE_ROOT.parent,
+        ).public_state()
+        assembly["mounted_effector"]["collision_primitives"][0]["shape"] = {
+            "type": "BOX",
+            "size_m": [0.01, 0.01, 0.01],
+        }
+        basic = FakeBasic()
+        controller = IntegratedController(load_config(), basic)
+
+        with self.assertRaisesRegex(RuntimeError, "supports only mounted-effector SPHERE"):
+            controller._bind_assembly_runtime(assembly, basic.model())
+
+    def test_default_role_separates_contact_and_gripper_control(self):
+        controller, _ = prepared_controller()
+
+        self.assertEqual(controller.controller_role, "FREE_SPACE")
+        with self.assertRaisesRegex(PermissionError, "separate grip controller"):
+            controller.request_gripper("OPEN")
+        with self.assertRaisesRegex(PermissionError, "separate contact controller"):
+            controller.capture_contact_baseline()
+        snapshot = controller.snapshot()
+        self.assertFalse(snapshot["embedded_contact_enabled"])
+        self.assertFalse(snapshot["embedded_gripper_enabled"])
+        self.assertNotIn(
+            "robot.motion.arm.integrated.gripper.mit",
+            snapshot["capability_readiness"],
+        )
+
     def test_transit_delta_resolves_from_fresh_measured_controlled_frame(self):
         controller, _ = prepared_controller()
         with controller.lock:
@@ -483,24 +690,22 @@ class ControllerTests(unittest.TestCase):
             float(origin[0, 3]) + 0.01,
         )
 
-    def test_default_scene_policy_keeps_pushable_geometry_non_blocking(self):
+    def test_default_free_space_scene_policy_ignores_pushable_geometry(self):
         controller, _ = prepared_controller()
         with controller.lock:
             self.assertTrue(
                 controller._pushable_contact_is_permitted_locked(False)
             )
-            controller.config["scene_input"][
-                "ignore_pushable_for_collision_planning"
-            ] = False
-            self.assertFalse(
-                controller._pushable_contact_is_permitted_locked(False)
-            )
             self.assertTrue(
                 controller._pushable_contact_is_permitted_locked(True)
             )
+        with self.assertRaisesRegex(PermissionError, "prohibits"):
+            controller.preview_staged_target(
+                allowed_contact_object_ids={"workpiece"},
+            )
 
     def test_gripper_rb_open_release_latches_mit_endpoint_without_float(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_gripper=True)
         controller.set_engaged(True)
         before_float = basic.float_count
         controller.update_input({"gripper_open": True})
@@ -525,7 +730,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(command[0]["mode"], MODE_MIT)
 
     def test_latched_pos_tor_gripper_is_appended_to_arm_command_envelope(self):
-        controller, _ = prepared_controller()
+        controller, _ = prepared_controller(embedded_gripper=True)
         controller.set_gripper_settings({"mode": "POS_TOR"})
         controller.set_engaged(True)
         controller.update_input({"gripper_close": True})
@@ -545,7 +750,7 @@ class ControllerTests(unittest.TestCase):
         )
 
     def test_gripper_rt_close_can_select_pos_tor(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_gripper=True)
         controller.set_gripper_settings({"mode": "POS_TOR"})
         controller.set_engaged(True)
         controller.update_input({"gripper_close": True})
@@ -557,7 +762,7 @@ class ControllerTests(unittest.TestCase):
         self.assertAlmostEqual(command["values"]["torque_limit_ratio"], 0.15)
 
     def test_gripper_requires_engage_and_does_not_send(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_gripper=True)
         controller.update_input({"gripper_open": True})
         controller._tick()
         self.assertFalse(basic.commands)
@@ -649,7 +854,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(basic.generation, original_generation + 1)
         controller.stop()
 
-    def test_press_transit_and_contact_are_physically_enabled_backends(self):
+    def test_production_enables_only_free_space_physical_backends(self):
         controller, _ = prepared_controller()
         state = controller.snapshot()
         self.assertEqual(state["control_mode"], CONTROL_MODE)
@@ -660,56 +865,36 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertEqual(
             state["safety"]["physically_enabled_execution_modes"],
-            [PRESS_MIT, TRANSIT_SPEED, CONTACT_WORK],
+            [PRESS_MIT, TRANSIT_SPEED],
         )
 
     def test_manager_discovery_advertises_only_reviewed_arm_motion_profiles(self):
         controller, _ = prepared_controller()
         state = controller.snapshot()
         readiness = state["capability_readiness"]
-        self.assertTrue(readiness["robot.motion.arm.integrated.mit.one_shot"])
-        self.assertTrue(readiness["robot.motion.arm.integrated.mit.continuous"])
-        self.assertTrue(
-            readiness["robot.motion.arm.integrated.pos_vel.one_shot"]
+        self.assertIn(
+            "robot_arm.motion.free_space.preview_commit.v1",
+            readiness,
         )
         self.assertTrue(
-            readiness["robot.motion.arm.integrated.pos_vel.one_shot_limited"]
+            readiness["robot.motion.arm.integrated.plan.transit_path.shadow"]
         )
         self.assertFalse(
             any(
-                "pos_vel.continuous" in capability
+                "mit.one_shot" in capability
+                or "mit.continuous" in capability
+                or "pos_vel.one_shot" in capability
                 or "pos_tor.one_shot" in capability
                 or "contact_work" in capability
+                or "gripper" in capability
                 for capability in readiness
             )
         )
         self.assertEqual(
             state["capability_profiles"][
-                "robot.motion.arm.integrated.pos_vel.one_shot"
-            ]["constraints"],
-            {
-                "maximum_path_length_m": 1.2,
-                "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
-                "effective_joint_speed_policy": (
-                    "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
-                ),
-            },
-        )
-        self.assertEqual(
-            state["capability_profiles"][
-                "robot.motion.arm.integrated.pos_vel.one_shot_limited"
-            ]["replacement"],
-            "robot.motion.arm.integrated.pos_vel.one_shot",
-        )
-        self.assertFalse(
-            state["non_discoverable_experiments"]["TRANSIT_SPEED_HOLD_LB"][
-                "manager_capability_advertised"
-            ]
-        )
-        self.assertFalse(
-            state["non_discoverable_experiments"][
-                "CONTACT_WORK_ONE_SHOT_POS_TOR"
-            ]["manager_capability_advertised"]
+                "robot_arm.motion.free_space.preview_commit.v1"
+            ]["controller_role"],
+            "FREE_SPACE",
         )
 
     def test_provider_capability_catalog_maps_upstream_operations(self):
@@ -717,29 +902,48 @@ class ControllerTests(unittest.TestCase):
         service = IntegratedService(controller, load_config(), None, None)
         catalog = service.capability_catalog()
         names = {item["capability"] for item in catalog["capabilities"]}
-        self.assertIn("robot.motion.arm.integrated.mit.one_shot", names)
-        self.assertIn("robot.motion.arm.integrated.pos_vel.one_shot", names)
-        self.assertIn(
-            "robot.motion.arm.integrated.pos_vel.one_shot_limited",
-            names,
-        )
+        self.assertIn("robot_arm.motion.free_space.preview_commit.v1", names)
+        self.assertIn("robot.motion.arm.integrated.plan.transit_path.shadow", names)
         self.assertEqual(
-            catalog["upstream_operations"]["cartesian_target_staging"][
-                "transport"
+            catalog["upstream_operations"]["controller_free_space_path_plan"][
+                "path"
             ],
-            "FABRIC",
+            "/v1/motion/path-plan",
         )
         self.assertEqual(
-            catalog["upstream_operations"]["engage"]["caller_policy"],
-            "OPERATOR_OR_OPERATOR_SUPERVISED_SKILL",
+            catalog["upstream_operations"]["authorized_free_space_path_commit"][
+                "path"
+            ],
+            "/v1/motion/path-commit",
         )
-        self.assertEqual(
-            catalog["upstream_operations"]["teleop_input"]["path"],
-            "/v1/teleop",
+        self.assertTrue(
+            {"engage", "teleop_input", "settings", "gripper_action", "contact_baseline_capture"}.isdisjoint(
+                catalog["upstream_operations"]
+            )
         )
         self.assertFalse(
             catalog["physical_execution_gate"]["upstream_motion_authority"]
         )
+
+    def test_public_state_hides_dormant_manual_contact_and_grip_controls(self):
+        controller, _ = prepared_controller()
+        service = IntegratedService(controller, load_config(), None, None)
+
+        state = service._state_payload()
+
+        for retired_field in (
+            "engaged",
+            "execution_mode",
+            "interaction_mode",
+            "input",
+            "external_input",
+            "gripper",
+            "contact_monitoring",
+        ):
+            self.assertNotIn(retired_field, state)
+        self.assertNotIn("payload_mass_kg", state["runtime"])
+        self.assertIn("assembly", state)
+        self.assertIn("planning", state)
 
     def test_preview_solves_without_sending_a_motor_command(self):
         controller, basic = prepared_controller()
@@ -916,6 +1120,55 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(after["ready"])
         self.assertIsNone(basic.lease_snapshot())
         self.assertEqual(basic.float_count, float_count)
+        self.assertEqual(basic.commands, [])
+
+    def test_transit_path_stops_at_closest_safe_work_object_boundary(self):
+        controller, basic = prepared_controller()
+        origin = controller.kinematics.controlled_frame(
+            np.asarray(basic._state["positions_rad"][:6], dtype=float),
+            controller._tool_to_control_locked(),
+        )
+        target = origin[:3, 3].copy()
+        target[1] += 0.10
+        controller.stage_scene(
+            {
+                "scene_revision": "closest-safe-work-object",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": "work-object-goal",
+                        "object_id": "work-object",
+                        "center_m": target.tolist(),
+                        "radius_m": 0.02,
+                        "type": "WORK_OBJECT",
+                    }
+                ],
+            },
+            source="test",
+        )
+
+        result = controller.preview_transit_path(
+            target_position_m=target.tolist(),
+            target_rpy_rad=None,
+            requested_speed_m_s=0.05,
+        )
+
+        self.assertEqual(result["status"], "PLANNED")
+        self.assertFalse(result["goal_reached"])
+        self.assertTrue(result["closest_safe"])
+        self.assertEqual(result["motion_outcome"], "CLOSEST_SAFE")
+        self.assertTrue(result["selected_plan"]["planning_valid"])
+        self.assertTrue(
+            result["selected_plan"]["preview"]["collision_free"]
+        )
+        self.assertIn(
+            "WORK_OBJECT",
+            result["selected_plan"]["blocking_object_types"],
+        )
+        self.assertGreater(
+            result["selected_plan"]["remaining_position_to_goal_m"],
+            0.0,
+        )
         self.assertEqual(basic.commands, [])
 
     def test_transit_path_preview_stops_at_shadow_planning_time_budget(self):
@@ -1114,6 +1367,54 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(controller.authorized_transit)
         self.assertGreater(basic.float_count, floats_before_release)
 
+    def test_authorized_transit_allows_missing_scene_when_policy_is_optional(self):
+        controller, basic = prepared_controller(short_trajectory=True)
+        original_command = basic.command
+
+        def follow_endpoint(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = 0.0
+            return result
+
+        basic.command = follow_endpoint  # type: ignore[method-assign]
+        q_start = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        q_goal = q_start.copy()
+        q_goal[0] += 0.002
+
+        result = controller.execute_authorized_transit(
+            plan_id="plan-no-scene",
+            preview_sha256="preview-no-scene",
+            request_sha256="request-no-scene",
+            q_waypoints_rad=[q_start.tolist(), q_goal.tolist()],
+            requested_speed_m_s=0.05,
+            scene_revision=None,
+            final_state="FLOAT",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-no-scene",
+                "decision_id": "decision-no-scene",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertEqual(result["status"], "EXECUTING")
+        self.assertIsNone(result["preview_scene_revision"])
+        self.assertIsNone(result["commit_scene_revision"])
+        self.assertFalse(result["scene_revision_advanced"])
+        self.assertTrue(
+            wait_until(
+                lambda: controller.authorized_transit is None,
+                timeout=2.0,
+            )
+        )
+
     def test_wait_for_next_chains_without_intermediate_float_then_floats(self):
         controller, basic = prepared_controller()
         controller.stage_scene(
@@ -1206,7 +1507,7 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(controller.snapshot()["safety"]["float_confirmed"])
 
     def test_gripper_can_join_authorized_final_hold_without_float(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_gripper=True)
         controller.stage_scene(
             {
                 "scene_revision": "scene-authorized-gripper-hold",
@@ -1328,7 +1629,7 @@ class ControllerTests(unittest.TestCase):
         controller.release_authorized_transit()
 
     def test_gripper_remains_blocked_during_authorized_transit(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_gripper=True)
         controller.stage_scene(
             {
                 "scene_revision": "scene-authorized-gripper-block",
@@ -1450,7 +1751,7 @@ class ControllerTests(unittest.TestCase):
         controller.release_authorized_transit()
 
     def test_physical_ik_keeps_large_position_residual_as_telemetry(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_contact=True)
         controller.set_runtime_settings(
             {
                 "execution_mode": CONTACT_WORK,
@@ -1481,7 +1782,10 @@ class ControllerTests(unittest.TestCase):
         self.assertAlmostEqual(accepted.position_residual_m, 0.2098)
 
     def test_contact_work_builds_latched_pos_tor_endpoint_from_explicit_budget(self):
-        controller, basic = prepared_controller(short_trajectory=True)
+        controller, basic = prepared_controller(
+            short_trajectory=True,
+            embedded_contact=True,
+        )
         controller.set_runtime_settings(
             {
                 "execution_mode": CONTACT_WORK,
@@ -1542,7 +1846,10 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(controller.last_completed_trajectory["float_confirmed"])
 
     def test_contact_work_accepts_isotropic_wrench_budget_and_forces_one_shot(self):
-        controller, basic = prepared_controller(short_trajectory=True)
+        controller, basic = prepared_controller(
+            short_trajectory=True,
+            embedded_contact=True,
+        )
         controller.set_runtime_settings(
             {
                 "execution_mode": CONTACT_WORK,
@@ -1668,7 +1975,7 @@ class ControllerTests(unittest.TestCase):
         self.assertGreater(basic.float_count, floats_before_release)
 
     def test_operator_baseline_capture_stays_in_float_and_sends_no_target(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_contact=True)
         controller.config["contact"]["baseline_duration_s"] = 0.5
         controller.config["contact"]["baseline_minimum_samples"] = 5
         result = controller.capture_contact_baseline()
@@ -1679,7 +1986,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(basic.commands, [])
 
     def test_contact_monitor_saturates_joint_without_raising_or_dropping_endpoint(self):
-        controller, basic = prepared_controller()
+        controller, basic = prepared_controller(embedded_contact=True)
         controller.set_runtime_settings(
             {"contact_torque_budget_nm": [0.1] * 6}
         )
@@ -1856,6 +2163,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_press_mit_recovers_when_measured_start_is_outside_operational_range(self):
         config = load_config()
+        relax_physical_gates_for_motion_unit_tests(config)
         config["runtime"]["duration_s"] = 0.25
         config["trajectory"]["send_rate_hz"] = 100.0
         basic = FakeBasic()
@@ -2071,7 +2379,7 @@ class ControllerTests(unittest.TestCase):
         controller.update_input({"lb": False})
 
 
-class FabricInputTests(unittest.TestCase):
+class InternalCompatibilityStagingTests(unittest.TestCase):
     def test_external_cartesian_command_stages_target_without_motion(self):
         controller, basic = prepared_controller()
         current = controller.staged_target[:3, 3].copy()
@@ -2129,41 +2437,6 @@ class FabricInputTests(unittest.TestCase):
             [0.0, 0.0, 0.006],
         )
         self.assertFalse(basic.commands)
-
-    def test_fabric_latest_observation_is_consumed_once_and_stale_is_ignored(self):
-        controller, _ = prepared_controller()
-        config = load_config()
-        service = IntegratedService(controller, config, None, "http://fabric")
-        position = controller.staged_target[:3, 3].copy()
-        observation = {
-            "schema": config["fabric_input"]["schema"],
-            "provider_id": "skill.test",
-            "provider_instance_id": "skill-instance",
-            "boot_id": "skill-boot",
-            "sequence": 11,
-            "observed_at_us": time.time_ns() // 1000,
-            "freshness_ms": 650,
-            "valid": True,
-            "data": {
-                "command_type": "CARTESIAN_TARGET",
-                "target": {"position_m": (position + np.array([0.0, 0.01, 0.0])).tolist()},
-            },
-        }
-        service.platform.latest = lambda stream: copy.deepcopy(observation)
-        service._consume_fabric_input()
-        self.assertEqual(service.fabric_input_status["last_result"], "ACCEPTED")
-        self.assertEqual(service.fabric_input_status["accepted_count"], 1)
-        service._consume_fabric_input()
-        self.assertEqual(service.fabric_input_status["last_result"], "DUPLICATE")
-        self.assertEqual(service.fabric_input_status["accepted_count"], 1)
-
-        stale = copy.deepcopy(observation)
-        stale["sequence"] = 12
-        stale["observed_at_us"] = (time.time_ns() // 1000) - 2_000_000
-        service.platform.latest = lambda stream: copy.deepcopy(stale)
-        service._consume_fabric_input()
-        self.assertEqual(service.fabric_input_status["last_result"], "STALE_IGNORED")
-        self.assertEqual(service.fabric_input_status["stale_count"], 1)
 
     def test_fabric_semantic_scene_is_staged_without_motion_authority(self):
         controller, basic = prepared_controller()

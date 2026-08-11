@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a mainframe mounted-effector selector backed by the machine-local central
+  assembly selection. Manager discovers only arm-compatible Provider-owned
+  profiles and refuses changes while Basic or a transitive dependent is live.
+- Add hierarchical Manager resource scopes: a parent conflicts with every
+  descendant, while disjoint sibling actuator groups may coexist.
+- Let capability binding require an exact Provider-advertised resource group,
+  so free-space arm selection cannot silently bind a gripper-only Provider.
+
 - Index transform observations at ingestion and resolve timestamped paths
   without repeatedly decoding and sorting complete edge histories under the
   Fabric lock. Batch publication now uses one write-lock acquisition while

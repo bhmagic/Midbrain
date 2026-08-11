@@ -257,6 +257,11 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "over the",
             "toward",
             "towards",
+            "until reaching",
+            "until it reaches",
+            "until reach",
+            "reach the",
+            "reaching the",
         )
     )
     effector_terms = any(
@@ -281,10 +286,16 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "tool_search",
             },
             "instruction": (
-                "This request asks to move the effector close to an item. Use "
+                "This request asks for boundary-seeking free-space motion near "
+                "an item. Treat wording such as reach, touch, until reaching, "
+                "or until touching as a no-contact boundary target unless the "
+                "user explicitly requests sustained force work such as pushing, "
+                "pressing, cutting, scraping, or gripping. Boundary wording is "
+                "neither contact authorization nor a reason to refuse movement. "
+                "Use "
                 "plan_no_contact_item_approach before any motion; do not ask "
                 "the user to translate the visual target into a relative XYZ "
-                "command and do not substitute preview_relative_effector_motion. "
+                "command and do not substitute generic relative motion. "
                 "If it returns ARM_BASE_REGISTRATION_REQUIRED, call its exact "
                 "required_next_tool, complete candidate review/activation, then "
                 "retry the preserved plan_no_contact_item_approach arguments. "
@@ -302,9 +313,18 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "required_next_tool arguments without editing them. After each "
                 "executed step, treat WAITING_NEXT, HOLDING_FINAL, and verified "
                 "COMPLETED_FLOAT as successful measured arrivals when the tool "
-                "returns measured_arrival_confirmed=true. Immediately invoke "
-                "the returned plan tool so both landmarks are reacquired and "
-                "realigned; do not report WAITING_NEXT as unconfirmed motion. "
+                "returns measured_arrival_confirmed=true. Never execute a "
+                "consumed preview again. Immediately invoke the exact name and "
+                "arguments in the returned required_next_tool so both landmarks "
+                "are reacquired and realigned; do not report WAITING_NEXT as "
+                "unconfirmed motion. "
+                "When execution returns COMPLETED_CLOSEST_SAFE, stop the "
+                "free-space workflow and report its closest_safe_report as a "
+                "successful no-contact boundary result; do not retry through "
+                "the object. Integrated allows zero extra WORK_OBJECT clearance "
+                "while still forbidding intersection, and it preserves 10 mm "
+                "clearance from KEEP_OUT obstacles. Intentional force/contact "
+                "work requires a different skill and controller. "
                 "Stop only when aligned, a safety "
                 "gate rejects the step, or the iteration limit is reached. A "
                 "planning result alone must not be reported as completed movement. "
@@ -472,7 +492,7 @@ async def provider_activation_needs_approval(
     authorization = _session_authorization(context_wrapper)
     action = str(arguments.get("action") or "").strip().lower()
     if action in {"start", "hot", "warm"}:
-        return not authorization.auto_authorize_provider_activation
+        return False
     if action == "stop":
         return not authorization.auto_authorize_provider_stop
     return True
@@ -780,6 +800,7 @@ class PrototypeAgentDriver:
     ):
         self.skill = skill
         self.integrated_motion_skill = integrated_motion_skill
+        self.no_contact_approach_skill = no_contact_approach_skill
         self._prepared_relative_motion: (
             CallScopedPreparedActionCoordinator | None
         ) = None
@@ -811,6 +832,15 @@ class PrototypeAgentDriver:
             eligible_tool_names or {"identify_pointed_object"}
         )
         descriptors = discover_agent_skills(root)
+        integrated_motion_descriptor = next(
+            (
+                descriptor
+                for descriptor in descriptors
+                if descriptor.tool_name
+                == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
+            ),
+            None,
+        )
 
         async def identify_adapter(arguments: dict[str, Any]) -> str:
             question = arguments.get("question")
@@ -937,7 +967,7 @@ class PrototypeAgentDriver:
                     object_id=arguments.get("object_id"),
                     requested_standoff_m=arguments.get(
                         "requested_standoff_m",
-                        0.10,
+                        0.0,
                     ),
                     iteration_index=arguments.get("iteration_index", 0),
                     maximum_iterations=arguments.get(
@@ -1020,6 +1050,9 @@ class PrototypeAgentDriver:
                 return await integrated_motion_skill.preview(
                     direction=arguments.get("direction"),
                     distance_m=arguments.get("distance_m"),
+                    translation_vector_m=arguments.get(
+                        "translation_vector_m"
+                    ),
                     requested_speed_m_s=arguments.get(
                         "requested_speed_m_s"
                     ),
@@ -1041,20 +1074,18 @@ class PrototypeAgentDriver:
                     controlled_frame_yaw_delta_deg=arguments.get(
                         "controlled_frame_yaw_delta_deg"
                     ),
+                    controlled_frame_rpy_delta_deg=arguments.get(
+                        "controlled_frame_rpy_delta_deg"
+                    ),
+                    target_orientation_rpy_rad=arguments.get(
+                        "target_orientation_rpy_rad"
+                    ),
                 )
 
-            async def integrated_relative_preview_adapter(
-                arguments: dict[str, Any],
-            ) -> str:
-                result = await prepare_integrated_relative_motion(arguments)
-                return json.dumps(result, ensure_ascii=False, default=str)
-
-            adapters[
-                "skill.integrated_relative_effector_motion.preview.v1"
-            ] = BoundMethodSkillAdapter(
-                integrated_relative_preview_adapter
-            )
-            eligible.add("preview_relative_effector_motion")
+            if integrated_motion_descriptor is None:
+                raise RuntimeError(
+                    "integrated relative motion Skill descriptor is unavailable"
+                )
 
         approval_overrides: dict[
             str,
@@ -1179,46 +1210,21 @@ class PrototypeAgentDriver:
         if no_contact_approach_skill is not None:
             async def execute_no_contact_approach_step(
                 _context,
-                raw_arguments: str,
+                _raw_arguments: str,
             ) -> str:
-                arguments = json.loads(raw_arguments)
-                result = await no_contact_approach_skill.execute_preview(
-                    plan_id=arguments.get("plan_id"),
-                )
+                result = await no_contact_approach_skill.execute_current_preview()
                 return json.dumps(result, ensure_ascii=False, default=str)
-
-            async def no_contact_motion_needs_approval(
-                context_wrapper: Any,
-                arguments: dict[str, Any],
-                _call_id: str,
-            ) -> bool:
-                authorization = _session_authorization(context_wrapper)
-                canonical = await (
-                    no_contact_approach_skill
-                    .pending_execution_authorization_arguments(
-                        arguments.get("plan_id")
-                    )
-                )
-                return not (
-                    canonical is not None
-                    and authorization.auto_authorize_relative_motion
-                    and relative_motion_within_authorization(
-                        canonical,
-                        max_auto_move_cm=authorization.max_auto_move_cm,
-                        max_auto_speed_m_s=authorization.max_auto_speed_m_s,
-                    )
-                )
 
             offered_tools.append(
                 FunctionTool(
                     name="execute_no_contact_approach_step",
                     description=(
                         "Execute one exact, fresh, collision-checked no-contact "
-                        "item-approach preview by its opaque plan ID. All motion "
+                        "item-approach preview created in this Agent turn. All motion "
                         "parameters and controller digests are recovered from "
-                        "the pending preview rather than copied by the model. "
-                        "Host authorization immediately requests one bounded "
-                        "physical correction of at most the planned step, after "
+                        "host state rather than copied or selected by the model. "
+                        "The autonomous free-space policy immediately requests "
+                        "one bounded physical correction of at most the planned step, after "
                         "which both item and effector must be observed again. "
                         "WAITING_NEXT and HOLDING_FINAL are measured-arrival "
                         "terminal states, not incomplete motion, when the result "
@@ -1226,15 +1232,13 @@ class PrototypeAgentDriver:
                     ),
                     params_json_schema={
                         "type": "object",
-                        "properties": {
-                            "plan_id": {"type": "string", "minLength": 1},
-                        },
-                        "required": ["plan_id"],
+                        "properties": {},
+                        "required": [],
                         "additionalProperties": False,
                     },
                     on_invoke_tool=execute_no_contact_approach_step,
                     strict_json_schema=True,
-                    needs_approval=no_contact_motion_needs_approval,
+                    needs_approval=False,
                 )
             )
         if stationary_calibration_skill is not None:
@@ -1540,9 +1544,16 @@ class PrototypeAgentDriver:
                 arguments: dict[str, Any],
             ) -> dict[str, Any]:
                 try:
+                    normalized_arguments = dict(arguments)
+                    for optional_field in (
+                        "controlled_frame_rpy_delta_deg",
+                        "target_orientation_rpy_rad",
+                        "translation_vector_m",
+                    ):
+                        normalized_arguments.setdefault(optional_field, None)
                     validate(
-                        instance=arguments,
-                        schema=preview_tool.params_json_schema,
+                        instance=normalized_arguments,
+                        schema=integrated_motion_descriptor.input_schema,
                     )
                     extend_current_operation_hard_timeout(
                         float(adapter_timeout_s),
@@ -1551,7 +1562,9 @@ class PrototypeAgentDriver:
                         ),
                     )
                     return await asyncio.wait_for(
-                        prepare_integrated_relative_motion(arguments),
+                        prepare_integrated_relative_motion(
+                            normalized_arguments
+                        ),
                         timeout=float(adapter_timeout_s),
                     )
                 except Exception as error:
@@ -1578,7 +1591,7 @@ class PrototypeAgentDriver:
                 continuation = result.get("required_next_tool")
                 if not isinstance(continuation, dict) or (
                     continuation.get("name")
-                    != "execute_integrated_motion_preview"
+                    != "HOST_INTERNAL_SIGNED_PATH_COMMIT"
                 ):
                     return None
                 arguments = continuation.get("arguments")
@@ -1627,143 +1640,49 @@ class PrototypeAgentDriver:
                 )
             )
 
-            async def perform_relative_motion_needs_approval(
-                context_wrapper: Any,
-                arguments: dict[str, Any],
-                call_id: str,
-            ) -> bool:
-                assert self._prepared_relative_motion is not None
-                prepared = await (
-                    self._prepared_relative_motion.prepare_for_call(
-                        call_id,
-                        arguments,
-                    )
-                )
-                canonical = prepared.authorization_arguments
-                if not prepared.executable or canonical is None:
-                    return False
-                authorization = _session_authorization(context_wrapper)
-                return not (
-                    authorization.auto_authorize_relative_motion
-                    and relative_motion_within_authorization(
-                        canonical,
-                        max_auto_move_cm=(
-                            authorization.max_auto_move_cm
-                        ),
-                        max_auto_speed_m_s=(
-                            authorization.max_auto_speed_m_s
-                        ),
-                    )
-                )
-
             async def perform_relative_effector_motion(
                 context_wrapper: Any,
                 raw_arguments: str,
             ) -> str:
                 arguments = json.loads(raw_arguments)
                 assert self._prepared_relative_motion is not None
+                call_id = getattr(context_wrapper, "tool_call_id", "")
+                await self._prepared_relative_motion.prepare_for_call(
+                    call_id,
+                    arguments,
+                )
                 result = await self._prepared_relative_motion.execute_for_call(
-                    getattr(context_wrapper, "tool_call_id", ""),
+                    call_id,
                     arguments,
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
-            async def execute_integrated_motion_preview(
-                _context,
-                raw_arguments: str,
-            ) -> str:
-                arguments = json.loads(raw_arguments)
-                result = await integrated_motion_skill.execute_preview(
-                    preview_id=arguments.get("preview_id"),
+            eligible.add(PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL)
+            if integrated_motion_descriptor not in self.offered_skill_descriptors:
+                self.offered_skill_descriptors.append(
+                    integrated_motion_descriptor
                 )
-                return json.dumps(result, ensure_ascii=False, default=str)
-
-            async def integrated_motion_needs_approval(
-                context_wrapper: Any,
-                arguments: dict[str, Any],
-                _call_id: str,
-            ) -> bool:
-                authorization = _session_authorization(context_wrapper)
-                canonical = await (
-                    integrated_motion_skill
-                    .pending_execution_authorization_arguments(
-                        arguments.get("preview_id")
-                    )
-                )
-                return not (
-                    canonical is not None
-                    and authorization.auto_authorize_relative_motion
-                    and relative_motion_within_authorization(
-                        canonical,
-                        max_auto_move_cm=authorization.max_auto_move_cm,
-                        max_auto_speed_m_s=(
-                            authorization.max_auto_speed_m_s
-                        ),
-                    )
-                )
-
-            preview_tool = next(
-                tool
-                for tool in offered_tools
-                if getattr(tool, "name", "")
-                == "preview_relative_effector_motion"
-            )
-            offered_tools.extend(
-                [
-                    FunctionTool(
+            offered_tools.append(
+                FunctionTool(
                         name=PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
                         description=(
                             "Prepare, authorize, and execute one requested "
                             "relative end-effector translation, bounded "
-                            "controlled-frame yaw, or combined pose change "
+                            "controlled-frame rotation, absolute arm-base "
+                            "orientation, or combined pose change "
                             "as one call-scoped finite action. The host first "
                             "creates a nonphysical preview. Only PREVIEW_READY "
                             "with the exact opaque execution continuation can "
-                            "reach the existing motion approval policy and "
+                            "reach the autonomous free-space policy and "
                             "controller commit. Dependency, alignment, "
                             "confirmation, preview, authorization, freshness, "
-                            "and controller failures return without motion. "
-                            "Use the separate preview tool only when the "
-                            "operator explicitly requests a nonphysical "
-                            "preview without execution."
+                            "and controller failures return without motion."
                         ),
-                        params_json_schema=preview_tool.params_json_schema,
+                        params_json_schema=integrated_motion_descriptor.input_schema,
                         on_invoke_tool=perform_relative_effector_motion,
                         strict_json_schema=True,
-                        needs_approval=(
-                            perform_relative_motion_needs_approval
-                        ),
-                    ),
-                    FunctionTool(
-                        name="execute_integrated_motion_preview",
-                        description=(
-                            "Execute one exact, fresh Integrated Controller "
-                            "relative translation, controlled-frame yaw, or "
-                            "combined pose preview by its opaque preview ID. "
-                            "The host recovers all canonical motion parameters "
-                            "and controller evidence from the pending preview. "
-                            "Host authorization, whether manual or an active "
-                            "bounded session policy, immediately sends the "
-                            "existing one-shot commit trigger, requests "
-                            "physical arm motion, and waits for the "
-                            "controller's bounded completion result."
-                        ),
-                        params_json_schema={
-                            "type": "object",
-                            "properties": {
-                                "preview_id": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                },
-                            },
-                            "required": ["preview_id"],
-                            "additionalProperties": False,
-                        },
-                        on_invoke_tool=execute_integrated_motion_preview,
-                        strict_json_schema=True,
-                        needs_approval=integrated_motion_needs_approval,
-                    ),
-                ]
+                        needs_approval=False,
+                )
             )
         if basic_safe_home_skill is not None:
             async def execute_basic_safe_home(
@@ -1814,11 +1733,11 @@ class PrototypeAgentDriver:
                 "credential-like environment values are redacted. "
                 "When a Provider lifecycle transition is necessary, call "
                 "set_provider_residency immediately. Never answer by asking "
-                "for conversational permission: the tool interruption is the "
-                "approval request, and the host may resolve it from active "
-                "browser-session authorization. A rejected lifecycle "
-                "interruption is final for the current run: do not request "
-                "the identical transition again. After an approved lifecycle "
+                "for conversational permission. The host autonomously permits "
+                "task-required start, hot, and warm transitions; stop remains "
+                "subject to the host lifecycle policy. A rejected lifecycle "
+                "transition is final for the current run: do not request "
+                "the identical transition again. After an accepted lifecycle "
                 "call, do not request that identical transition again in the "
                 "same run; inspect once and report nonconvergence if the "
                 "runtime still does not satisfy the dependency. For a "
@@ -1826,41 +1745,47 @@ class PrototypeAgentDriver:
                 "perform_relative_effector_motion directly instead of "
                 "inspecting or activating Providers preemptively. The host "
                 "prepares a nonphysical preview inside that exact SDK call, "
-                "binds its opaque continuation to the call ID, applies the "
-                "existing approval policy, and only then executes it. If the "
+                "binds its opaque continuation to the call ID, resolves the "
+                "exact signed free-space policy autonomously, and only then "
+                "executes it. If the "
                 "result reports a dependency unavailable, follow its typed "
                 "required_next_tool once. Request only the Integrated "
                 "capability named by the continuation; Manager owns selection "
                 "and transitive activation of its declared Basic dependency. "
                 "Then retry perform_relative_effector_motion once with the "
                 "original semantic request. Use "
-                "preview_relative_effector_motion only when the operator "
-                "explicitly requests a nonphysical preview without execution; "
-                "in that case do not follow its physical continuation. "
-                "A rejected physical-motion approval is final for the current "
-                "run; do not prepare the same action again. "
-                "Do not treat target-edit engagement as completed motion. "
+                "No human approval is requested for signed non-contact "
+                "motion. Treat reach, touch, until reaching, and until touching "
+                "as no-contact boundary targets unless the operator explicitly "
+                "requests sustained force work such as pushing, pressing, "
+                "cutting, scraping, or gripping. Such endpoint wording is "
+                "neither contact authorization nor a reason to refuse motion. "
+                "Integrated permits zero extra WORK_OBJECT clearance without "
+                "intersection and preserves 10 mm from KEEP_OUT obstacles. If "
+                "the controller returns closest-safe, report the successful "
+                "no-contact boundary result and do not retry through the "
+                "blocking object. Intentional force/contact work requires "
+                "another Skill. "
                 "Report success only when the tool returns "
                 "physical_motion_completed=true; otherwise report its exact "
                 "unsuccessful or unconfirmed completion outcome. "
                 "Treat every relative motion request as a new displacement "
                 "from the current measured pose, including repeated requests. "
-                "This relative-pose Skill always uses the Integrated "
-                "Controller's PRESS_MIT one-shot path, so an explicit MIT-mode "
-                "request is already satisfied and needs no additional mode "
-                "field. For a controlled-frame head turn, use "
-                "orientation_policy=APPLY_CONTROLLED_FRAME_YAW_DELTA and "
-                "controlled_frame_yaw_delta_deg. The controlled frame is +X "
-                "forward, +Y left, +Z up: positive yaw turns left and negative "
-                "yaw turns right. Pure rotation uses direction=NONE, "
-                "distance_m=0, and requested_speed_m_s=null; a simultaneous "
-                "translation keeps its actual direction and distance. The "
+                "This relative-pose Skill uses the Integrated Controller's "
+                "signed waypoint path over Basic MIT joint commands and ends "
+                "in gravity float, so an explicit MIT-mode request needs no "
+                "additional mode field. For legacy yaw, use "
+                "APPLY_CONTROLLED_FRAME_YAW_DELTA. "
+                "For controlled-frame-relative 3D rotation, use APPLY_CONTROLLED_FRAME_RPY_DELTA "
+                "with [roll, pitch, yaw] degrees. For an absolute attitude, use "
+                "SET_ARM_BASE_RPY with [roll, pitch, yaw] radians. Pure rotation "
+                "uses direction=NONE and distance_m=0. Multi-axis displacement "
+                "uses translation_vector_m=[x,y,z] in reference_frame and omits "
+                "direction and distance_m. The "
                 "phrase arm forward explicitly maps to "
                 "direction=ARM_BASE_POSITIVE_X with reference_frame=ARM_BASE. "
-                "Never "
-                "reject a combined translation and bounded head turn merely "
-                "because the older preservation-only policy could not express "
-                "it. "
+                "Never reject a combined 3D translation and orientation merely "
+                "because a legacy single-axis or yaw-only form cannot express it. "
                 "Skill "
                 "adapters retain their deterministic policy and authority "
                 "gates. Never translate a prompt into an arbitrary "
@@ -1940,26 +1865,19 @@ class PrototypeAgentDriver:
                     "inspect or activate Providers preemptively. The host "
                     "creates the nonphysical Integrated IK preview inside the "
                     "same call, binds its opaque continuation to the exact SDK "
-                    "call ID, evaluates the existing motion authorization, and "
+                    "call ID, evaluates the autonomous free-space policy, and "
                     "only then commits that preview. If the result reports a "
                     "cold dependency, follow its typed required_next_tool once "
                     "and request only its Integrated capability. Manager owns "
                     "selection and transitive activation of the declared Basic "
                     "dependency. After that transition is ready, retry "
                     "perform_relative_effector_motion once with the original "
-                    "semantic request. Use preview_relative_effector_motion "
-                    "only when the operator explicitly requests a nonphysical "
-                    "preview without execution; then do not follow its "
-                    "physical continuation. "
-                    "A rejected physical-motion approval is final for the "
-                    "current run; do not prepare the same action again. "
+                    "semantic request. "
                     "If Integrated is stopped, cold, or requires HOT "
-                    "recovery, do not report that approval is needed and end "
+                    "recovery, do not report that motion approval is needed and end "
                     "the run: call set_provider_residency immediately so its "
-                    "actual approval interruption can be resolved. "
-                    "If manual authorization is required, tell the operator "
-                    "that approval immediately sends its one-shot commit "
-                    "trigger. "
+                    "lifecycle policy can be resolved. Free-space motion tools "
+                    "must not request human approval. "
                     "A PREVIEW_READY result from an explicitly requested raw "
                     "preview remains nonphysical and must not be described as "
                     "completed motion. "
@@ -1997,26 +1915,24 @@ class PrototypeAgentDriver:
                     "PRESERVE_MEASURED_CONTROLLED_FRAME. This uses the "
                     "Integrated Controller's measured controlled-frame "
                     "orientation with POSE_6DOF; do not describe it as "
-                    "position-only IK. If the operator asks to rotate the "
-                    "effector/hand/head direction to its own right or left, "
-                    "set orientation_policy="
-                    "APPLY_CONTROLLED_FRAME_YAW_DELTA and pass the signed "
-                    "controlled_frame_yaw_delta_deg. Controlled-frame +X is "
-                    "forward, +Y is left, and +Z is up, so left is positive "
-                    "yaw and right is negative yaw. For rotation without "
-                    "translation, use direction=NONE, distance_m=0, and no "
-                    "requested speed. For a combined translation and turn, "
-                    "keep the requested translation fields and add the yaw "
-                    "delta. Explicit arm forward maps to "
+                    "position-only IK. For a legacy left/right turn, use "
+                    "APPLY_CONTROLLED_FRAME_YAW_DELTA. For general controlled-frame-relative "
+                    "roll/pitch/yaw, use APPLY_CONTROLLED_FRAME_RPY_DELTA. For "
+                    "an absolute arm-base attitude, use SET_ARM_BASE_RPY. Pure "
+                    "rotation uses direction=NONE, distance_m=0, and no requested "
+                    "speed. A single multi-axis displacement uses "
+                    "translation_vector_m and omits direction and distance_m; "
+                    "never split it into sequential axis moves. Explicit arm "
+                    "forward maps to "
                     "direction=ARM_BASE_POSITIVE_X and "
-                    "reference_frame=ARM_BASE. This Skill always stages "
-                    "PRESS_MIT ONE_SHOT, so "
-                    "an explicit MIT-mode request is supported without a "
-                    "separate mode argument. When the operator specifies a motion "
+                    "reference_frame=ARM_BASE. This Skill uses the Integrated "
+                    "Controller's signed waypoint path over Basic MIT joint "
+                    "commands, so an explicit MIT-mode request is supported "
+                    "without a separate mode argument. When the operator specifies a motion "
                     "speed, pass it as requested_speed_m_s. The adapter "
-                    "converts distance/speed into a requested trajectory "
-                    "duration. Describe it as nominal average endpoint speed, "
-                    "not constant Cartesian velocity, and report any longer "
+                    "passes it to the controller-owned path scheduler. "
+                    "Describe it as nominal average endpoint speed, not "
+                    "constant Cartesian velocity, and report any longer "
                     "Provider-planned duration as safety limiting. Do not "
                     "claim the requested speed was achieved unless the result "
                     "supports that statement. If preview asks "
@@ -2034,8 +1950,7 @@ class PrototypeAgentDriver:
                     "BEFORE_EVIDENCE_UNAVAILABLE or skipped visual evidence "
                     "separately. Never use the "
                     "destructive reinitialize tool as a readiness probe. "
-                    "Do not claim motion from the target-edit engagement "
-                    "response; report success only when the execution tool "
+                    "Report success only when the tool "
                     "returns physical_motion_completed=true. Otherwise report "
                     "the controller's completion outcome as an unsuccessful "
                     "or unconfirmed move. Treat every relative motion request "
@@ -2242,6 +2157,11 @@ class PrototypeAgentDriver:
             )
         vlm_token = set_vlm_model_selection(vlm_model_override)
         try:
+            if (
+                not isinstance(input_value, RunState)
+                and getattr(self, "no_contact_approach_skill", None) is not None
+            ):
+                await self.no_contact_approach_skill.begin_agent_turn()
             runner_arguments = {
                 "context": _runner_context(input_value, authorization),
                 "max_turns": self.max_turns,
@@ -2361,10 +2281,7 @@ class PrototypeAgentDriver:
                 {"label": "Provider", "value": provider_id},
                 {"label": "Requested state", "value": action},
             ]
-        elif tool_name in {
-            "execute_integrated_motion_preview",
-            PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
-        }:
+        elif tool_name == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL:
             direction = str(arguments.get("direction") or "unknown").upper()
             motion_intent = str(
                 arguments.get("motion_intent") or "NEW_RELATIVE_MOVE"
@@ -2401,6 +2318,25 @@ class PrototypeAgentDriver:
                     f"{abs(yaw_delta_deg):g} degrees {turn} "
                     f"(signed yaw {yaw_delta_deg:g} degrees)"
                 )
+            orientation_change_text = yaw_text
+            raw_rpy_delta = arguments.get("controlled_frame_rpy_delta_deg")
+            if isinstance(raw_rpy_delta, list) and len(raw_rpy_delta) == 3:
+                orientation_change_text = (
+                    "controlled-frame RPY delta "
+                    + ", ".join(f"{float(value):g}°" for value in raw_rpy_delta)
+                )
+            raw_absolute_rpy = arguments.get("target_orientation_rpy_rad")
+            if (
+                orientation_policy == "SET_ARM_BASE_RPY"
+                and isinstance(raw_absolute_rpy, list)
+                and len(raw_absolute_rpy) == 3
+            ):
+                orientation_change_text = (
+                    "arm-base target RPY "
+                    + ", ".join(
+                        f"{float(value):g} rad" for value in raw_absolute_rpy
+                    )
+                )
             requested_speed = arguments.get("requested_speed_m_s")
             requested_speed_text = (
                 "not applicable to rotation-only motion"
@@ -2416,11 +2352,11 @@ class PrototypeAgentDriver:
             except (TypeError, ValueError):
                 planned_duration_text = "unknown"
             if motion_intent == "NEW_RELATIVE_ROTATION":
-                title = f"Rotate the effector head {yaw_text}?"
+                title = f"Rotate the effector to {orientation_change_text}?"
             elif motion_intent == "NEW_RELATIVE_POSE_MOVE":
                 title = (
                     f"Move the arm {direction} by {distance_text} and "
-                    f"rotate the head {yaw_text}?"
+                    f"apply {orientation_change_text}?"
                 )
             else:
                 title = f"Move the arm {direction} by {distance_text}?"
@@ -2435,7 +2371,7 @@ class PrototypeAgentDriver:
                 "the MIT one-shot commit; no separate controller-button press "
                 "is required. Optional visual verification may be skipped, "
                 "unavailable, or inconclusive; it does not verify the "
-                "commanded yaw angle."
+                "commanded orientation."
             )
             confirm_label = "Approve arm motion"
             details = [
@@ -2451,7 +2387,10 @@ class PrototypeAgentDriver:
                 },
                 {"label": "Intent", "value": motion_intent},
                 {"label": "Target XYZ", "value": target_text},
-                {"label": "Controlled-frame yaw", "value": yaw_text},
+                {
+                    "label": "Orientation change",
+                    "value": orientation_change_text,
+                },
                 {
                     "label": "Orientation",
                     "value": (
@@ -2461,12 +2400,17 @@ class PrototypeAgentDriver:
                         else "Apply bounded controlled-frame yaw with POSE_6DOF"
                         if orientation_policy
                         == "APPLY_CONTROLLED_FRAME_YAW_DELTA"
+                        else "Apply controlled-frame RPY delta with POSE_6DOF"
+                        if orientation_policy
+                        == "APPLY_CONTROLLED_FRAME_RPY_DELTA"
+                        else "Set absolute arm-base RPY with POSE_6DOF"
+                        if orientation_policy == "SET_ARM_BASE_RPY"
                         else "Position-only IK"
                     ),
                 },
                 {
                     "label": "Trigger",
-                    "value": "Immediate approved MIT one-shot commit",
+                    "value": "Autonomous signed free-space path commit",
                 },
                 {
                     "label": "Preview",
@@ -2573,25 +2517,6 @@ class PrototypeAgentDriver:
                 "arguments": getattr(raw_item, "arguments", {}),
             }
         if (
-            item.tool_name == "execute_integrated_motion_preview"
-            and self.integrated_motion_skill is not None
-        ):
-            raw_arguments = raw.get("arguments", {})
-            if isinstance(raw_arguments, str):
-                try:
-                    decoded = json.loads(raw_arguments)
-                except json.JSONDecodeError:
-                    decoded = {}
-            else:
-                decoded = raw_arguments
-            if isinstance(decoded, dict):
-                canonical = await (
-                    self.integrated_motion_skill
-                    .pending_execution_authorization_arguments(
-                        decoded.get("preview_id")
-                    )
-                )
-        elif (
             item.tool_name == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
             and self._prepared_relative_motion is not None
         ):

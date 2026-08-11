@@ -1,82 +1,58 @@
-# Attended physical test procedure
+# Attended physical qualification
 
 Read [Integrated safety](SAFETY.md) and
-[Basic safety](../../rebot_arm_dm/docs/SAFETY.md) first. This is an attended
-hardware-characterization procedure, not an autonomous Agent workflow and not
-a substitute for deployment qualification.
-
-Confirm current profile maturity in `manifest.json` and the live
-`GET /v1/capabilities` response. The local GUI can expose experimental modes
-that are deliberately absent from Agent discovery.
+[Basic safety](../../rebot_arm_dm/docs/SAFETY.md) first. This procedure is for
+attended hardware qualification of the autonomous signed free-space path. It
+does not restore retired manual staging or teleoperation interfaces.
 
 ## Prerequisites
 
-Require Manager and Fabric healthy, Basic healthy and in
-`SAFE_HOLD_GRAVITY_FLOAT`, Integrated healthy with its fenced Basic lease, and
-no global motion inhibit.
+- Manager and Fabric are healthy.
+- Basic is healthy in verified gravity float.
+- Integrated is HOT with its fenced arm-group lease.
+- No global motion inhibit is active.
+- The Basic-published assembly ID, fingerprint, mounted-effector revision,
+  inertial values, and collision profiles match the installed hardware.
+- No undeclared object is held.
+- The emergency gravity-float and authoritative safe-home paths are available.
 
-Start with payload mass `0` unless the held tool mass and tool-frame COM are known.
+Confirm `GET /v1/capabilities` advertises only the current free-space surface.
+The developer page must not expose target editing, engagement, gamepad,
+gripper, contact, or runtime-settings controls.
 
-Preview and semantic-scene input are optional diagnostics. Neither is required before the operator's Engage plus LB hardware command.
+## Bounded test sequence
 
-## ONE_SHOT first
+1. From the normal Agent UI, request a 5 mm position-only free-space move in a
+   direction with generous verified clearance.
+2. Confirm the operation uses `perform_relative_effector_motion`, creates a
+   current signed path plan, executes without a human approval prompt, reaches
+   a measured terminal state, and returns to the requested safe final state.
+3. Repeat with a small arbitrary three-axis displacement. Confirm it remains
+   one combined Cartesian goal and never becomes three sequential axis moves.
+4. Repeat with a small orientation-only goal, then a combined translation and
+   orientation goal. Verify position and orientation residuals separately.
+5. Place a work object beyond the requested destination. Confirm motion is
+   allowed up to the zero-extra-margin non-contact boundary.
+6. Place a `KEEP_OUT` obstacle in the direct route. Confirm 10 mm extra
+   clearance and either rejection at the start or `CLOSEST_SAFE`; the arm must
+   not rise or move laterally to invent a detour.
+7. Confirm all selected mounted-effector spheres appear in the main 3D viewer
+   and the control audit names the same profile revision.
 
-Use `PRESS_MIT`, `POSITION_3DOF`, `ONE_SHOT`, duration `3.0 s`, Kp multiplier `1.0`, and an approximately 5 mm staged target change. Click Engage; the arm should remain floating. Click/release LB once. Confirm one smooth physical move, commanded joints differ from measured joints during motion, and completion returns to gravity-float.
+Stop immediately on unexpected descent, path shape, collision classification,
+profile mismatch, loss of gravity support, transport error, or uncertain
+physical outcome. Do not automatically retry.
 
-Increase Kp gradually only after the 1.0x test is stable. Watch the effective-gain table. J1-J3 clamp at Kp 500, so requests above about 4.167x do not increase those joints further.
+## Excluded tests
 
-## HOLD_LB next
+Do not use this Provider to test gripping, cutting, pushing, pressing,
+scraping, contact-force behavior, manual target staging, or motion with an
+undeclared held object. These require separate qualified controllers.
 
-Use a small target and `0.10 s` replan interval. Hold LB and move the staged target slowly. Confirm the motor stream remains smooth across replans and releasing LB returns promptly to gravity-float. Experiment with replan interval only after the default behaves predictably.
+## Safe termination
 
-## TRANSIT_SPEED hardware test
+The authoritative shutdown command from the repository root is
+`./providers/rebot_arm_integrated/scripts/stop_physical_gui_test.ps1 -ProjectRoot (Resolve-Path .) -StopCore`.
 
-Select `TRANSIT_SPEED` and `ONE_SHOT`. Engage and click LB. Integrated sends and refreshes one latched POS_VEL endpoint. After the configured stable position/velocity window it automatically requests gravity-float. Requested joint speeds are saturated at Basic's physical-test POS_VEL caps rather than rejected.
-
-`TRANSIT_SPEED` also supports `HOLD_LB` for the next continuous endpoint test. While LB is held, each new target revision may replace the latched POS_VEL endpoint at the configured replan interval; an unchanged target is not resubmitted as a new endpoint. Releasing LB explicitly requests gravity-float.
-
-TRANSIT_SPEED uses the requested motor-envelope POS_SPEED caps of 5 rad/s on J1-J3 and 10 rad/s on J4-J6. Requested Cartesian speed is converted to per-joint demand, with explicit authentication above 10 rad/s and hard rejection at or above 20 rad/s. If Basic rejects a later continuous endpoint with HTTP 400 after at least one endpoint was accepted, Integrated retains the last accepted endpoint and reports `HOLDING_LAST_VALID_POS_VEL_ENDPOINT`; it does not request float. A transport or Basic health fault is different because Integrated cannot assume that endpoint control remains available.
-
-## Gripper hardware test
-
-Use the dedicated panel to select `MIT` or `POS_TOR`. The physical mapping is RB/open at approximately -4.887 rad and RT/close at approximately -0.349 rad. Engage, then hold RB to open or RT to close. Releasing RB/RT stops changing the request and latches the last selected MIT or POS_TOR endpoint so the gripper continues holding. The UI buttons use the same press/release input. LT, Float, and Safe terminate are the explicit release paths. A latched gripper endpoint is carried in later arm command envelopes; starting a new gripper action remains blocked while an arm trajectory is active.
-
-## CONTACT_WORK / POS_TOR test
-
-Select `CONTACT_WORK`, `POSE_6DOF`, `ONE_SHOT`, and a target within 20 cm of the current pose. Choose JOINT_6, WRENCH_6, or ISOTROPIC_2 in the contact budget panel. The JOINT_6 default is 2, 2, 2, 1, 1, 1 Nm. ISOTROPIC_2 treats the entered force and torque as Euclidean magnitude limits valid in any controlled-frame direction, then maps their worst-case joint effects. With the arm in the posture to be used, click `Capture float torque baseline (manual)` and wait for `CAPTURED`. That command leaves physical control disengaged. Separately click Engage, stage the target, and click LB. Integrated uses the stored baseline and sends the POS_TOR endpoint without performing another real-time baseline capture. It applies the task for the configured one-shot duration and returns to float when time expires; reaching the IK goal is not required.
-
-The GUI displays IK residuals with the selected budget mode, mapped joint
-budgets, calculated effort-limit ratios, live baseline-relative residual
-torque, and saturated joints. Position and orientation residuals outside the
-configured IK tolerances reject the action before execution. A live torque
-residual beyond an effective joint budget can raise affected joints to the
-reviewed physical ceiling while retaining the effort-limited endpoint until
-normal timed completion.
-
-## 6-DoF after 3-DoF
-
-Select `POSE_6DOF` and make small orientation changes. Watch position and orientation residuals separately and compare target/measured coordinate axes.
-
-GUI Safe Terminate is not considered physically verified by software tests. The authoritative shutdown command is:
-
-From the repository root, run
-`.\providers\rebot_arm_integrated\scripts\stop_physical_gui_test.ps1 -ProjectRoot (Resolve-Path .) -StopCore`.
-
-## Gamepad mapping
-
-- Left stick left/right edits base X; left stick up/down edits base Y.
-- D-pad up/down edits base Z.
-- In `POSE_6DOF`, right stick left/right edits base-Z yaw, right stick
-  up/down edits base-Y pitch, and B/X edits positive/negative base-X roll.
-- LB commits once in `ONE_SHOT`; in `HOLD_LB`, hold LB for eligible target
-  revisions and release it to request gravity float.
-- RB commands gripper open and RT commands gripper close with the selected
-  backend; releasing either input latches the last endpoint.
-- LT requests immediate gravity float and disengages.
-- Y cycles the execution profile while motion is idle.
-- Left-stick click captures the steady gravity-float torque baseline.
-- Hold View + Menu for two seconds to launch authoritative safe termination.
-
-GUI engagement is required before local arm execution or a new gripper
-endpoint. Gamepad convenience does not bypass Basic lease fencing, Midbrain
-motion inhibit, or Provider-side validation.
+GUI launch acknowledgement is not evidence that safe-home completed. Inspect
+the safe-termination log and physical arm state.

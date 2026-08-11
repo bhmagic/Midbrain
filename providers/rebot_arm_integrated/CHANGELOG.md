@@ -7,6 +7,51 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Remove the obsolete `/v1/preview` and `/v1/motion/plan` Agent-facing routes;
+  autonomous free-space motion now has one signed path-plan/path-commit API.
+- Remove the retired manual engagement, teleoperation, mutable runtime
+  settings, gripper/contact, and Fabric Cartesian-target routes from the live
+  catalog and HTTP surface. Public state now hides their dormant extraction
+  internals, and the developer page is observation-only except for float and
+  safe termination.
+- Remove synthetic clearance-Z and lateral candidates. Until a general
+  obstacle rerouter is implemented, planning follows the direct Cartesian path
+  or its closest collision-free prefix.
+- Consume the active assembly profile's mounted-effector collision spheres for
+  path checking and expose their profile revisions in diagnostics.
+- Make Agent free-space execution autonomous while preserving exact signed,
+  one-time path authority; generic 6D motion now uses controller-owned
+  `/path-plan` and `/path-commit` instead of legacy endpoint engagement.
+- Ignore `PUSHABLE` under the current temporary policy, enforce 10 mm extra
+  clearance for `KEEP_OUT`, and use zero extra margin for `WORK_OBJECT` while
+  still prohibiting geometry intersection.
+- Evaluate the direct Cartesian path and, when blocked, select its executable
+  closest-safe collision-free prefix. General obstacle rerouting remains
+  explicitly unimplemented so contact work cannot leak into this controller
+  and the arm cannot invent a high-clearance detour.
+- Make semantic-scene collision evidence opportunistic for free-space motion.
+  Fresh scenes still reject colliding paths, while a missing or stale scene is
+  bound and audited as `null` instead of blocking preview or commit.
+- Recast Integrated as a free-space-only controller. Embedded contact and
+  gripper paths remain compatibility code but are disabled and no longer
+  advertised.
+- Consume the Basic-resolved assembly profile, including controlled-frame
+  geometry, collision radii, arm-group resource identity, and preview-bound
+  assembly revisions.
+- Consume mounted-effector collision spheres from the effector profile and
+  keep the arm capsule profile independent of the selected gripper or tool.
+- Lease only `robot_arm.primary/arm`, allowing a separate gripper owner to
+  retain `robot_arm.primary/gripper` concurrently through Basic's disjoint
+  group fencing.
+- Expand the Agent adapter from single-axis/yaw inputs to one arbitrary 3D
+  displacement vector plus controlled-frame-relative RPY or absolute
+  arm-base RPY targets while preserving preview/commit authorization.
+- Resolve advisory Manager authority from the active assembly's arm group so
+  sibling gripper/contact groups are not unnecessarily claimed.
+- Preserve exact local control-audit records while projecting oversized Fabric
+  copies to bounded digest-bearing events, preventing one large plan result
+  from blocking all later audit replay.
+
 - Made `TRANSIT_SPEED` the ordinary-motion default and added
   `robot.motion.arm.integrated.pos_vel.one_shot`; retained the former
   `_limited` name as a deprecated alias.

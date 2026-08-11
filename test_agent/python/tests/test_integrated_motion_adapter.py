@@ -11,6 +11,7 @@ from physical_agent_test.integrated_motion_adapter import (
     IntegratedRelativeMotionAdapter,
     _fit_rigid_correspondences,
 )
+from physical_agent_test.authorization import AuthorizationStore
 from physical_agent_test.spatial_frames import (
     SpatialFrameResolver,
     WORLD_CONVENTION_ID,
@@ -63,6 +64,7 @@ def _adapter(
     attempt_visual_verification: bool = False,
     require_upright_mount_confirmation: bool = False,
     calibration_activation_continuation=None,
+    authorization_store=None,
 ):
     spatial_fabric = fabric or _SpatialFabric()
     return IntegratedRelativeMotionAdapter(
@@ -80,6 +82,9 @@ def _adapter(
         ),
         calibration_activation_continuation=(
             calibration_activation_continuation
+        ),
+        authorization_store=(
+            authorization_store or AuthorizationStore("a" * 32)
         ),
     )
 
@@ -145,6 +150,8 @@ class _IntegratedClient:
         self.rejected_preview_plan = None
         self.preview_duration_override_s = None
         self.preview_joint_speed_policy = None
+        self.path_request = None
+        self.commit_request = None
         self.snapshot = {
             "residency": "HOT",
             "ready": True,
@@ -255,6 +262,121 @@ class _IntegratedClient:
             "preview": preview_payload,
         }
 
+    async def preview_transit_path(self, request):
+        self.path_request = copy.deepcopy(request)
+        target = request["target"]
+        current = self.snapshot["model_view"][
+            "measured_controlled_frame"
+        ]["position_m"]
+        distance = float(
+            np.linalg.norm(
+                np.asarray(target["position_m"], dtype=float)
+                - np.asarray(current, dtype=float)
+            )
+        )
+        requested_speed = float(request.get("requested_speed_m_s") or 0.05)
+        requested_duration = max(0.05, distance / requested_speed)
+        direct = await self.preview_direct_motion(
+            {
+                "command": {
+                    "target": copy.deepcopy(target),
+                    "settings": {
+                        "duration_s": requested_duration,
+                        "ik_mode": request.get("ik_mode"),
+                        "execution_mode": "TRANSIT_SPEED",
+                        "interaction_mode": "ONE_SHOT",
+                    },
+                }
+            }
+        )
+        direct_plan = direct.get("preview")
+        direct_plan = direct_plan if isinstance(direct_plan, dict) else {}
+        if direct.get("status") != "PLANNED":
+            return {
+                "status": "REJECTED",
+                "plan_id": "preview-1",
+                "selected_plan": copy.deepcopy(direct_plan),
+                "preview_contract": {
+                    "request_context_complete": True,
+                    "request_sha256": "request-sha",
+                    "preview_sha256": "preview-sha",
+                },
+            }
+        planned_duration = float(direct_plan["duration_s"])
+        joint_policy = copy.deepcopy(
+            self.preview_joint_speed_policy
+            or {
+                "requested_peak_joint_speed_rad_s": 1.0,
+                "effective_peak_joint_speed_rad_s": 1.0,
+                "authentication_required": False,
+                "hard_limit_exceeded": False,
+            }
+        )
+        return {
+            "status": "PLANNED",
+            "plan_id": "preview-1",
+            "goal_reached": True,
+            "closest_safe": False,
+            "motion_outcome": "GOAL_REACHED",
+            "selected_plan": {
+                "planning_valid": True,
+                "goal_reached": True,
+                "closest_safe": False,
+                "preview": {
+                    "preview_id": "preview-1",
+                    "collision_free": True,
+                    "duration_s": planned_duration,
+                },
+                "speed_schedule": {
+                    "duration_s": planned_duration,
+                    "joint_speed_policy": joint_policy,
+                },
+            },
+            "preview_contract": {
+                "request_context_complete": True,
+                "request_sha256": "request-sha",
+                "preview_sha256": "preview-sha",
+                "controller_provider_id": "robot_arm.primary.integrated",
+                "controller_provider_instance_id": "controller-instance",
+                "controller_boot_id": "controller-boot",
+                "controller_configuration_sha256": "configuration-sha",
+                "issued_at_us": 2_000_000,
+                "expires_at_us": 10**18,
+                "scene_revision": "scene-1",
+            },
+        }
+
+    async def commit_transit_path(self, request, *, authorization_assertion):
+        self.commit_request = copy.deepcopy(request)
+        target = self.path_request["target"]["position_m"]
+        if self.completion_success:
+            self.snapshot["model_view"]["measured_controlled_frame"][
+                "position_m"
+            ] = list(target)
+            status = "COMPLETED_FLOAT"
+            self.snapshot["safety"] = {"float_confirmed": True}
+        else:
+            self.snapshot["model_view"]["measured_controlled_frame"][
+                "position_m"
+            ] = [target[0], target[1], target[2] - 0.006]
+            status = "FAILED"
+        self.snapshot["planning"] = {
+            "authorized_transit": None,
+            "last_authorized_transit": {
+                "plan_id": "preview-1",
+                "status": status,
+                "error": None if self.completion_success else "arrival failed",
+            },
+        }
+        return {
+            "status": "EXECUTING",
+            "planned_duration_s": 0.5,
+            "final_state": "FLOAT",
+        }
+
+    async def release_transit_path(self):
+        return {"status": "gravity_float"}
+
     async def engage_staged_motion(self):
         self.engage_count += 1
         return {"status": "engaged_target_edit", "engaged": True}
@@ -302,9 +424,204 @@ class _OfflineIntegratedClient:
         raise httpx.ConnectError("All connection attempts failed")
 
 
+class _SignedIntegratedClient(_IntegratedClient):
+    def __init__(self, *, closest_safe: bool = False):
+        super().__init__()
+        self.closest_safe = bool(closest_safe)
+        self.path_request = None
+        self.commit_request = None
+        self.authorization_assertion = None
+
+    async def preview_transit_path(self, request):
+        self.path_request = copy.deepcopy(request)
+        target = request["target"]
+        selected = {
+            "planning_valid": True,
+            "goal_reached": not self.closest_safe,
+            "closest_safe": self.closest_safe,
+            "executed_controlled_displacement_m": (
+                0.08 if self.closest_safe else 0.1
+            ),
+            "remaining_position_to_goal_m": (
+                0.02 if self.closest_safe else 0.0
+            ),
+            "blocking_object_ids": (
+                ["work-object"] if self.closest_safe else []
+            ),
+            "blocking_object_types": (
+                ["WORK_OBJECT"] if self.closest_safe else []
+            ),
+            "closest_safe_reason": (
+                "REQUESTED_GOAL_BLOCKED_BY_SEMANTIC_GEOMETRY"
+                if self.closest_safe
+                else None
+            ),
+            "preview": {
+                "preview_id": "signed-preview-1",
+                "collision_free": True,
+                "duration_s": 0.5,
+            },
+            "speed_schedule": {
+                "duration_s": 0.5,
+                "joint_speed_policy": {
+                    "requested_peak_joint_speed_rad_s": 1.0,
+                    "effective_peak_joint_speed_rad_s": 1.0,
+                    "authentication_required": False,
+                    "hard_limit_exceeded": False,
+                },
+            },
+        }
+        now_us = 2_000_000
+        return {
+            "status": "PLANNED",
+            "plan_id": "signed-preview-1",
+            "goal_reached": not self.closest_safe,
+            "closest_safe": self.closest_safe,
+            "motion_outcome": (
+                "CLOSEST_SAFE" if self.closest_safe else "GOAL_REACHED"
+            ),
+            "selected_plan": selected,
+            "preview_contract": {
+                "request_context_complete": True,
+                "request_sha256": "request-sha",
+                "preview_sha256": "preview-sha",
+                "controller_provider_id": "robot_arm.primary.integrated",
+                "controller_provider_instance_id": "instance-1",
+                "controller_boot_id": "boot-1",
+                "controller_configuration_sha256": "config-sha",
+                "issued_at_us": now_us,
+                "expires_at_us": 10**18,
+                "scene_revision": "scene-1",
+            },
+            "target": copy.deepcopy(target),
+        }
+
+    async def commit_transit_path(
+        self,
+        request,
+        *,
+        authorization_assertion,
+    ):
+        self.commit_request = copy.deepcopy(request)
+        self.authorization_assertion = authorization_assertion
+        target = self.path_request["target"]["position_m"]
+        self.snapshot["model_view"]["measured_controlled_frame"][
+            "position_m"
+        ] = list(target)
+        self.snapshot["planning"] = {
+            "authorized_transit": None,
+            "last_authorized_transit": {
+                "plan_id": "signed-preview-1",
+                "status": "COMPLETED_FLOAT",
+            },
+        }
+        self.snapshot["safety"] = {"float_confirmed": True}
+        return {
+            "status": "EXECUTING",
+            "planned_duration_s": 0.5,
+            "final_state": "FLOAT",
+        }
+
+    async def release_transit_path(self):
+        return {"status": "gravity_float"}
+
+
 class IntegratedRelativeMotionAdapterTests(
     unittest.IsolatedAsyncioTestCase
 ):
+    async def test_signed_autonomous_path_executes_combined_six_dof_goal(self):
+        client = _SignedIntegratedClient()
+        adapter = _adapter(
+            client,
+            authorization_store=AuthorizationStore("a" * 32),
+        )
+
+        preview = await adapter.preview(
+            direction="ARM_BASE_POSITIVE_X",
+            reference_frame="ARM_BASE",
+            distance_m=0.1,
+            requested_speed_m_s=0.2,
+            orientation_policy="SET_ARM_BASE_RPY",
+            target_orientation_rpy_rad=[0.17, -0.09, 0.52],
+        )
+        result = await adapter.execute_preview(
+            **preview["required_next_tool"]["arguments"]
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertFalse(preview["approval_required"])
+        self.assertEqual(client.path_request["ik_mode"], "POSE_6DOF")
+        self.assertEqual(client.path_request["final_state"], "FLOAT")
+        self.assertEqual(
+            client.path_request["request_context"]["context_kind"],
+            "AUTONOMOUS_FREE_SPACE_KINEMATIC",
+        )
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertTrue(result["physical_motion_completed"])
+        self.assertEqual(
+            result["authorization"]["issuer"],
+            "physical-agent-autonomy",
+        )
+        self.assertFalse(
+            result["authorization"]["human_approval_required"]
+        )
+        self.assertIsNotNone(client.authorization_assertion)
+        self.assertEqual(client.engage_count, 0)
+        self.assertEqual(client.trigger_count, 0)
+
+    async def test_signed_autonomous_path_reports_closest_safe_terminal(self):
+        client = _SignedIntegratedClient(closest_safe=True)
+        adapter = _adapter(
+            client,
+            authorization_store=AuthorizationStore("a" * 32),
+        )
+
+        preview = await adapter.preview(
+            direction="ARM_BASE_POSITIVE_X",
+            reference_frame="ARM_BASE",
+            distance_m=0.1,
+            requested_speed_m_s=0.2,
+        )
+        result = await adapter.execute_preview(
+            **preview["required_next_tool"]["arguments"]
+        )
+
+        self.assertEqual(result["status"], "MOTION_COMPLETED_CLOSEST_SAFE")
+        self.assertTrue(result["closest_safe"])
+        self.assertFalse(result["goal_reached"])
+        self.assertEqual(result["distance_m"], 0.08)
+        self.assertEqual(
+            result["closest_safe_report"]["blocking_object_types"],
+            ["WORK_OBJECT"],
+        )
+
+    async def test_signed_rotation_only_accepts_controller_owned_duration(self):
+        client = _SignedIntegratedClient()
+        adapter = _adapter(
+            client,
+            authorization_store=AuthorizationStore("a" * 32),
+        )
+
+        preview = await adapter.preview(
+            direction="NONE",
+            distance_m=0.0,
+            orientation_policy="APPLY_CONTROLLED_FRAME_RPY_DELTA",
+            controlled_frame_rpy_delta_deg=[10.0, -5.0, 20.0],
+        )
+        result = await adapter.execute_preview(
+            **preview["required_next_tool"]["arguments"]
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertEqual(preview["planned_duration_s"], 0.5)
+        self.assertEqual(client.path_request["ik_mode"], "POSE_6DOF")
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertEqual(
+            result["controlled_frame_rpy_delta_deg"],
+            [10.0, -5.0, 20.0],
+        )
+        self.assertEqual(result["final_state"], "FLOAT")
+
     def test_root_alignment_fit_requires_noncollinear_motion(self) -> None:
         collinear = np.asarray(
             [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.4, 0.0, 0.0]],
@@ -400,7 +717,7 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(
             result["required_next_tool"],
             {
-                "name": "execute_integrated_motion_preview",
+                "name": "HOST_INTERNAL_SIGNED_PATH_COMMIT",
                 "arguments": {"preview_id": "preview-1"},
             },
         )
@@ -678,7 +995,7 @@ class IntegratedRelativeMotionAdapterTests(
         )
         self.assertEqual(
             result["timing"]["semantics"],
-            "DEFAULT_DURATION_WITH_JOINT_RATE_SAFETY",
+            "CONTROLLER_OWNED_SIGNED_PATH",
         )
 
     async def test_combined_arm_forward_and_intrinsic_head_yaw_uses_one_pose_target(
@@ -719,6 +1036,88 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(
             command["target"]["rpy_rad"],
             preview["target_orientation_rpy_rad"],
+        )
+
+    async def test_arbitrary_arm_base_vector_is_one_cartesian_goal(
+        self,
+    ) -> None:
+        client = _IntegratedClient()
+        adapter = _adapter(client)
+
+        preview = await adapter.preview(
+            translation_vector_m=[0.1, -0.2, 0.05],
+            reference_frame="ARM_BASE",
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertEqual(preview["direction"], "VECTOR")
+        self.assertEqual(
+            preview["translation_vector_m"],
+            [0.1, -0.2, 0.05],
+        )
+        np.testing.assert_allclose(
+            preview["target_position_m"],
+            [0.2, 0.0, 0.35],
+            atol=1e-12,
+        )
+        self.assertEqual(
+            client.last_preview_request["command"]["target"]["position_m"],
+            preview["target_position_m"],
+        )
+
+    async def test_vector_and_intrinsic_rpy_delta_bind_one_pose_target(
+        self,
+    ) -> None:
+        client = _IntegratedClient()
+        client.snapshot["model_view"]["measured_controlled_frame"][
+            "rpy_rad"
+        ] = [0.0, 0.0, 0.0]
+        adapter = _adapter(client)
+
+        preview = await adapter.preview(
+            translation_vector_m=[0.1, 0.2, -0.05],
+            reference_frame="ARM_BASE",
+            orientation_policy="APPLY_CONTROLLED_FRAME_RPY_DELTA",
+            controlled_frame_rpy_delta_deg=[10.0, -15.0, 30.0],
+        )
+
+        self.assertEqual(preview["motion_intent"], "NEW_RELATIVE_POSE_MOVE")
+        self.assertEqual(
+            preview["orientation_reference_frame"],
+            "CONTROLLED_FRAME",
+        )
+        np.testing.assert_allclose(
+            preview["target_orientation_rpy_rad"],
+            np.radians([10.0, -15.0, 30.0]),
+            atol=1e-12,
+        )
+        command = client.last_preview_request["command"]
+        self.assertEqual(command["settings"]["ik_mode"], "POSE_6DOF")
+        self.assertEqual(
+            command["target"]["rpy_rad"],
+            preview["target_orientation_rpy_rad"],
+        )
+
+    async def test_rotation_only_accepts_absolute_arm_base_rpy(
+        self,
+    ) -> None:
+        client = _IntegratedClient()
+        adapter = _adapter(client)
+        target_rpy = [0.25, -0.5, 1.0]
+
+        preview = await adapter.preview(
+            direction="NONE",
+            distance_m=0.0,
+            orientation_policy="SET_ARM_BASE_RPY",
+            target_orientation_rpy_rad=target_rpy,
+        )
+
+        self.assertEqual(preview["motion_intent"], "NEW_RELATIVE_ROTATION")
+        self.assertEqual(preview["orientation_reference_frame"], "ARM_BASE")
+        self.assertEqual(preview["target_orientation_rpy_rad"], target_rpy)
+        self.assertEqual(
+            client.last_preview_request["command"]["target"]["rpy_rad"],
+            target_rpy,
         )
 
     async def test_combined_pose_visual_evidence_confirms_translation_not_yaw(
@@ -1200,7 +1599,7 @@ class IntegratedRelativeMotionAdapterTests(
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
                     "required_capability": (
-                        "robot.motion.arm.integrated.pos_vel.one_shot"
+                        "robot_arm.motion.free_space.preview_commit.v1"
                     ),
                 },
             },
@@ -1232,7 +1631,7 @@ class IntegratedRelativeMotionAdapterTests(
                     "provider_id": "robot_arm.primary.integrated",
                     "action": "hot",
                     "required_capability": (
-                        "robot.motion.arm.integrated.pos_vel.one_shot"
+                        "robot_arm.motion.free_space.preview_commit.v1"
                     ),
                 },
             },
@@ -1250,8 +1649,8 @@ class IntegratedRelativeMotionAdapterTests(
 
         self.assertEqual(result["status"], "MOTION_COMPLETED")
         self.assertTrue(result["physical_motion_completed"])
-        self.assertEqual(client.engage_count, 1)
-        self.assertEqual(client.trigger_count, 1)
+        self.assertEqual(client.engage_count, 0)
+        self.assertEqual(client.trigger_count, 0)
 
     async def test_finished_motion_without_arrival_is_not_success(self) -> None:
         client = _IntegratedClient()
@@ -1259,16 +1658,10 @@ class IntegratedRelativeMotionAdapterTests(
         adapter = _adapter(client)
         preview = await adapter.preview(direction="UP", distance_m=0.2)
 
-        result = await adapter.execute_preview(
-            **preview["required_next_tool"]["arguments"]
-        )
-
-        self.assertEqual(
-            result["status"],
-            "MOTION_FINISHED_WITHOUT_CONFIRMED_ARRIVAL",
-        )
-        self.assertFalse(result["physical_motion_completed"])
-        self.assertIn("DEADLINE_FLOAT_BEFORE_ARRIVAL", result["message"])
+        with self.assertRaisesRegex(RuntimeError, "arrival failed"):
+            await adapter.execute_preview(
+                **preview["required_next_tool"]["arguments"]
+            )
 
         next_preview = await adapter.preview(direction="UP", distance_m=0.2)
 
@@ -1276,7 +1669,7 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertAlmostEqual(next_preview["start_position_m"][2], 0.494)
         self.assertAlmostEqual(next_preview["target_position_m"][2], 0.694)
 
-    async def test_changed_controller_preview_is_refreshed_before_commit(
+    async def test_signed_controller_preview_is_not_restaged_before_commit(
         self,
     ) -> None:
         client = _IntegratedClient()
@@ -1289,8 +1682,8 @@ class IntegratedRelativeMotionAdapterTests(
         )
 
         self.assertEqual(result["status"], "MOTION_COMPLETED")
-        self.assertTrue(result["controller_preview_refreshed"])
-        self.assertEqual(client.engage_count, 1)
+        self.assertFalse(result["controller_preview_refreshed"])
+        self.assertEqual(client.engage_count, 0)
 
     async def test_changed_measured_start_pose_is_rejected(self) -> None:
         client = _IntegratedClient()

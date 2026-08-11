@@ -133,7 +133,7 @@ class BrowserUiContractTests(unittest.TestCase):
                 str(surface),
             )
 
-    def test_integrated_model_canvas_uses_neutral_background(self) -> None:
+    def test_integrated_developer_ui_is_read_only_except_safe_controls(self) -> None:
         root = Path(__file__).resolve().parents[3]
         app = (
             root
@@ -145,8 +145,17 @@ class BrowserUiContractTests(unittest.TestCase):
             / "app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('context.fillStyle = "#0a0a0a"', app)
-        self.assertNotIn('context.fillStyle = "#0a0f14"', app)
+        self.assertIn('api("/v1/state"', app)
+        self.assertIn('api("/v1/float"', app)
+        self.assertIn('api("/v1/safe-terminate"', app)
+        for retired_path in (
+            "/v1/engage",
+            "/v1/teleop",
+            "/v1/settings",
+            "/v1/gripper",
+            "/v1/contact-baseline",
+        ):
+            self.assertNotIn(retired_path, app)
 
     def test_legacy_foundation_debug_ui_uses_neutral_chrome(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -349,6 +358,9 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('id="showWorkObject"', app)
         self.assertIn('id="showGripper"', app)
         self.assertIn('"type": "GRIPPER"', app)
+        self.assertIn('"ACTIVE_EFFECTOR_PROFILE"', app)
+        self.assertIn('markers.pop("robot-gripper-tool", None)', app)
+        self.assertIn('"robot-effector-collider:', app)
         self.assertIn('"FABRIC_TRANSFORM"', app)
         self.assertIn("_frame_transform_to_world", app)
         self.assertIn(
@@ -716,7 +728,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("APPLY_CONTROLLED_FRAME_YAW_DELTA", regular)
         self.assertIn("controlled-frame yaw AUTO <= 45°", regular)
         self.assertIn('["start", "hot", "warm"]', regular)
-        self.assertIn("execute_integrated_motion_preview", regular)
+        self.assertNotIn("execute_integrated_motion_preview", regular)
         self.assertIn("Provider stop AUTO", regular)
         self.assertIn("safe-home AUTO", regular)
         self.assertIn("_validate_automatic_agent_approval", app)

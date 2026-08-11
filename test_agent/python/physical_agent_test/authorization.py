@@ -152,13 +152,18 @@ class AuthorizationStore:
                     "approved decision or controller preview has expired"
                 )
             assertion_id = str(uuid.uuid4())
+            issuer = (
+                "physical-agent-autonomy"
+                if record["resolved_by"] == "autonomous-free-space-policy"
+                else "physical-agent-ui"
+            )
             claims = {
                 "schema": (
                     "physical_agent.authorization_execution_assertion"
                 ),
                 "schema_version": 1,
                 "assertion_id": assertion_id,
-                "issuer": "physical-agent-ui",
+                "issuer": issuer,
                 "audience": authority["controller_provider_id"],
                 "action": "EXECUTE_TRANSIT_PATH",
                 "decision_id": record["decision_id"],

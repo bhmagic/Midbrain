@@ -715,10 +715,7 @@
             plannedSpeedMps === 0 &&
             argumentsValue.requested_speed_m_s == null &&
             boundedYaw;
-          return [
-            "execute_integrated_motion_preview",
-            "perform_relative_effector_motion"
-          ].includes(approval.tool_name) &&
+          return approval.tool_name === "perform_relative_effector_motion" &&
             (exactTranslation || exactCombinedPose || exactPureRotation);
         });
       if (motionEligible) {

@@ -55,6 +55,10 @@ class ControlAuditOutbox:
         self.boot_id = boot_id
         self.maximum_pending = max(64, int(settings.get("maximum_pending", 4096)))
         self.maximum_replay = max(0, int(settings.get("maximum_replay", 4096)))
+        self.maximum_fabric_event_bytes = max(
+            4096,
+            int(settings.get("maximum_fabric_event_bytes", 1_000_000)),
+        )
         self._lock = threading.Lock()
         self._pending: deque[dict[str, Any]] = deque()
         self._sequence = 0
@@ -63,6 +67,7 @@ class ControlAuditOutbox:
         self._local_persisted_count = 0
         self._local_write_failure_count = 0
         self._published_count = 0
+        self._projected_fabric_count = 0
         self._dropped_pending_count = 0
         self._last_local_error: str | None = None
         self._last_fabric_error: str | None = None
@@ -167,8 +172,9 @@ class ControlAuditOutbox:
                 event = copy.deepcopy(self._pending[0]) if self._pending else None
             if event is None:
                 break
+            fabric_event, projected = self._fabric_event(event)
             try:
-                publish(self.fabric_stream, event)
+                publish(self.fabric_stream, fabric_event)
             except Exception as error:
                 with self._lock:
                     self._last_fabric_error = str(error)
@@ -184,10 +190,69 @@ class ControlAuditOutbox:
                     int(event["audit_sequence"]),
                 )
                 self._published_count += 1
+                if projected:
+                    self._projected_fabric_count += 1
                 self._last_fabric_error = None
                 self._write_cursor_locked()
             published += 1
         return published
+
+    def _fabric_event(self, event: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        event_bytes = _canonical_json_bytes(event)
+        if len(event_bytes) <= self.maximum_fabric_event_bytes:
+            return event, False
+
+        canonical_request = event.get("canonical_request")
+        request_bytes = _canonical_json_bytes(canonical_request)
+        request_for_fabric: Any = canonical_request
+        if len(request_bytes) > self.maximum_fabric_event_bytes // 4:
+            request_for_fabric = {
+                "fabric_projection": "OVERSIZED_PROVIDER_LOCAL_CANONICAL_REQUEST",
+                "sha256": hashlib.sha256(request_bytes).hexdigest(),
+                "utf8_bytes": len(request_bytes),
+            }
+
+        result = event.get("result")
+        result_bytes = _canonical_json_bytes(result)
+        result_keys = sorted(result) if isinstance(result, dict) else []
+        error = event.get("error")
+        projected = {
+            key: copy.deepcopy(event.get(key))
+            for key in (
+                "schema",
+                "schema_version",
+                "audit_event_id",
+                "audit_sequence",
+                "recorded_at_us",
+                "provider_id",
+                "provider_instance_id",
+                "boot_id",
+                "lifecycle",
+                "endpoint",
+                "command_id",
+                "plan_id",
+                "binding_id",
+                "authority_id",
+                "related_skill_id",
+                "canonical_request_sha256",
+                "mode",
+            )
+        }
+        projected["canonical_request"] = request_for_fabric
+        projected["result"] = {
+            "fabric_projection": "OVERSIZED_PROVIDER_LOCAL_RESULT",
+            "sha256": hashlib.sha256(result_bytes).hexdigest(),
+            "utf8_bytes": len(result_bytes),
+            "keys": result_keys,
+        }
+        projected["error"] = None if error is None else str(error)[:2048]
+        projected["fabric_projection"] = {
+            "reason": "FABRIC_REQUEST_BODY_LIMIT",
+            "exact_provider_local_record": True,
+            "original_event_sha256": hashlib.sha256(event_bytes).hexdigest(),
+            "original_event_utf8_bytes": len(event_bytes),
+        }
+        return projected, True
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -206,6 +271,8 @@ class ControlAuditOutbox:
                 "local_persisted_count": self._local_persisted_count,
                 "local_write_failure_count": self._local_write_failure_count,
                 "published_count": self._published_count,
+                "projected_fabric_count": self._projected_fabric_count,
+                "maximum_fabric_event_bytes": self.maximum_fabric_event_bytes,
                 "dropped_pending_count": self._dropped_pending_count,
                 "last_local_error": self._last_local_error,
                 "last_fabric_error": self._last_fabric_error,
@@ -296,3 +363,12 @@ class ControlAuditOutbox:
 
 def _json_copy(value: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")

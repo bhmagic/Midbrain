@@ -15,9 +15,10 @@ from rebot_arm_integrated.service import IntegratedService
 
 
 class _Controller:
-    def __init__(self):
+    def __init__(self, scene_revision="scene-1"):
         self.physical_control_call_count = 0
         self.authorization_configured = False
+        self.scene_revision = scene_revision
 
     def set_authorization_assertion_configured(self, configured):
         self.authorization_configured = bool(configured)
@@ -90,7 +91,7 @@ class _Controller:
                     "preview_id": "transit-plan-1",
                 },
             },
-            "scene_revision": "scene-1",
+            "scene_revision": self.scene_revision,
         }
 
     def execute_authorized_transit(self, **kwargs):
@@ -148,14 +149,14 @@ class ControlAuditTests(unittest.TestCase):
 
             submitted = audit.record(
                 lifecycle="SUBMITTED",
-                endpoint="/v1/motion/plan",
+                endpoint="/v1/motion/path-plan",
                 command_id="command-1",
                 canonical_request=request,
                 related_skill_id="skill-1",
             )
             accepted = audit.record(
                 lifecycle="ACCEPTED",
-                endpoint="/v1/motion/plan",
+                endpoint="/v1/motion/path-plan",
                 command_id="command-1",
                 canonical_request=request,
                 result={"plan_id": "plan-1"},
@@ -207,6 +208,73 @@ class ControlAuditTests(unittest.TestCase):
             self.assertEqual(restored.status()["last_sequence"], 2)
             self.assertEqual(restored.status()["pending_count"], 0)
 
+    def test_oversized_fabric_copy_is_projected_without_changing_local_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = {
+                "path": str(root / "events.jsonl"),
+                "cursor_path": str(root / "cursor.json"),
+                "strict_local_write": True,
+                "maximum_fabric_event_bytes": 4096,
+            }
+            audit = ControlAuditOutbox(
+                root,
+                "provider",
+                "instance",
+                "boot",
+                config,
+            )
+            request = {"target": {"position_m": [0.1, 0.2, 0.3]}}
+            large_result = {
+                "candidate_evaluations": "x" * 12000,
+                "plan_id": "plan-large",
+            }
+            recorded = audit.record(
+                lifecycle="ACCEPTED",
+                endpoint="/v1/motion/path-plan",
+                command_id="command-large",
+                canonical_request=request,
+                result=large_result,
+                plan_id="plan-large",
+            )
+            local_event = json.loads(
+                (root / "events.jsonl").read_text(encoding="utf-8").strip()
+            )
+            published: list[dict] = []
+
+            self.assertEqual(
+                audit.publish_pending(
+                    lambda _stream, event: published.append(event),
+                    maximum_events=1,
+                ),
+                1,
+            )
+
+            self.assertEqual(local_event["result"], large_result)
+            self.assertEqual(published[0]["audit_event_id"], recorded["audit_event_id"])
+            self.assertEqual(published[0]["canonical_request"], request)
+            self.assertEqual(
+                published[0]["result"]["fabric_projection"],
+                "OVERSIZED_PROVIDER_LOCAL_RESULT",
+            )
+            self.assertTrue(
+                published[0]["fabric_projection"]["exact_provider_local_record"]
+            )
+            self.assertLess(
+                len(
+                    json.dumps(
+                        published[0],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ),
+                4096,
+            )
+            status = audit.status()
+            self.assertEqual(status["pending_count"], 0)
+            self.assertEqual(status["projected_fabric_count"], 1)
+            self.assertEqual(status["published_sequence"], 1)
+
     def test_recent_timeline_includes_exact_request_and_fabric_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -227,7 +295,7 @@ class ControlAuditTests(unittest.TestCase):
             }
             audit.record(
                 lifecycle="SUBMITTED",
-                endpoint="/v1/motion/plan",
+                endpoint="/v1/motion/path-plan",
                 command_id="command-1",
                 canonical_request=request,
             )
@@ -299,7 +367,7 @@ class ControlAuditTests(unittest.TestCase):
             self.assertEqual(audit.status()["pending_count"], 1)
             self.assertIn("Fabric offline", audit.status()["last_fabric_error"])
 
-    def test_direct_plan_is_nonphysical_and_returns_normalized_target(self) -> None:
+    def test_signed_path_plan_is_nonphysical_and_returns_normalized_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             service = IntegratedService(
@@ -316,28 +384,38 @@ class ControlAuditTests(unittest.TestCase):
                 None,
                 None,
             )
+            spatial_resolution = {"reference_frame": "ARM_BASE"}
+            spatial_sha256 = hashlib.sha256(
+                json.dumps(
+                    spatial_resolution,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             request = {
                 "command_id": "command-1",
                 "related_skill_id": "skill-1",
-                "command": {
-                    "target": {
-                        "position_m": [0.1, 0.2, 0.3],
-                    }
+                "target": {"position_m": [0.1, 0.2, 0.3]},
+                "request_context": {
+                    "context_kind": "AUTONOMOUS_FREE_SPACE_KINEMATIC",
+                    "spatial_resolution_sha256": spatial_sha256,
+                    "spatial_resolution_resolved_at_us": time.time_ns() // 1000,
+                    "spatial_resolution": spatial_resolution,
                 },
             }
 
             result = service._audited_control(
-                "/v1/motion/plan",
+                "/v1/motion/path-plan",
                 request,
-                lambda: service._direct_plan_motion(request),
+                lambda: service._direct_plan_transit_path(request),
             )
 
             self.assertEqual(result["status"], "PLANNED")
             self.assertEqual(result["enforcement"], "SHADOW_NONPHYSICAL")
             self.assertFalse(result["physical_motion_authorized"])
-            self.assertEqual(result["plan_id"], "preview-1")
+            self.assertEqual(result["plan_id"], "transit-plan-1")
             self.assertEqual(
-                result["normalized_target"]["position_m"],
+                result["target_position_m"],
                 [0.1, 0.2, 0.3],
             )
             self.assertEqual(result["control_audit"]["command_id"], "command-1")
@@ -464,7 +542,7 @@ class ControlAuditTests(unittest.TestCase):
                 "controller rejected the request",
             ):
                 service._audited_control(
-                    "/v1/motion/plan",
+                    "/v1/motion/path-plan",
                     {"command_id": "rejected-command"},
                     rejected_operation,
                 )
@@ -543,6 +621,57 @@ class ControlAuditTests(unittest.TestCase):
             self.assertFalse(status["may_switch_control_mode"])
             self.assertFalse(status["may_submit_motor_commands"])
             self.assertEqual(service.controller.physical_control_call_count, 0)
+
+    def test_manager_authority_resolves_assembly_arm_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = IntegratedService(
+                _Controller(),  # type: ignore[arg-type]
+                {
+                    "provider_id": "robot_arm.primary.integrated",
+                    "listen_host": "127.0.0.1",
+                    "listen_port": 8793,
+                    "manager_authority": {
+                        "enabled": True,
+                        "mode": "SHADOW_OBSERVE",
+                        "resource_id": "ASSEMBLY_ARM_GROUP",
+                    },
+                    "control_audit": {
+                        "path": str(root / "events.jsonl"),
+                        "cursor_path": str(root / "cursor.json"),
+                    },
+                },
+                "http://manager",
+                None,
+            )
+            observed_resource_ids = []
+
+            def observe(resource_id):
+                observed_resource_ids.append(resource_id)
+                return {
+                    "resource_id": resource_id,
+                    "enforcement": "ADVISORY",
+                    "active_lease": None,
+                }
+
+            service.platform.control_authority = observe  # type: ignore[method-assign]
+            service._poll_advisory_authority(
+                {
+                    "arm_resource_id": "robot_arm.primary/arm",
+                    "lease": None,
+                    "engaged": False,
+                }
+            )
+
+            self.assertEqual(observed_resource_ids, ["robot_arm.primary/arm"])
+            self.assertEqual(
+                service.manager_authority_status["configured_resource_id"],
+                "ASSEMBLY_ARM_GROUP",
+            )
+            self.assertEqual(
+                service.manager_authority_status["resource_id"],
+                "robot_arm.primary/arm",
+            )
 
     def test_transit_path_plan_is_controller_owned_shadow_and_audited(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -679,6 +808,107 @@ class ControlAuditTests(unittest.TestCase):
         self.assertEqual(
             contract["scene_revision_adaptation"]["policy"],
             "CONTROLLER_NEWEST_ACCEPTED_SCENE_USED",
+        )
+
+    def test_transit_preview_allows_missing_scene_revision(self) -> None:
+        service = IntegratedService(
+            _Controller(scene_revision=None),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        now_us = time.time_ns() // 1000
+        request = {
+            "target": {"position_m": [0.2, 0.1, 0.4], "rpy_rad": None},
+            "requested_speed_m_s": 0.05,
+            "request_context": {
+                "binding_id": "binding-1",
+                "camera_provider_id": "camera.test",
+                "camera_provider_instance_id": "camera-instance-1",
+                "camera_boot_id": "camera-boot-1",
+                "workcell_transform_id": "transform-1",
+                "workcell_transform_revision": "transform-revision-1",
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+                ),
+                "vio_session_epoch": "vio-epoch-1",
+                "observation_timestamp_us": now_us,
+                "observation_expires_at_us": now_us + 60_000_000,
+            },
+        }
+
+        result = service._direct_plan_transit_path(request)
+        contract = result["preview_contract"]
+
+        self.assertTrue(contract["request_context_complete"])
+        self.assertEqual(contract["request_context_issues"], [])
+        self.assertIsNone(contract["scene_revision"])
+        self.assertIsNone(contract["scene_revision_adaptation"])
+
+    def test_autonomous_free_space_context_is_digest_bound_without_ui(self) -> None:
+        service = IntegratedService(
+            _Controller(scene_revision=None),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        spatial_resolution = {
+            "schema": "physical_agent.semantic_direction_resolution",
+            "schema_version": 2,
+            "direction": "ARM_BASE_POSITIVE_Z",
+            "reference_frame": "ARM_BASE",
+            "resolved_unit_vector": [0.0, 0.0, 1.0],
+            "provenance": {
+                "resolution_source": "EXPLICIT_ARM_BASE_AXIS",
+                "resolved_at_us": time.time_ns() // 1000,
+            },
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                spatial_resolution,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        request = {
+            "target": {"position_m": [0.2, 0.1, 0.4], "rpy_rad": None},
+            "requested_speed_m_s": 0.05,
+            "request_context": {
+                "context_kind": "AUTONOMOUS_FREE_SPACE_KINEMATIC",
+                "spatial_resolution_sha256": digest,
+                "spatial_resolution_resolved_at_us": (
+                    spatial_resolution["provenance"]["resolved_at_us"]
+                ),
+                "spatial_resolution": spatial_resolution,
+            },
+        }
+
+        result = service._direct_plan_transit_path(request)
+
+        self.assertTrue(
+            result["preview_contract"]["request_context_complete"]
+        )
+        self.assertEqual(
+            result["preview_contract"]["request_context_issues"],
+            [],
+        )
+        request["request_context"]["spatial_resolution_sha256"] = "bad"
+        rejected = service._direct_plan_transit_path(request)
+        self.assertFalse(
+            rejected["preview_contract"]["request_context_complete"]
+        )
+        self.assertIn(
+            "SPATIAL_RESOLUTION_DIGEST_MISMATCH",
+            rejected["preview_contract"]["request_context_issues"],
         )
 
     def test_transit_preview_preserves_relative_delta_request(self) -> None:

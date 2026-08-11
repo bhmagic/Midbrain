@@ -264,7 +264,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
         _validate_automatic_agent_approval(
             [
                 _interruption(
-                    "execute_integrated_motion_preview",
+                    "perform_relative_effector_motion",
                     '{"preview_id":"preview-1","distance_m":0.1,'
                     '"motion_intent":"NEW_RELATIVE_MOVE",'
                     '"direction":"POSITIVE_X",'
@@ -281,7 +281,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             _validate_automatic_agent_approval(
                 [
                     _interruption(
-                        "execute_integrated_motion_preview",
+                        "perform_relative_effector_motion",
                         '{"preview_id":"preview-2","distance_m":0.1001,'
                         '"motion_intent":"NEW_RELATIVE_MOVE",'
                         '"direction":"POSITIVE_X",'
@@ -309,7 +309,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             max_auto_speed_m_s=0.3,
         )
         interruption = _interruption(
-            "execute_integrated_motion_preview",
+            "perform_relative_effector_motion",
             '{"preview_id":"preview-opaque"}',
         )
         approval = PrototypeAgentDriver._approval_description(
@@ -369,7 +369,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
         )
         repeated = PrototypeAgentDriver._approval_description(
             _interruption(
-                "execute_integrated_motion_preview",
+                "perform_relative_effector_motion",
                 '{"preview_id":"preview-2"}',
             ),
             canonical_motion_arguments=_pose_motion_arguments(
@@ -424,7 +424,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                 _validate_automatic_agent_approval(
                     [
                         _interruption(
-                            "execute_integrated_motion_preview",
+                            "perform_relative_effector_motion",
                             json.dumps(arguments),
                         )
                     ],
@@ -447,7 +447,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                     _validate_automatic_agent_approval(
                         [
                             _interruption(
-                                "execute_integrated_motion_preview",
+                                "perform_relative_effector_motion",
                                 json.dumps(arguments),
                             )
                         ],
@@ -466,7 +466,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
         _validate_automatic_agent_approval(
             [
                 _interruption(
-                    "execute_integrated_motion_preview",
+                    "perform_relative_effector_motion",
                     '{"preview_id":"preview-1",'
                     '"motion_intent":"NEW_RELATIVE_MOVE",'
                     '"direction":"POSITIVE_X","distance_m":0.2,'
@@ -483,7 +483,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             _validate_automatic_agent_approval(
                 [
                     _interruption(
-                        "execute_integrated_motion_preview",
+                        "perform_relative_effector_motion",
                         '{"preview_id":"preview-2",'
                         '"motion_intent":"NEW_RELATIVE_MOVE",'
                         '"direction":"POSITIVE_X","distance_m":0.2,'

@@ -32,6 +32,13 @@ Protected resources may include:
 - Tool actuation
 - Other mechanisms that can create physical movement or force
 
+Resource IDs form a slash-delimited hierarchy. A lease for a parent conflicts
+with every descendant. Sibling command groups may be leased concurrently only
+when the hardware Provider declares disjoint actuator membership and enforces
+commands at that group boundary. For example, `robot_arm.primary/arm` and
+`robot_arm.primary/gripper` may coexist, while `robot_arm.primary` conflicts
+with both.
+
 The hardware Resource Provider is the final software enforcement point.
 
 ## 3. Eligible owners

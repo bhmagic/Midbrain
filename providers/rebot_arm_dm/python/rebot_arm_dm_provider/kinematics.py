@@ -68,6 +68,13 @@ class RebotKinematics:
         ]
         fixed = model["fixed_tool"]
         self.fixed_tool = transform(fixed["translation_m"], rpy_matrix(fixed["rpy_rad"]))
+        controlled = model.get("controlled_frame", {})
+        self.controlled_tool = transform(
+            controlled.get("translation_m", (0.0, 0.0, 0.0)),
+            rpy_matrix(controlled.get("rpy_rad", (0.0, 0.0, 0.0))),
+        )
+        self.base_frame = str(model.get("frames", {}).get("base", "rebot_arm_base"))
+        self.tool_frame = str(model.get("frames", {}).get("tool", "rebot_arm_tool"))
 
     @staticmethod
     def axis_rotation(axis: Any, angle: float) -> np.ndarray:
@@ -93,11 +100,22 @@ class RebotKinematics:
         return frames
 
     def points(self, positions_rad: Any) -> list[list[float]]:
-        return [frame[:3, 3].tolist() for frame in self.frames(positions_rad)]
+        frames = self.frames(positions_rad)
+        controlled = frames[-1] @ self.controlled_tool
+        return [
+            frame[:3, 3].tolist()
+            for frame in [*frames[:-1], controlled]
+        ]
+
+    def controlled_frame(self, positions_rad: Any) -> np.ndarray:
+        """Return the assembly-selected free-space controlled frame."""
+
+        return self.frames(positions_rad)[-1] @ self.controlled_tool
 
     def public_transforms(self, positions_rad: Any) -> list[dict[str, Any]]:
         frames = self.frames(positions_rad)
-        names = ["rebot_arm_base", "link1", "link2", "link3", "link4", "link5", "link6", "rebot_arm_tool"]
+        frames[-1] = frames[-1] @ self.controlled_tool
+        names = [self.base_frame, "link1", "link2", "link3", "link4", "link5", "link6", self.tool_frame]
         output=[]
         for index in range(1, len(frames)):
             relative = np.linalg.inv(frames[index-1]) @ frames[index]

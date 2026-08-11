@@ -1,10 +1,15 @@
 {
   "schema": "physical_agent.arm_integrated_mit_bringup_config",
   "schema_version": 3,
-  "managed_policy_revision": 6,
+  "managed_policy_revision": 9,
   "provider_id": "robot_arm.primary.integrated",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "arm_id": "primary",
+  "role_policy": {
+    "role": "FREE_SPACE",
+    "embedded_contact_enabled": false,
+    "embedded_gripper_enabled": false
+  },
   "basic_controller_url": "http://127.0.0.1:8791",
   "listen_host": "127.0.0.1",
   "listen_port": 8793,
@@ -129,17 +134,15 @@
     "transit_preview_ttl_ms": 30000,
     "wait_for_next_timeout_s": 30.0,
     "shadow_planning_time_budget_s": 1.5,
-    "transit_shadow_enabled": true,
-    "transit_clearance_margin_m": 0.08,
-    "singularity_escape_lateral_m": 0.05
+    "transit_shadow_enabled": true
   },
   "max_basic_state_age_ms": 300,
   "safety": {
     "float_verify_timeout_ms": 8000,
     "require_manager_for_motion": true,
     "require_fabric_for_motion": true,
-    "physically_enabled_execution_modes": ["PRESS_MIT", "TRANSIT_SPEED", "CONTACT_WORK"],
-    "preview_required_execution_modes": [],
+    "physically_enabled_execution_modes": ["PRESS_MIT", "TRANSIT_SPEED"],
+    "preview_required_execution_modes": ["PRESS_MIT", "TRANSIT_SPEED"],
     "scene_required_execution_modes": []
   },
   "contact": {
@@ -179,7 +182,7 @@
   "manager_authority": {
     "enabled": true,
     "mode": "SHADOW_OBSERVE",
-    "resource_id": "robot_arm.primary",
+    "resource_id": "ASSEMBLY_ARM_GROUP",
     "poll_ms": 500
   },
   "control_audit": {
@@ -191,14 +194,8 @@
     "path": "runtime_logs/control_audit/events.jsonl",
     "cursor_path": "runtime_logs/control_audit/fabric_cursor.json",
     "maximum_pending": 4096,
-    "maximum_replay": 4096
-  },
-  "fabric_input": {
-    "enabled": true,
-    "stream": "robot_arm.primary.integrated.command",
-    "schema": "physical_agent.arm_integrated_command",
-    "poll_ms": 50,
-    "max_age_ms": 650
+    "maximum_replay": 4096,
+    "maximum_fabric_event_bytes": 1000000
   },
   "scene_input": {
     "enabled": true,
@@ -207,6 +204,11 @@
     "poll_ms": 100,
     "max_age_ms": 10000,
     "maximum_spheres": 20000,
-    "ignore_pushable_for_collision_planning": true
+    "ignore_pushable_for_collision_planning": true,
+    "clearance_margin_by_type_m": {
+      "KEEP_OUT": 0.01,
+      "PUSHABLE": 0.0,
+      "WORK_OBJECT": 0.0
+    }
   }
 }

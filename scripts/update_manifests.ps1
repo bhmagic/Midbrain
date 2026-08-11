@@ -24,6 +24,7 @@ function Test-ManifestFileExcluded {
             'config/BASELINE_INVENTORY.md',
             'config/api_keys.env.example',
             'config/providers.json.example',
+            'config/robot_assemblies/primary_manipulator.example.json',
             'config/system.env.example',
             'config/foundation_pose/FILE_MANIFEST.sha256',
             'config/foundation_pose/MODIFICATIONS.md',

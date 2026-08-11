@@ -74,6 +74,7 @@ $requiredFiles = @(
     "config/system.env.example",
     "config/api_keys.env.example",
     "config/providers.json.example",
+    "config/robot_assemblies/primary_manipulator.example.json",
     "platform_core/config_templates/api_keys.env.example",
     "platform_core/config_templates/system.env.example",
     "platform_core/config_templates/providers.json.example",
@@ -115,6 +116,7 @@ if ($failures.Count -gt 0) {
 
 $jsonFiles = @(
     "config/providers.json.example",
+    "config/robot_assemblies/primary_manipulator.example.json",
     "platform_core/config_templates/providers.json.example",
     "providers/orbbec_femto_bolt/config_templates/provider_entry.json",
     "providers/local_vio/config_templates/provider_entry.json",
@@ -299,6 +301,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             "config/system.env",
             "config/api_keys.env",
             "config/providers.json",
+            "config/robot_assemblies/primary_manipulator.json",
             "config/calibration/devices/example/imu-accelerometer.json",
             "providers/rebot_arm_dm/config/arm_calibration.json",
             "providers/rebot_arm_integrated/config/controller.json",
@@ -311,6 +314,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             "config/system.env.example",
             "config/api_keys.env.example",
             "config/providers.json.example",
+            "config/robot_assemblies/primary_manipulator.example.json",
             "config/BASELINE_INVENTORY.md"
         )) {
             & git check-ignore -q --no-index -- $examplePath

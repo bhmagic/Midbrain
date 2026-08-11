@@ -344,6 +344,7 @@ integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
     calibration_activation_continuation=(
         stationary_calibration_agent_adapter.latest_activation_continuation
     ),
+    authorization_store=authorization_store,
 )
 
 
@@ -757,10 +758,7 @@ def _approval_fingerprint(approval: dict[str, Any]) -> str:
     """Identify an exact protected operation without SDK call identifiers."""
     tool_name = str(approval.get("tool_name") or "")
     arguments = dict(_approval_arguments(approval))
-    if tool_name in {
-        "execute_integrated_motion_preview",
-        PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
-    }:
+    if tool_name == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL:
         arguments.pop("preview_id", None)
         tool_name = "integrated_relative_motion_commit"
     return json.dumps(
@@ -885,10 +883,7 @@ def _validate_automatic_agent_approval(
             )
         eligible = all(
             approval.get("tool_name")
-            in {
-                "execute_integrated_motion_preview",
-                PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
-            }
+            == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
             and relative_motion_within_authorization(
                 _approval_arguments(approval),
                 max_auto_move_cm=maximum_cm,
@@ -2195,7 +2190,7 @@ async def _annotation_frame_transform(
 
 @app.get("/api/world-annotations")
 async def world_annotations() -> dict[str, Any]:
-    """Project semantic spheres, the last item, and the gripper into the viewer."""
+    """Project semantic spheres, the last item, and profile collision geometry."""
 
     point_cloud_status = await world_point_cloud.status()
     world_frame = str(point_cloud_status.get("world_frame") or "")
@@ -2355,6 +2350,73 @@ async def world_annotations() -> dict[str, Any]:
                     "stale": scene_stale,
                     "show_label": sphere in semantic,
                 }
+            collision_geometry = data.get("robot_collision_geometry")
+            collision_geometry = (
+                collision_geometry
+                if isinstance(collision_geometry, dict)
+                else {}
+            )
+            geometry_frame = str(
+                collision_geometry.get("frame_id") or source_frame
+            )
+            if geometry_frame != source_frame:
+                raise RuntimeError(
+                    "profile collision geometry frame does not match scene frame"
+                )
+            effector_spheres = collision_geometry.get("effector_spheres")
+            effector_spheres = (
+                effector_spheres if isinstance(effector_spheres, list) else []
+            )
+            displayed_effector_spheres = 0
+            for sphere in effector_spheres:
+                if not isinstance(sphere, dict):
+                    continue
+                primitive_id = str(sphere.get("primitive_id") or "").strip()
+                radius_m = float(sphere.get("radius_m") or 0.0)
+                center_m = sphere.get("center_m")
+                if (
+                    not primitive_id
+                    or not math.isfinite(radius_m)
+                    or radius_m <= 0.0
+                    or not isinstance(center_m, list)
+                    or len(center_m) != 3
+                ):
+                    continue
+                marker_id = f"robot-effector-collider:{primitive_id}"
+                markers[marker_id] = {
+                    "marker_id": marker_id,
+                    "label": primitive_id,
+                    "center_m": _transform_annotation_center(
+                        center_m,
+                        transform,
+                    ),
+                    "radius_m": radius_m,
+                    "type": "GRIPPER",
+                    "roi_scope": None,
+                    "semantic_source": "ACTIVE_EFFECTOR_PROFILE",
+                    "source": "ARM_SCENE_COMPILER",
+                    "stale": scene_stale,
+                    "show_label": False,
+                    "observed_at_us": int(scene.get("observed_at_us") or 0),
+                }
+                displayed_effector_spheres += 1
+            if displayed_effector_spheres:
+                markers.pop("robot-gripper-tool", None)
+                gripper_metadata = {
+                    "status": "STALE" if scene_stale else "CURRENT",
+                    "frame_id": geometry_frame,
+                    "source": "ACTIVE_EFFECTOR_PROFILE",
+                    "assembly_fingerprint": collision_geometry.get(
+                        "assembly_fingerprint"
+                    ),
+                    "mounted_effector_profile_revision": collision_geometry.get(
+                        "mounted_effector_profile_revision"
+                    ),
+                    "collision_sphere_count": displayed_effector_spheres,
+                }
+                scene_metadata["displayed_effector_collision_sphere_count"] = (
+                    displayed_effector_spheres
+                )
         except Exception as error:
             warnings.append(f"compiled scene projection unavailable: {error}")
 
@@ -3934,10 +3996,7 @@ function automaticDeveloperApprovalDecision(approvals) {
         direction === 'NONE' && distanceM === 0 &&
         plannedSpeedMps === 0 &&
         argumentsValue.requested_speed_m_s == null && boundedYaw;
-      return [
-        'execute_integrated_motion_preview',
-        'perform_relative_effector_motion'
-      ].includes(approval.tool_name) &&
+      return approval.tool_name === 'perform_relative_effector_motion' &&
         (exactTranslation || exactCombinedPose || exactPureRotation);
     });
   if (motionEligible) {

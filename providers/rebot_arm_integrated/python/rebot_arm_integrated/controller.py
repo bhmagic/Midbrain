@@ -27,6 +27,7 @@ from .planning import (
     PlanPreview,
     build_transit_frame_candidates,
     build_waypoint_preview,
+    closest_collision_free_prefix,
     controller_owned_duration,
     joint_speed_policy_schedule,
     solve_cartesian_continuity,
@@ -127,8 +128,8 @@ class AuthorizedTransitExecution:
     assertion_id: str
     decision_id: str
     resolved_by: str
-    preview_scene_revision: str
-    scene_revision: str
+    preview_scene_revision: str | None
+    scene_revision: str | None
     final_state: str
     q_waypoints: tuple[np.ndarray, ...]
     stage_durations_s: tuple[float, ...]
@@ -167,6 +168,14 @@ class IntegratedController:
     def __init__(self, config: dict[str, Any], basic: BasicControllerClient):
         self.config = copy.deepcopy(config)
         self.basic = basic
+        role_policy = self.config.get("role_policy", {})
+        self.controller_role = str(role_policy.get("role") or "FREE_SPACE")
+        self.embedded_contact_enabled = bool(
+            role_policy.get("embedded_contact_enabled", False)
+        )
+        self.embedded_gripper_enabled = bool(
+            role_policy.get("embedded_gripper_enabled", False)
+        )
         self.lock = threading.RLock()
         self.command_gate_lock = threading.RLock()
         self.lease_operation_lock = threading.RLock()
@@ -184,6 +193,10 @@ class IntegratedController:
 
         runtime = self.config["runtime"]
         self.execution_mode = normalize_execution_mode(runtime["execution_mode"])
+        if self.execution_mode == CONTACT_WORK and not self.embedded_contact_enabled:
+            raise ValueError(
+                "CONTACT_WORK belongs to the separate contact controller"
+            )
         self.interaction_mode = str(runtime["interaction_mode"]).upper()
         if self.execution_mode == CONTACT_WORK:
             self.interaction_mode = INTERACTION_ONE_SHOT
@@ -229,6 +242,14 @@ class IntegratedController:
 
         self.basic_state: dict[str, Any] = {}
         self.basic_model: dict[str, Any] = {}
+        self.basic_assembly: dict[str, Any] = {}
+        self.assembly_fingerprint: str | None = None
+        self.arm_resource_id: str | None = None
+        self.collision_link_radii_m = np.asarray(
+            self.config["trajectory"]["link_radii_m"],
+            dtype=float,
+        )
+        self.collision_effector_spheres: list[dict[str, Any]] = []
         self.kinematics: ArmKinematics | None = None
         self.last_state_poll = 0.0
         self.last_state_success = 0.0
@@ -366,7 +387,195 @@ class IntegratedController:
     def _tool_to_control_locked(self) -> np.ndarray:
         return transform(self.tool_offset_xyz_m, rpy_matrix(self.tool_offset_rpy_rad))
 
+    def _bind_assembly_runtime(
+        self,
+        assembly: dict[str, Any],
+        model: dict[str, Any] | None = None,
+    ) -> None:
+        """Bind Provider-resolved physical profiles into free-space runtime policy."""
+
+        if assembly.get("schema") != "midbrain.robot_assembly_state":
+            raise RuntimeError("Basic Controller returned an unsupported assembly state")
+        fingerprint = str(assembly.get("assembly_fingerprint") or "").strip()
+        if not fingerprint:
+            raise RuntimeError("assembly state is missing its canonical fingerprint")
+        groups = assembly.get("resource_groups")
+        groups = groups if isinstance(groups, list) else []
+        arm_groups = [
+            item for item in groups
+            if isinstance(item, dict) and item.get("group_id") == "arm"
+        ]
+        if len(arm_groups) != 1:
+            raise RuntimeError("assembly must expose exactly one arm actuator group")
+        arm_resource_id = str(arm_groups[0].get("resource_id") or "").strip()
+        arm_joint_names = arm_groups[0].get("joint_names")
+        if not arm_resource_id or not isinstance(arm_joint_names, list) or len(arm_joint_names) != 6:
+            raise RuntimeError("this reBot free-space controller requires one six-joint arm group")
+        roles = assembly.get("qualified_control_roles")
+        roles = roles if isinstance(roles, dict) else {}
+        if not isinstance(roles.get("free_space"), dict):
+            raise RuntimeError("assembly does not qualify a free-space control role")
+        effector = assembly.get("mounted_effector")
+        effector = effector if isinstance(effector, dict) else {}
+        controlled = effector.get("controlled_frame")
+        controlled = controlled if isinstance(controlled, dict) else {}
+        controlled_transform = controlled.get("transform")
+        controlled_transform = (
+            controlled_transform if isinstance(controlled_transform, dict) else {}
+        )
+        xyz = np.asarray(controlled_transform.get("translation_m", []), dtype=float)
+        rpy = np.asarray(controlled_transform.get("rpy_rad", []), dtype=float)
+        if xyz.shape != (3,) or rpy.shape != (3,) or not np.all(np.isfinite(xyz)) or not np.all(np.isfinite(rpy)):
+            raise RuntimeError("mounted-effector controlled frame is invalid")
+        collision = assembly.get("collision_geometry")
+        collision = collision if isinstance(collision, dict) else {}
+        primitives = collision.get("frame_primitives")
+        if not isinstance(primitives, list):
+            raise RuntimeError("assembly collision profile frame_primitives must be an array")
+        if primitives:
+            raise RuntimeError(
+                "this Integrated collision consumer does not yet support arm-owned frame primitives"
+            )
+        controlled_frame_id = str(controlled.get("frame_id", "")).strip()
+        effector_primitives = effector.get("collision_primitives")
+        if not isinstance(effector_primitives, list):
+            raise RuntimeError(
+                "mounted-effector collision_primitives must be an array"
+            )
+        effector_spheres: list[dict[str, Any]] = []
+        primitive_ids: set[str] = set()
+        for primitive in effector_primitives:
+            if not isinstance(primitive, dict):
+                raise RuntimeError(
+                    "mounted-effector collision primitives must be objects"
+                )
+            primitive_id = str(primitive.get("primitive_id", "")).strip()
+            if not primitive_id or primitive_id in primitive_ids:
+                raise RuntimeError(
+                    "mounted-effector collision primitive IDs must be non-empty and unique"
+                )
+            if str(primitive.get("frame_id", "")) != controlled_frame_id:
+                raise RuntimeError(
+                    "Integrated currently requires mounted-effector collision primitives in the controlled frame"
+                )
+            primitive_transform = primitive.get("transform")
+            primitive_transform = (
+                primitive_transform if isinstance(primitive_transform, dict) else {}
+            )
+            translation = np.asarray(
+                primitive_transform.get("translation_m", []),
+                dtype=float,
+            )
+            primitive_rpy = np.asarray(
+                primitive_transform.get("rpy_rad", []),
+                dtype=float,
+            )
+            shape = primitive.get("shape")
+            shape = shape if isinstance(shape, dict) else {}
+            if shape.get("type") != "SPHERE":
+                raise RuntimeError(
+                    "Integrated currently supports only mounted-effector SPHERE collision primitives"
+                )
+            try:
+                radius = float(shape.get("radius_m"))
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    "mounted-effector collision sphere radius must be positive and finite"
+                ) from error
+            if (
+                translation.shape != (3,)
+                or primitive_rpy.shape != (3,)
+                or not np.all(np.isfinite(translation))
+                or not np.all(np.isfinite(primitive_rpy))
+                or not np.isfinite(radius)
+                or radius <= 0.0
+            ):
+                raise RuntimeError(
+                    "mounted-effector collision sphere transform and radius must be finite"
+                )
+            primitive_ids.add(primitive_id)
+            effector_spheres.append(
+                {
+                    "primitive_id": primitive_id,
+                    "translation_m": translation.tolist(),
+                    "radius_m": radius,
+                }
+            )
+        capsules = collision.get("polyline_capsules")
+        capsules = capsules if isinstance(capsules, list) else []
+        ordered = sorted(
+            (item for item in capsules if isinstance(item, dict)),
+            key=lambda item: int(item.get("segment_index", -1)),
+        )
+        radii = np.asarray([item.get("radius_m") for item in ordered], dtype=float)
+        if radii.shape not in {(6,), (7,)} or not np.all(np.isfinite(radii)) or np.any(radii <= 0.0):
+            raise RuntimeError(
+                "assembly collision profile must define six arm capsules or seven legacy arm-plus-effector capsules"
+            )
+        point_frames = collision.get("polyline_point_frames")
+        if not isinstance(point_frames, list) or len(point_frames) != radii.size + 1:
+            raise RuntimeError(
+                "assembly collision profile must define one ordered point frame per capsule endpoint"
+            )
+        if model is not None:
+            arm_joint_names_set = {str(value) for value in arm_joint_names}
+            expected_point_frames = [
+                str(model.get("coordinate_convention", {}).get("root_frame", ""))
+            ]
+            expected_point_frames.extend(
+                str(joint.get("kinematics", {}).get("child_link", ""))
+                for joint in model.get("joints", [])
+                if isinstance(joint, dict)
+                and str(joint.get("name", "")) in arm_joint_names_set
+            )
+            if radii.size == 7:
+                expected_point_frames.append(controlled_frame_id)
+            if point_frames != expected_point_frames:
+                raise RuntimeError(
+                    "assembly collision point frames do not match the Basic kinematic model"
+                )
+        self.basic.bind_resource(arm_resource_id)
+        with self.lock:
+            self.basic_assembly = copy.deepcopy(assembly)
+            self.assembly_fingerprint = fingerprint
+            self.arm_resource_id = arm_resource_id
+            self.tool_offset_xyz_m = xyz
+            self.tool_offset_rpy_rad = rpy
+            self.collision_link_radii_m = radii
+            self.collision_effector_spheres = copy.deepcopy(effector_spheres)
+
+    def _assert_assembly_unchanged(self) -> None:
+        """Reject a preview or commit after Basic activates a different assembly."""
+
+        with self.lock:
+            expected = self.assembly_fingerprint
+        if expected is None:
+            return
+        if not hasattr(self.basic, "assembly"):
+            raise RuntimeError("Basic Controller cannot revalidate the bound assembly")
+        current = self.basic.assembly()
+        if not isinstance(current, dict):
+            raise RuntimeError("Basic Controller returned an invalid assembly state")
+        actual = str(current.get("assembly_fingerprint") or "").strip()
+        if actual != expected:
+            raise RuntimeError(
+                "selected robot assembly changed after Integrated bound its runtime"
+            )
+
+    def _collision_radii_locked(self) -> list[float]:
+        return self.collision_link_radii_m.tolist()
+
+    def _collision_effector_spheres_locked(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self.collision_effector_spheres)
+
     def set_runtime_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.embedded_contact_enabled and any(
+            str(key).startswith("contact_") or str(key) == "task_torque_budget_nm"
+            for key in payload
+        ):
+            raise PermissionError(
+                "contact settings belong to the separate contact controller"
+            )
         payload_update = False
         with self.lock:
             if (
@@ -383,7 +592,17 @@ class IntegratedController:
                     raise ValueError(f"unsupported interaction mode {value}")
                 self.interaction_mode = value
             if "execution_mode" in payload:
-                self.execution_mode = normalize_execution_mode(payload["execution_mode"])
+                requested_execution_mode = normalize_execution_mode(
+                    payload["execution_mode"]
+                )
+                if (
+                    requested_execution_mode == CONTACT_WORK
+                    and not self.embedded_contact_enabled
+                ):
+                    raise ValueError(
+                        "CONTACT_WORK belongs to the separate contact controller"
+                    )
+                self.execution_mode = requested_execution_mode
             if self.execution_mode == CONTACT_WORK:
                 self.interaction_mode = INTERACTION_ONE_SHOT
             if "ik_mode" in payload:
@@ -398,8 +617,16 @@ class IntegratedController:
             if "kp_multiplier" in payload:
                 self.kp_multiplier = float(payload["kp_multiplier"])
             if "controlled_frame_offset_xyz_m" in payload:
+                if self.basic_assembly:
+                    raise ValueError(
+                        "controlled frame is assembly-profile-owned and cannot be changed at runtime"
+                    )
                 self.tool_offset_xyz_m = np.asarray(payload["controlled_frame_offset_xyz_m"], dtype=float)
             if "controlled_frame_offset_rpy_rad" in payload:
+                if self.basic_assembly:
+                    raise ValueError(
+                        "controlled frame is assembly-profile-owned and cannot be changed at runtime"
+                    )
                 self.tool_offset_rpy_rad = np.asarray(payload["controlled_frame_offset_rpy_rad"], dtype=float)
             if "payload_mass_kg" in payload:
                 self.payload_mass_kg = float(payload["payload_mass_kg"])
@@ -550,6 +777,10 @@ class IntegratedController:
         }
 
     def set_gripper_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.embedded_gripper_enabled:
+            raise PermissionError(
+                "gripper control belongs to the separate grip controller"
+            )
         with self.lock:
             if self.trajectory is not None or self.gripper_active_action is not None:
                 raise RuntimeError("gripper settings cannot change during active motion")
@@ -769,14 +1000,55 @@ class IntegratedController:
                 "scene": scene.snapshot(),
             }
 
+    def _fresh_planning_scene_locked(
+        self,
+        *,
+        now: float | None = None,
+    ) -> tuple[SceneSnapshot | None, str, float | None]:
+        """Return only scene evidence that is fresh enough for planning."""
+
+        if self.scene is None:
+            return None, "UNAVAILABLE", None
+        observed_now = time.monotonic() if now is None else float(now)
+        scene_age_ms = max(
+            0.0,
+            (observed_now - self.scene_received_monotonic) * 1000.0,
+        )
+        if scene_age_ms > float(self.config["scene_input"]["max_age_ms"]):
+            return None, "STALE_IGNORED", scene_age_ms
+        return self.scene, "FRESH", scene_age_ms
+
     def _pushable_contact_is_permitted_locked(self, requested: bool) -> bool:
         """Keep PUSHABLE geometry non-blocking when the scene policy requests it."""
-        return bool(requested) or bool(
+        policy_ignores_pushable = bool(
             self.config["scene_input"].get(
                 "ignore_pushable_for_collision_planning",
                 False,
             )
         )
+        if not self.embedded_contact_enabled:
+            return policy_ignores_pushable
+        return bool(requested) or policy_ignores_pushable
+
+    def _scene_clearance_margins_locked(self) -> dict[str, float]:
+        return {
+            str(object_type): float(value)
+            for object_type, value in self.config["scene_input"][
+                "clearance_margin_by_type_m"
+            ].items()
+        }
+
+    def _assert_free_space_contact_prohibited(
+        self,
+        allowed_contact_object_ids: set[str] | None,
+        permit_pushable_contact: bool,
+    ) -> None:
+        if not self.embedded_contact_enabled and (
+            allowed_contact_object_ids or permit_pushable_contact
+        ):
+            raise PermissionError(
+                "free-space control prohibits intentional or permitted contact"
+            )
 
     def preview_staged_target(
         self,
@@ -785,6 +1057,11 @@ class IntegratedController:
         permit_pushable_contact: bool = False,
     ) -> dict[str, Any]:
         """Solve and sample a candidate plan without engaging or sending a command."""
+        self._assert_free_space_contact_prohibited(
+            allowed_contact_object_ids,
+            permit_pushable_contact,
+        )
+        self._assert_assembly_unchanged()
         try:
             state = self.basic.state()
             with self.lock:
@@ -810,28 +1087,36 @@ class IntegratedController:
                 )
                 q_goal = continuity.q_waypoints[-1]
                 duration = self._duration_for_move_locked(q_start, q_goal, self.duration_s)
+                planning_scene, scene_status, scene_age_ms = (
+                    self._fresh_planning_scene_locked()
+                )
                 preview = build_waypoint_preview(
                     self.kinematics,
                     continuity.q_waypoints,
                     duration,
-                    scene=self.scene,
-                    link_radii_m=self.config["trajectory"]["link_radii_m"],
+                    scene=planning_scene,
+                    link_radii_m=self._collision_radii_locked(),
                     sample_count=int(self.config["trajectory"]["preview_sample_count"]),
                     allowed_contact_object_ids=set(allowed_contact_object_ids or set()),
                     permit_pushable_contact=self._pushable_contact_is_permitted_locked(
                         permit_pushable_contact
                     ),
+                    clearance_margin_by_type_m=(
+                        self._scene_clearance_margins_locked()
+                    ),
+                    tool_to_control=self._tool_to_control_locked(),
+                    effector_spheres=self._collision_effector_spheres_locked(),
                 )
                 planning_reasons: list[str] = []
                 scene_required = self.execution_mode in {
                     str(value).upper() for value in self.config["safety"]["scene_required_execution_modes"]
                 }
-                if scene_required and self.scene is None:
+                if scene_required and scene_status == "UNAVAILABLE":
                     planning_reasons.append("a fresh semantic scene is required for this execution mode")
-                if scene_required and self.scene_received_monotonic:
-                    scene_age_ms = (time.monotonic() - self.scene_received_monotonic) * 1000.0
-                    if scene_age_ms > float(self.config["scene_input"]["max_age_ms"]):
-                        planning_reasons.append(f"semantic scene is stale ({scene_age_ms:.0f} ms)")
+                if scene_required and scene_status == "STALE_IGNORED":
+                    planning_reasons.append(
+                        f"semantic scene is stale ({scene_age_ms:.0f} ms)"
+                    )
                 if not preview.collision_free:
                     planning_reasons.append("candidate path intersects a non-permitted semantic object")
                 planning_config = self.config["planning"]
@@ -936,10 +1221,32 @@ class IntegratedController:
                     physical_reasons.append("CONTACT_WORK requires an operator-captured steady torque baseline")
                 self.last_preview = preview
                 self.last_preview_context = {
+                    "assembly_fingerprint": self.assembly_fingerprint,
+                    "arm_resource_id": self.arm_resource_id,
+                    "mounted_effector_profile_revision": (
+                        self.basic_assembly.get("mounted_effector", {}).get(
+                            "profile_revision"
+                        )
+                        if self.basic_assembly
+                        else None
+                    ),
+                    "collision_geometry_profile_revision": (
+                        self.basic_assembly.get("collision_geometry", {}).get(
+                            "profile_revision"
+                        )
+                        if self.basic_assembly
+                        else None
+                    ),
                     "target_revision": self.target_revision,
                     "execution_mode": self.execution_mode,
                     "ik_mode": self.ik_mode,
                     "target_clamped": clamped,
+                    "scene_status": scene_status,
+                    "scene_revision": (
+                        None
+                        if planning_scene is None
+                        else planning_scene.revision
+                    ),
                     "position_residual_m": continuity.final_position_residual_m,
                     "orientation_residual_rad": continuity.final_orientation_residual_rad,
                     "cartesian_continuity": continuity.snapshot(),
@@ -1001,6 +1308,12 @@ class IntegratedController:
         permit_pushable_contact: bool = False,
     ) -> dict[str, Any]:
         """Evaluate controller-owned transit paths without changing control state."""
+
+        self._assert_free_space_contact_prohibited(
+            allowed_contact_object_ids,
+            permit_pushable_contact,
+        )
+        self._assert_assembly_unchanged()
 
         state = self.basic.state()
         with self.lock:
@@ -1077,6 +1390,24 @@ class IntegratedController:
 
             planning_config = self.config["planning"]
             planning_started = time.monotonic()
+            planning_scene, scene_status, scene_age_ms = (
+                self._fresh_planning_scene_locked(now=planning_started)
+            )
+            scene_required = self.execution_mode in {
+                str(value).upper()
+                for value in self.config["safety"][
+                    "scene_required_execution_modes"
+                ]
+            }
+            scene_reasons: list[str] = []
+            if scene_required and scene_status == "UNAVAILABLE":
+                scene_reasons.append(
+                    "a fresh semantic scene is required for this execution mode"
+                )
+            if scene_required and scene_status == "STALE_IGNORED":
+                scene_reasons.append(
+                    f"semantic scene is stale ({scene_age_ms:.0f} ms)"
+                )
             planning_time_budget_s = float(
                 planning_config["shadow_planning_time_budget_s"]
             )
@@ -1100,16 +1431,13 @@ class IntegratedController:
             candidates = build_transit_frame_candidates(
                 origin,
                 goal,
-                workspace=self.config["workspace"],
-                clearance_margin_m=float(
-                    planning_config["transit_clearance_margin_m"]
-                ),
-                lateral_escape_m=float(
-                    planning_config["singularity_escape_lateral_m"]
-                ),
             )
             evaluated: list[dict[str, Any]] = []
+            closest_safe_candidates: list[dict[str, Any]] = []
             planning_timed_out = False
+            collision_reason = (
+                "candidate path intersects a non-permitted semantic object"
+            )
             for strategy, cartesian_frames in candidates:
                 try:
                     if time.monotonic() >= planning_deadline:
@@ -1229,8 +1557,8 @@ class IntegratedController:
                         self.kinematics,
                         q_waypoints,
                         duration["duration_s"],
-                        scene=self.scene,
-                        link_radii_m=self.config["trajectory"]["link_radii_m"],
+                        scene=planning_scene,
+                        link_radii_m=self._collision_radii_locked(),
                         sample_count=max(
                             int(self.config["trajectory"]["preview_sample_count"]),
                             len(q_waypoints),
@@ -1241,17 +1569,20 @@ class IntegratedController:
                         permit_pushable_contact=self._pushable_contact_is_permitted_locked(
                             permit_pushable_contact
                         ),
+                        clearance_margin_by_type_m=(
+                            self._scene_clearance_margins_locked()
+                        ),
+                        tool_to_control=self._tool_to_control_locked(),
+                        effector_spheres=self._collision_effector_spheres_locked(),
                     )
-                    reasons: list[str] = []
+                    reasons: list[str] = list(scene_reasons)
                     if speed_policy["hard_limit_exceeded"]:
                         reasons.append(
                             "requested trajectory reaches or exceeds the "
                             "20 rad/s per-joint hard limit"
                         )
                     if not preview.collision_free:
-                        reasons.append(
-                            "candidate path intersects a non-permitted semantic object"
-                        )
+                        reasons.append(collision_reason)
                     orientation_motion = float(
                         np.linalg.norm(
                             rotation_vector(goal[:3, :3] @ origin[:3, :3].T)
@@ -1314,11 +1645,12 @@ class IntegratedController:
                     maximum_segment_duration = float(
                         self.config["runtime_limits"]["duration_max_s"]
                     )
-                    evaluated.append(
-                        {
+                    candidate_result = {
                             "strategy": strategy,
                             "planning_valid": not reasons,
                             "planning_reasons": reasons,
+                            "goal_reached": not reasons,
+                            "closest_safe": False,
                             "preview": preview.snapshot(include_samples=False),
                             "cartesian_waypoints": [
                                 self._frame_payload(frame)
@@ -1353,7 +1685,216 @@ class IntegratedController:
                                 ),
                             },
                         }
-                    )
+                    evaluated.append(candidate_result)
+
+                    non_collision_reasons = [
+                        reason
+                        for reason in reasons
+                        if reason != collision_reason
+                    ]
+                    if (
+                        planning_scene is not None
+                        and not preview.collision_free
+                        and not non_collision_reasons
+                    ):
+                        safe_waypoints = closest_collision_free_prefix(
+                            self.kinematics,
+                            preview,
+                            scene=planning_scene,
+                            link_radii_m=self._collision_radii_locked(),
+                            allowed_contact_object_ids=set(
+                                allowed_contact_object_ids or set()
+                            ),
+                            permit_pushable_contact=(
+                                self._pushable_contact_is_permitted_locked(
+                                    permit_pushable_contact
+                                )
+                            ),
+                            clearance_margin_by_type_m=(
+                                self._scene_clearance_margins_locked()
+                            ),
+                            tool_to_control=self._tool_to_control_locked(),
+                            effector_spheres=self._collision_effector_spheres_locked(),
+                        )
+                        if len(safe_waypoints) >= 2:
+                            safe_positions = [
+                                self.kinematics.controlled_frame(
+                                    waypoint,
+                                    self._tool_to_control_locked(),
+                                )[:3, 3]
+                                for waypoint in safe_waypoints
+                            ]
+                            safe_path_length = sum(
+                                float(np.linalg.norm(end - start))
+                                for start, end in zip(
+                                    safe_positions[:-1], safe_positions[1:]
+                                )
+                            )
+                            safe_speed_policy = joint_speed_policy_schedule(
+                                safe_waypoints,
+                                safe_positions,
+                                requested_speed_m_s,
+                                transit_joint_caps,
+                                minimum_stage_duration_s=float(
+                                    planning_config[
+                                        "transit_stage_min_duration_s"
+                                    ]
+                                ),
+                                authentication_threshold_rad_s=float(
+                                    planning_config[
+                                        "joint_speed_authentication_threshold_rad_s"
+                                    ]
+                                ),
+                                hard_limit_rad_s=float(
+                                    planning_config[
+                                        "joint_speed_hard_limit_rad_s"
+                                    ]
+                                ),
+                            )
+                            safe_duration = controller_owned_duration(
+                                safe_waypoints,
+                                safe_path_length,
+                                requested_speed_m_s,
+                                transit_joint_caps,
+                                minimum_duration_s=float(
+                                    self.config["runtime_limits"][
+                                        "duration_min_s"
+                                    ]
+                                ),
+                            )
+                            safe_preview = build_waypoint_preview(
+                                self.kinematics,
+                                safe_waypoints,
+                                safe_duration["duration_s"],
+                                scene=planning_scene,
+                                link_radii_m=self._collision_radii_locked(),
+                                sample_count=max(
+                                    int(
+                                        self.config["trajectory"][
+                                            "preview_sample_count"
+                                        ]
+                                    ),
+                                    len(safe_waypoints),
+                                ),
+                                allowed_contact_object_ids=set(
+                                    allowed_contact_object_ids or set()
+                                ),
+                                permit_pushable_contact=(
+                                    self._pushable_contact_is_permitted_locked(
+                                        permit_pushable_contact
+                                    )
+                                ),
+                                clearance_margin_by_type_m=(
+                                    self._scene_clearance_margins_locked()
+                                ),
+                                tool_to_control=(
+                                    self._tool_to_control_locked()
+                                ),
+                                effector_spheres=(
+                                    self._collision_effector_spheres_locked()
+                                ),
+                            )
+                            if safe_preview.collision_free:
+                                safe_frame = self.kinematics.controlled_frame(
+                                    safe_waypoints[-1],
+                                    self._tool_to_control_locked(),
+                                )
+                                remaining_position_m = float(
+                                    np.linalg.norm(
+                                        goal[:3, 3] - safe_frame[:3, 3]
+                                    )
+                                )
+                                remaining_orientation_rad = float(
+                                    np.linalg.norm(
+                                        rotation_vector(
+                                            goal[:3, :3]
+                                            @ safe_frame[:3, :3].T
+                                        )
+                                    )
+                                )
+                                safe_displacement_m = float(
+                                    np.linalg.norm(
+                                        safe_frame[:3, 3]
+                                        - origin[:3, 3]
+                                    )
+                                )
+                                first_blocked = (
+                                    preview.first_collision_sample_index
+                                )
+                                blockers = [
+                                    item
+                                    for item in preview.collisions
+                                    if item.get("sample_index")
+                                    == first_blocked
+                                ]
+                                safe_candidate = {
+                                    **copy.deepcopy(candidate_result),
+                                    "strategy": f"{strategy}_CLOSEST_SAFE",
+                                    "planning_valid": True,
+                                    "planning_reasons": [],
+                                    "goal_reached": False,
+                                    "closest_safe": True,
+                                    "closest_safe_reason": (
+                                        "REQUESTED_GOAL_BLOCKED_BY_SEMANTIC_GEOMETRY"
+                                    ),
+                                    "blocking_object_ids": sorted(
+                                        {
+                                            str(item.get("object_id") or "")
+                                            for item in blockers
+                                            if item.get("object_id")
+                                        }
+                                    ),
+                                    "blocking_object_types": sorted(
+                                        {
+                                            str(item.get("type") or "")
+                                            for item in blockers
+                                            if item.get("type")
+                                        }
+                                    ),
+                                    "remaining_position_to_goal_m": (
+                                        remaining_position_m
+                                    ),
+                                    "remaining_orientation_to_goal_rad": (
+                                        remaining_orientation_rad
+                                    ),
+                                    "executed_controlled_displacement_m": (
+                                        safe_displacement_m
+                                    ),
+                                    "preview": safe_preview.snapshot(
+                                        include_samples=False
+                                    ),
+                                    "cartesian_waypoints": [],
+                                    "joint_waypoint_count": len(
+                                        safe_waypoints
+                                    ),
+                                    "q_waypoints_rad": [
+                                        waypoint.tolist()
+                                        for waypoint in safe_waypoints
+                                    ],
+                                    "speed_schedule": {
+                                        **safe_duration,
+                                        "joint_speed_policy": (
+                                            safe_speed_policy
+                                        ),
+                                        "maximum_execution_segment_duration_s": (
+                                            maximum_segment_duration
+                                        ),
+                                        "execution_segment_count": max(
+                                            1,
+                                            int(
+                                                math.ceil(
+                                                    safe_duration[
+                                                        "duration_s"
+                                                    ]
+                                                    / maximum_segment_duration
+                                                )
+                                            ),
+                                        ),
+                                    },
+                                }
+                                closest_safe_candidates.append(
+                                    safe_candidate
+                                )
                 except Exception as error:
                     evaluated.append(
                         {
@@ -1375,6 +1916,24 @@ class IntegratedController:
                 ),
                 None,
             )
+            if selected is None and closest_safe_candidates:
+                selected = min(
+                    closest_safe_candidates,
+                    key=lambda candidate: (
+                        float(
+                            candidate.get(
+                                "remaining_position_to_goal_m",
+                                float("inf"),
+                            )
+                        ),
+                        float(
+                            candidate.get(
+                                "remaining_orientation_to_goal_rad",
+                                float("inf"),
+                            )
+                        ),
+                    ),
+                )
             if selected is None:
                 selected = min(
                     evaluated,
@@ -1394,9 +1953,20 @@ class IntegratedController:
                 "control_state_unchanged": True,
                 "lease_unchanged": True,
                 "selected_strategy": selected.get("strategy"),
+                "goal_reached": bool(selected.get("goal_reached")),
+                "closest_safe": bool(selected.get("closest_safe")),
+                "motion_outcome": (
+                    "CLOSEST_SAFE"
+                    if selected.get("closest_safe")
+                    else "GOAL_REACHED"
+                    if selected.get("planning_valid")
+                    else "REJECTED"
+                ),
                 "plan_id": (selected.get("preview") or {}).get("preview_id"),
                 "selected_plan": copy.deepcopy(selected),
-                "candidate_evaluations": copy.deepcopy(evaluated),
+                "candidate_evaluations": copy.deepcopy(
+                    [*evaluated, *closest_safe_candidates]
+                ),
                 "target": self._frame_payload(goal),
                 "target_resolution": target_resolution,
                 "requested_target_delta_m": (
@@ -1405,12 +1975,35 @@ class IntegratedController:
                     else requested_delta.tolist()
                 ),
                 "ik_mode": effective_ik_mode,
-                "scene_revision": None if self.scene is None else self.scene.revision,
+                "scene_status": scene_status,
+                "scene_revision": (
+                    None
+                    if planning_scene is None
+                    else planning_scene.revision
+                ),
                 "planning_time_budget_s": planning_time_budget_s,
                 "planning_elapsed_ms": (
                     time.monotonic() - planning_started
                 ) * 1000.0,
                 "planning_timed_out": planning_timed_out,
+                "assembly_binding": {
+                    "assembly_fingerprint": self.assembly_fingerprint,
+                    "arm_resource_id": self.arm_resource_id,
+                    "mounted_effector_profile_revision": (
+                        self.basic_assembly.get("mounted_effector", {}).get(
+                            "profile_revision"
+                        )
+                        if self.basic_assembly
+                        else None
+                    ),
+                    "collision_geometry_profile_revision": (
+                        self.basic_assembly.get("collision_geometry", {}).get(
+                            "profile_revision"
+                        )
+                        if self.basic_assembly
+                        else None
+                    ),
+                },
             }
             self.shadow_transit_plan_count += 1
             self.last_shadow_transit_plan = copy.deepcopy(result)
@@ -1418,6 +2011,10 @@ class IntegratedController:
 
     def capture_contact_baseline(self) -> dict[str, Any]:
         """Capture steady torque while floating; this operation never sends a motion target."""
+        if not self.embedded_contact_enabled:
+            raise PermissionError(
+                "contact baseline capture belongs to the separate contact controller"
+            )
         return self._capture_contact_baseline()
 
     def execute_authorized_transit(
@@ -1428,13 +2025,19 @@ class IntegratedController:
         request_sha256: str,
         q_waypoints_rad: list[list[float]],
         requested_speed_m_s: float,
-        scene_revision: str,
+        scene_revision: str | None,
         final_state: str = FINAL_STATE_FIXED,
         allowed_contact_object_ids: set[str] | None,
         permit_pushable_contact: bool,
         authorization_claims: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute one exact reviewed waypoint path with a bound final state."""
+
+        self._assert_free_space_contact_prohibited(
+            allowed_contact_object_ids,
+            permit_pushable_contact,
+        )
+        self._assert_assembly_unchanged()
 
         normalized_final_state = str(final_state or "").strip().upper()
         if normalized_final_state not in SUPPORTED_FINAL_STATES:
@@ -1480,16 +2083,20 @@ class IntegratedController:
                     )
                 if self.kinematics is None:
                     raise RuntimeError("kinematics are unavailable")
-                if self.scene is None:
+                scene_required = self.execution_mode in {
+                    str(value).upper()
+                    for value in self.config["safety"][
+                        "scene_required_execution_modes"
+                    ]
+                }
+                commit_scene, commit_scene_status, scene_age_ms = (
+                    self._fresh_planning_scene_locked(now=now)
+                )
+                if scene_required and commit_scene_status == "UNAVAILABLE":
                     raise PermissionError(
                         "authorized transit requires a current semantic scene"
                     )
-                scene_age_ms = (
-                    now - self.scene_received_monotonic
-                ) * 1000.0
-                if scene_age_ms > float(
-                    self.config["scene_input"]["max_age_ms"]
-                ):
+                if scene_required and commit_scene_status == "STALE_IGNORED":
                     raise PermissionError(
                         "semantic scene is stale at authorized transit commit"
                     )
@@ -1631,10 +2238,8 @@ class IntegratedController:
                     self.kinematics,
                     q_waypoints,
                     total_duration,
-                    scene=self.scene,
-                    link_radii_m=self.config["trajectory"][
-                        "link_radii_m"
-                    ],
+                    scene=commit_scene,
+                    link_radii_m=self._collision_radii_locked(),
                     sample_count=max(
                         int(
                             self.config["trajectory"][
@@ -1649,13 +2254,22 @@ class IntegratedController:
                     permit_pushable_contact=self._pushable_contact_is_permitted_locked(
                         permit_pushable_contact
                     ),
+                    clearance_margin_by_type_m=(
+                        self._scene_clearance_margins_locked()
+                    ),
+                    tool_to_control=self._tool_to_control_locked(),
+                    effector_spheres=self._collision_effector_spheres_locked(),
                 )
                 if not refreshed_preview.collision_free:
                     raise PlanningRejected(
                         "authorized transit became colliding during commit "
                         "revalidation"
                     )
-                commit_scene_revision = self.scene.revision
+                commit_scene_revision = (
+                    None
+                    if commit_scene is None
+                    else commit_scene.revision
+                )
 
                 assertion_id = str(
                     authorization_claims.get("assertion_id") or ""
@@ -1677,7 +2291,7 @@ class IntegratedController:
                     assertion_id=assertion_id,
                     decision_id=decision_id,
                     resolved_by=resolved_by,
-                    preview_scene_revision=str(scene_revision),
+                    preview_scene_revision=scene_revision,
                     scene_revision=commit_scene_revision,
                     final_state=normalized_final_state,
                     q_waypoints=tuple(
@@ -1737,10 +2351,10 @@ class IntegratedController:
                 "chained_from_plan_id": (
                     None if chained_from is None else chained_from.plan_id
                 ),
-                "preview_scene_revision": str(scene_revision),
+                "preview_scene_revision": scene_revision,
                 "commit_scene_revision": commit_scene_revision,
                 "scene_revision_advanced": (
-                    commit_scene_revision != str(scene_revision)
+                    commit_scene_revision != scene_revision
                 ),
                 "physical_motion_authorized": True,
             }
@@ -1840,6 +2454,8 @@ class IntegratedController:
                 return {"status": "already_hot_float"}
         model = self.basic.model()
         state = self.basic.state()
+        if hasattr(self.basic, "assembly") and hasattr(self.basic, "bind_resource"):
+            self._bind_assembly_runtime(self.basic.assembly(), model)
         with self.lease_operation_lock:
             with self.lock:
                 if (
@@ -2047,7 +2663,7 @@ class IntegratedController:
                 GRIPPER_OPEN if rb_open and not rt_close
                 else GRIPPER_CLOSE if rt_close and not rb_open
                 else None
-            )
+            ) if self.embedded_gripper_enabled else None
             if self.engaged and rising and self.trajectory is None:
                 self.commit_requested = True
             if falling and self.trajectory is not None and self.trajectory.interaction_mode == INTERACTION_HOLD_LB:
@@ -2056,6 +2672,10 @@ class IntegratedController:
             self._cancel_active_trajectory("LB released in hold mode", request_float=True)
 
     def request_gripper(self, action: str) -> dict[str, Any]:
+        if not self.embedded_gripper_enabled:
+            raise PermissionError(
+                "gripper control belongs to the separate grip controller"
+            )
         normalized = str(action).strip().upper()
         if normalized not in SUPPORTED_GRIPPER_ACTIONS | {"STOP"}:
             raise ValueError("gripper action must be OPEN, CLOSE, or STOP")
@@ -2559,6 +3179,7 @@ class IntegratedController:
 
     def _commit_staged_target(self) -> None:
         try:
+            self._assert_assembly_unchanged()
             state = self.basic.state()
             now = time.monotonic()
             with self.lock:
@@ -4538,6 +5159,8 @@ class IntegratedController:
         self,
         commands: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        if not self.embedded_gripper_enabled:
+            return list(commands)
         if self.gripper_active_action is None:
             return commands
         return [
@@ -4546,6 +5169,8 @@ class IntegratedController:
         ]
 
     def _service_gripper(self, now: float) -> None:
+        if not self.embedded_gripper_enabled:
+            return
         with self.lock:
             desired = self._desired_gripper_action_locked()
             active = self.gripper_active_action
@@ -4698,7 +5323,29 @@ class IntegratedController:
                     verified = self.basic.state()
                     state_name = str(verified.get("provider_state") or verified.get("state") or "")
                     pending_float_modes = verified.get("float_transition_pending_joint_indices", [])
-                    if state_name == "SAFE_HOLD_GRAVITY_FLOAT" and not pending_float_modes:
+                    lease = self.basic.lease_snapshot()
+                    group_scoped = bool(
+                        lease is not None and lease.resource_id
+                    )
+                    active_modes = verified.get("active_command_modes", [])
+                    arm_group_float = bool(
+                        group_scoped
+                        and isinstance(active_modes, list)
+                        and len(active_modes) >= 6
+                        and all(
+                            str(mode) == MODE_MIT
+                            for mode in active_modes[:6]
+                        )
+                        and not any(
+                            isinstance(index, int) and index < 6
+                            for index in pending_float_modes
+                        )
+                    )
+                    if arm_group_float or (
+                        not group_scoped
+                        and state_name == "SAFE_HOLD_GRAVITY_FLOAT"
+                        and not pending_float_modes
+                    ):
                         break
                     time.sleep(0.03)
                 else:
@@ -4991,26 +5638,14 @@ class IntegratedController:
                 and str(state.get("health") or "") not in {"FAULTED", "UNHEALTHY"}
             )
             capability_readiness = {
-                "robot.motion.arm.integrated.mit.one_shot": discovery_ready,
-                "robot.motion.arm.integrated.mit.continuous": discovery_ready,
-                "robot.motion.arm.integrated.pos_vel.one_shot": discovery_ready,
-                "robot.motion.arm.integrated.pos_vel.one_shot_limited": discovery_ready,
-                "robot.motion.arm.integrated.target_staging": discovery_ready,
-                "robot.motion.arm.integrated.runtime_settings": discovery_ready,
+                "robot_arm.motion.free_space.preview_commit.v1": bool(
+                    discovery_ready and self.arm_resource_id
+                ),
                 "robot.motion.arm.integrated.semantic_scene_staging": discovery_ready,
-                "robot.motion.arm.integrated.nonphysical_preview": discovery_ready,
-                "robot.motion.arm.integrated.plan.direct.nonphysical": direct_planning_ready,
                 "robot.motion.arm.integrated.plan.transit_path.shadow": bool(
                     direct_planning_ready
                     and self.config["planning"]["transit_shadow_enabled"]
                 ),
-                "robot.motion.arm.integrated.transit.authorized_staged": bool(
-                    discovery_ready
-                    and self.authorization_assertion_configured
-                ),
-                "robot.motion.arm.integrated.contact_baseline_capture": discovery_ready,
-                "robot.motion.arm.integrated.gripper.mit": discovery_ready,
-                "robot.motion.arm.integrated.gripper.pos_tor": discovery_ready,
                 "robot.motion.arm.integrated.gravity_float": discovery_ready,
                 "robot.motion.arm.integrated.idle_profile.leased": (
                     discovery_ready
@@ -5023,6 +5658,9 @@ class IntegratedController:
                 "provider_id": self.config["provider_id"],
                 "arm_id": self.config["arm_id"],
                 "control_mode": CONTROL_MODE,
+                "controller_role": self.controller_role,
+                "embedded_contact_enabled": self.embedded_contact_enabled,
+                "embedded_gripper_enabled": self.embedded_gripper_enabled,
                 "execution_mode": self.execution_mode,
                 "basic_execution_mode": MODE_SPECS[self.execution_mode].basic_mode,
                 "interaction_mode": self.interaction_mode,
@@ -5037,54 +5675,36 @@ class IntegratedController:
                 "last_error": self.last_error,
                 "basic_connected": bool(state),
                 "basic_state": state,
+                "assembly": copy.deepcopy(self.basic_assembly),
+                "assembly_fingerprint": self.assembly_fingerprint,
+                "arm_resource_id": self.arm_resource_id,
                 "capability_readiness": capability_readiness,
+                "resource_groups": (
+                    [
+                        {
+                            "group_id": "free_space_arm",
+                            "resource_id": self.arm_resource_id,
+                            "capabilities": [
+                                "robot_arm.motion.free_space.preview_commit.v1"
+                            ],
+                        }
+                    ]
+                    if self.arm_resource_id
+                    else []
+                ),
                 "capability_profiles": {
-                    "robot.motion.arm.integrated.mit.one_shot": {
-                        "maturity": "USABLE",
-                        "execution_mode": PRESS_MIT,
-                        "interaction_mode": INTERACTION_ONE_SHOT,
-                        "discoverable": True,
-                    },
-                    "robot.motion.arm.integrated.mit.continuous": {
-                        "maturity": "USABLE",
-                        "execution_mode": PRESS_MIT,
-                        "interaction_mode": INTERACTION_HOLD_LB,
-                        "discoverable": True,
-                    },
-                    "robot.motion.arm.integrated.pos_vel.one_shot": {
-                        "maturity": "USABLE",
-                        "execution_mode": TRANSIT_SPEED,
-                        "interaction_mode": INTERACTION_ONE_SHOT,
-                        "discoverable": True,
-                        "constraints": {
-                            "maximum_path_length_m": 1.2,
-                            "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
-                            "effective_joint_speed_policy": (
-                                "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
-                            ),
-                        },
-                    },
-                    "robot.motion.arm.integrated.pos_vel.one_shot_limited": {
-                        "maturity": "DEPRECATED_ALIAS",
-                        "replacement": (
-                            "robot.motion.arm.integrated.pos_vel.one_shot"
-                        ),
-                        "execution_mode": TRANSIT_SPEED,
-                        "interaction_mode": INTERACTION_ONE_SHOT,
-                        "discoverable": True,
-                        "constraints": {
-                            "maximum_path_length_m": 1.2,
-                            "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD",
-                            "effective_joint_speed_policy": (
-                                "MIN_CONTROLLER_BASIC_POS_SPEED_AND_MOTOR_VMAX"
-                            ),
-                        },
-                    },
-                    "robot.motion.arm.integrated.plan.direct.nonphysical": {
-                        "maturity": "SHADOW",
-                        "transport": "DIRECT_HTTP",
-                        "fabric_in_synchronous_path": False,
-                        "physical_motion_authorized": False,
+                    "robot_arm.motion.free_space.preview_commit.v1": {
+                        "maturity": "SOFTWARE_TESTED",
+                        "controller_role": "FREE_SPACE",
+                        "resource_id": self.arm_resource_id,
+                        "goal_classes": [
+                            "POSITION_3DOF",
+                            "POSE_6DOF",
+                            "ARBITRARY_RELATIVE_TRANSLATION_VECTOR",
+                            "FULL_RPY_ORIENTATION",
+                        ],
+                        "collision_geometry_source": "ASSEMBLY_PROFILE",
+                        "preview_commit": "IMMUTABLE_PREVIEW_THEN_SIGNED_ONE_TIME_COMMIT",
                         "discoverable": True,
                     },
                     "robot.motion.arm.integrated.plan.transit_path.shadow": {
@@ -5095,32 +5715,11 @@ class IntegratedController:
                         "physical_motion_authorized": False,
                         "evaluates": [
                             "DIRECT",
-                            "CLEARANCE_Z_THEN_XY",
-                            "LATERAL_SINGULARITY_ESCAPE",
+                            "CLOSEST_COLLISION_FREE_DIRECT_PREFIX",
                             "PROVIDER_RATE_CAPPED_SPEED",
                             "SEMANTIC_SCENE_COLLISION",
                         ],
-                        "discoverable": True,
-                    },
-                    "robot.motion.arm.integrated.transit.authorized_staged": {
-                        "maturity": "LIMITED",
-                        "planner_owner": (
-                            "ROBOT_ARM_INTEGRATED_CONTROLLER"
-                        ),
-                        "transport": "DIRECT_HTTP",
-                        "fabric_in_synchronous_path": False,
-                        "authorization": (
-                            "SIGNED_SHORT_LIVED_ONE_TIME_ASSERTION"
-                        ),
-                        "exact_preview_digest_required": True,
-                        "maximum_joint_velocity_rad_s": float(
-                            self.config["planning"][
-                                "maximum_transit_joint_velocity_rad_s"
-                            ]
-                        ),
-                        "completion_behavior": (
-                            "HOLD_FINAL_ENDPOINT_UNTIL_EXPLICIT_RELEASE"
-                        ),
+                        "general_obstacle_rerouting": "NOT_IMPLEMENTED",
                         "discoverable": True,
                     },
                     "robot.motion.arm.integrated.idle_profile.leased": {
@@ -5144,16 +5743,6 @@ class IntegratedController:
                         ],
                         "expiry_behavior": IDLE_GRAVITY_FLOAT,
                         "discoverable": True,
-                    },
-                },
-                "non_discoverable_experiments": {
-                    "TRANSIT_SPEED_HOLD_LB": {
-                        "maturity": "EXPERIMENTAL_UNSTABLE",
-                        "manager_capability_advertised": False,
-                    },
-                    "CONTACT_WORK_ONE_SHOT_POS_TOR": {
-                        "maturity": "EXPERIMENTAL_UNSTABLE",
-                        "manager_capability_advertised": False,
                     },
                 },
                 "input": {

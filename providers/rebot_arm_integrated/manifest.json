@@ -1,7 +1,7 @@
 {
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
-  "version": "0.8.2",
-  "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
+  "version": "0.9.0",
+  "display_name": "Arm Integrated Free-Space Controller",
   "manager_ids": ["robot_arm.primary.integrated"],
   "ui": {
     "observation": {
@@ -21,32 +21,24 @@
     "COLD"
   ],
   "capabilities": [
+    "robot_arm.motion.free_space.preview_commit.v1",
+    "robot_arm.integrated.assembly_profile_consumer",
+    "robot_arm.integrated.arm_group_scoped_basic_lease",
     "robot_arm.integrated.physical_only",
-    "robot_arm.integrated.menu_engage_gate",
-    "robot.motion.arm.integrated.mit.one_shot",
-    "robot.motion.arm.integrated.mit.continuous",
-    "robot.motion.arm.integrated.pos_vel.one_shot",
-    "robot.motion.arm.integrated.pos_vel.one_shot_limited",
-    "robot.motion.arm.integrated.plan.direct.nonphysical",
     "robot.motion.arm.integrated.plan.transit_path.shadow",
-    "robot.motion.arm.integrated.transit.authorized_staged",
     "robot.motion.arm.integrated.idle_profile.leased",
     "robot_arm.integrated.provider_local_control_audit",
     "robot_arm.integrated.manager_authority_shadow",
     "robot_arm.integrated.manager_shutdown_shadow_client",
     "robot_arm.integrated.manager_capability_catalog",
-    "robot_arm.integrated.one_shot_lb_commit",
     "robot_arm.integrated.position_3dof_ik",
     "robot_arm.integrated.pose_6dof_ik",
     "robot_arm.integrated.controlled_frame_offset",
     "robot_arm.integrated.payload_gravity_model",
     "robot_arm.integrated.integrated_owned_smoothing",
-    "robot_arm.integrated.auto_float_after_one_shot",
     "robot_arm.integrated.free_space_one_point_two_meter_request_envelope",
-    "robot_arm.integrated.runtime_kp_multiplier",
     "robot_arm.integrated.leased_compliant_idle_hold",
     "robot_arm.integrated.leased_position_lock",
-    "robot_arm.integrated.runtime_duration",
     "robot_arm.integrated.measured_commanded_joint_telemetry",
     "robot_arm.integrated.safe_terminate",
     "robot_arm.integrated.verified_gravity_float",
@@ -54,23 +46,16 @@
     "robot_arm.integrated.midbrain_lifecycle",
     "robot_arm.integrated.motion_inhibit_consumer",
     "robot_arm.integrated.capability_readiness",
-    "robot_arm.integrated.fabric_cartesian_target_consumer",
-    "robot_arm.integrated.fabric_freshness_and_duplicate_filter",
     "robot_arm.integrated.semantic_scene_consumer",
     "robot_arm.integrated.nonphysical_path_preview",
-    "robot_arm.integrated.operator_torque_baseline_capture",
-    "robot_arm.integrated.contact_residual_monitor",
-    "robot_arm.integrated.explicit_joint_torque_budgets",
-    "robot_arm.integrated.cartesian_wrench_budgets",
-    "robot_arm.integrated.isotropic_force_torque_budgets",
-    "robot_arm.integrated.gripper_mit_test",
-    "robot_arm.integrated.gripper_pos_tor_test",
-    "robot_arm.integrated.gripper_latched_endpoint_hold"
+    "robot_arm.integrated.free_space_only_role"
   ],
   "required_capabilities": [
     "robot_arm.joint_state",
     "robot_arm.gravity_float",
-    "robot_arm.control.operational_api_v2"
+    "robot_arm.control.operational_api_v2",
+    "robot_arm.assembly_state",
+    "robot_arm.control.joint_group.v1"
   ],
   "provider_dependencies": [
     {
@@ -86,7 +71,6 @@
     "robot_arm.integrated.control_audit"
   ],
   "consumed_streams": [
-    "robot_arm.primary.integrated.command",
     "robot_arm.primary.integrated.scene"
   ],
   "package_layout": "providers/rebot_arm_integrated",
@@ -97,31 +81,31 @@
     "audited_commit": "e226a09",
     "contract_set": "0.3.10-working-draft"
   },
-  "operator_control": {
-    "physical_gates": [
-      "GUI_ENGAGE",
-      "XBOX_LB_ARM",
-      "XBOX_RB_RT_GRIPPER"
-    ],
-    "target_edit": "NON_PHYSICAL_WHILE_FLOATING",
-    "one_shot": "LB_RISING_EDGE_SOLVE_AND_STREAM_THEN_FLOAT",
-    "hold_lb": "RECEDING_HORIZON_REPLAN_WHILE_HELD_RELEASE_TO_FLOAT",
-    "trajectory": "INTEGRATED_OWNED_50HZ_MIT_OR_10HZ_LATCHED_POS_VEL_POS_TOR_ENDPOINT",
+  "free_space_execution": {
+    "physical_gate": "SIGNED_PATH_SPECIFIC_AUTONOMOUS_POLICY_ASSERTION",
+    "plan": "NON_PHYSICAL_IMMUTABLE_PATH_PLAN",
+    "commit": "ONE_TIME_SIGNED_PATH_COMMIT",
+    "terminal_release": "GRAVITY_FLOAT_OR_EXPLICIT_LEASED_IDLE_PROFILE",
+    "trajectory": "INTEGRATED_OWNED_ARM_GROUP_STREAM_WITH_BASIC_SAFETY_CEILINGS",
     "maximum_translation_per_commit_m": 1.2,
     "default_execution_mode": "POSITION_VELOCITY_LIMITED"
   },
   "ik": {
     "position": "SELECTABLE_3DOF_POSITION_IK",
     "orientation": "SELECTABLE_6DOF_POSE_IK",
-    "controlled_frame": "TOOL_RELATIVE_OFFSET_TRANSFORM",
+    "controlled_frame": "ASSEMBLY_PROFILE_CONTROLLED_FRAME",
     "rpy_matrix": "CORRECTED_STANDARD_RZ_RY_RX"
   },
   "limitations": [
     "Physical hardware validation is required; this release is software-tested only",
-    "Controller-owned path-plan remains nonphysical; physical path-commit requires an exact unexpired preview, a signed short-lived one-time authorization assertion, current scene and workcell context, and a fresh fenced Basic lease",
-    "Free-space TRANSIT_SPEED uses the lower of controller policy, Basic POS_SPEED caps, and each motor's configured VMAX; contact work remains separately limited",
-    "TRANSIT_SPEED HOLD_LB and CONTACT_WORK ONE_SHOT are experimental and unstable and are excluded from Manager capability discovery",
-    "Cartesian wrench budgets are mapped to joint limits, but measured Cartesian force estimation remains absent; CONTACT_WORK monitors joint-torque residuals",
+    "Controller-owned path-plan remains nonphysical; physical path-commit requires an exact unexpired preview, a signed short-lived one-time authorization assertion, its declared observation or autonomous kinematic context, and a fresh fenced Basic lease",
+    "Generic relative-motion Agent execution uses only the signed autonomous path-plan/path-commit boundary; retired engage, teleop, runtime-settings, gripper, contact-baseline, and Fabric target-staging routes are not exposed",
+    "General obstacle rerouting is not implemented; free-space planning evaluates the direct Cartesian path and may stop at its closest collision-free prefix",
+    "Free-space TRANSIT_SPEED uses the lower of controller policy, Basic POS_SPEED caps, and each motor's configured VMAX",
+    "Contact work and gripper control are intentionally excluded; they belong to separately qualified controllers",
+    "Runtime held-object geometry ingestion is not implemented; free-space motion while holding an object is prohibited until an attachment revision, payload, and collision geometry are bound into the preview",
+    "Additional collision frame primitives are schema-supported but rejected fail-closed by this release; the current consumer evaluates only the ordered capsule polyline",
+    "Self-collision is not implemented by the selected reBot collision profile",
     "Manager control-authority leases and shutdown plans remain advisory shadow interfaces during Phase 2; physical enforcement remains the fenced provider-local Basic lease and existing safe-termination helper",
     "Leased idle profiles are provider-local physical holds: COMPLIANT_HOLD accepts 2x-4x configured Kp, POSITION_LOCK uses POS_VEL, and every lease expiry or release returns to verified gravity float"
   ],
@@ -137,54 +121,26 @@
     "IMPEDANCE": {
       "required_capability": "robot_arm.control.impedance",
       "default": false,
-      "one_shot_maturity": "USABLE",
-      "continuous_maturity": "USABLE",
+      "signed_path_commit_maturity": "USABLE",
       "discoverable": true
     },
     "POSITION_VELOCITY_LIMITED": {
       "required_capability": "robot_arm.control.position_velocity_limited",
       "default": true,
-      "one_shot_maturity": "USABLE",
-      "one_shot_constraints": {
+      "signed_path_commit_maturity": "USABLE",
+      "signed_path_commit_constraints": {
         "maximum_path_length_m": 1.2,
         "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD"
       },
-      "continuous_maturity": "EXPERIMENTAL_UNSTABLE",
-      "continuous_discoverable": false
-    },
-    "GRIPPER_POSITION_EFFORT_LIMITED": {
-      "required_capability": "robot_arm.control.position_effort_limited",
-      "default": false,
-      "scope": "joint_7_operator_hold_test"
-    },
-    "ARM_POSITION_EFFORT_LIMITED": {
-      "required_capability": "robot_arm.control.position_effort_limited",
-      "default": false,
-      "scope": "six_joint_twenty_cm_contact_work_with_joint_or_cartesian_budgets",
-      "one_shot_maturity": "EXPERIMENTAL_UNSTABLE",
-      "discoverable": false
+      "discoverable": true
     }
   },
   "capability_discovery": {
     "manager_source": "heartbeat.details.capability_readiness",
     "provider_catalog_endpoint": "GET /v1/capabilities",
     "advertised_motion_capabilities": [
-      "robot.motion.arm.integrated.mit.one_shot",
-      "robot.motion.arm.integrated.mit.continuous",
-      "robot.motion.arm.integrated.pos_vel.one_shot",
-      "robot.motion.arm.integrated.pos_vel.one_shot_limited",
-      "robot.motion.arm.integrated.plan.direct.nonphysical",
-      "robot.motion.arm.integrated.plan.transit_path.shadow",
-      "robot.motion.arm.integrated.transit.authorized_staged"
-    ],
-    "excluded_experiments": [
-      "TRANSIT_SPEED_HOLD_LB",
-      "CONTACT_WORK_ONE_SHOT_POS_TOR"
+      "robot_arm.motion.free_space.preview_commit.v1",
+      "robot.motion.arm.integrated.plan.transit_path.shadow"
     ]
-  },
-  "fabric_input": {
-    "stream": "robot_arm.primary.integrated.command",
-    "schema": "physical_agent.arm_integrated_command",
-    "motion_authority": "STAGING_ONLY_GUI_ENGAGE_AND_XBOX_LB_STILL_REQUIRED"
   }
 }

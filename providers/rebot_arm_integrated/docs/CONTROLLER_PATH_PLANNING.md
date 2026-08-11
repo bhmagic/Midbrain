@@ -4,13 +4,10 @@ Status: signed physical commit enforced; preview remains nonphysical
 
 ## Purpose
 
-`POST /v1/motion/path-plan` moves general transit decisions out of individual
-Skills and into the Integrated controller. It evaluates:
+`POST /v1/motion/path-plan` moves free-space transit decisions out of
+individual Skills and into the Integrated controller. It evaluates:
 
 - a direct Cartesian path;
-- a clearance-Z path;
-- positive- and negative-Y lateral alternatives intended to escape poor wrist
-  singularity regions;
 - sequentially seeded Cartesian IK continuity;
 - minimum Jacobian singular value and joint-jump limits;
 - semantic-scene collision clearance when a scene is present;
@@ -25,6 +22,21 @@ The target may contain either an absolute arm-base `position_m` or a bounded
 fresh measured controlled frame inside the preview. This lets a visual Skill
 request a capped correction when an upstream FK transform is temporarily
 missing without guessing the controller tool's absolute origin.
+
+The fresh-scene policy currently ignores `PUSHABLE`, applies 10 mm additional
+clearance to `KEEP_OUT`, and applies zero additional clearance to
+`WORK_OBJECT`. Zero additional margin is not contact permission: robot and
+object geometry still may not intersect.
+
+General obstacle rerouting is not implemented. The controller does not invent
+a clearance-Z or lateral path because those templates can create surprising
+motion unrelated to observed obstacle geometry. If the direct path cannot
+reach the goal collision-free, the controller may return its collision-free
+prefix ending as close as possible to the first semantic boundary. Such a plan
+is executable but sets
+`goal_reached: false`, `closest_safe: true`, and
+`motion_outcome: CLOSEST_SAFE`, including the blocking object IDs/types and
+remaining goal distance.
 
 ## Preview safety and latency boundary
 
@@ -44,7 +56,7 @@ The planning endpoint:
 
 ## Freshness and identity contract
 
-Callers that intend to create an operator decision must include
+Observation-driven callers that intend to create a reviewed decision must include
 `request_context` with:
 
 - `binding_id`;
@@ -68,9 +80,14 @@ Callers must copy the policy and its required identity fields from the active
 Manager workcell activation. They must not convert V1 evidence to V2, omit a
 V1 epoch, or invent a calibration revision.
 
-Legacy nonphysical diagnostic calls may omit this object, but the returned
-contract then reports `request_context_complete: false` and must not be used to
-create authorization.
+Diagnostic path-plan calls may omit this object, but the returned contract then
+reports `request_context_complete: false` and cannot be committed.
+
+Autonomous generic free-space motion instead uses
+`context_kind=AUTONOMOUS_FREE_SPACE_KINEMATIC`. It binds the complete spatial
+resolution and its canonical digest plus resolution time. This context is for
+arm-base or already-resolved spatial goals; observation-driven item approaches
+continue to use the stricter camera/workcell/scene context above.
 
 `preview_contract` records a bounded issue/expiry interval, controller
 provider/instance/boot/configuration identity, exact normalized request and
@@ -90,7 +107,11 @@ no separately protected physical-control APIs.
 
 `POST /v1/motion/path-commit` is not a mode on the planning request. It requires
 the exact stored `plan_id`, `request_sha256`, and `preview_sha256`, plus a
-`X-Midbrain-Authorization` HMAC assertion issued for one approved UI decision.
+`X-Midbrain-Authorization` HMAC assertion issued for one exact host policy
+decision. Normal free-space Agent motion uses issuer
+`physical-agent-autonomy` with resolver `autonomous-free-space-policy`; the
+commit does not require a human approval dialog. UI-issued assertions remain
+supported for attended workflows.
 The assertion binds controller provider/instance/boot/configuration, plan,
 request, preview, semantic scene, decision, resolver, and expiry. Both the
 plan and assertion ID are consumed once.
@@ -131,8 +152,9 @@ gravity-float. The local append-only audit synchronously records the exact
 request and authorization-token SHA-256; the raw token is never persisted and
 Fabric receives only an asynchronous audit copy.
 
-General route search, an in-flight successor queue, task-level slicing paths,
-and broader multistep orchestration are not part of this implemented boundary.
+General route search beyond the implemented direct/clearance candidates, an
+in-flight successor queue, task-level slicing paths, and broader multistep
+orchestration are not part of this implemented boundary.
 Their design and promotion gates belong in the
 [active roadmap](../../../docs/09_LIMITATIONS_AND_ROADMAP.md#controller-owned-multistep-routing),
 not in this current-interface reference.

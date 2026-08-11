@@ -167,6 +167,8 @@ struct CapabilityView {
 struct CapabilityBindingRequest {
     required_capabilities: Vec<String>,
     #[serde(default)]
+    required_resources_by_capability: HashMap<String, String>,
+    #[serde(default)]
     fallback_provider_ids: HashMap<String, String>,
     #[serde(default)]
     allowed_provider_ids: Vec<String>,
@@ -189,11 +191,14 @@ struct CapabilityBindingCandidate {
     health: String,
     residency: String,
     expired: bool,
+    required_resource_id: Option<String>,
+    resource_compatible: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct CapabilityBindingSelection {
     capability: String,
+    required_resource_id: Option<String>,
     provider_id: String,
     provider_instance_id: Option<String>,
     boot_id: Option<String>,
@@ -305,6 +310,7 @@ struct ControlAuthorityResourceView {
     resource_id: String,
     enforcement: String,
     active_lease: Option<ControlAuthorityLease>,
+    active_overlapping_leases: Vec<ControlAuthorityLease>,
     latest_fencing_generation: u64,
 }
 
@@ -486,6 +492,7 @@ struct AppState {
     shutdown_execution: Arc<Mutex<Option<ShutdownExecutionRecord>>>,
     shutdown_fence: Arc<Mutex<Option<String>>>,
     workcell_calibrations: Arc<Mutex<HashMap<String, WorkcellCalibrationActivationRecord>>>,
+    assembly_selection_lock: Arc<Mutex<()>>,
     shutdown_execution_enabled: bool,
     review_auth_secret: Arc<Vec<u8>>,
     manager_instance_id: String,
@@ -556,6 +563,7 @@ async fn main() -> Result<()> {
         shutdown_execution: Arc::new(Mutex::new(None)),
         shutdown_fence: Arc::new(Mutex::new(None)),
         workcell_calibrations: Arc::new(Mutex::new(HashMap::new())),
+        assembly_selection_lock: Arc::new(Mutex::new(())),
         shutdown_execution_enabled,
         review_auth_secret: Arc::new(review_auth_secret),
         manager_instance_id: Uuid::new_v4().to_string(),
@@ -585,6 +593,10 @@ async fn main() -> Result<()> {
         .route("/developer/skill/:id", get(ui::developer_page))
         .route("/shutdown", get(ui::shutdown_page))
         .route("/v1/ui/overview", get(ui::overview))
+        .route(
+            "/v1/ui/robot-assembly/effectors",
+            get(ui::effector_profiles).post(ui::select_effector),
+        )
         .route("/v1/ui/providers/:id", get(ui::provider_detail))
         .route("/v1/ui/skills/:id", get(ui::skill_detail))
         .route(
@@ -2109,6 +2121,14 @@ fn build_capability_binding(
             ));
         }
     }
+    for (capability, resource_id) in &request.required_resources_by_capability {
+        if !required_set.contains(capability.as_str()) {
+            return Err(anyhow!(
+                "required resource supplied for unrequested capability {capability}"
+            ));
+        }
+        validate_resource_id(resource_id)?;
+    }
 
     let allowed: HashSet<String> = request
         .allowed_provider_ids
@@ -2140,11 +2160,20 @@ fn build_capability_binding(
     let mut unresolved_capabilities = Vec::new();
 
     for capability in required_capabilities {
+        let required_resource_id = request
+            .required_resources_by_capability
+            .get(&capability)
+            .map(String::as_str);
         let mut candidates: Vec<CapabilityBindingCandidate> = configs
             .keys()
             .filter(|provider_id| provider_allowed(provider_id))
             .filter_map(|provider_id| {
-                capability_candidate(provider_id, reports.get(provider_id), &capability)
+                capability_candidate_for_resource(
+                    provider_id,
+                    reports.get(provider_id),
+                    &capability,
+                    required_resource_id,
+                )
             })
             .collect();
         candidates.sort_by(|left, right| {
@@ -2159,6 +2188,7 @@ fn build_capability_binding(
         if let Some(selected) = candidates.iter().find(|candidate| candidate.available) {
             selections.push(CapabilityBindingSelection {
                 capability,
+                required_resource_id: required_resource_id.map(str::to_string),
                 provider_id: selected.provider_id.clone(),
                 provider_instance_id: selected.provider_instance_id.clone(),
                 boot_id: selected.boot_id.clone(),
@@ -2176,17 +2206,27 @@ fn build_capability_binding(
             .get(&capability)
             .filter(|provider_id| provider_allowed(provider_id));
         if let Some(provider_id) = fallback {
-            let selected = capability_candidate(provider_id, reports.get(provider_id), &capability)
-                .unwrap_or_else(|| {
-                    unavailable_fallback_candidate(provider_id, reports.get(provider_id))
-                });
+            let selected = capability_candidate_for_resource(
+                provider_id,
+                reports.get(provider_id),
+                &capability,
+                required_resource_id,
+            )
+            .unwrap_or_else(|| {
+                unavailable_fallback_candidate(
+                    provider_id,
+                    reports.get(provider_id),
+                    required_resource_id,
+                )
+            });
             selections.push(CapabilityBindingSelection {
                 capability,
+                required_resource_id: required_resource_id.map(str::to_string),
                 provider_id: selected.provider_id.clone(),
                 provider_instance_id: selected.provider_instance_id.clone(),
                 boot_id: selected.boot_id.clone(),
                 available: selected.available,
-                compatibility_verified: selected.advertised,
+                compatibility_verified: selected.advertised && selected.resource_compatible,
                 requires_activation: !selected.available,
                 selection_reason: "EXPLICIT_PROVIDER_FALLBACK".to_string(),
                 candidates_considered: candidates,
@@ -2257,9 +2297,13 @@ fn refresh_binding_validity(
             ));
             continue;
         }
-        let currently_available =
-            capability_candidate(&selection.provider_id, Some(report), &selection.capability)
-                .is_some_and(|candidate| candidate.available);
+        let currently_available = capability_candidate_for_resource(
+            &selection.provider_id,
+            Some(report),
+            &selection.capability,
+            selection.required_resource_id.as_deref(),
+        )
+        .is_some_and(|candidate| candidate.available);
         if !currently_available {
             issues.push(format!(
                 "PROVIDER_UNAVAILABLE:{}:{}",
@@ -2293,10 +2337,11 @@ fn refresh_binding_validity(
     binding
 }
 
-fn capability_candidate(
+fn capability_candidate_for_resource(
     provider_id: &str,
     report: Option<&ProviderReport>,
     capability: &str,
+    required_resource_id: Option<&str>,
 ) -> Option<CapabilityBindingCandidate> {
     let report = report?;
     let readiness = report
@@ -2306,8 +2351,20 @@ fn capability_candidate(
         .get(capability)?;
     let advertised = readiness.is_boolean();
     let capability_ready = readiness.as_bool().unwrap_or(false);
+    let resource_compatible = required_resource_id.is_none_or(|required| {
+        report
+            .details
+            .get("resource_groups")
+            .and_then(Value::as_array)
+            .is_some_and(|groups| {
+                groups
+                    .iter()
+                    .any(|group| group.get("resource_id").and_then(Value::as_str) == Some(required))
+            })
+    });
     let available = advertised
         && capability_ready
+        && resource_compatible
         && report.ready
         && !report.expired
         && report.residency == "HOT"
@@ -2322,12 +2379,15 @@ fn capability_candidate(
         health: report.health.clone(),
         residency: report.residency.clone(),
         expired: report.expired,
+        required_resource_id: required_resource_id.map(str::to_string),
+        resource_compatible,
     })
 }
 
 fn unavailable_fallback_candidate(
     provider_id: &str,
     report: Option<&ProviderReport>,
+    required_resource_id: Option<&str>,
 ) -> CapabilityBindingCandidate {
     CapabilityBindingCandidate {
         provider_id: provider_id.to_string(),
@@ -2343,6 +2403,8 @@ fn unavailable_fallback_candidate(
             .map(|value| value.residency.clone())
             .unwrap_or_else(|| "COLD".to_string()),
         expired: report.is_some_and(|value| value.expired),
+        required_resource_id: required_resource_id.map(str::to_string),
+        resource_compatible: required_resource_id.is_none(),
     }
 }
 
@@ -2591,6 +2653,8 @@ async fn acquire_control_authority(
             "resource_id and owner_id are required",
         ));
     }
+    validate_resource_id(&resource_id)
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     validate_authority_duration(request.duration_ms, request.renewal_interval_ms)
         .map_err(|error| api_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let mut permissions: Vec<String> = request
@@ -2611,25 +2675,35 @@ async fn acquire_control_authority(
     let now = Utc::now();
     let mut leases = state.control_authority_leases.lock().await;
     expire_control_authority_locked(&mut leases, now);
-    let active_lease_id = leases
+    let active_lease_ids: Vec<String> = leases
         .values()
-        .filter(|lease| lease.resource_id == resource_id && lease.state == "ACTIVE")
-        .max_by_key(|lease| lease.fencing_generation)
-        .map(|lease| lease.lease_id.clone());
-    if let Some(active_lease_id) = active_lease_id {
+        .filter(|lease| {
+            lease.state == "ACTIVE" && resource_scopes_overlap(&lease.resource_id, &resource_id)
+        })
+        .map(|lease| lease.lease_id.clone())
+        .collect();
+    let mut preempted_resources = HashSet::new();
+    if !active_lease_ids.is_empty() {
         if !request.preempt {
-            let active = leases.get(&active_lease_id).expect("active lease exists");
+            let active = leases
+                .get(&active_lease_ids[0])
+                .expect("active overlapping lease exists");
             return Err(api_error(
                 StatusCode::CONFLICT,
                 format!(
-                    "resource {resource_id} already has active advisory lease {} owned by {}",
-                    active.lease_id, active.owner_id
+                    "resource {resource_id} overlaps active advisory lease {} on {} owned by {}",
+                    active.lease_id, active.resource_id, active.owner_id
                 ),
             ));
         }
-        if let Some(active) = leases.get_mut(&active_lease_id) {
-            active.state = "PREEMPTED".to_string();
-            active.last_transition_reason = format!("preempted by advisory owner {owner_id}");
+        for active_lease_id in active_lease_ids {
+            if let Some(active) = leases.get_mut(&active_lease_id) {
+                preempted_resources.insert(active.resource_id.clone());
+                active.state = "PREEMPTED".to_string();
+                active.last_transition_reason = format!(
+                    "preempted by advisory owner {owner_id} on overlapping resource {resource_id}"
+                );
+            }
         }
     }
 
@@ -2659,6 +2733,11 @@ async fn acquire_control_authority(
     drop(generations);
     drop(leases);
 
+    for preempted_resource in preempted_resources {
+        if let Err(error) = publish_control_authority_resource(&state, &preempted_resource).await {
+            warn!(resource_id = %preempted_resource, error = %error, "failed to publish preempted advisory authority");
+        }
+    }
     if let Err(error) = publish_control_authority_resource(&state, &resource_id).await {
         warn!(resource_id = %resource_id, error = %error, "failed to publish advisory authority");
     }
@@ -2756,6 +2835,34 @@ fn validate_authority_duration(duration_ms: u64, renewal_interval_ms: u64) -> Re
     Ok(())
 }
 
+fn validate_resource_id(resource_id: &str) -> Result<()> {
+    let value = resource_id.trim();
+    if value != resource_id || value.is_empty() || value.starts_with('/') || value.ends_with('/') {
+        return Err(anyhow!("resource_id must be a non-empty canonical path"));
+    }
+    if value.split('/').any(|segment| {
+        segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || !segment.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+            })
+    }) {
+        return Err(anyhow!("resource_id contains an invalid path segment"));
+    }
+    Ok(())
+}
+
+fn resource_scopes_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 fn expire_control_authority_locked(
     leases: &mut HashMap<String, ControlAuthorityLease>,
     now: DateTime<Utc>,
@@ -2786,6 +2893,18 @@ async fn control_authority_resource_view(
         .filter(|lease| lease.resource_id == resource_id && lease.state == "ACTIVE")
         .max_by_key(|lease| lease.fencing_generation)
         .cloned();
+    let mut active_overlapping_leases: Vec<ControlAuthorityLease> = leases
+        .values()
+        .filter(|lease| {
+            lease.state == "ACTIVE" && resource_scopes_overlap(&lease.resource_id, resource_id)
+        })
+        .cloned()
+        .collect();
+    active_overlapping_leases.sort_by(|left, right| {
+        left.resource_id
+            .cmp(&right.resource_id)
+            .then_with(|| left.fencing_generation.cmp(&right.fencing_generation))
+    });
     drop(leases);
     let latest_fencing_generation = state
         .control_authority_generations
@@ -2798,6 +2917,7 @@ async fn control_authority_resource_view(
         resource_id: resource_id.to_string(),
         enforcement: "ADVISORY".to_string(),
         active_lease,
+        active_overlapping_leases,
         latest_fencing_generation,
     }
 }
@@ -4176,6 +4296,7 @@ mod tests {
     fn binding_request(capability: &str) -> CapabilityBindingRequest {
         CapabilityBindingRequest {
             required_capabilities: vec![capability.to_string()],
+            required_resources_by_capability: HashMap::new(),
             fallback_provider_ids: HashMap::new(),
             allowed_provider_ids: Vec::new(),
             excluded_provider_ids: Vec::new(),
@@ -4200,6 +4321,7 @@ mod tests {
             shutdown_execution: Arc::new(Mutex::new(None)),
             shutdown_fence: Arc::new(Mutex::new(None)),
             workcell_calibrations: Arc::new(Mutex::new(HashMap::new())),
+            assembly_selection_lock: Arc::new(Mutex::new(())),
             shutdown_execution_enabled,
             review_auth_secret: Arc::new(
                 b"test-review-auth-secret-with-at-least-32-bytes".to_vec(),
@@ -5318,6 +5440,84 @@ mod tests {
     }
 
     #[test]
+    fn authority_resource_hierarchy_allows_siblings_and_conflicts_with_parent() {
+        assert!(!resource_scopes_overlap(
+            "robot_arm.primary/arm",
+            "robot_arm.primary/gripper"
+        ));
+        assert!(resource_scopes_overlap(
+            "robot_arm.primary",
+            "robot_arm.primary/arm"
+        ));
+        assert!(resource_scopes_overlap(
+            "robot_arm.primary/gripper",
+            "robot_arm.primary"
+        ));
+        assert!(!resource_scopes_overlap(
+            "robot_arm.primary",
+            "robot_arm.secondary"
+        ));
+        assert!(validate_resource_id("robot_arm.primary/arm").is_ok());
+        assert!(validate_resource_id(" robot_arm.primary/arm").is_err());
+        assert!(validate_resource_id("robot_arm.primary/arm bad").is_err());
+        assert!(validate_resource_id("robot_arm.primary\\arm").is_err());
+    }
+
+    #[test]
+    fn capability_binding_can_require_the_selected_resource_group() {
+        let configs = HashMap::from([
+            (
+                "provider.arm-a".to_string(),
+                provider_config("provider.arm-a"),
+            ),
+            (
+                "provider.arm-b".to_string(),
+                provider_config("provider.arm-b"),
+            ),
+        ]);
+        let mut report_a = provider_report(
+            "provider.arm-a",
+            "robot.motion.free_space",
+            true,
+            true,
+            "HOT",
+        );
+        report_a.details["resource_groups"] = json!([{
+            "resource_id": "robot_arm.secondary/arm"
+        }]);
+        let mut report_b = provider_report(
+            "provider.arm-b",
+            "robot.motion.free_space",
+            true,
+            true,
+            "HOT",
+        );
+        report_b.details["resource_groups"] = json!([{
+            "resource_id": "robot_arm.primary/arm"
+        }]);
+        let reports = HashMap::from([
+            ("provider.arm-a".to_string(), report_a),
+            ("provider.arm-b".to_string(), report_b),
+        ]);
+        let mut request = binding_request("robot.motion.free_space");
+        request.required_resources_by_capability.insert(
+            "robot.motion.free_space".to_string(),
+            "robot_arm.primary/arm".to_string(),
+        );
+
+        let binding = build_capability_binding(&configs, &reports, request)
+            .expect("resource-qualified binding should resolve");
+
+        assert_eq!(binding.validity, "CURRENT");
+        assert_eq!(binding.selections[0].provider_id, "provider.arm-b");
+        assert_eq!(
+            binding.selections[0].required_resource_id.as_deref(),
+            Some("robot_arm.primary/arm")
+        );
+        assert!(binding.selections[0].compatibility_verified);
+    }
+
+    #[test]
     fn advisory_authority_expiry_preserves_history_and_fencing_generation() {
         let now = Utc::now();
         let lease = ControlAuthorityLease {
@@ -5375,7 +5575,7 @@ mod tests {
                 "robot_arm.integrated".to_string(),
                 provider_report(
                     "robot_arm.integrated",
-                    "robot.motion.arm.integrated.plan.direct.nonphysical",
+                    "robot_arm.motion.free_space.preview_commit.v1",
                     true,
                     true,
                     "HOT",

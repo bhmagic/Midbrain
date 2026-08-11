@@ -1,0 +1,49 @@
+{
+  "schema": "midbrain.robot_collision_geometry_profile",
+  "schema_version": 1,
+  "profile_id": "rebot_b601_dm.arm_capsules",
+  "profile_revision": "rebot-b601-dm-arm-capsules-v2",
+  "display_name": "reBot B601-DM Arm Conservative Capsule Approximation",
+  "qualification": "SOFTWARE_TESTED",
+  "robot_compatibility": {
+    "model_id": "rebot_arm_b601_dm",
+    "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope"
+  },
+  "polyline_point_frames": [
+    "rebot_arm_base",
+    "link1",
+    "link2",
+    "link3",
+    "link4",
+    "link5",
+    "link6"
+  ],
+  "polyline_capsules": [
+    {"segment_index": 0, "radius_m": 0.07, "source": "legacy Integrated conservative radius"},
+    {"segment_index": 1, "radius_m": 0.065, "source": "legacy Integrated conservative radius"},
+    {"segment_index": 2, "radius_m": 0.06, "source": "legacy Integrated conservative radius"},
+    {"segment_index": 3, "radius_m": 0.05, "source": "legacy Integrated conservative radius"},
+    {"segment_index": 4, "radius_m": 0.045, "source": "legacy Integrated conservative radius"},
+    {"segment_index": 5, "radius_m": 0.04, "source": "legacy Integrated conservative radius"}
+  ],
+  "frame_primitives": [],
+  "capability_qualification": {
+    "external_obstacle_avoidance": {
+      "status": "SOFTWARE_TESTED",
+      "note": "Integrated combines these arm capsules with collision primitives owned by the selected mounted-effector profile; physical geometry clearance remains unqualified."
+    },
+    "self_collision": {
+      "status": "NOT_IMPLEMENTED",
+      "note": "This revision does not define or qualify self-collision pairs."
+    },
+    "runtime_attachments": {
+      "status": "RUNTIME_REQUIRED",
+      "note": "Any held object must be supplied as runtime attachment geometry before free-space motion can claim collision coverage."
+    }
+  },
+  "invalidation_conditions": [
+    "Robot model or kinematic revision change",
+    "Any structural modification that changes the arm swept volume",
+    "Physical measurement shows an arm link exceeds its conservative radius"
+  ]
+}

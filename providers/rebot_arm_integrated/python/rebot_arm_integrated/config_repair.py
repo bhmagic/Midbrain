@@ -9,7 +9,7 @@ import json
 from .modes import SUPPORTED_EXECUTION_MODES, normalize_execution_mode
 
 
-MANAGED_POLICY_REVISION = 6
+MANAGED_POLICY_REVISION = 9
 LEGACY_ENDPOINT_JOINT_DELTA_RAD = (0.80, 0.80, 0.80, 1.00, 1.00, 1.00)
 
 
@@ -41,6 +41,12 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("unsupported Integrated Controller configuration version")
     if int(config.get("managed_policy_revision", 0)) != MANAGED_POLICY_REVISION:
         raise ValueError("unsupported Integrated Controller managed policy revision")
+    role_policy = config.get("role_policy")
+    if not isinstance(role_policy, dict) or role_policy.get("role") != "FREE_SPACE":
+        raise ValueError("Integrated Controller role_policy.role must be FREE_SPACE")
+    for key in ("embedded_contact_enabled", "embedded_gripper_enabled"):
+        if not isinstance(role_policy.get(key), bool):
+            raise ValueError(f"role_policy.{key} must be boolean")
     runtime = config["runtime"]
     limits = config["runtime_limits"]
     normalize_execution_mode(runtime["execution_mode"])
@@ -251,10 +257,6 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError("planning singularity and continuity thresholds must be positive")
     if not bool(planning["transit_shadow_enabled"]):
         raise ValueError("planning.transit_shadow_enabled must remain true in Phase 2")
-    if float(planning["transit_clearance_margin_m"]) <= 0.0:
-        raise ValueError("planning.transit_clearance_margin_m must be positive")
-    if float(planning["singularity_escape_lateral_m"]) <= 0.0:
-        raise ValueError("planning.singularity_escape_lateral_m must be positive")
     endpoint_delta = planning["maximum_endpoint_joint_delta_rad"]
     if not isinstance(endpoint_delta, list) or len(endpoint_delta) != 6 or any(float(value) <= 0.0 for value in endpoint_delta):
         raise ValueError("planning.maximum_endpoint_joint_delta_rad must contain six positive values")
@@ -309,15 +311,6 @@ def validate_controller_config(config: dict[str, Any]) -> None:
         raise ValueError(
             "planning.shadow_planning_time_budget_s must be in [0.1, 3.0]"
         )
-    fabric_input = config["fabric_input"]
-    if not str(fabric_input["stream"]).strip():
-        raise ValueError("fabric_input.stream must be non-empty")
-    if not str(fabric_input["schema"]).strip():
-        raise ValueError("fabric_input.schema must be non-empty")
-    if int(fabric_input["poll_ms"]) < 20:
-        raise ValueError("fabric_input.poll_ms must be at least 20 ms")
-    if int(fabric_input["max_age_ms"]) <= 0:
-        raise ValueError("fabric_input.max_age_ms must be positive")
     scene_input = config["scene_input"]
     if not str(scene_input["stream"]).strip() or not str(scene_input["schema"]).strip():
         raise ValueError("scene_input stream and schema must be non-empty")
@@ -328,6 +321,23 @@ def validate_controller_config(config: dict[str, Any]) -> None:
     ):
         raise ValueError(
             "scene_input.ignore_pushable_for_collision_planning must be boolean"
+        )
+    clearance_margins = scene_input["clearance_margin_by_type_m"]
+    if not isinstance(clearance_margins, dict) or set(clearance_margins) != {
+        "KEEP_OUT",
+        "PUSHABLE",
+        "WORK_OBJECT",
+    }:
+        raise ValueError(
+            "scene_input.clearance_margin_by_type_m must define exactly "
+            "KEEP_OUT, PUSHABLE, and WORK_OBJECT"
+        )
+    if any(
+        not 0.0 <= float(value) <= 0.25
+        for value in clearance_margins.values()
+    ):
+        raise ValueError(
+            "scene_input clearance margins must be in [0, 0.25] metres"
         )
     idle_profiles = config["idle_profiles"]
     lease_min_ms = int(idle_profiles["lease_min_ms"])
@@ -383,7 +393,7 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
         if key in active:
             preserved[key] = active[key]
     if active.get("schema") == defaults.get("schema"):
-        for key in ("trajectory", "runtime", "runtime_limits", "idle_profiles", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "manager_authority", "control_audit", "fabric_input", "scene_input"):
+        for key in ("trajectory", "runtime", "runtime_limits", "idle_profiles", "teleop", "gripper", "ik", "workspace", "planning", "safety", "contact", "hybrid_approach", "ui", "manager_authority", "control_audit", "scene_input"):
             if isinstance(active.get(key), dict):
                 preserved[key] = active[key]
     if isinstance(active.get("platform"), dict):
@@ -411,6 +421,9 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
             defaults["planning"]["maximum_endpoint_joint_delta_rad"]
         )
     if active_policy_revision < default_policy_revision:
+        merged["manager_authority"]["resource_id"] = str(
+            defaults["manager_authority"]["resource_id"]
+        )
         merged["trajectory"]["maximum_translation_per_commit_m"] = float(
             defaults["trajectory"]["maximum_translation_per_commit_m"]
         )

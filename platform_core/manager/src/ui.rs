@@ -213,6 +213,510 @@ pub(super) async fn overview(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+#[derive(Clone, Debug)]
+struct EffectorProfileRecord {
+    document: Value,
+    provider_relative_path: String,
+    workspace_relative_path: String,
+}
+
+#[derive(Debug)]
+struct EffectorCatalog {
+    selection_path: PathBuf,
+    selection: Value,
+    arm_provider_id: String,
+    profiles: Vec<EffectorProfileRecord>,
+    warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SelectEffectorRequest {
+    profile_id: String,
+    profile_revision: String,
+    #[serde(default)]
+    physical_effector_confirmed: bool,
+}
+
+pub(super) async fn effector_profiles(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let _selection_guard = state.assembly_selection_lock.lock().await;
+    let catalog = load_effector_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    Ok(Json(effector_catalog_payload(&state, &catalog, None)))
+}
+
+pub(super) async fn select_effector(
+    State(state): State<AppState>,
+    Json(request): Json<SelectEffectorRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !request.physical_effector_confirmed {
+        return Err(api_failure(
+            StatusCode::BAD_REQUEST,
+            "physical_effector_confirmed=true is required for a static assembly change",
+        ));
+    }
+    reject_if_shutdown_fenced(&state, "mounted-effector selection").await?;
+    let _selection_guard = state.assembly_selection_lock.lock().await;
+    let catalog = load_effector_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    let selected = catalog
+        .profiles
+        .iter()
+        .find(|profile| {
+            profile.document.get("profile_id").and_then(Value::as_str)
+                == Some(request.profile_id.as_str())
+                && profile
+                    .document
+                    .get("profile_revision")
+                    .and_then(Value::as_str)
+                    == Some(request.profile_revision.as_str())
+        })
+        .cloned()
+        .ok_or_else(|| {
+            api_failure(
+                StatusCode::BAD_REQUEST,
+                "the requested mounted-effector identity is not an installed compatible profile",
+            )
+        })?;
+    let active_reference = catalog
+        .selection
+        .pointer("/profiles/mounted_effector")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            internal_ui_error("assembly selection is missing profiles.mounted_effector")
+        })?;
+    let already_selected = active_reference.get("expected_id").and_then(Value::as_str)
+        == Some(request.profile_id.as_str())
+        && active_reference
+            .get("expected_revision")
+            .and_then(Value::as_str)
+            == Some(request.profile_revision.as_str());
+    if already_selected {
+        return Ok(Json(effector_catalog_payload(
+            &state,
+            &catalog,
+            Some("ALREADY_SELECTED"),
+        )));
+    }
+
+    let affected = affected_provider_ids(&state.configs, &catalog.arm_provider_id);
+    let provider_views = collect_provider_views(&state).await;
+    let blockers: Vec<Value> = provider_views
+        .iter()
+        .filter(|view| affected.contains(&view.config.id))
+        .filter(|view| {
+            view.process_state != "stopped"
+                || view.report.as_ref().is_some_and(|report| !report.expired)
+        })
+        .map(|view| {
+            json!({
+                "provider_id": view.config.id,
+                "process_state": view.process_state,
+                "residency": view.report.as_ref().map(|report| report.residency.as_str()),
+            })
+        })
+        .collect();
+    if !blockers.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "stop the arm Provider and its running dependents before changing the static mounted effector",
+                "blocking_providers": blockers,
+                "restart_required": true,
+            })),
+        ));
+    }
+
+    let mut updated = catalog.selection.clone();
+    let selection_object = updated
+        .as_object_mut()
+        .ok_or_else(|| internal_ui_error("assembly selection must be a JSON object"))?;
+    let assembly_id = selection_object
+        .get("assembly_id")
+        .and_then(Value::as_str)
+        .unwrap_or("primary_manipulator")
+        .to_string();
+    selection_object.insert(
+        "assembly_revision".to_string(),
+        Value::String(format!("{assembly_id}--{}", request.profile_revision)),
+    );
+    let profiles = selection_object
+        .get_mut("profiles")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| internal_ui_error("assembly selection profiles must be an object"))?;
+    profiles.insert(
+        "mounted_effector".to_string(),
+        json!({
+            "relative_path": selected.provider_relative_path,
+            "expected_schema": "midbrain.mounted_effector_profile",
+            "expected_id": request.profile_id,
+            "expected_revision": request.profile_revision,
+            "sha256": null,
+        }),
+    );
+    let has_effector_actuators = selected
+        .document
+        .get("actuator_groups")
+        .and_then(Value::as_array)
+        .is_some_and(|groups| !groups.is_empty());
+    if !has_effector_actuators {
+        if let Some(roles) = selection_object
+            .get_mut("qualified_control_roles")
+            .and_then(Value::as_object_mut)
+        {
+            roles.insert("grip".to_string(), Value::Null);
+        }
+    }
+    write_assembly_selection(&catalog.selection_path, &updated).map_err(internal_ui_error)?;
+    info!(
+        profile_id = %request.profile_id,
+        profile_revision = %request.profile_revision,
+        "static mounted-effector selection changed"
+    );
+    let refreshed = load_effector_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    Ok(Json(effector_catalog_payload(
+        &state,
+        &refreshed,
+        Some("SELECTED_RESTART_REQUIRED"),
+    )))
+}
+
+fn load_effector_catalog(workspace_root: &FsPath) -> Result<EffectorCatalog> {
+    let workspace_root = fs::canonicalize(workspace_root)
+        .with_context(|| format!("resolving workspace root {}", workspace_root.display()))?;
+    let selection_path = workspace_root
+        .join("config")
+        .join("robot_assemblies")
+        .join("primary_manipulator.json");
+    let selection_path = fs::canonicalize(&selection_path).with_context(|| {
+        format!(
+            "resolving active assembly selection {}",
+            selection_path.display()
+        )
+    })?;
+    if !selection_path.starts_with(&workspace_root) {
+        return Err(anyhow::anyhow!(
+            "assembly selection resolves outside the workspace"
+        ));
+    }
+    let selection: Value = serde_json::from_slice(
+        &fs::read(&selection_path)
+            .with_context(|| format!("reading {}", selection_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", selection_path.display()))?;
+    if selection.get("schema").and_then(Value::as_str) != Some("midbrain.robot_assembly_selection")
+        || selection.get("schema_version").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(anyhow::anyhow!(
+            "unsupported active robot assembly selection"
+        ));
+    }
+    let arm_provider = selection
+        .get("arm_provider")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("assembly selection arm_provider must be an object"))?;
+    let arm_provider_id = required_string(arm_provider.get("provider_id"), "arm provider ID")?;
+    let provider_relative =
+        required_string(arm_provider.get("provider_root"), "arm Provider root")?;
+    let provider_relative_path = PathBuf::from(&provider_relative);
+    if provider_relative_path.is_absolute() {
+        return Err(anyhow::anyhow!(
+            "arm Provider root must be workspace-relative"
+        ));
+    }
+    let provider_root = fs::canonicalize(workspace_root.join(&provider_relative_path))
+        .with_context(|| format!("resolving arm Provider root {provider_relative}"))?;
+    if !provider_root.starts_with(&workspace_root) {
+        return Err(anyhow::anyhow!(
+            "arm Provider root resolves outside the workspace"
+        ));
+    }
+    let effector_root = fs::canonicalize(provider_root.join("profiles").join("effectors"))
+        .with_context(|| {
+            format!("resolving effector profile directory under {provider_relative}")
+        })?;
+    if !effector_root.starts_with(&provider_root) {
+        return Err(anyhow::anyhow!(
+            "effector profile directory resolves outside the arm Provider"
+        ));
+    }
+    let model_reference = selection
+        .pointer("/profiles/arm_model")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("assembly selection is missing its arm model reference"))?;
+    let model_id = required_string(model_reference.get("expected_id"), "arm model ID")?;
+    let model_revision = required_string(
+        model_reference.get("expected_revision"),
+        "arm model revision",
+    )?;
+
+    let mut paths: Vec<PathBuf> = fs::read_dir(&effector_root)
+        .with_context(|| format!("reading {}", effector_root.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    let mut profiles = Vec::new();
+    let mut warnings = Vec::new();
+    let mut identities = HashSet::new();
+    for path in paths {
+        match load_effector_profile(
+            &workspace_root,
+            &provider_root,
+            &path,
+            &model_id,
+            &model_revision,
+        ) {
+            Ok(profile) => {
+                let identity = (
+                    profile
+                        .document
+                        .get("profile_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    profile
+                        .document
+                        .get("profile_revision")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+                if !identities.insert(identity.clone()) {
+                    return Err(anyhow::anyhow!(
+                        "duplicate mounted-effector identity {} at revision {}",
+                        identity.0,
+                        identity.1
+                    ));
+                }
+                profiles.push(profile);
+            }
+            Err(error) => warnings.push(format!("{}: {error}", ui_path(&path, &workspace_root))),
+        }
+    }
+    if profiles.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no compatible mounted-effector profiles are installed"
+        ));
+    }
+    Ok(EffectorCatalog {
+        selection_path,
+        selection,
+        arm_provider_id,
+        profiles,
+        warnings,
+    })
+}
+
+fn load_effector_profile(
+    workspace_root: &FsPath,
+    provider_root: &FsPath,
+    path: &FsPath,
+    model_id: &str,
+    model_revision: &str,
+) -> Result<EffectorProfileRecord> {
+    let resolved =
+        fs::canonicalize(path).with_context(|| format!("resolving profile {}", path.display()))?;
+    if !resolved.starts_with(provider_root) {
+        return Err(anyhow::anyhow!("profile resolves outside the arm Provider"));
+    }
+    let document: Value = serde_json::from_slice(
+        &fs::read(&resolved).with_context(|| format!("reading {}", resolved.display()))?,
+    )
+    .with_context(|| format!("parsing {}", resolved.display()))?;
+    if document.get("schema").and_then(Value::as_str) != Some("midbrain.mounted_effector_profile")
+        || document.get("schema_version").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(anyhow::anyhow!(
+            "unsupported mounted-effector profile schema"
+        ));
+    }
+    required_string(document.get("profile_id"), "profile_id")?;
+    required_string(document.get("profile_revision"), "profile_revision")?;
+    required_string(document.get("display_name"), "display_name")?;
+    let compatibility = document
+        .get("robot_compatibility")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("robot_compatibility must be an object"))?;
+    if compatibility.get("model_id").and_then(Value::as_str) != Some(model_id)
+        || compatibility.get("model_revision").and_then(Value::as_str) != Some(model_revision)
+    {
+        return Err(anyhow::anyhow!(
+            "profile is incompatible with the selected arm model"
+        ));
+    }
+    let inertial = document
+        .get("inertial")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("inertial must be an object"))?;
+    let mass = inertial
+        .get("mass_kg")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow::anyhow!("inertial.mass_kg must be a number"))?;
+    if !mass.is_finite() || mass < 0.0 {
+        return Err(anyhow::anyhow!(
+            "inertial.mass_kg must be finite and non-negative"
+        ));
+    }
+    let com = inertial
+        .get("center_of_mass_m")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("inertial.center_of_mass_m must be an array"))?;
+    if com.len() != 3
+        || com
+            .iter()
+            .any(|value| value.as_f64().is_none_or(|item| !item.is_finite()))
+    {
+        return Err(anyhow::anyhow!(
+            "inertial.center_of_mass_m must contain three finite numbers"
+        ));
+    }
+    if !document
+        .get("collision_primitives")
+        .is_some_and(Value::is_array)
+    {
+        return Err(anyhow::anyhow!("collision_primitives must be an array"));
+    }
+    let provider_relative_path = resolved
+        .strip_prefix(provider_root)
+        .map_err(|_| anyhow::anyhow!("profile is not Provider-relative"))?;
+    Ok(EffectorProfileRecord {
+        document,
+        provider_relative_path: provider_relative_path.to_string_lossy().replace('\\', "/"),
+        workspace_relative_path: ui_path(&resolved, workspace_root),
+    })
+}
+
+fn effector_catalog_payload(
+    state: &AppState,
+    catalog: &EffectorCatalog,
+    status: Option<&str>,
+) -> Value {
+    let active = catalog
+        .selection
+        .pointer("/profiles/mounted_effector")
+        .and_then(Value::as_object);
+    let active_id = active
+        .and_then(|value| value.get("expected_id"))
+        .and_then(Value::as_str);
+    let active_revision = active
+        .and_then(|value| value.get("expected_revision"))
+        .and_then(Value::as_str);
+    let profiles: Vec<Value> = catalog
+        .profiles
+        .iter()
+        .map(|profile| {
+            let document = &profile.document;
+            let inertial = document.get("inertial").cloned().unwrap_or(Value::Null);
+            let profile_id = document.get("profile_id").and_then(Value::as_str);
+            let profile_revision = document.get("profile_revision").and_then(Value::as_str);
+            json!({
+                "profile_id": profile_id,
+                "profile_revision": profile_revision,
+                "display_name": document.get("display_name"),
+                "assembly_type": document.get("assembly_type"),
+                "qualification": document.get("qualification"),
+                "active": profile_id == active_id && profile_revision == active_revision,
+                "profile_file": profile.workspace_relative_path,
+                "provider_relative_path": profile.provider_relative_path,
+                "inertial": inertial,
+                "controlled_frame": document.get("controlled_frame"),
+                "collision_primitive_count": document
+                    .get("collision_primitives")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
+                "actuator_group_count": document
+                    .get("actuator_groups")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
+            })
+        })
+        .collect();
+    json!({
+        "schema": "midbrain.effector_profile_catalog",
+        "schema_version": 1,
+        "status": status.unwrap_or("READY"),
+        "selection_file": ui_path(&catalog.selection_path, &state.workspace_root),
+        "assembly_id": catalog.selection.get("assembly_id"),
+        "assembly_revision": catalog.selection.get("assembly_revision"),
+        "arm_provider_id": catalog.arm_provider_id,
+        "active_profile_id": active_id,
+        "active_profile_revision": active_revision,
+        "profiles": profiles,
+        "warnings": catalog.warnings,
+        "selection_policy": {
+            "physical_effector_confirmation_required": true,
+            "affected_providers_must_be_stopped": true,
+            "restart_required": true,
+            "profile_content_edit_requires_restart": true,
+        },
+        "affected_provider_ids": affected_provider_ids(&state.configs, &catalog.arm_provider_id),
+    })
+}
+
+fn affected_provider_ids(
+    configs: &HashMap<String, super::ProviderConfig>,
+    arm_provider_id: &str,
+) -> HashSet<String> {
+    let mut affected = HashSet::from([arm_provider_id.to_string()]);
+    loop {
+        let before = affected.len();
+        for config in configs.values() {
+            if config
+                .dependencies
+                .iter()
+                .any(|dependency| affected.contains(dependency))
+            {
+                affected.insert(config.id.clone());
+            }
+        }
+        if affected.len() == before {
+            return affected;
+        }
+    }
+}
+
+fn write_assembly_selection(selection_path: &FsPath, selection: &Value) -> Result<()> {
+    let payload = serde_json::to_string_pretty(selection)? + "\n";
+    let next_path = selection_path.with_extension("json.next");
+    let backup_path = selection_path.with_extension("json.previous");
+    fs::copy(selection_path, &backup_path)
+        .with_context(|| format!("backing up assembly selection to {}", backup_path.display()))?;
+    fs::write(&next_path, payload.as_bytes())
+        .with_context(|| format!("writing staged assembly selection {}", next_path.display()))?;
+    let staged: Value = serde_json::from_slice(&fs::read(&next_path)?)?;
+    if staged.get("schema").and_then(Value::as_str) != Some("midbrain.robot_assembly_selection") {
+        let _ = fs::remove_file(&next_path);
+        return Err(anyhow::anyhow!(
+            "staged assembly selection failed validation"
+        ));
+    }
+    if let Err(error) = fs::copy(&next_path, selection_path) {
+        let _ = fs::copy(&backup_path, selection_path);
+        let _ = fs::remove_file(&next_path);
+        return Err(error).context("activating staged assembly selection");
+    }
+    fs::remove_file(&next_path)
+        .with_context(|| format!("removing staged selection {}", next_path.display()))?;
+    Ok(())
+}
+
+fn required_string(value: Option<&Value>, label: &str) -> Result<String> {
+    let value = value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{label} must be a non-empty string"))?;
+    Ok(value.to_string())
+}
+
+fn ui_path(path: &FsPath, workspace_root: &FsPath) -> String {
+    path.strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 pub(super) async fn provider_detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -925,6 +1429,173 @@ fn internal_ui_error(error: impl std::fmt::Display) -> (StatusCode, Json<Value>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider_config(id: &str, dependencies: &[&str]) -> crate::ProviderConfig {
+        crate::ProviderConfig {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            dependencies: dependencies.iter().map(|value| value.to_string()).collect(),
+            command: "unused".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            control_url: None,
+            auto_start: false,
+            graceful_stop_timeout_ms: 5_000,
+            force_kill_on_stop_timeout: true,
+            heartbeat_timeout_ms: 3_500,
+            safe_state_request_path: None,
+            safe_state_timeout_ms: 35_000,
+            env: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn mainframe_exposes_guarded_effector_selection() {
+        assert!(MAINFRAME_HTML.contains("id=\"effectorSelect\""));
+        assert!(MAINFRAME_HTML.contains("id=\"effectorPhysicalConfirmation\""));
+        assert!(MAINFRAME_JS.contains("physical_effector_confirmed: true"));
+        assert!(MAINFRAME_JS.contains("/v1/ui/robot-assembly/effectors"));
+    }
+
+    #[test]
+    fn effector_selection_fences_transitive_arm_dependents() {
+        let configs = HashMap::from([
+            (
+                "robot_arm.rebot_dm".to_string(),
+                provider_config("robot_arm.rebot_dm", &[]),
+            ),
+            (
+                "robot_arm.primary.integrated".to_string(),
+                provider_config("robot_arm.primary.integrated", &["robot_arm.rebot_dm"]),
+            ),
+            (
+                "world_model.arm_scene_compiler".to_string(),
+                provider_config(
+                    "world_model.arm_scene_compiler",
+                    &["robot_arm.primary.integrated"],
+                ),
+            ),
+            (
+                "camera.femto_bolt".to_string(),
+                provider_config("camera.femto_bolt", &[]),
+            ),
+        ]);
+
+        let affected = affected_provider_ids(&configs, "robot_arm.rebot_dm");
+
+        assert!(affected.contains("robot_arm.rebot_dm"));
+        assert!(affected.contains("robot_arm.primary.integrated"));
+        assert!(affected.contains("world_model.arm_scene_compiler"));
+        assert!(!affected.contains("camera.femto_bolt"));
+    }
+
+    #[test]
+    fn effector_catalog_reads_only_compatible_provider_owned_profiles() {
+        let root = std::env::temp_dir().join(format!(
+            "midbrain-effector-catalog-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let selection_dir = root.join("config").join("robot_assemblies");
+        let profile_dir = root
+            .join("providers")
+            .join("test_arm")
+            .join("profiles")
+            .join("effectors");
+        fs::create_dir_all(&selection_dir).unwrap();
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            selection_dir.join("primary_manipulator.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schema": "midbrain.robot_assembly_selection",
+                "schema_version": 1,
+                "assembly_id": "primary_manipulator",
+                "assembly_revision": "test-v1",
+                "arm_provider": {
+                    "provider_id": "robot_arm.test",
+                    "provider_root": "providers/test_arm"
+                },
+                "profiles": {
+                    "arm_model": {
+                        "expected_id": "test_arm",
+                        "expected_revision": "test-arm-v1"
+                    },
+                    "mounted_effector": {
+                        "expected_id": "test_arm.blade",
+                        "expected_revision": "blade-v1"
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            profile_dir.join("blade.v1.json"),
+            serde_json::to_vec_pretty(&json!({
+                "schema": "midbrain.mounted_effector_profile",
+                "schema_version": 1,
+                "profile_id": "test_arm.blade",
+                "profile_revision": "blade-v1",
+                "display_name": "Test blade",
+                "robot_compatibility": {
+                    "model_id": "test_arm",
+                    "model_revision": "test-arm-v1"
+                },
+                "inertial": {
+                    "mass_kg": 0.7,
+                    "center_of_mass_m": [0.0, 0.0, -0.06]
+                },
+                "collision_primitives": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let catalog = load_effector_catalog(&root).unwrap();
+
+        assert_eq!(catalog.arm_provider_id, "robot_arm.test");
+        assert_eq!(catalog.profiles.len(), 1);
+        assert_eq!(
+            catalog.profiles[0].provider_relative_path,
+            "profiles/effectors/blade.v1.json"
+        );
+        assert!(catalog.warnings.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn assembly_selection_write_keeps_recoverable_previous_copy() {
+        let root = std::env::temp_dir().join(format!(
+            "midbrain-effector-selection-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let selection_path = root.join("primary_manipulator.json");
+        let previous = json!({
+            "schema": "midbrain.robot_assembly_selection",
+            "assembly_revision": "previous"
+        });
+        let next = json!({
+            "schema": "midbrain.robot_assembly_selection",
+            "assembly_revision": "next"
+        });
+        fs::write(
+            &selection_path,
+            serde_json::to_vec_pretty(&previous).unwrap(),
+        )
+        .unwrap();
+
+        write_assembly_selection(&selection_path, &next).unwrap();
+
+        let active: Value = serde_json::from_slice(&fs::read(&selection_path).unwrap()).unwrap();
+        let backup: Value = serde_json::from_slice(
+            &fs::read(selection_path.with_extension("json.previous")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(active["assembly_revision"], "next");
+        assert_eq!(backup["assembly_revision"], "previous");
+        assert!(!selection_path.with_extension("json.next").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn terminal_skill_state_is_presented_as_idle_with_history() {

@@ -14,6 +14,9 @@ development-level detail.
   `camera_system_x/y/z` axis names on camera-relative measurements.
 - Made default-profile repair reproduce the canonical persistent layout while
   preserving existing registries and custom files.
+- Made the documented post-setup publication validator self-contained by
+  installing its test extra, and aligned default-profile integrity checks with
+  the repository's cross-platform canonical text hashing policy.
 
 ## 0.3.0
 

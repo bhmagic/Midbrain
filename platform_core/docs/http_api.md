@@ -9,6 +9,8 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | GET | `/` | Systemic read-only mainframe for Manager, Fabric, Providers, Skills, and Agent UI links |
 | GET | `/health` | Manager health and feature flags |
 | GET | `/v1/ui/overview` | Aggregated Manager/Fabric health plus Provider and Skill liveness summaries |
+| GET | `/v1/ui/robot-assembly/effectors` | Installed arm-compatible mounted-effector profiles, active identity, inertial tuning fields, and restart policy |
+| POST | `/v1/ui/robot-assembly/effectors` | Confirm and persist one installed mounted-effector identity while the arm Provider and all transitive dependents are stopped |
 | GET | `/v1/ui/providers/{id}` | Provider process, heartbeat, readiness, capabilities, streams, and latest observations |
 | GET | `/v1/ui/skills/{id}` | Skill availability, lifecycle history, streams, and latest observations |
 | GET | `/observe/provider/{id}` | Read-only Provider observation page |
@@ -64,6 +66,16 @@ it does not duplicate the Provider shutdown algorithm. Its request uses the
 exact `SHUT_DOWN_MIDBRAIN` confirmation phrase and returns before that script
 stops Manager.
 
+The mounted-effector selector mutates only the machine-local central assembly
+selection. It discovers profiles under the selected arm Provider, filters by
+the selected arm model identity/revision, and accepts an exact profile ID and
+revision rather than a client-supplied filesystem path. The request requires
+`physical_effector_confirmed=true`. It returns `409 Conflict` with
+`blocking_providers` while Basic or any transitive Provider dependent is still
+loaded. A successful change keeps a recoverable `.previous` selection and
+requires the affected Providers to restart before the profile becomes runtime
+state. Profile mass or COM edits have the same restart requirement.
+
 Provider configuration accepts `graceful_stop_timeout_ms`,
 `force_kill_on_stop_timeout`, `safe_state_request_path`, and
 `safe_state_timeout_ms`. `force_kill_on_stop_timeout` defaults to `true`. When
@@ -82,6 +94,7 @@ provider brands:
     "camera.rgb",
     "camera.depth_aligned_to_rgb"
   ],
+  "required_resources_by_capability": {},
   "fallback_provider_ids": {
     "camera.rgb": "camera.femto_bolt",
     "camera.depth_aligned_to_rgb": "camera.femto_bolt"
@@ -94,7 +107,9 @@ provider brands:
 ```
 
 The Manager selects currently advertised, ready, healthy, HOT providers
-deterministically. An explicit provider is considered only when no available
+deterministically. A request may bind a capability to a canonical resource
+group, such as `robot_arm.primary/arm`; in that case the selected Provider
+heartbeat must advertise that exact resource group. An explicit provider is considered only when no available
 candidate exists for that capability. A fallback may be returned with
 `requires_activation=true` and `compatibility_verified=false`, preserving the
 existing hard-coded route during migration.
@@ -128,7 +143,7 @@ duration, renewal interval, optional related Skill, and explicit preemption:
 
 ```json
 {
-  "resource_id": "robot_arm.primary",
+  "resource_id": "robot_arm.primary/arm",
   "owner_id": "skill-execution-123",
   "permissions": ["plan", "execute"],
   "duration_ms": 6000,
@@ -138,8 +153,10 @@ duration, renewal interval, optional related Skill, and explicit preemption:
 }
 ```
 
-Only one active advisory lease is retained for a resource unless explicit
-preemption is requested. Each new acquisition increments its fencing
+Only one active advisory lease is retained for an overlapping resource scope
+unless explicit preemption is requested. A parent scope conflicts with every
+descendant, while siblings such as `robot_arm.primary/arm` and
+`robot_arm.primary/gripper` may be leased concurrently. Each new acquisition increments its fencing
 generation. Expired, released, and preempted records remain inspectable.
 Resource views are best-effort published under
 `manager.control_authority.<resource>`.

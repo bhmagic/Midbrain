@@ -5,6 +5,7 @@ from .compiler import (
     SEMANTIC_SCENE_SCHEMA,
     SEMANTIC_SCENE_STREAM,
     build_layered_scene,
+    build_profile_self_exclusion_spheres,
     build_scene_observation,
     build_self_exclusion_spheres,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "SEMANTIC_SCENE_SCHEMA",
     "SEMANTIC_SCENE_STREAM",
     "build_layered_scene",
+    "build_profile_self_exclusion_spheres",
     "build_scene_observation",
     "build_self_exclusion_spheres",
 ]

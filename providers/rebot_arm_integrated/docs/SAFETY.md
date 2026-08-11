@@ -1,71 +1,77 @@
 # Integrated Provider safety boundary
 
-Integrated plans and coordinates motion, but the Basic Provider remains the
-final hardware authority for motor mode, load-bearing stiffness and damping,
-joint/rate/effort limits, tracking effort, lease fencing, deadlines, gravity
-support, and safe-home. Read [Basic safety](../../rebot_arm_dm/docs/SAFETY.md)
-before physical use.
+Integrated plans and coordinates free-space arm motion. Basic remains the
+final hardware authority for motor modes, load-bearing stiffness and damping,
+joint/rate/effort limits, lease fencing, command deadlines, gravity support,
+and safe-home. Read [Basic safety](../../rebot_arm_dm/docs/SAFETY.md) before
+physical use.
 
 Low force, low torque, low stiffness, or slow movement is not inherently safe.
-In particular, lowering load-bearing MIT stiffness can allow the arm to fall
+In particular, insufficient load-bearing impedance can allow the arm to fall
 before gravity support stabilizes.
 
-## Physical authority boundaries
+## Physical authority
 
-Local operator testing requires GUI engagement plus the documented gamepad or
-GUI action. Editing a target, changing a profile, receiving a Fabric command,
-or generating a preview remains nonphysical.
+Every physical move requires an exact controller-owned plan followed by a
+signed, short-lived, policy-specific, one-time commit. The commit revalidates:
 
-Agentic transit uses a different boundary: an exact controller-owned preview
-must be followed by a signed, short-lived, decision-specific, one-time commit.
-The commit revalidates controller/configuration identity, the reviewed
-workcell activation, observation lifetime, measured start, current semantic
-scene and collisions, path limits, motion inhibit, readiness, and the fenced
-Basic lease. Approval or preview alone does not execute motion.
+- Provider boot and configuration identity;
+- selected assembly fingerprint and controlled-frame geometry;
+- measured joint start and requested position/orientation goal;
+- joint, motor, timing, singularity, and workspace limits;
+- global motion inhibit and the fenced Basic arm-group lease; and
+- the newest usable semantic scene when available.
 
-The current capability names and maturity are authoritative in
-`manifest.json` and the live capability response. A profile exposed only by
-the local test GUI is not thereby available to an Agent.
+Normal free-space Skills use autonomous host policy authorization and do not
+pause for human approval. A nonphysical plan, Agent statement, scene update,
+or Provider activation never grants motion authority by itself.
 
-## Fallback and completion
+## Collision and completion
+
+The collision model combines assembly-profile arm capsules with every sphere
+in the selected mounted-effector profile. The scene compiler uses the same
+profile geometry to remove robot/tool cells from semantic output, and the main
+3D viewer renders those same effector spheres.
+
+`PUSHABLE` is ignored under the current temporary policy. `WORK_OBJECT` has
+zero additional clearance but may not intersect the robot. `KEEP_OUT` receives
+10 mm additional clearance. Integrated evaluates the direct Cartesian path;
+general obstacle rerouting is not implemented. A blocked route may execute
+only its closest collision-free prefix and must report `CLOSEST_SAFE`.
+
+Wording such as “reach,” “touch,” or “until reaching” identifies a no-contact
+boundary destination. It does not authorize intersection and is not a reason
+to refuse movement up to that boundary.
+
+Completion telemetry distinguishes elapsed command duration, measured target
+arrival, and closest-safe partial arrival. Callers must not infer success from
+a deadline alone.
+
+## Contact, grip, and attachments
+
+Integrated exposes no intentional-contact, torque-baseline, gripper, manual
+target-staging, or teleoperation API. Cutting, pushing, pressing, scraping, and
+gripping belong to separately qualified controllers and Skills.
+
+A future grip controller may hold the gripper resource while Integrated holds
+the arm resource. Moving the arm then also requires a runtime attachment
+revision describing the held object's transform, payload, and swept collision
+geometry. Until that ingestion path exists, free-space motion with an
+undeclared held object is prohibited.
+
+The selected static effector inertia comes from the assembly profile and Basic
+uses it for gravity feed-forward. Replacing or retuning the tool invalidates
+the profile qualification.
+
+## Fallback and termination
 
 Transport uncertainty, stale physical feedback, lost lease, motion inhibit,
-Manager/Fabric readiness loss where required, Basic fault, invalidated
-workcell/scene evidence, or an execution error blocks new commands and
-requests gravity float when the lease is still valid. Integrated does not
-automatically retry physical work after a safety fallback.
+Basic fault, changed assembly, invalidated measured start, collision, or
+execution error blocks new commands and requests gravity float when authority
+is still valid. Integrated does not automatically retry a physical move after
+a safety fallback.
 
-Completion telemetry distinguishes elapsed command duration from stable
-measured target arrival. Callers must inspect the reported outcome and final
-state; they must not infer success from a completed deadline. Signed transit
-may request `FLOAT`, `FIXED`, or bounded `WAIT_FOR_NEXT`, each enforced by the
-stored preview and commit contract.
-
-## Contact and gripper limits
-
-`CONTACT_WORK` requires `POSE_6DOF`, a configured short-stroke limit, a
-separately captured steady gravity-float baseline, a complete joint/wrench
-budget, and an IK result inside the configured position and orientation
-residual tolerances. Required effort ratios and live residual overruns may
-saturate affected joints at Basic's reviewed physical ceilings; this is
-telemetry, not proof of contact safety or Cartesian-force accuracy.
-
-A released gripper input intentionally latches the last selected endpoint.
-Float, LT, and safe termination explicitly release that latch. New gripper
-input remains interlocked while an arm trajectory is active.
-
-Payload mass and tool-frame center of mass must be supplied only when known.
-Basic clips combined arm-plus-payload gravity feed-forward to configured motor
-limits.
-
-## Safe termination
-
-The GUI safe-terminate route launches the authoritative PowerShell helper and
-waits for a launch-ID acknowledgement. Only `status=accepted` together with
-`safe_termination.state=RUNNING` is evidence that the helper started; neither
-state proves that safe-home completed.
-
-On an unconfirmed launch, use
-`scripts/stop_physical_gui_test.ps1` and inspect
-`runtime_logs/safe_terminate.log`. Do not force-kill a process that may be
-providing powered support merely to free a port.
+The developer page retains only gravity-float and safe-terminate controls.
+Safe terminate launches the authoritative PowerShell helper and requires an
+accepted launch acknowledgement; launch acknowledgement does not prove
+safe-home completion.

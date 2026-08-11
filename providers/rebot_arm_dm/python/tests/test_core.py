@@ -12,6 +12,7 @@ from unittest.mock import patch
 import numpy as np
 
 from rebot_arm_dm_provider.calibration import fit_two_parameter_friction, robust_fit
+from rebot_arm_dm_provider.assembly import AssemblyConfigurationError, RobotAssemblyConfiguration
 from rebot_arm_dm_provider.collision import CalibrationCollisionGuard
 from rebot_arm_dm_provider.controller import ArmController, CommandEnvelope, JointCommand, LeasePermissionError, ProviderState
 from rebot_arm_dm_provider.dynamics import RebotDynamics
@@ -34,6 +35,241 @@ def wait_for(predicate, timeout=1.5):
             return True
         time.sleep(0.01)
     return False
+
+
+class AssemblyConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.workspace = ROOT.parents[1]
+        self.selection_path = (
+            self.workspace / 'config' / 'robot_assemblies' /
+            'primary_manipulator.example.json'
+        )
+
+    def test_provider_owned_profiles_resolve_to_normalized_resource_groups(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        state = assembly.public_state()
+        self.assertEqual(state['schema'], 'midbrain.robot_assembly_state')
+        self.assertEqual(state['arm_model_identity']['model_id'], 'rebot_arm_b601_dm')
+        groups = {item['group_id']: item for item in state['resource_groups']}
+        self.assertEqual(groups['arm']['joint_names'], [
+            'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'
+        ])
+        self.assertNotIn('gripper', groups)
+        self.assertEqual(
+            state['mounted_effector']['profile_id'],
+            'rebot_b601_dm.5_inch_blade',
+        )
+        self.assertEqual(
+            state['mounted_effector']['inactive_joint_names'],
+            ['gripper'],
+        )
+        self.assertNotIn(
+            'mounted_effector_compatibility',
+            state['collision_geometry'],
+        )
+        self.assertEqual(
+            [
+                (
+                    item['transform']['translation_m'],
+                    item['shape']['radius_m'],
+                )
+                for item in state['mounted_effector']['collision_primitives']
+            ],
+            [
+                ([-0.005, 0.0, -0.07], 0.005),
+                ([-0.03, 0.0, -0.07], 0.015),
+                ([-0.09, 0.0, -0.07], 0.035),
+                ([-0.15, 0.0, -0.07], 0.035),
+            ],
+        )
+        normalized = assembly.normalized_arm_model()
+        self.assertEqual(normalized['frames']['tool'], 'rebot_arm_tool')
+        self.assertEqual(normalized['fixed_tool']['parent_link'], 'link6')
+        self.assertEqual(normalized['fixed_tool']['child_link'], 'end_link')
+        inertial = state['mounted_effector']['inertial']
+        self.assertEqual(inertial['mass_kg'], 0.33)
+        self.assertEqual(
+            inertial['center_of_mass_m'],
+            [-0.165, 0.0, -0.03],
+        )
+        self.assertEqual(
+            normalized['links'][-1]['mass_kg'],
+            inertial['mass_kg'],
+        )
+        self.assertEqual(
+            normalized['links'][-1]['center_of_mass_m'],
+            inertial['center_of_mass_m'],
+        )
+        self.assertAlmostEqual(
+            normalized['links'][-1]['weight_n_at_standard_gravity'],
+            float(inertial['mass_kg']) * 9.80665,
+        )
+
+    def test_inactive_effector_joint_is_not_exposed_as_arm_or_effector_resource(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+
+        self.assertEqual(assembly.arm_joint_names, (
+            'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'
+        ))
+        self.assertEqual(assembly.inactive_joint_names, ('gripper',))
+        self.assertEqual(
+            [group['group_id'] for group in assembly.resource_groups()],
+            ['arm'],
+        )
+
+    def test_fixed_tool_service_starts_without_registering_inactive_gripper(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        configuration = ArmConfiguration(
+            assembly.normalized_arm_model(),
+            assembly.profiles['calibration'],
+        )
+        kinematics = RebotKinematics(configuration.model)
+        dynamics = RebotDynamics(configuration, kinematics)
+        backend = SimulationBackend(
+            configuration,
+            dynamics.calibrated_gravity_torque,
+        )
+        controller = ArmController(configuration, backend, dynamics)
+        service = ArmProviderService(
+            configuration,
+            controller,
+            kinematics,
+            assembly.calibration_path,
+            '127.0.0.1',
+            0,
+            None,
+            None,
+            False,
+            True,
+            False,
+            assembly,
+        )
+
+        self.assertEqual(controller.active_joint_indices, (0, 1, 2, 3, 4, 5))
+        self.assertEqual(controller.inactive_joint_indices, frozenset({6}))
+        self.assertEqual(backend.inactive_joint_indices, frozenset({6}))
+
+        service.start()
+        try:
+            state = controller.snapshot()
+            self.assertEqual(
+                state['provider_state'],
+                ProviderState.SAFE_HOLD_GRAVITY_FLOAT.value,
+            )
+            self.assertEqual(state['motor_status'][6], 'INACTIVE_NOT_INSTALLED')
+            self.assertEqual(state['inactive_joint_names'], ['gripper'])
+            self.assertIsNone(state['active_command_modes'][6])
+            lease = controller.acquire_lease('fixed-tool-test', 1000)
+            with self.assertRaisesRegex(
+                LeasePermissionError,
+                'inactive joint indices',
+            ):
+                controller.submit(CommandEnvelope(
+                    'inactive-gripper-command',
+                    lease.lease_id,
+                    lease.fencing_generation,
+                    {
+                        6: JointCommand(
+                            'POSITION_EFFORT_LIMITED',
+                            {
+                                'position_rad': 0.0,
+                                'velocity_limit_rad_s': 0.1,
+                                'torque_limit_ratio': 0.1,
+                            },
+                        ),
+                    },
+                    time.monotonic() + 0.5,
+                ))
+        finally:
+            service.shutdown(False)
+
+    def test_joint_cannot_be_both_inactive_and_actuated(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        assembly.profiles['mounted_effector']['actuator_groups'] = [
+            {
+                'group_id': 'invalid',
+                'resource_id': 'robot_arm.primary/invalid',
+                'joint_names': ['gripper'],
+                'capabilities': ['invalid'],
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            AssemblyConfigurationError,
+            'both inactive and actuator-group members',
+        ):
+            assembly._validate_compatibility()
+
+    def test_profile_revision_mismatch_is_rejected(self):
+        selection = json.loads(self.selection_path.read_text(encoding='utf-8'))
+        selection['profiles']['mounted_effector']['expected_revision'] = 'wrong'
+        with tempfile.TemporaryDirectory(dir=self.workspace) as temporary:
+            path = Path(temporary) / 'selection.json'
+            path.write_text(json.dumps(selection), encoding='utf-8')
+            with self.assertRaisesRegex(AssemblyConfigurationError, 'revision'):
+                RobotAssemblyConfiguration.load(path, self.workspace)
+
+    def test_provider_profile_path_cannot_escape_provider_root(self):
+        selection = json.loads(self.selection_path.read_text(encoding='utf-8'))
+        selection['profiles']['mounted_effector']['relative_path'] = '../../README.md'
+        with tempfile.TemporaryDirectory(dir=self.workspace) as temporary:
+            path = Path(temporary) / 'selection.json'
+            path.write_text(json.dumps(selection), encoding='utf-8')
+            with self.assertRaisesRegex(AssemblyConfigurationError, 'outside'):
+                RobotAssemblyConfiguration.load(path, self.workspace)
+
+    def test_effector_inertial_reference_frame_must_match_attachment(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        assembly.profiles['mounted_effector']['inertial']['reference_frame'] = 'link6'
+        with self.assertRaisesRegex(AssemblyConfigurationError, 'inertial reference frame'):
+            assembly._validate_compatibility()
+
+    def test_collision_point_frames_must_match_selected_kinematic_chain(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        assembly.profiles['collision_geometry']['polyline_point_frames'][-1] = 'end_link'
+        with self.assertRaisesRegex(AssemblyConfigurationError, 'kinematic chain'):
+            assembly._validate_compatibility()
+
+    def test_collision_primitives_require_known_frames_and_positive_dimensions(self):
+        assembly = RobotAssemblyConfiguration.load(
+            self.selection_path,
+            self.workspace,
+        )
+        primitive = {
+            'primitive_id': 'knife-body',
+            'frame_id': 'missing-frame',
+            'transform': {
+                'translation_m': [0.0, 0.0, 0.0],
+                'rpy_rad': [0.0, 0.0, 0.0],
+            },
+            'shape': {'type': 'BOX', 'size_m': [0.1, 0.02, 0.0]},
+            'qualification': 'DEVELOPMENT',
+        }
+        assembly.profiles['collision_geometry']['frame_primitives'] = [primitive]
+        with self.assertRaisesRegex(AssemblyConfigurationError, 'unknown frame'):
+            assembly._validate_compatibility()
+
+        primitive['frame_id'] = 'rebot_arm_tool'
+        with self.assertRaisesRegex(AssemblyConfigurationError, 'positive dimensions'):
+            assembly._validate_compatibility()
 
 
 class CoreTests(unittest.TestCase):
@@ -562,6 +798,241 @@ class CoreTests(unittest.TestCase):
     def setUp(self):
         self.config=configuration(); self.kin=RebotKinematics(self.config.model); self.dyn=RebotDynamics(self.config,self.kin)
 
+    def test_disjoint_arm_and_gripper_group_leases_merge_without_cross_scope(self):
+        backend = SimulationBackend(
+            self.config,
+            self.dyn.calibrated_gravity_torque,
+        )
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        controller.configure_resource_groups(
+            "robot_arm.primary",
+            [
+                {
+                    "resource_id": "robot_arm.primary/arm",
+                    "joint_names": [
+                        "joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6",
+                    ],
+                },
+                {
+                    "resource_id": "robot_arm.primary/gripper",
+                    "joint_names": ["gripper"],
+                },
+            ],
+        )
+        arm = controller.acquire_group_lease(
+            "robot_arm.primary/arm", "integrated-free-space", 1000
+        )
+        gripper = controller.acquire_group_lease(
+            "robot_arm.primary/gripper", "grip-controller", 1000
+        )
+        with self.assertRaisesRegex(LeasePermissionError, "already leased"):
+            controller.acquire_group_lease(
+                "robot_arm.primary/arm", "contender", 1000
+            )
+        with self.assertRaisesRegex(LeasePermissionError, "root control conflicts"):
+            controller.acquire_lease("legacy-root", 1000)
+
+        arm_command = CommandEnvelope(
+            "arm-command",
+            arm.lease_id,
+            arm.fencing_generation,
+            {
+                0: JointCommand(
+                    "IMPEDANCE",
+                    {
+                        "position_rad": 0.1,
+                        "velocity_rad_s": 0.0,
+                        "target_rate_limit_rad_s": 0.25,
+                        "kp": 120.0,
+                        "kd": 8.0,
+                        "feedforward_torque_nm": 0.0,
+                    },
+                )
+            },
+            time.monotonic() + 0.5,
+            resource_id="robot_arm.primary/arm",
+        )
+        grip_command = CommandEnvelope(
+            "grip-command",
+            gripper.lease_id,
+            gripper.fencing_generation,
+            {
+                6: JointCommand(
+                    "POSITION_EFFORT_LIMITED",
+                    {
+                        "position_rad": float(self.config.home_positions[6]),
+                        "velocity_limit_rad_s": 0.1,
+                        "torque_limit_ratio": 0.1,
+                    },
+                )
+            },
+            time.monotonic() + 0.5,
+            resource_id="robot_arm.primary/gripper",
+        )
+        controller.submit_group(arm_command)
+        controller.submit_group(grip_command)
+        for _ in range(4):
+            controller._tick(time.monotonic())
+
+        self.assertEqual(controller.active_command_modes[0], "IMPEDANCE")
+        self.assertEqual(
+            controller.active_command_modes[6],
+            "POSITION_EFFORT_LIMITED",
+        )
+        snapshot = controller.snapshot()
+        resources = {
+            item["resource_id"] for item in snapshot["resource_group_leases"]
+        }
+        self.assertEqual(
+            resources,
+            {"robot_arm.primary/arm", "robot_arm.primary/gripper"},
+        )
+
+        wrong_scope = CommandEnvelope(
+            "wrong-scope",
+            arm.lease_id,
+            arm.fencing_generation,
+            {6: grip_command.commands[6]},
+            time.monotonic() + 0.5,
+            resource_id="robot_arm.primary/arm",
+        )
+        with self.assertRaisesRegex(LeasePermissionError, "may command only"):
+            controller.submit_group(wrong_scope)
+
+        self.assertTrue(
+            controller.release_group_lease(
+                "robot_arm.primary/arm",
+                arm.lease_id,
+                arm.fencing_generation,
+            )
+        )
+        controller._tick(time.monotonic())
+        self.assertEqual(controller.active_command_modes[0], "IMPEDANCE")
+        self.assertEqual(
+            controller.active_command_modes[6],
+            "POSITION_EFFORT_LIMITED",
+        )
+        controller.revoke_lease("test group safety preemption")
+        self.assertFalse(controller.group_leases)
+        self.assertFalse(controller.group_pending)
+
+    def test_group_release_with_only_idle_sibling_immediately_recaptures_safely(self):
+        backend = SimulationBackend(
+            self.config,
+            self.dyn.calibrated_gravity_torque,
+        )
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        controller.configure_resource_groups(
+            "robot_arm.primary",
+            [
+                {
+                    "resource_id": "robot_arm.primary/arm",
+                    "joint_names": [
+                        "joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6",
+                    ],
+                },
+                {
+                    "resource_id": "robot_arm.primary/gripper",
+                    "joint_names": ["gripper"],
+                },
+            ],
+        )
+        arm = controller.acquire_group_lease(
+            "robot_arm.primary/arm", "integrated-free-space", 1000
+        )
+        controller.acquire_group_lease(
+            "robot_arm.primary/gripper", "idle-grip-controller", 1000
+        )
+        controller.submit_group(
+            CommandEnvelope(
+                "arm-command-before-release",
+                arm.lease_id,
+                arm.fencing_generation,
+                {
+                    0: JointCommand(
+                        "IMPEDANCE",
+                        {
+                            "position_rad": 0.1,
+                            "velocity_rad_s": 0.0,
+                            "target_rate_limit_rad_s": 0.25,
+                            "kp": 120.0,
+                            "kd": 8.0,
+                            "feedforward_torque_nm": 0.0,
+                        },
+                    )
+                },
+                time.monotonic() + 0.5,
+                resource_id="robot_arm.primary/arm",
+            )
+        )
+        controller._tick(time.monotonic())
+        self.assertEqual(controller.state, ProviderState.CALIBRATION_MANUAL)
+
+        siblings_remain = controller.release_group_lease(
+            "robot_arm.primary/arm",
+            arm.lease_id,
+            arm.fencing_generation,
+        )
+
+        self.assertTrue(siblings_remain)
+        self.assertEqual(controller.state, ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
+        self.assertNotIn("robot_arm.primary/arm", controller.group_pending)
+        self.assertIn("robot_arm.primary/gripper", controller.group_leases)
+
+    def test_expired_group_renewal_leaves_authority_for_control_loop_fallback(self):
+        backend = SimulationBackend(
+            self.config,
+            self.dyn.calibrated_gravity_torque,
+        )
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        controller.configure_resource_groups(
+            "robot_arm.primary",
+            [
+                {
+                    "resource_id": "robot_arm.primary/arm",
+                    "joint_names": [
+                        "joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6",
+                    ],
+                },
+                {
+                    "resource_id": "robot_arm.primary/gripper",
+                    "joint_names": ["gripper"],
+                },
+            ],
+        )
+        arm = controller.acquire_group_lease(
+            "robot_arm.primary/arm", "integrated-free-space", 1000
+        )
+        arm.expires_monotonic = time.monotonic() - 0.001
+
+        with self.assertRaisesRegex(LeasePermissionError, "expired"):
+            controller.renew_group_lease(
+                "robot_arm.primary/arm",
+                arm.lease_id,
+                arm.fencing_generation,
+                1000,
+            )
+
+        self.assertIn("robot_arm.primary/arm", controller.group_leases)
+        controller._tick(time.monotonic())
+        self.assertNotIn("robot_arm.primary/arm", controller.group_leases)
+        self.assertEqual(controller.state, ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
+
     def test_forward_kinematics(self):
         frames=self.kin.frames(self.config.home_positions)
         self.assertEqual(len(frames),8); self.assertTrue(np.all(np.isfinite(frames[-1])))
@@ -679,6 +1150,85 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(FakeController.instance.poll_count,1)
         self.assertEqual(feedback.positions_rad.shape,(7,))
         self.assertTrue(np.all(np.isfinite(feedback.positions_rad)))
+
+    def test_motorbridge_does_not_register_or_poll_inactive_gripper(self):
+        class FakeState:
+            def __init__(self, index):
+                self.pos = float(index)
+                self.vel = 0.0
+                self.torq = 0.0
+                self.status_code = 0
+
+        class FakeMotor:
+            def __init__(self, index):
+                self.index = index
+                self.state = None
+                self.generation = 0
+                self.requested = False
+
+            def request_feedback(self):
+                self.requested = True
+
+            def get_state_sample(self):
+                if self.state is None:
+                    return None
+                return self.state, self.generation, 0
+
+        class FakeController:
+            instance = None
+
+            def __init__(self):
+                self.motors = []
+                FakeController.instance = self
+
+            @classmethod
+            def from_dm_serial(cls, port, baudrate):
+                return cls()
+
+            def add_damiao_motor(self, motor_id, feedback_id, motor_model):
+                motor = FakeMotor(len(self.motors))
+                self.motors.append(motor)
+                return motor
+
+            def poll_feedback_once(self):
+                for motor in self.motors:
+                    if motor.requested:
+                        motor.state = FakeState(motor.index)
+                        motor.generation += 1
+                        motor.requested = False
+
+            def disable_all(self):
+                pass
+
+            def shutdown(self):
+                pass
+
+            def close(self):
+                pass
+
+        fake_module = types.SimpleNamespace(
+            Controller=FakeController,
+            Mode=types.SimpleNamespace(),
+        )
+        with patch.dict(sys.modules, {'motorbridge': fake_module}):
+            backend = MotorBridgeBackend(self.config, 'COM3', 921600)
+            backend.configure_inactive_joints({6})
+            backend.connect()
+            feedback = backend.read()
+
+        self.assertEqual(len(FakeController.instance.motors), 6)
+        self.assertEqual(feedback.positions_rad.shape, (7,))
+        self.assertEqual(feedback.status_codes[6], 'INACTIVE_NOT_INSTALLED')
+        self.assertEqual(feedback.feedback_generations[6], 0)
+        self.assertEqual(feedback.per_joint_observed_at_us[6], 0)
+        self.assertAlmostEqual(
+            feedback.positions_rad[6],
+            self.config.home_positions[6],
+        )
+        self.assertEqual(
+            backend.diagnostics()['inactive_joint_names'],
+            ['gripper'],
+        )
 
     def test_motorbridge_rerequests_dropped_gripper_feedback(self):
         class FakeState:

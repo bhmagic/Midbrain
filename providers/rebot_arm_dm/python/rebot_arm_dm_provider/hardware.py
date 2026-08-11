@@ -32,6 +32,7 @@ class JointFeedback:
 
 
 class HardwareBackend(Protocol):
+    def configure_inactive_joints(self, indices: set[int] | frozenset[int]) -> None: ...
     def connect(self) -> None: ...
     def disconnect(self) -> None: ...
     def enable(self) -> None: ...
@@ -62,6 +63,19 @@ class SimulationBackend:
         self.read_cycle_count = 0
         self.command_frame_count = 0
         self.started_monotonic = time.monotonic()
+        self.inactive_joint_indices: frozenset[int] = frozenset()
+
+    def configure_inactive_joints(self, indices: set[int] | frozenset[int]) -> None:
+        if self.connected:
+            raise RuntimeError("inactive joints must be configured before backend connection")
+        normalized = frozenset(int(index) for index in indices)
+        if any(index < 0 or index >= len(self.configuration.joints) for index in normalized):
+            raise ValueError("inactive joint index is outside the configured model")
+        self.inactive_joint_indices = normalized
+
+    def _assert_active(self, index: int) -> None:
+        if index in self.inactive_joint_indices:
+            raise RuntimeError(f"joint {index + 1} is inactive in the installed assembly")
 
     def connect(self) -> None:
         with self.lock:
@@ -120,7 +134,12 @@ class SimulationBackend:
                 torques_nm=self.torque.copy(),
                 temperatures_c=self.temperature.copy(),
                 voltages_v=self.voltage.copy(),
-                status_codes=["OK"] * 7,
+                status_codes=[
+                    "INACTIVE_NOT_INSTALLED"
+                    if index in self.inactive_joint_indices
+                    else "OK"
+                    for index in range(7)
+                ],
                 observed_at_us=observed_at_us,
                 observed_monotonic=observed_monotonic,
                 timestamp_uncertainty_us=0,
@@ -132,12 +151,16 @@ class SimulationBackend:
             )
 
     def send_impedance(self, index, position, velocity, kp, kd, torque):
+        self._assert_active(index)
         with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="IMPEDANCE", position=position, velocity=velocity, kp=kp, kd=kd, torque=torque)
     def send_position_velocity(self, index, position, velocity_limit):
+        self._assert_active(index)
         with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="POSITION_VELOCITY_LIMITED", position=position, vlim=velocity_limit)
     def send_velocity(self, index, velocity):
+        self._assert_active(index)
         with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="VELOCITY", velocity=velocity)
     def send_force_position(self, index, position, velocity_limit, torque_ratio):
+        self._assert_active(index)
         with self.lock: self.command_frame_count += 1; self.commands[index].update(mode="POSITION_EFFORT_LIMITED", position=position, vlim=velocity_limit, ratio=torque_ratio)
 
     def diagnostics(self) -> dict[str, Any]:
@@ -148,6 +171,10 @@ class SimulationBackend:
             "command_frames": self.command_frame_count,
             "read_cycles_per_s": self.read_cycle_count / elapsed,
             "command_frames_per_s": self.command_frame_count / elapsed,
+            "inactive_joint_names": [
+                self.configuration.joints[index].name
+                for index in sorted(self.inactive_joint_indices)
+            ],
         }
 
 
@@ -164,6 +191,7 @@ class MotorBridgeBackend:
     def __init__(self, configuration: ArmConfiguration, port: str, baudrate: int = 921600):
         self.configuration=configuration; self.port=port; self.baudrate=baudrate
         self.controller=None; self.motors=[]; self.mode_enum=None; self.active_modes=[None]*7; self.enabled=False
+        self.inactive_joint_indices: frozenset[int] = frozenset()
         self.started_monotonic=time.monotonic(); self.read_cycle_count=0; self.feedback_request_count=0
         self.feedback_poll_count=0; self.command_frame_attempt_count=0; self.command_frame_count=0
         self.mode_switch_count=0; self.mode_switch_attempt_count=0; self.mode_switch_failure_count=0
@@ -185,6 +213,14 @@ class MotorBridgeBackend:
         self.transient_retry_attempt_count=0; self.transient_retry_recovery_count=0
         self.transient_retry_failure_count=0; self.last_transient_retry_error=None
 
+    def configure_inactive_joints(self, indices: set[int] | frozenset[int]) -> None:
+        if self.controller is not None:
+            raise RuntimeError("inactive joints must be configured before backend connection")
+        normalized = frozenset(int(index) for index in indices)
+        if any(index < 0 or index >= len(self.configuration.joints) for index in normalized):
+            raise ValueError("inactive joint index is outside the configured model")
+        self.inactive_joint_indices = normalized
+
     def connect(self) -> None:
         try:
             module=importlib.import_module("motorbridge")
@@ -204,10 +240,20 @@ class MotorBridgeBackend:
             )
         self.controller=Controller.from_dm_serial(self.port,self.baudrate)
         self.started_monotonic=time.monotonic()
-        self.motors=[]; self.active_modes=[None]*7
+        self.motors=[None]*len(self.configuration.joints); self.active_modes=[None]*7
         for joint in self.configuration.joints:
-            self.motors.append(self.controller.add_damiao_motor(joint.motor_id,joint.feedback_id,joint.motor_model))
-        if not all(callable(getattr(motor,"get_state_sample",None)) for motor in self.motors):
+            if joint.index in self.inactive_joint_indices:
+                continue
+            self.motors[joint.index]=self.controller.add_damiao_motor(
+                joint.motor_id,
+                joint.feedback_id,
+                joint.motor_model,
+            )
+        active_motors=[motor for motor in self.motors if motor is not None]
+        if not active_motors:
+            self.disconnect()
+            raise RuntimeError("installed assembly contains no active motors")
+        if not all(callable(getattr(motor,"get_state_sample",None)) for motor in active_motors):
             self.disconnect()
             raise RuntimeError(
                 "MotorBridge does not expose verified feedback generations and receive ages; "
@@ -288,15 +334,20 @@ class MotorBridgeBackend:
     def read(self) -> JointFeedback:
         if self.controller is None: raise RuntimeError("MotorBridge is disconnected")
         acquisition_started_monotonic=time.monotonic()
-        baselines=[]
+        active_indices=[
+            index for index,motor in enumerate(self.motors)
+            if motor is not None
+        ]
+        baselines={}
         try:
-            for motor in self.motors:
+            for index in active_indices:
+                motor=self.motors[index]
                 sample=motor.get_state_sample()
-                baselines.append(0 if sample is None else int(sample[1]))
+                baselines[index]=0 if sample is None else int(sample[1])
         except Exception as exc:
             self.io_error_count += 1; self.last_io_error = str(exc); raise
 
-        pending=set(range(len(self.motors)))
+        pending=set(active_indices)
         samples:dict[int,tuple[Any,int,int,int,float]]={}
         deadline=acquisition_started_monotonic+self.feedback_cycle_timeout_s
         next_request_at=acquisition_started_monotonic
@@ -344,14 +395,19 @@ class MotorBridgeBackend:
                 )
             time.sleep(min(0.001,max(0.0,deadline-time.monotonic())))
 
-        positions=[]; velocities=[]; torques=[]; status=[]
-        per_joint_observed_at_us=[]; generations=[]
+        joint_count=len(self.configuration.joints)
+        positions=self.configuration.home_positions.astype(float).tolist()
+        velocities=[0.0]*joint_count
+        torques=[0.0]*joint_count
+        status=["INACTIVE_NOT_INSTALLED"]*joint_count
+        per_joint_observed_at_us=[0]*joint_count
+        generations=[0]*joint_count
         interval_start_us=[]; interval_end_us=[]; observed_monotonic_values=[]
-        for index in range(len(self.motors)):
+        for index in active_indices:
             state,generation,observed_at_us,uncertainty_us,observed_monotonic=samples[index]
             q,qd,tau=self._joint_from_motor(index,float(state.pos),float(state.vel),float(state.torq))
-            positions.append(q); velocities.append(qd); torques.append(tau); status.append(str(state.status_code))
-            per_joint_observed_at_us.append(observed_at_us); generations.append(generation)
+            positions[index]=q; velocities[index]=qd; torques[index]=tau; status[index]=str(state.status_code)
+            per_joint_observed_at_us[index]=observed_at_us; generations[index]=generation
             interval_start_us.append(observed_at_us-uncertainty_us)
             interval_end_us.append(observed_at_us+uncertainty_us)
             observed_monotonic_values.append(observed_monotonic)
@@ -385,7 +441,10 @@ class MotorBridgeBackend:
 
     def _motor(self,index:int):
         if index<0 or index>=len(self.motors): raise IndexError(index)
-        return self.motors[index]
+        motor=self.motors[index]
+        if motor is None:
+            raise RuntimeError(f"joint {index + 1} is inactive in the installed assembly")
+        return motor
 
     def _ensure_mode(self,index:int,canonical_mode:str) -> bool:
         mode_name=self.MODE_NAMES[canonical_mode]
@@ -493,6 +552,15 @@ class MotorBridgeBackend:
             "backend": "MOTORBRIDGE_DM_SERIAL",
             "port": self.port,
             "baudrate": self.baudrate,
+            "active_joint_names": [
+                self.configuration.joints[index].name
+                for index,motor in enumerate(self.motors)
+                if motor is not None
+            ],
+            "inactive_joint_names": [
+                self.configuration.joints[index].name
+                for index in sorted(self.inactive_joint_indices)
+            ],
             "read_cycles": self.read_cycle_count,
             "feedback_requests": self.feedback_request_count,
             "feedback_polls": self.feedback_poll_count,

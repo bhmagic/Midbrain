@@ -202,7 +202,7 @@ def build_no_contact_correction_plan(
     maximum_iterations: int = 6,
     maximum_step_m: float = 1.2,
     alignment_tolerance_m: float = 0.008,
-    uncertainty_clearance_m: float = 0.015,
+    uncertainty_clearance_m: float = 0.0,
     maximum_observation_skew_ms: float = 2_000.0,
     maximum_arm_radius_m: float = DEFAULT_MAXIMUM_ARM_RADIUS_M,
     vertical_policy: str = "FREE_3D",
@@ -212,8 +212,8 @@ def build_no_contact_correction_plan(
 
     target_frame = _require_common_frame(item_location, effector_location)
     requested_standoff = float(requested_standoff_m)
-    if not math.isfinite(requested_standoff) or not 0.03 <= requested_standoff <= 0.5:
-        raise ValueError("requested_standoff_m must be between 0.03 and 0.5")
+    if not math.isfinite(requested_standoff) or not 0.0 <= requested_standoff <= 0.5:
+        raise ValueError("requested_standoff_m must be between 0.0 and 0.5")
     if not 1 <= int(maximum_iterations) <= 20:
         raise ValueError("maximum_iterations must be between 1 and 20")
     iteration = int(iteration_index)
@@ -259,7 +259,11 @@ def build_no_contact_correction_plan(
         + effector_uncertainty_m
         + float(uncertainty_clearance_m)
     )
-    effective_standoff_m = max(requested_standoff, combined_uncertainty_m)
+    # Observation uncertainty remains explicit evidence. The controller's
+    # semantic collision geometry owns no-contact clearance and closest-safe
+    # truncation, so this Skill must not silently turn uncertainty into a
+    # second clearance margin.
+    effective_standoff_m = requested_standoff
     difference = effector_point - item_point
     current_distance_m = float(np.linalg.norm(difference))
     if current_distance_m <= 1e-9:
@@ -592,7 +596,7 @@ class NoContactItemApproachAdapter:
         *,
         question: str,
         object_id: str | None = None,
-        requested_standoff_m: float = 0.10,
+        requested_standoff_m: float = 0.0,
         iteration_index: int = 0,
         maximum_iterations: int = 6,
         maximum_step_m: float = 1.2,
@@ -937,6 +941,29 @@ class NoContactItemApproachAdapter:
         attached["correction_status"] = plan.get("status")
         if attached.get("controller_preview_valid") is True:
             attached["status"] = "CONTROLLER_PREVIEW_READY"
+            attached["goal_reached"] = bool(preview.get("goal_reached"))
+            attached["closest_safe"] = bool(preview.get("closest_safe"))
+            attached["motion_outcome"] = preview.get("motion_outcome")
+            if attached["closest_safe"]:
+                attached["closest_safe_report"] = {
+                    "reason": (
+                        preview.get("selected_plan") or {}
+                    ).get("closest_safe_reason"),
+                    "blocking_object_ids": (
+                        preview.get("selected_plan") or {}
+                    ).get("blocking_object_ids", []),
+                    "blocking_object_types": (
+                        preview.get("selected_plan") or {}
+                    ).get("blocking_object_types", []),
+                    "remaining_position_to_goal_m": (
+                        preview.get("selected_plan") or {}
+                    ).get("remaining_position_to_goal_m"),
+                    "message": (
+                        "The requested goal is blocked. The controller will "
+                        "stop at the closest collision-free point on the direct "
+                        "path. General obstacle rerouting is not implemented."
+                    ),
+                }
             authority = attached.get("controller_preview_authority")
             authority = authority if isinstance(authority, dict) else {}
             requested_speed_m_s = float(
@@ -956,11 +983,9 @@ class NoContactItemApproachAdapter:
                 if isinstance(joint_speed_policy, dict)
                 else {}
             )
-            execution_arguments = {
-                "plan_id": str(authority.get("plan_id") or ""),
-            }
+            plan_id = str(authority.get("plan_id") or "")
             authorization_arguments = {
-                **execution_arguments,
+                "plan_id": plan_id,
                 "request_sha256": str(authority.get("request_sha256") or ""),
                 "preview_sha256": str(authority.get("preview_sha256") or ""),
                 "distance_m": float(attached.get("step_distance_m") or 0.0),
@@ -985,14 +1010,15 @@ class NoContactItemApproachAdapter:
             }
             attached["required_next_tool"] = {
                 "name": "execute_no_contact_approach_step",
-                "arguments": execution_arguments,
+                "arguments": {},
             }
             attached["next_action"] = (
                 "EXECUTE_EXACT_PREVIEW_THEN_REOBSERVE_BOTH"
             )
             if self.authorization_store is not None:
                 async with self._pending_lock:
-                    self._pending_execution[execution_arguments["plan_id"]] = {
+                    self._pending_execution.clear()
+                    self._pending_execution[plan_id] = {
                         "action": copy.deepcopy(attached),
                         "arguments": copy.deepcopy(authorization_arguments),
                         "authority": copy.deepcopy(authority),
@@ -1006,6 +1032,34 @@ class NoContactItemApproachAdapter:
             attached["status"] = "CONTROLLER_PREVIEW_REJECTED"
             attached["next_action"] = "FIX_CONTROLLER_PREVIEW_BLOCKERS"
         return attached
+
+    async def begin_agent_turn(self) -> None:
+        """Invalidate opaque continuations from earlier user turns."""
+
+        async with self._pending_lock:
+            self._pending_execution.clear()
+
+    async def execute_current_preview(
+        self,
+        *,
+        _automatic_retry_count: int = 0,
+    ) -> dict[str, Any]:
+        """Execute the sole preview created in the current Agent turn."""
+
+        async with self._pending_lock:
+            plan_ids = list(self._pending_execution)
+        if len(plan_ids) != 1:
+            return self._replan_required_result(
+                status="NO_CONTACT_CURRENT_PREVIEW_UNAVAILABLE",
+                reason=(
+                    "No unique collision-checked preview exists in this Agent "
+                    "turn. Reobserve both landmarks and create a fresh plan."
+                ),
+            )
+        return await self.execute_preview(
+            plan_id=plan_ids[0],
+            _automatic_retry_count=_automatic_retry_count,
+        )
 
     async def pending_execution_authorization_arguments(
         self,
@@ -1080,10 +1134,10 @@ class NoContactItemApproachAdapter:
                 approved = self.authorization_store.resolve(
                     decision["decision_id"],
                     resolution="APPROVED",
-                    resolved_by="agent-sdk-approved-execution-tool",
+                    resolved_by="autonomous-free-space-policy",
                     note=(
-                        "The Agent SDK invoked this execution function only after "
-                        "its host authorization policy approved the exact tool call."
+                        "The host autonomously approved this exact, fresh, "
+                        "collision-checked free-space plan."
                     ),
                 )
                 issued = self.authorization_store.issue_execution_assertion(
@@ -1134,42 +1188,102 @@ class NoContactItemApproachAdapter:
             plan_id=normalized_plan_id,
             commit_result=result,
         )
+        controller_preview = action.get("controller_preview")
+        controller_preview = (
+            controller_preview
+            if isinstance(controller_preview, dict)
+            else {}
+        )
+        closest_safe = bool(controller_preview.get("closest_safe"))
+        selected_plan = controller_preview.get("selected_plan")
+        selected_plan = (
+            selected_plan if isinstance(selected_plan, dict) else {}
+        )
         return {
             "schema": "physical_agent.no_contact_approach_step_execution",
             "schema_version": 1,
-            "status": "COMPLETED",
+            "status": (
+                "COMPLETED_CLOSEST_SAFE"
+                if closest_safe
+                else "COMPLETED"
+            ),
+            "workflow_complete": closest_safe,
             "decision_id": approved["decision_id"],
             "plan_id": normalized_plan_id,
             "motion_submitted": True,
             "measured_arrival_confirmed": completion[
                 "measured_arrival_confirmed"
             ],
-            "post_move_reobservation_required": True,
+            "post_move_reobservation_required": not closest_safe,
             "contact_policy": "NO_CONTACT",
-            "executed_step_m": expected["distance_m"],
-            "required_next_tool": {
-                "name": "plan_no_contact_item_approach",
-                "arguments": {
-                    "question": str(
-                        (
-                            action.get("source_evidence", {})
-                            .get("item_location", {})
-                            .get("item_label")
+            "executed_step_m": float(
+                selected_plan.get(
+                    "executed_controlled_displacement_m",
+                    expected["distance_m"],
+                )
+            ),
+            "goal_reached": not closest_safe,
+            "closest_safe": closest_safe,
+            "closest_safe_report": (
+                {
+                    "reason": selected_plan.get("closest_safe_reason"),
+                    "blocking_object_ids": selected_plan.get(
+                        "blocking_object_ids", []
+                    ),
+                    "blocking_object_types": selected_plan.get(
+                        "blocking_object_types", []
+                    ),
+                    "remaining_position_to_goal_m": selected_plan.get(
+                        "remaining_position_to_goal_m"
+                    ),
+                    "message": (
+                        "Completed the boundary-seeking move at the closest "
+                        "collision-free point immediately before the blocking "
+                        "geometry. Any intentional force/contact action requires "
+                        "a different skill and controller."
+                    ),
+                }
+                if closest_safe
+                else None
+            ),
+            "required_next_tool": (
+                None
+                if closest_safe
+                else {
+                    "name": "plan_no_contact_item_approach",
+                    "arguments": {
+                        "question": str(
+                            (
+                                action.get("source_evidence", {})
+                                .get("item_location", {})
+                                .get("item_label")
+                            )
+                            or action.get("object_id")
+                            or "the same item"
+                        ),
+                        "object_id": action.get("object_id") or None,
+                        "requested_standoff_m": action.get(
+                            "requested_standoff_m"
+                        ),
+                        "iteration_index": int(
+                            action.get("iteration_index") or 0
                         )
-                        or action.get("object_id")
-                        or "the same item"
-                    ),
-                    "object_id": action.get("object_id") or None,
-                    "requested_standoff_m": action.get("requested_standoff_m"),
-                    "iteration_index": int(action.get("iteration_index") or 0) + 1,
-                    "maximum_iterations": action.get("maximum_iterations"),
-                    "maximum_step_m": action.get("maximum_step_m"),
-                    "vertical_policy": action.get(
-                        "vertical_policy", "FREE_3D"
-                    ),
-                },
-            },
-            "next_action": "REOBSERVE_BOTH_AND_REPLAN",
+                        + 1,
+                        "maximum_iterations": action.get(
+                            "maximum_iterations"
+                        ),
+                        "maximum_step_m": action.get("maximum_step_m"),
+                        "vertical_policy": action.get(
+                            "vertical_policy", "FREE_3D"
+                        ),
+                    },
+                }
+            ),
+            "next_action": (
+                "STOP_AT_NO_CONTACT_BOUNDARY_REQUEST_COMPLETE"
+                if closest_safe
+                else "REOBSERVE_BOTH_AND_REPLAN"
+            ),
             "integrated_controller": {
                 "commit": result,
                 **completion,
@@ -1210,7 +1324,9 @@ class NoContactItemApproachAdapter:
             ),
             "object_id": action.get("object_id") or None,
             "requested_standoff_m": float(
-                action.get("requested_standoff_m") or 0.1
+                action.get("requested_standoff_m")
+                if action.get("requested_standoff_m") is not None
+                else 0.0
             ),
             "iteration_index": int(action.get("iteration_index") or 0),
             "maximum_iterations": int(action.get("maximum_iterations") or 6),
@@ -1257,15 +1373,16 @@ class NoContactItemApproachAdapter:
             )
         next_tool = replanned.get("required_next_tool")
         next_tool = next_tool if isinstance(next_tool, dict) else {}
-        next_arguments = next_tool.get("arguments")
-        if not isinstance(next_arguments, dict):
+        if (
+            next_tool.get("name") != "execute_no_contact_approach_step"
+            or next_tool.get("arguments") != {}
+        ):
             return self._replan_required_result(
                 status="NO_CONTACT_AUTOMATIC_REPLAN_INCOMPLETE",
                 reason=f"{first_error}; fresh preview has no execution continuation",
                 action=action,
             )
-        recovered = await self.execute_preview(
-            **next_arguments,
+        recovered = await self.execute_current_preview(
             _automatic_retry_count=automatic_retry_count,
         )
         recovered["automatic_commit_recovery"] = {
@@ -1413,7 +1530,9 @@ class NoContactItemApproachAdapter:
                     "question": question,
                     "object_id": object_id or None,
                     "requested_standoff_m": float(
-                        source.get("requested_standoff_m") or 0.1
+                        source.get("requested_standoff_m")
+                        if source.get("requested_standoff_m") is not None
+                        else 0.0
                     ),
                     "iteration_index": int(
                         source.get("iteration_index") or 0

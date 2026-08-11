@@ -2,11 +2,13 @@
 
 Most of this directory is intentionally excluded from Git. The exceptions are this guidance, blank templates, and the sanitized FoundationPose runtime/restore profile.
 
-The non-interactive core initializer creates missing machine-local files here and preserves existing ones:
+The non-interactive core initializer and Provider setup scripts create missing
+machine-local files here and preserve existing ones:
 
 - `system.env`
 - `api_keys.env`
 - `providers.json`
+- `robot_assemblies/primary_manipulator.json`
 - serial-bound calibration under `calibration/devices/...`
 
 Do not commit API keys, device serial numbers, calibration measurements, runtime logs, captures, generated PID files, or absolute workstation paths.
@@ -14,6 +16,9 @@ Do not commit API keys, device serial numbers, calibration measurements, runtime
 Safe starting points:
 
 - `config/system.env.example`, `config/api_keys.env.example`, and `config/providers.json.example` are the root recovery copies used by the initializer.
+- `config/robot_assemblies/primary_manipulator.example.json` is the clean central assembly-selection template. Basic setup copies it to the ignored active path when missing; its profile paths remain relative to the selected arm Provider root.
+- The arm collision profile owns arm-link geometry. The selected mounted-effector profile owns gripper or fixed-tool collision primitives, so an effector replacement normally changes only the mounted-effector reference and any role qualification that the replacement invalidates.
+- The main Midbrain page can select among compatible Provider-owned effector profiles while the arm Provider and its dependents are stopped. It writes only the ignored active `primary_manipulator.json`; the clean example remains the installation seed.
 - `platform_core/config_templates` and `test_agent/config_templates` contain validated package-level fallback copies for partial-package setup.
 - The generated `config/api_keys.env` contains blank keys. Fill the active local file only when a hosted-model feature is intentionally enabled.
 - The FoundationPose Provider already reads `config/foundation_pose/models.json`; a complete sanitized registry, CAD profile, and reference-atlas copy is shipped at that location.

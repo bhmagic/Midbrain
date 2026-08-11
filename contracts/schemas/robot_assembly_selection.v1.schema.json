@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/robot_assembly_selection.v1.schema.json",
+  "title": "Midbrain Robot Assembly Selection v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "assembly_id",
+    "assembly_revision",
+    "arm_resource_id",
+    "arm_provider",
+    "profiles",
+    "qualified_control_roles"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.robot_assembly_selection"},
+    "schema_version": {"const": 1},
+    "assembly_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "assembly_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+    "arm_resource_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "arm_provider": {
+      "type": "object",
+      "required": ["provider_id", "provider_root"],
+      "properties": {
+        "provider_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "provider_root": {"type": "string", "minLength": 1, "maxLength": 500}
+      },
+      "additionalProperties": false
+    },
+    "profiles": {
+      "type": "object",
+      "required": ["arm_model", "calibration", "mounted_effector", "collision_geometry"],
+      "properties": {
+        "arm_model": {"$ref": "#/$defs/profileReference"},
+        "calibration": {"$ref": "#/$defs/profileReference"},
+        "mounted_effector": {"$ref": "#/$defs/profileReference"},
+        "collision_geometry": {"$ref": "#/$defs/profileReference"}
+      },
+      "additionalProperties": false
+    },
+    "qualified_control_roles": {
+      "type": "object",
+      "required": ["free_space", "contact", "grip"],
+      "properties": {
+        "free_space": {
+          "anyOf": [{"$ref": "#/$defs/controlRole"}, {"type": "null"}]
+        },
+        "contact": {
+          "anyOf": [{"$ref": "#/$defs/controlRole"}, {"type": "null"}]
+        },
+        "grip": {
+          "anyOf": [{"$ref": "#/$defs/controlRole"}, {"type": "null"}]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "profileReference": {
+      "type": "object",
+      "required": ["relative_path", "expected_schema", "expected_id", "expected_revision"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 500},
+        "expected_schema": {"type": "string", "minLength": 1, "maxLength": 200},
+        "expected_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "expected_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "controlRole": {
+      "type": "object",
+      "required": ["required_capability", "qualification"],
+      "properties": {
+        "required_capability": {"type": "string", "minLength": 1, "maxLength": 240},
+        "qualification": {"enum": ["DEVELOPMENT", "SOFTWARE_TESTED", "PHYSICALLY_QUALIFIED"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

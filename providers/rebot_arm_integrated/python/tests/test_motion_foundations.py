@@ -21,6 +21,7 @@ from rebot_arm_integrated.modes import CONTACT_WORK, PRESS_MIT, TRANSIT_SPEED, M
 from rebot_arm_integrated.planning import (
     build_direct_preview,
     build_transit_frame_candidates,
+    closest_collision_free_prefix,
     controller_owned_duration,
     joint_speed_policy_schedule,
     solve_cartesian_continuity,
@@ -208,9 +209,7 @@ class ScenePlanningTests(unittest.TestCase):
         self.kinematics = ArmKinematics(model)
         self.q = np.array([0.0, -0.18, -0.22, 0.12, 0.02, -0.05])
 
-    def test_transit_candidates_include_direct_clearance_and_both_lateral_escapes(
-        self,
-    ):
+    def test_transit_candidates_use_only_direct_or_closest_safe_motion(self):
         start = np.eye(4)
         start[:3, 3] = [0.1, 0.0, 0.3]
         goal = np.eye(4)
@@ -219,26 +218,11 @@ class ScenePlanningTests(unittest.TestCase):
         candidates = build_transit_frame_candidates(
             start,
             goal,
-            workspace={
-                "z_min_m": 0.05,
-                "z_max_m": 0.72,
-                "abs_y_max_m": 0.65,
-            },
-            clearance_margin_m=0.08,
-            lateral_escape_m=0.05,
         )
 
         names = [name for name, _frames in candidates]
-        self.assertEqual(names[0], "DIRECT")
-        self.assertIn("CLEARANCE_Z_THEN_XY", names)
-        self.assertIn(
-            "CLEARANCE_WITH_POSITIVE_Y_SINGULARITY_ESCAPE",
-            names,
-        )
-        self.assertIn(
-            "CLEARANCE_WITH_NEGATIVE_Y_SINGULARITY_ESCAPE",
-            names,
-        )
+        self.assertEqual(names, ["DIRECT"])
+        self.assertTrue(np.array_equal(candidates[0][1][0], goal))
 
     def test_controller_duration_uses_requested_speed_and_joint_rate_caps(self):
         schedule = controller_owned_duration(
@@ -308,6 +292,217 @@ class ScenePlanningTests(unittest.TestCase):
         self.assertGreater(report["collision_count"], 2)
         self.assertEqual(len(report["collisions"]), 2)
         self.assertTrue(report["collision_details_truncated"])
+
+    def test_semantic_clearance_margins_are_type_specific(self):
+        points = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+        margins = {
+            "KEEP_OUT": 0.01,
+            "PUSHABLE": 0.0,
+            "WORK_OBJECT": 0.0,
+        }
+
+        def scene_for(object_type: str) -> SceneSnapshot:
+            return SceneSnapshot.from_payload(
+                {
+                    "scene_revision": f"margin-{object_type}",
+                    "frame_id": "rebot_arm_base",
+                    "spheres": [
+                        {
+                            "sphere_id": object_type.lower(),
+                            "object_id": object_type.lower(),
+                            "center_m": [0.5, 0.055, 0.0],
+                            "radius_m": 0.04,
+                            "type": object_type,
+                        }
+                    ],
+                }
+            )
+
+        keep_out = configuration_clearance(
+            points,
+            scene_for("KEEP_OUT"),
+            [0.01],
+            clearance_margin_by_type_m=margins,
+        )
+        work_object = configuration_clearance(
+            points,
+            scene_for("WORK_OBJECT"),
+            [0.01],
+            clearance_margin_by_type_m=margins,
+        )
+        pushable = configuration_clearance(
+            points,
+            scene_for("PUSHABLE"),
+            [0.01],
+            permit_pushable_contact=True,
+            clearance_margin_by_type_m=margins,
+        )
+
+        self.assertFalse(keep_out["collision_free"])
+        self.assertAlmostEqual(
+            keep_out["collisions"][0]["raw_clearance_m"],
+            0.005,
+        )
+        self.assertAlmostEqual(
+            keep_out["collisions"][0][
+                "required_clearance_margin_m"
+            ],
+            0.01,
+        )
+        self.assertTrue(work_object["collision_free"])
+        self.assertTrue(pushable["collision_free"])
+        self.assertIsNone(pushable["minimum_clearance_m"])
+
+    def test_mounted_effector_sphere_uses_the_same_semantic_margins(self):
+        points = [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]]
+        robot_sphere = {
+            "primitive_id": "gripper-body",
+            "center_m": [0.5, 0.0, 0.0],
+            "radius_m": 0.03,
+        }
+
+        def scene_for(object_type: str, center_x: float) -> SceneSnapshot:
+            return SceneSnapshot.from_payload(
+                {
+                    "scene_revision": f"effector-margin-{object_type}",
+                    "frame_id": "rebot_arm_base",
+                    "spheres": [
+                        {
+                            "sphere_id": object_type.lower(),
+                            "object_id": object_type.lower(),
+                            "center_m": [center_x, 0.0, 0.0],
+                            "radius_m": 0.01,
+                            "type": object_type,
+                        }
+                    ],
+                }
+            )
+
+        margins = {"KEEP_OUT": 0.01, "PUSHABLE": 0.0, "WORK_OBJECT": 0.0}
+        keep_out = configuration_clearance(
+            points,
+            scene_for("KEEP_OUT", 0.545),
+            [0.01],
+            robot_spheres=[robot_sphere],
+            clearance_margin_by_type_m=margins,
+        )
+        work_object = configuration_clearance(
+            points,
+            scene_for("WORK_OBJECT", 0.545),
+            [0.01],
+            robot_spheres=[robot_sphere],
+            clearance_margin_by_type_m=margins,
+        )
+
+        self.assertFalse(keep_out["collision_free"])
+        self.assertEqual(
+            keep_out["collisions"][0]["robot_primitive_id"],
+            "gripper-body",
+        )
+        self.assertAlmostEqual(keep_out["minimum_clearance_m"], -0.005)
+        self.assertTrue(work_object["collision_free"])
+        self.assertAlmostEqual(work_object["minimum_clearance_m"], 0.005)
+
+    def test_preview_transforms_mounted_effector_spheres_with_controlled_frame(self):
+        tool_to_control = np.eye(4)
+        controlled = self.kinematics.controlled_frame(
+            self.q,
+            tool_to_control,
+        )
+        scene = SceneSnapshot.from_payload(
+            {
+                "scene_revision": "effector-sphere-preview",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": "tip-obstacle",
+                        "object_id": "tip-obstacle",
+                        "center_m": controlled[:3, 3].tolist(),
+                        "radius_m": 0.001,
+                        "type": "WORK_OBJECT",
+                    }
+                ],
+            }
+        )
+
+        preview = build_direct_preview(
+            self.kinematics,
+            self.q,
+            self.q,
+            0.5,
+            scene=scene,
+            link_radii_m=[0.001] * 6,
+            tool_to_control=tool_to_control,
+            effector_spheres=[
+                {
+                    "primitive_id": "gripper-tip",
+                    "translation_m": [0.0, 0.0, 0.0],
+                    "radius_m": 0.005,
+                }
+            ],
+        )
+
+        self.assertFalse(preview.collision_free)
+        self.assertEqual(
+            preview.collisions[0]["robot_primitive_id"],
+            "gripper-tip",
+        )
+
+    def test_collision_preview_can_be_truncated_to_a_safe_prefix(self):
+        q_goal = self.q.copy()
+        q_goal[0] += 0.4
+        goal_tool = self.kinematics.evaluate(q_goal).points[-1]
+        scene = SceneSnapshot.from_payload(
+            {
+                "scene_revision": "closest-safe-prefix",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": "goal-obstacle",
+                        "object_id": "goal-obstacle",
+                        "center_m": goal_tool.tolist(),
+                        "radius_m": 0.02,
+                        "type": "KEEP_OUT",
+                    }
+                ],
+            }
+        )
+        margins = {
+            "KEEP_OUT": 0.01,
+            "PUSHABLE": 0.0,
+            "WORK_OBJECT": 0.0,
+        }
+        preview = build_direct_preview(
+            self.kinematics,
+            self.q,
+            q_goal,
+            1.0,
+            scene=scene,
+            link_radii_m=[0.01] * 7,
+            clearance_margin_by_type_m=margins,
+        )
+
+        prefix = closest_collision_free_prefix(
+            self.kinematics,
+            preview,
+            scene=scene,
+            link_radii_m=[0.01] * 7,
+            clearance_margin_by_type_m=margins,
+        )
+
+        self.assertFalse(preview.collision_free)
+        self.assertIsNotNone(preview.first_collision_sample_index)
+        self.assertGreaterEqual(len(prefix), 2)
+        safe_endpoint = build_direct_preview(
+            self.kinematics,
+            prefix[-2],
+            prefix[-1],
+            0.1,
+            scene=scene,
+            link_radii_m=[0.01] * 7,
+            clearance_margin_by_type_m=margins,
+        )
+        self.assertTrue(safe_endpoint.collision_free)
 
     def test_canonical_scene_enforces_roi_and_minimum_sphere_radius(self):
         scene = SceneSnapshot.from_payload(
@@ -399,6 +594,47 @@ class ScenePlanningTests(unittest.TestCase):
         )
         self.assertFalse(preview.collision_free)
         self.assertTrue(preview.collisions)
+
+    def test_collision_polyline_ends_at_selected_controlled_frame(self):
+        tool_to_control = np.eye(4, dtype=float)
+        tool_to_control[2, 3] = 0.25
+        controlled = self.kinematics.controlled_frame(
+            self.q,
+            tool_to_control,
+        )[:3, 3]
+        scene = SceneSnapshot.from_payload(
+            {
+                "scene_revision": "scene-controlled-frame-offset",
+                "frame_id": "rebot_arm_base",
+                "spheres": [
+                    {
+                        "sphere_id": "controlled-endpoint",
+                        "object_id": "controlled-endpoint",
+                        "center_m": controlled.tolist(),
+                        "radius_m": 0.01,
+                        "type": "KEEP_OUT",
+                    }
+                ],
+            }
+        )
+
+        preview = build_direct_preview(
+            self.kinematics,
+            self.q,
+            self.q + np.array([0.001, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            0.5,
+            scene=scene,
+            link_radii_m=[0.01] * 7,
+            tool_to_control=tool_to_control,
+        )
+
+        self.assertFalse(preview.collision_free)
+        self.assertTrue(
+            any(
+                collision["sphere_id"] == "controlled-endpoint"
+                for collision in preview.collisions
+            )
+        )
 
     def test_three_modes_map_to_distinct_basic_backends(self):
         self.assertEqual(

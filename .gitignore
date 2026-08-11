@@ -6,6 +6,9 @@ config/*
 !config/api_keys.env.example
 !config/system.env.example
 !config/providers.json.example
+!config/robot_assemblies/
+config/robot_assemblies/*
+!config/robot_assemblies/primary_manipulator.example.json
 providers/rebot_arm_dm/config/
 providers/rebot_arm_integrated/config/
 **/api_keys.env

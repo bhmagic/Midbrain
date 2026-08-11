@@ -93,12 +93,14 @@ class IntegratedService:
         self.motion_inhibited = False
         self.motion_inhibit_owners: list[dict[str, Any]] = []
         authority_config = config.get("manager_authority", {})
+        self.manager_authority_resource_binding = str(
+            authority_config.get("resource_id", "ASSEMBLY_ARM_GROUP")
+        ).strip()
         self.manager_authority_status: dict[str, Any] = {
             "enabled": bool(authority_config.get("enabled", True)),
             "mode": str(authority_config.get("mode", "SHADOW_OBSERVE")),
-            "resource_id": str(
-                authority_config.get("resource_id", "robot_arm.primary")
-            ),
+            "configured_resource_id": self.manager_authority_resource_binding,
+            "resource_id": self.manager_authority_resource_binding,
             "enforcement": "ADVISORY",
             "physical_enforcement": False,
             "may_replace_local_basic_lease": False,
@@ -129,20 +131,6 @@ class IntegratedService:
             "message": "",
             "started_at_monotonic": None,
             "manager_shadow_plan": None,
-        }
-        self.fabric_input_last_key: tuple[str, str, int] | None = None
-        self.fabric_input_status: dict[str, Any] = {
-            "enabled": bool(config.get("fabric_input", {}).get("enabled", False)),
-            "stream": str(config.get("fabric_input", {}).get("stream", "")),
-            "schema": str(config.get("fabric_input", {}).get("schema", "")),
-            "last_result": "WAITING",
-            "last_error": None,
-            "last_sequence": None,
-            "last_provider_id": None,
-            "last_age_ms": None,
-            "accepted_count": 0,
-            "stale_count": 0,
-            "rejected_count": 0,
         }
         self.scene_input_last_key: tuple[str, str, int] | None = None
         self.scene_input_status: dict[str, Any] = {
@@ -204,7 +192,9 @@ class IntegratedService:
             raise
 
         try:
-            self.platform.register(self.controller.snapshot())
+            self.platform.register(
+                self._public_controller_state(self.controller.snapshot())
+            )
             self.manager_registered = self.platform.manager_url is not None
         except Exception as exc:
             self.manager_registered = False
@@ -229,10 +219,7 @@ class IntegratedService:
         next_target = 0.0
         next_inhibit = 0.0
         next_authority = 0.0
-        next_fabric_input = 0.0
         next_scene_input = 0.0
-        fabric_input_cfg = self.config.get("fabric_input", {})
-        fabric_input_poll_s = max(0.02, float(fabric_input_cfg.get("poll_ms", 50)) / 1000.0)
         scene_input_cfg = self.config.get("scene_input", {})
         scene_input_poll_s = max(0.02, float(scene_input_cfg.get("poll_ms", 100)) / 1000.0)
         manager_authority_cfg = self.config.get("manager_authority", {})
@@ -243,7 +230,7 @@ class IntegratedService:
 
         while not self.shutdown_event.wait(0.02):
             now = time.monotonic()
-            state = self.controller.snapshot()
+            state = self._public_controller_state(self.controller.snapshot())
 
             if not self.manager_registered and now >= next_register:
                 try:
@@ -278,9 +265,6 @@ class IntegratedService:
                 self._poll_advisory_authority(state)
                 next_authority = now + authority_poll_s
 
-            if bool(fabric_input_cfg.get("enabled", False)) and now >= next_fabric_input:
-                self._consume_fabric_input()
-                next_fabric_input = now + fabric_input_poll_s
             if bool(scene_input_cfg.get("enabled", False)) and now >= next_scene_input:
                 self._consume_scene_input()
                 next_scene_input = now + scene_input_poll_s
@@ -329,83 +313,6 @@ class IntegratedService:
                 )
 
             self._sync_platform_state()
-
-    def _consume_fabric_input(self) -> None:
-        cfg = self.config.get("fabric_input", {})
-        stream = str(cfg.get("stream", "")).strip()
-        expected_schema = str(cfg.get("schema", "")).strip()
-        try:
-            observation = self.platform.latest(stream)
-            if observation is None:
-                self.fabric_input_status["last_result"] = "NO_OBSERVATION"
-                self.fabric_input_status["last_error"] = None
-                return
-            if expected_schema and str(observation.get("schema", "")) != expected_schema:
-                raise ValueError(
-                    f"Fabric input schema {observation.get('schema')!r} does not match {expected_schema!r}"
-                )
-            if observation.get("valid") is False:
-                self.fabric_input_status["last_result"] = "INVALID_IGNORED"
-                self.fabric_input_status["last_error"] = None
-                return
-
-            now_us = time.time_ns() // 1000
-            observed_at_us = int(observation.get("observed_at_us") or 0)
-            age_ms = None if observed_at_us <= 0 else max(0.0, (now_us - observed_at_us) / 1000.0)
-            configured_max_age_ms = float(cfg.get("max_age_ms", 650))
-            observation_freshness = observation.get("freshness_ms")
-            allowed_age_ms = configured_max_age_ms
-            if observation_freshness is not None:
-                allowed_age_ms = min(allowed_age_ms, float(observation_freshness))
-            expires_at_us = int(observation.get("expires_at_us") or 0)
-            if (age_ms is not None and age_ms > allowed_age_ms) or (expires_at_us > 0 and now_us > expires_at_us):
-                self.fabric_input_status["last_result"] = "STALE_IGNORED"
-                self.fabric_input_status["last_error"] = None
-                self.fabric_input_status["last_age_ms"] = age_ms
-                self.fabric_input_status["stale_count"] += 1
-                return
-
-            key = (
-                str(observation.get("provider_instance_id") or observation.get("provider_id") or ""),
-                str(observation.get("boot_id") or ""),
-                int(observation.get("sequence") or 0),
-            )
-            if key == self.fabric_input_last_key:
-                self.fabric_input_status["last_result"] = "DUPLICATE"
-                self.fabric_input_status["last_age_ms"] = age_ms
-                return
-            data = observation.get("data")
-            if not isinstance(data, dict):
-                raise ValueError("Fabric arm command data must be an object")
-            result = self.controller.stage_external_command(
-                data,
-                source=f"fabric:{stream}",
-                metadata={
-                    "schema": observation.get("schema"),
-                    "provider_id": observation.get("provider_id"),
-                    "provider_instance_id": observation.get("provider_instance_id"),
-                    "boot_id": observation.get("boot_id"),
-                    "sequence": observation.get("sequence"),
-                    "observed_at_us": observed_at_us,
-                    "related_skill_id": observation.get("related_skill_id"),
-                },
-            )
-            self.fabric_input_last_key = key
-            self.fabric_input_status["last_result"] = "ACCEPTED"
-            self.fabric_input_status["last_error"] = None
-            self.fabric_input_status["last_sequence"] = key[2]
-            self.fabric_input_status["last_provider_id"] = observation.get("provider_id")
-            self.fabric_input_status["last_age_ms"] = age_ms
-            self.fabric_input_status["accepted_count"] += 1
-            self.fabric_input_status["physical_motion_authorized"] = bool(
-                result.get("physical_motion_authorized", False)
-            )
-            self.platform.fabric_consume_error = None
-        except Exception as exc:
-            self.fabric_input_status["last_result"] = "REJECTED"
-            self.fabric_input_status["last_error"] = str(exc)
-            self.fabric_input_status["rejected_count"] += 1
-            self.platform.fabric_consume_error = str(exc)
 
     def _consume_scene_input(self) -> None:
         cfg = self.config.get("scene_input", {})
@@ -463,7 +370,7 @@ class IntegratedService:
         with self.safe_termination_lock:
             termination = copy.deepcopy(self.safe_termination)
         return {
-            **self.controller.snapshot(),
+            **self._public_controller_state(self.controller.snapshot()),
             "controller_identity": {
                 "provider_id": self.config["provider_id"],
                 "provider_instance_id": self.platform.instance_id,
@@ -471,14 +378,58 @@ class IntegratedService:
                 "configuration_sha256": _canonical_sha256(self.config),
             },
             "safe_termination": termination,
-            "fabric_input": copy.deepcopy(self.fabric_input_status),
             "scene_input": copy.deepcopy(self.scene_input_status),
             "manager_authority": copy.deepcopy(self.manager_authority_status),
             "control_audit": self.control_audit.status(),
         }
 
+    @staticmethod
+    def _public_controller_state(snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Remove dormant compatibility controls from every public surface."""
+
+        state = copy.deepcopy(snapshot)
+        for key in (
+            "engaged",
+            "execution_mode",
+            "basic_execution_mode",
+            "interaction_mode",
+            "input",
+            "external_input",
+            "gripper",
+            "contact_monitoring",
+        ):
+            state.pop(key, None)
+        runtime = state.get("runtime")
+        if isinstance(runtime, dict):
+            for key in tuple(runtime):
+                if key.startswith("contact_") or key in {
+                    "controlled_frame_offset_xyz_m",
+                    "controlled_frame_offset_rpy_rad",
+                    "payload_mass_kg",
+                    "payload_com_tool_m",
+                }:
+                    runtime.pop(key, None)
+        trajectory = state.get("trajectory")
+        if isinstance(trajectory, dict):
+            trajectory.pop("interaction_mode", None)
+        return state
+
     def _poll_advisory_authority(self, controller_state: dict[str, Any]) -> None:
-        resource_id = str(self.manager_authority_status["resource_id"])
+        resource_id = self.manager_authority_resource_binding
+        if resource_id == "ASSEMBLY_ARM_GROUP":
+            resource_id = _optional_text(controller_state.get("arm_resource_id")) or ""
+            if not resource_id:
+                self.manager_authority_status.update(
+                    {
+                        "resource_id": None,
+                        "comparison": "WAITING",
+                        "manager_view": None,
+                        "last_error": "assembly arm resource is not available yet",
+                        "evaluation": None,
+                    }
+                )
+                return
+        self.manager_authority_status["resource_id"] = resource_id
         local_lease = copy.deepcopy(controller_state.get("lease"))
         planning = controller_state.get("planning")
         planning = planning if isinstance(planning, dict) else {}
@@ -675,37 +626,6 @@ class IntegratedService:
                 },
             }
 
-    def _direct_plan_motion(self, body: dict[str, Any]) -> dict[str, Any]:
-        command = body.get("command", body)
-        if not isinstance(command, dict):
-            raise ValueError("command must be an object")
-        staged = self.controller.stage_external_command(
-            command,
-            source="direct:/v1/motion/plan",
-            metadata={
-                "command_id": body.get("command_id"),
-                "binding_id": body.get("binding_id"),
-                "authority_id": body.get("authority_id"),
-                "related_skill_id": body.get("related_skill_id"),
-            },
-        )
-        allowed = body.get("allowed_contact_object_ids", [])
-        if not isinstance(allowed, list):
-            raise ValueError("allowed_contact_object_ids must be an array")
-        preview = self.controller.preview_staged_target(
-            allowed_contact_object_ids={str(value) for value in allowed},
-            permit_pushable_contact=bool(body.get("permit_pushable_contact", False)),
-        )
-        return {
-            "status": "PLANNED" if preview.get("planning_valid") else "REJECTED",
-            "enforcement": "SHADOW_NONPHYSICAL",
-            "physical_motion_authorized": False,
-            "plan_id": preview.get("preview_id"),
-            "normalized_target": staged.get("staged_target"),
-            "runtime": staged.get("runtime"),
-            "preview": preview,
-        }
-
     def _direct_plan_transit_path(self, body: dict[str, Any]) -> dict[str, Any]:
         target = body.get("target")
         if not isinstance(target, dict):
@@ -777,46 +697,78 @@ class IntegratedService:
             )
         )
         ttl_ms = max(250, min(30_000, ttl_ms))
+        context_kind = str(
+            request_context.get("context_kind") or "OBSERVATION_BOUND"
+        ).strip().upper()
+        autonomous_free_space_context = (
+            context_kind == "AUTONOMOUS_FREE_SPACE_KINEMATIC"
+        )
         workcell_policy = str(
             request_context.get("workcell_transform_validity_policy") or ""
         )
-        required_context_fields = (
-            "binding_id",
-            "camera_provider_id",
-            "camera_provider_instance_id",
-            "camera_boot_id",
-            "workcell_transform_id",
-            "workcell_transform_revision",
-            "workcell_transform_validity_policy",
-            "observation_timestamp_us",
-            "observation_expires_at_us",
-            "scene_revision",
-        )
-        if workcell_policy == MOUNTED_WORKCELL_POLICY_V1:
-            required_context_fields += ("vio_session_epoch",)
+        if autonomous_free_space_context:
+            required_context_fields = (
+                "spatial_resolution_sha256",
+                "spatial_resolution_resolved_at_us",
+            )
+        else:
+            required_context_fields = (
+                "binding_id",
+                "camera_provider_id",
+                "camera_provider_instance_id",
+                "camera_boot_id",
+                "workcell_transform_id",
+                "workcell_transform_revision",
+                "workcell_transform_validity_policy",
+                "observation_timestamp_us",
+                "observation_expires_at_us",
+            )
+            if workcell_policy == MOUNTED_WORKCELL_POLICY_V1:
+                required_context_fields += ("vio_session_epoch",)
         context_issues = [
             f"MISSING_REQUEST_CONTEXT:{field}"
             for field in required_context_fields
             if field not in request_context
         ]
-        for field in (
-            "binding_id",
-            "camera_provider_id",
-            "camera_provider_instance_id",
-            "camera_boot_id",
-            "workcell_transform_id",
-            "workcell_transform_revision",
-            "workcell_transform_validity_policy",
-            "scene_revision",
-        ):
+        if autonomous_free_space_context:
+            spatial_resolution = request_context.get("spatial_resolution")
+            if not isinstance(spatial_resolution, dict):
+                context_issues.append(
+                    "MISSING_REQUEST_CONTEXT:spatial_resolution"
+                )
+            elif request_context.get(
+                "spatial_resolution_sha256"
+            ) != _canonical_sha256(spatial_resolution):
+                context_issues.append(
+                    "SPATIAL_RESOLUTION_DIGEST_MISMATCH"
+                )
+        text_context_fields = (
+            ("spatial_resolution_sha256",)
+            if autonomous_free_space_context
+            else (
+                "binding_id",
+                "camera_provider_id",
+                "camera_provider_instance_id",
+                "camera_boot_id",
+                "workcell_transform_id",
+                "workcell_transform_revision",
+                "workcell_transform_validity_policy",
+            )
+        )
+        for field in text_context_fields:
             if field in request_context and not str(
                 request_context.get(field) or ""
             ).strip():
                 context_issues.append(f"EMPTY_REQUEST_CONTEXT:{field}")
-        for field in (
-            "observation_timestamp_us",
-            "observation_expires_at_us",
-        ):
+        time_context_fields = (
+            ("spatial_resolution_resolved_at_us",)
+            if autonomous_free_space_context
+            else (
+                "observation_timestamp_us",
+                "observation_expires_at_us",
+            )
+        )
+        for field in time_context_fields:
             if field in request_context:
                 try:
                     if int(request_context[field]) <= 0:
@@ -826,7 +778,9 @@ class IntegratedService:
                 except (TypeError, ValueError):
                     context_issues.append(f"INVALID_REQUEST_CONTEXT:{field}")
         for field, issue in (
-            ("observation_expires_at_us", "OBSERVATION_EXPIRED"),
+            ()
+            if autonomous_free_space_context
+            else (("observation_expires_at_us", "OBSERVATION_EXPIRED"),)
         ):
             try:
                 if (
@@ -848,9 +802,14 @@ class IntegratedService:
             except (KeyError, TypeError, ValueError):
                 pass
         planning_result["final_state"] = final_state
-        if workcell_policy not in SUPPORTED_MOUNTED_WORKCELL_POLICIES:
+        if (
+            not autonomous_free_space_context
+            and workcell_policy not in SUPPORTED_MOUNTED_WORKCELL_POLICIES
+        ):
             context_issues.append("WORKCELL_VALIDITY_POLICY_UNSUPPORTED")
         if (
+            not autonomous_free_space_context
+            and
             workcell_policy == MOUNTED_WORKCELL_POLICY_V2
             and not str(
                 request_context.get("camera_calibration_revision") or ""
@@ -913,6 +872,9 @@ class IntegratedService:
             "request_context_issues": context_issues,
             "scene_revision_adaptation": scene_revision_adaptation,
             "scene_revision": planning_result.get("scene_revision"),
+            "assembly_binding": copy.deepcopy(
+                planning_result.get("assembly_binding")
+            ),
             "lease_snapshot": {
                 "active": bool(lease_state.get("active")),
                 "state": lease_state.get("state"),
@@ -920,6 +882,7 @@ class IntegratedService:
                 "fencing_generation": lease_state.get(
                     "fencing_generation"
                 ),
+                "resource_id": lease_state.get("resource_id"),
             },
             "basic_feedback": {
                 "observed_at_us": basic_state.get("observed_at_us"),
@@ -1079,10 +1042,14 @@ class IntegratedService:
                 "transit preview digest does not match the stored preview"
             )
         normalized_request = plan["normalized_request"]
-        self._require_current_workcell_activation(
-            normalized_request["request_context"],
-            now_us=now_us,
-        )
+        request_context = normalized_request["request_context"]
+        if str(request_context.get("context_kind") or "").upper() != (
+            "AUTONOMOUS_FREE_SPACE_KINEMATIC"
+        ):
+            self._require_current_workcell_activation(
+                request_context,
+                now_us=now_us,
+            )
         selected_plan = plan["planning_result"].get("selected_plan")
         selected_plan = (
             selected_plan if isinstance(selected_plan, dict) else {}
@@ -1137,7 +1104,7 @@ class IntegratedService:
                 requested_speed_m_s=float(
                     normalized_request["requested_speed_m_s"]
                 ),
-                scene_revision=str(contract["scene_revision"]),
+                scene_revision=contract.get("scene_revision"),
                 final_state=str(normalized_request["final_state"]),
                 allowed_contact_object_ids={
                     str(value)
@@ -1178,17 +1145,6 @@ class IntegratedService:
 
     def _direct_release_transit_path(self) -> dict[str, Any]:
         return self.controller.release_authorized_transit()
-
-    def _teleop_result(self, body: dict[str, Any]) -> dict[str, Any]:
-        self.controller.update_input(body)
-        state = self.controller.snapshot()
-        return {
-            "accepted": True,
-            "normalized_target": copy.deepcopy(state.get("target")),
-            "physical_motion_authorized": bool(
-                state.get("engaged") and body.get("lb")
-            ),
-        }
 
     def _request_service_stop(self) -> dict[str, str]:
         timer = threading.Timer(0.15, self.shutdown)
@@ -1426,7 +1382,7 @@ class IntegratedService:
         return result
 
     def capability_catalog(self) -> dict[str, Any]:
-        state = self.controller.snapshot()
+        state = self._public_controller_state(self.controller.snapshot())
         profiles = state.get("capability_profiles", {})
         readiness = state.get("capability_readiness", {})
         capabilities = []
@@ -1446,27 +1402,7 @@ class IntegratedService:
             "capabilities": capabilities,
             "upstream_operations": {
                 "state": {"method": "GET", "path": "/v1/state"},
-                "engage": {
-                    "method": "POST",
-                    "path": "/v1/engage",
-                    "caller_policy": "OPERATOR_OR_OPERATOR_SUPERVISED_SKILL",
-                },
-                "teleop_input": {
-                    "method": "POST",
-                    "path": "/v1/teleop",
-                    "caller_policy": "OPERATOR_OR_OPERATOR_SUPERVISED_SKILL",
-                },
-                "settings": {"method": "POST", "path": "/v1/settings"},
-                "gripper_settings": {"method": "POST", "path": "/v1/gripper/settings"},
-                "gripper_action": {"method": "POST", "path": "/v1/gripper"},
-                "nonphysical_preview": {"method": "POST", "path": "/v1/preview"},
-                "direct_motion_plan": {
-                    "method": "POST",
-                    "path": "/v1/motion/plan",
-                    "physical_motion_authorized": False,
-                    "fabric_in_synchronous_path": False,
-                },
-                "controller_transit_path_shadow": {
+                "controller_free_space_path_plan": {
                     "method": "POST",
                     "path": "/v1/motion/path-plan",
                     "planner_owner": "ROBOT_ARM_INTEGRATED_CONTROLLER",
@@ -1479,7 +1415,7 @@ class IntegratedService:
                     ],
                     "fabric_in_synchronous_path": False,
                 },
-                "authorized_staged_transit_commit": {
+                "authorized_free_space_path_commit": {
                     "method": "POST",
                     "path": "/v1/motion/path-commit",
                     "planner_owner": (
@@ -1499,13 +1435,11 @@ class IntegratedService:
                         )
                     ),
                 },
-                "authorized_staged_transit_release": {
+                "authorized_free_space_path_release": {
                     "method": "POST",
                     "path": "/v1/motion/path-release",
                     "behavior": "EXPLICIT_GRAVITY_FLOAT",
                 },
-                "contact_baseline_capture": {"method": "POST", "path": "/v1/contact-baseline"},
-                "semantic_scene_staging": {"method": "POST", "path": "/v1/scene"},
                 "gravity_float": {"method": "POST", "path": "/v1/float"},
                 "leased_idle_profile": {
                     "method": "POST",
@@ -1518,7 +1452,7 @@ class IntegratedService:
                         "POSITION_LOCK",
                     ],
                     "lease_expiry_behavior": "GRAVITY_FLOAT",
-                    "caller_policy": "OPERATOR_OR_OPERATOR_SUPERVISED_SKILL",
+                    "caller_policy": "HOST_POLICY_OR_OPERATOR_SAFE_CONTROL",
                 },
                 "safe_terminate": {"method": "POST", "path": "/v1/safe-terminate"},
                 "manager_authority_observation": {
@@ -1530,31 +1464,25 @@ class IntegratedService:
                     "may_switch_control_mode": False,
                     "may_submit_motor_commands": False,
                 },
-                "cartesian_target_staging": {
-                    "transport": "FABRIC",
-                    "stream": self.config.get("fabric_input", {}).get("stream"),
-                    "schema": self.config.get("fabric_input", {}).get("schema"),
-                },
             },
             "physical_execution_gate": {
-                "authority": "OPERATOR_OR_SIGNED_UI_DECISION",
+                "authority": "AUTONOMOUS_HOST_SIGNED_POLICY",
                 "required": [
-                    "PATH_SPECIFIC_GATE",
+                    "EXACT_CONTROLLER_PATH_PLAN",
+                    "ONE_TIME_AUTHORIZATION_ASSERTION",
                     "FRESH_LOCAL_BASIC_LEASE",
+                    "CURRENT_ASSEMBLY_PROFILE",
                 ],
                 "upstream_motion_authority": False,
-                "operator_debug_path": {
-                    "authority": "OPERATOR",
-                    "required": ["GUI_ENGAGE", "XBOX_LB"],
-                },
                 "agentic_transit_path": {
-                    "authority": "SIGNED_UI_DECISION",
+                    "authority": "AUTONOMOUS_HOST_SIGNED_POLICY",
                     "required": [
                         "EXACT_CONTROLLER_PREVIEW",
                         "ONE_TIME_AUTHORIZATION_ASSERTION",
                         "FRESH_LOCAL_BASIC_LEASE",
-                        "CURRENT_SEMANTIC_SCENE",
+                        "CURRENT_ASSEMBLY_PROFILE",
                     ],
+                    "semantic_scene_policy": "USE_FRESH_IF_AVAILABLE",
                     "configured": bool(
                         len(
                             self.authorization_secret.encode("utf-8")
@@ -1565,9 +1493,6 @@ class IntegratedService:
             },
             "control_audit": self.control_audit.status(),
             "manager_authority": copy.deepcopy(self.manager_authority_status),
-            "non_discoverable_experiments": copy.deepcopy(
-                state.get("non_discoverable_experiments", {})
-            ),
         }
 
     @staticmethod
@@ -1586,7 +1511,7 @@ class IntegratedService:
         service = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "ArmIntegratedMIT/0.8.1"
+            server_version = "ArmIntegratedFreeSpace/0.9.0"
 
             def log_message(self, fmt, *args):
                 try:
@@ -1594,7 +1519,7 @@ class IntegratedService:
                 except (TypeError, ValueError):
                     status = 200
                 if status >= 400:
-                    print(f"[staged-http] {self.path} {fmt % args}")
+                    print(f"[free-space-http] {self.path} {fmt % args}")
 
             def _write_bytes(self, data: bytes) -> bool:
                 try:
@@ -1739,16 +1664,6 @@ class IntegratedService:
                                 command_id=self.headers.get("X-Midbrain-Command-ID"),
                             ),
                         )
-                    if self.path == "/v1/motion/plan":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service._direct_plan_motion(body),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
                     if self.path == "/v1/motion/path-plan":
                         return self._json(
                             200,
@@ -1800,103 +1715,6 @@ class IntegratedService:
                                 command_id=self.headers.get(
                                     "X-Midbrain-Command-ID"
                                 ),
-                            ),
-                        )
-                    if self.path == "/v1/teleop":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service._teleop_result(body),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/engage":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.set_engaged(
-                                    bool(body.get("enabled", False))
-                                ),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/settings":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.set_runtime_settings(body),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/gripper/settings":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.set_gripper_settings(body),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/gripper":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.request_gripper(
-                                    str(body.get("action", ""))
-                                ),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/preview":
-                        allowed = body.get("allowed_contact_object_ids", [])
-                        if not isinstance(allowed, list):
-                            raise ValueError("allowed_contact_object_ids must be an array")
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.preview_staged_target(
-                                    allowed_contact_object_ids={
-                                        str(value) for value in allowed
-                                    },
-                                    permit_pushable_contact=bool(
-                                        body.get("permit_pushable_contact", False)
-                                    ),
-                                ),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/contact-baseline":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                service.controller.capture_contact_baseline,
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
-                            ),
-                        )
-                    if self.path == "/v1/scene":
-                        return self._json(
-                            200,
-                            service._audited_control(
-                                self.path,
-                                body,
-                                lambda: service.controller.stage_scene(
-                                    body,
-                                    source="operator-api",
-                                ),
-                                command_id=self.headers.get("X-Midbrain-Command-ID"),
                             ),
                         )
                     if self.path == "/v1/float":

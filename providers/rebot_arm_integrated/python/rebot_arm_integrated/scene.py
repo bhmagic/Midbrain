@@ -261,8 +261,10 @@ def configuration_clearance(
     scene: SceneSnapshot,
     link_radii_m: Iterable[float],
     *,
+    robot_spheres: Iterable[dict[str, Any]] | None = None,
     allowed_contact_object_ids: set[str] | None = None,
     permit_pushable_contact: bool = False,
+    clearance_margin_by_type_m: dict[str, float] | None = None,
     maximum_collision_details: int = 16,
 ) -> dict[str, Any]:
     points = np.asarray(list(points_m), dtype=float)
@@ -271,7 +273,44 @@ def configuration_clearance(
     radii = np.asarray(list(link_radii_m), dtype=float)
     if radii.shape != (points.shape[0] - 1,) or np.any(radii <= 0.0) or not np.all(np.isfinite(radii)):
         raise ValueError("link_radii_m must provide one positive radius per robot segment")
+    checked_robot_spheres: list[tuple[str, np.ndarray, float]] = []
+    robot_primitive_ids: set[str] = set()
+    for primitive in robot_spheres or ():
+        if not isinstance(primitive, dict):
+            raise ValueError("robot_spheres entries must be objects")
+        primitive_id = str(primitive.get("primitive_id", "")).strip()
+        center = np.asarray(primitive.get("center_m", []), dtype=float)
+        try:
+            radius = float(primitive.get("radius_m"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("robot sphere radii must be positive and finite") from error
+        if not primitive_id or primitive_id in robot_primitive_ids:
+            raise ValueError("robot sphere IDs must be non-empty and unique")
+        if center.shape != (3,) or not np.all(np.isfinite(center)):
+            raise ValueError("robot sphere centers must contain three finite values")
+        if not np.isfinite(radius) or radius <= 0.0:
+            raise ValueError("robot sphere radii must be positive and finite")
+        robot_primitive_ids.add(primitive_id)
+        checked_robot_spheres.append((primitive_id, center, radius))
     allowed = set(allowed_contact_object_ids or set())
+    configured_margins = dict(clearance_margin_by_type_m or {})
+    unknown_margin_types = set(configured_margins) - SUPPORTED_OBJECT_TYPES
+    if unknown_margin_types:
+        raise ValueError(
+            "clearance margins contain unsupported semantic object types: "
+            + ", ".join(sorted(unknown_margin_types))
+        )
+    margins_by_type = {
+        object_type: float(configured_margins.get(object_type, 0.0))
+        for object_type in SUPPORTED_OBJECT_TYPES
+    }
+    if any(
+        not np.isfinite(value) or value < 0.0
+        for value in margins_by_type.values()
+    ):
+        raise ValueError(
+            "clearance margins must be finite non-negative distances"
+        )
     if int(maximum_collision_details) < 0:
         raise ValueError("maximum_collision_details must be non-negative")
     minimum = float("inf")
@@ -283,6 +322,10 @@ def configuration_clearance(
         )
         sphere_radii = np.asarray(
             [sphere.radius_m for sphere in scene.spheres], dtype=float
+        )
+        required_margins = np.asarray(
+            [margins_by_type[sphere.object_type] for sphere in scene.spheres],
+            dtype=float,
         )
         permitted_mask = np.asarray(
             [
@@ -301,6 +344,7 @@ def configuration_clearance(
     else:
         centers = np.empty((0, 3), dtype=float)
         sphere_radii = np.empty((0,), dtype=float)
+        required_margins = np.empty((0,), dtype=float)
         permitted_mask = np.empty((0,), dtype=bool)
     for segment_index, (start, end, link_radius) in enumerate(zip(points[:-1], points[1:], radii)):
         if centers.size == 0:
@@ -319,8 +363,11 @@ def configuration_clearance(
                 centers - (start + scales[:, None] * segment),
                 axis=1,
             )
-        clearances = distances - float(link_radius) - sphere_radii
-        minimum = min(minimum, float(np.min(clearances)))
+        raw_clearances = distances - float(link_radius) - sphere_radii
+        clearances = raw_clearances - required_margins
+        blocking_clearances = clearances[~permitted_mask]
+        if blocking_clearances.size:
+            minimum = min(minimum, float(np.min(blocking_clearances)))
         collision_indices = np.flatnonzero(
             (clearances <= 0.0) & ~permitted_mask
         )
@@ -336,6 +383,42 @@ def configuration_clearance(
                     "sphere_id": sphere.sphere_id,
                     "object_id": sphere.object_id,
                     "type": sphere.object_type,
+                    "raw_clearance_m": float(raw_clearances[sphere_index]),
+                    "required_clearance_margin_m": float(
+                        required_margins[sphere_index]
+                    ),
+                    "clearance_m": float(clearances[sphere_index]),
+                }
+            )
+    for primitive_id, center, robot_radius in checked_robot_spheres:
+        if centers.size == 0:
+            continue
+        distances = np.linalg.norm(centers - center, axis=1)
+        raw_clearances = distances - robot_radius - sphere_radii
+        clearances = raw_clearances - required_margins
+        blocking_clearances = clearances[~permitted_mask]
+        if blocking_clearances.size:
+            minimum = min(minimum, float(np.min(blocking_clearances)))
+        collision_indices = np.flatnonzero(
+            (clearances <= 0.0) & ~permitted_mask
+        )
+        collision_count += int(collision_indices.size)
+        remaining = int(maximum_collision_details) - len(collisions)
+        if remaining <= 0:
+            continue
+        for sphere_index in collision_indices[:remaining]:
+            sphere = scene.spheres[int(sphere_index)]
+            collisions.append(
+                {
+                    "robot_primitive_id": primitive_id,
+                    "robot_sphere_radius_m": robot_radius,
+                    "sphere_id": sphere.sphere_id,
+                    "object_id": sphere.object_id,
+                    "type": sphere.object_type,
+                    "raw_clearance_m": float(raw_clearances[sphere_index]),
+                    "required_clearance_margin_m": float(
+                        required_margins[sphere_index]
+                    ),
                     "clearance_m": float(clearances[sphere_index]),
                 }
             )

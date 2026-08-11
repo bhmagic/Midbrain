@@ -30,20 +30,21 @@ if ($WithMotorBridge) {
     if ($actualCommit -ne $motorBridgeCommit) {
         throw "MotorBridge source is at $actualCommit; expected reviewed commit $motorBridgeCommit."
     }
-    & git -C $motorBridgeSource apply --reverse --check $motorBridgePatch 2>$null
-    $patchAlreadyApplied = $LASTEXITCODE -eq 0
+    # Windows line-ending behavior can make reverse-apply probing reject an
+    # already-applied patch. Accept only an exact normalized tracked diff.
+    $expectedPatch = ((Get-Content -Raw -LiteralPath $motorBridgePatch) -replace "`r`n", "`n").TrimEnd()
+    $actualPatch = ((& git -C $motorBridgeSource diff --binary) -join "`n").TrimEnd()
+    $patchAlreadyApplied = $actualPatch -ceq $expectedPatch
     if (-not $patchAlreadyApplied) {
-        $sourceChanges = & git -C $motorBridgeSource status --porcelain
-        if ($sourceChanges) {
+        if ($actualPatch) {
             throw "MotorBridge source contains unrelated changes; preserve or remove them before setup."
         }
         & git -C $motorBridgeSource apply --check $motorBridgePatch
         if ($LASTEXITCODE -ne 0) { throw "The reviewed MotorBridge freshness patch does not apply cleanly." }
         & git -C $motorBridgeSource apply $motorBridgePatch
         if ($LASTEXITCODE -ne 0) { throw "Could not apply the reviewed MotorBridge freshness patch." }
+        $actualPatch = ((& git -C $motorBridgeSource diff --binary) -join "`n").TrimEnd()
     }
-    $expectedPatch = ((Get-Content -Raw -LiteralPath $motorBridgePatch) -replace "`r`n", "`n").TrimEnd()
-    $actualPatch = ((& git -C $motorBridgeSource diff --binary) -join "`n").TrimEnd()
     if ($actualPatch -cne $expectedPatch) {
         throw "MotorBridge source differs from the reviewed tracked patch."
     }
@@ -61,5 +62,19 @@ New-Item -ItemType Directory -Force -Path $config | Out-Null
 if (-not (Test-Path (Join-Path $config "arm_model.json"))) { Copy-Item (Join-Path $provider "config_templates\arm_model.factory.json") (Join-Path $config "arm_model.json") }
 if (-not (Test-Path (Join-Path $config "arm_calibration.json"))) { Copy-Item (Join-Path $provider "config_templates\arm_calibration.initial.json") (Join-Path $config "arm_calibration.json") }
 if (-not (Test-Path (Join-Path $config "calibration_collision_model.json"))) { Copy-Item (Join-Path $provider "config_templates\calibration_collision_model.json") (Join-Path $config "calibration_collision_model.json") }
+$workspace = Get-WorkspaceRoot
+$assemblyTemplate = Join-Path $workspace "config\robot_assemblies\primary_manipulator.example.json"
+if (Test-Path -LiteralPath $assemblyTemplate) {
+    $assemblyDirectory = Join-Path $workspace "config\robot_assemblies"
+    $assemblyConfig = Join-Path $assemblyDirectory "primary_manipulator.json"
+    New-Item -ItemType Directory -Force -Path $assemblyDirectory | Out-Null
+    if (-not (Test-Path -LiteralPath $assemblyConfig)) {
+        $selection = Get-Content -Raw -LiteralPath $assemblyTemplate | ConvertFrom-Json
+        $calibration = Get-Content -Raw -LiteralPath (Join-Path $config "arm_calibration.json") | ConvertFrom-Json
+        $selection.profiles.calibration.expected_revision = $calibration.calibration_revision
+        $selection | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $assemblyConfig -Encoding utf8
+        Write-Host "Created active robot assembly selection: $assemblyConfig"
+    }
+}
 Write-Host "Basic Controller setup complete."
 Write-Host "Private Python: $python"

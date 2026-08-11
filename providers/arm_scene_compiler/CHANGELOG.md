@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Replace the hard-coded link/tool exclusion chain with the active Basic
+  assembly-state arm capsules and mounted-effector spheres.
+- Publish the exact profile-driven effector spheres with each compiled scene so
+  controller diagnostics and the main 3D viewer use the same geometry.
+- Apply that same profile-bound self filter to SAM2 semantic cells, preventing
+  the mounted tool from returning as a false work-object collision at sample
+  zero.
+
 ## 0.1.3 - 2026-08-04
 
 - Bind every compiled semantic scene to the exact upstream tracker policy

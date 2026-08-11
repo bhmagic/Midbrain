@@ -45,12 +45,11 @@ $Ready = $Integrated.ready -and $Integrated.basic_connected -and $Integrated.lea
     IntegratedState = $Integrated.control_state
     IntegratedHealth = $Integrated.health
     Ready = $Ready
-    Interaction = $Integrated.interaction_mode
-    IK = $Integrated.ik_mode
-    KpMultiplier = $Integrated.runtime.kp_multiplier
     MaxCommitCm = [Math]::Round([double]$Integrated.target.maximum_commit_distance_m * 100, 1)
     WaypointRateHz = $Integrated.trajectory.send_rate_hz
-    FabricInput = $Integrated.fabric_input.last_result
+    SceneInput = $Integrated.scene_input.last_result
+    Assembly = $Integrated.assembly.assembly_id
+    AssemblyFingerprint = $Integrated.assembly_fingerprint
     Fault = $Integrated.fault_reason
     LastError = $Integrated.last_error
 } | Format-List
@@ -58,16 +57,11 @@ $Ready = $Integrated.ready -and $Integrated.basic_connected -and $Integrated.lea
 if (-not $Ready) { throw "Integrated MIT bring-up controller is not ready." }
 if (-not $NoBrowser) { Start-Process $IntegratedUrl }
 
-Write-Host "MIT bring-up GUI ready at $IntegratedUrl"
-Write-Host "Start with payload mass 0 unless the held tool mass and tool-frame COM are known."
-Write-Host "First physical move: PRESS_MIT + POSITION_3DOF + ONE_SHOT + Kp multiplier 1.0 + about 5 mm target change + 3 s duration."
-Write-Host "Physical testing uses GUI Engage + Xbox LB directly; no preview or A-button step is required."
-Write-Host "Basic MIT support runs at 50 Hz; unchanged POS_VEL/POS_TOR motor endpoints refresh at 10 Hz."
-Write-Host "CONTACT_WORK/POS_TOR requires POSE_6DOF, a fresh float baseline, and a JOINT_6, WRENCH_6, or ISOTROPIC_2 budget."
-Write-Host "After that is smooth, test larger Kp gradually. J1-J3 clamp at effective Kp 500; the GUI shows every effective value."
-Write-Host "Then test HOLD_LB at 0.10 s replan interval using small moving targets. Releasing LB must return to gravity-float."
-Write-Host "TRANSIT_SPEED holds its POS_VEL endpoint after arrival; use Float/LT explicitly, or HOLD_LB release, to return to gravity-float."
-Write-Host "Test POSE_6DOF only after the 3-DoF path is physically predictable."
+Write-Host "Integrated read-only developer UI ready at $IntegratedUrl"
+Write-Host "Run bounded physical qualification from the normal Agent UI through perform_relative_effector_motion."
+Write-Host "Start with one 5 mm position-only move in verified open space, then inspect measured completion and the control audit."
+Write-Host "Do not use this Provider for contact, gripping, manual target staging, gamepad teleoperation, or an undeclared held object."
+Write-Host "General obstacle rerouting is not implemented; a blocked direct route may stop only at its closest-safe prefix."
 Write-Host "Authoritative shutdown command:"
 $StopScript = Join-Path $ProviderRoot "scripts\stop_physical_gui_test.ps1"
 Write-Host ('powershell -ExecutionPolicy Bypass -File "{0}" -ProjectRoot "{1}" -StopCore' -f $StopScript, $ProjectRoot)

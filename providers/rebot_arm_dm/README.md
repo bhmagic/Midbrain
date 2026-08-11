@@ -1,5 +1,11 @@
 # reBot Arm DM Basic Resource Provider
 
+The recommended managed launch selects the installed robot through
+`config/robot_assemblies/primary_manipulator.json`. That machine-local file
+references the model, calibration, mounted-effector, and collision profiles
+inside this Provider. Direct `--config` and `--calibration` arguments remain a
+legacy/development fallback.
+
 The Basic Provider is the sole hardware-facing owner of the reBot/Damiao motor
 transport. It publishes seven-motor feedback and local transforms, enforces
 fenced operational leases and command deadlines, validates motor modes and
@@ -62,7 +68,8 @@ Basic owns:
 - exclusive motor-bus access and hardware identity checks;
 - measured feedback and local arm transforms;
 - command-schema, joint, rate, stiffness, damping, effort, and deadline checks;
-- fenced lease acquisition, renewal, expiry, and revocation;
+- fenced root or disjoint actuator-group lease acquisition, renewal, expiry,
+  and revocation;
 - calibrated arm and declared-payload gravity feed-forward;
 - gravity-float, explicit Manager `HOT` fault requalification, and safe-home
   sequencing; and
@@ -74,9 +81,38 @@ generation-verified joint batch. Recovery fences any earlier lease and enters
 powered gravity float; a higher-level controller must acquire new authority
 before it can move the arm again.
 
+The selected assembly defines disjoint arm and effector joint membership.
+Basic rejects every group command that includes a joint outside that group.
+The arm and gripper groups may be leased concurrently, while a root lease
+conflicts with both. This permits a separate grip controller to retain its
+hold while the free-space controller moves the arm.
+
 Basic exposes motor primitives and hard safety enforcement. The Integrated
-Provider owns reviewed Cartesian profiles, path previews, semantic-scene
-checks, and higher-level physical release policy.
+free-space Provider owns reviewed Cartesian profiles, path previews,
+semantic-scene checks, and higher-level physical release policy.
+
+The static mounted effector comes from the selected Provider-owned profile.
+That profile also owns its collision primitives. The arm collision profile is
+arm-only, allowing the central assembly selection to pair the same arm with a
+different gripper or fixed tool without copying effector geometry into the arm
+profile.
+It also owns the effector inertial mass and center of mass used by Basic's
+gravity model. The provisional `5 inch blade` profile begins from the former
+tool mass as a lower-bound tuning value and a geometric blade-center estimate.
+Its current values remain operator-tuned development data, not a physical
+qualification. They must be measured or tuned before relying on MIT gravity
+float. Profile edits require Basic and its higher dependents to restart.
+
+A fixed-tool profile can list unavailable model joints in
+`inactive_joint_names`. Basic excludes them from the six-axis arm group without
+advertising a nonexistent gripper actuator resource. It also omits those
+motors from MotorBridge registration, enable, feedback, and command traffic.
+The legacy seven-slot state marks the unavailable slot
+`INACTIVE_NOT_INSTALLED`; only installed motors determine feedback freshness.
+An object later held by a gripper is not part of that file: it requires a
+separate runtime attachment revision with payload and collision geometry.
+That runtime registry is not implemented yet, so a higher controller must not
+claim collision-safe free-space motion while an undeclared object is held.
 
 ## Documentation
 

@@ -49,6 +49,8 @@
         "0.005",
         "--inertial-publish-hz",
         "100",
+        "--pose-publication-mode",
+        "fixed_rig_initial_hold",
         "--ir-sync-tolerance-us",
         "8000",
         "--ir-enabled",
