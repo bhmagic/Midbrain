@@ -7,6 +7,11 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Record the operator-reported successful execution of several development
+  6-DoF free-space motions with the `5 inch blade` assembly. The final
+  checked-in profile uses 0.33 kg and COM `[-0.165, 0.0, -0.03]` m; this result
+  accepts the patch behavior but does not promote the development collision
+  envelope or full operating range to physical qualification.
 - Remove the obsolete `/v1/preview` and `/v1/motion/plan` Agent-facing routes;
   autonomous free-space motion now has one signed path-plan/path-commit API.
 - Remove the retired manual engagement, teleoperation, mutable runtime

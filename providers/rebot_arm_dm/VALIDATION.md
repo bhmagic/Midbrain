@@ -15,7 +15,15 @@ preservation, gripper `POSITION_EFFORT_LIMITED` to `FORCE_POS` translation, meas
 hysteretic brake/hold and recovery, MotorBridge, calibration, and Midbrain
 integration regressions.
 
-Python compilation, provider JSON parsing, and PowerShell syntax validation pass. This revision has not physically validated the 10 Hz motor endpoint keepalive, transient retry, first-frame bridge, expanded POS_TOR envelope, CONTACT_WORK support, payload compensation, increased allowed Kp range, or the new gripper measured-speed guard.
+Python compilation, provider JSON parsing, and PowerShell syntax validation
+pass. On 2026-08-11, the operator reported successful gravity balancing and
+several 6-DoF free-space motions during development of the selected `5 inch
+blade` assembly. That observation does not cover the exact motion envelope,
+repeatability, fault injection, or every arm pose and therefore does not
+physically qualify payload compensation across the operating envelope. The
+10 Hz motor endpoint keepalive, transient retry, first-frame bridge, expanded
+POS_TOR envelope, CONTACT_WORK support, increased allowed Kp range, and the new
+gripper measured-speed guard also remain outside this limited observation.
 
 The file-integrity manifest covers the version-controlled Provider payload.
 Provider `.venv`, active machine-local configuration, caches, generated

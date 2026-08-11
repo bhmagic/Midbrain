@@ -23,6 +23,11 @@ work.
 
 ## Unreleased
 
+- Record the final checked-in development values for the `5 inch blade`
+  mounted-effector profile: 0.33 kg total effector mass, center of mass
+  `[-0.165, 0.0, -0.03]` m in `end_link`, and the four operator-tuned temporary
+  collision spheres in `rebot_arm_tool`. Regression tests now bind those exact
+  values so later physical changes require an explicit profile revision.
 - Let fixed-tool profiles mark replaced effector joints inactive. Inactive
   motors are excluded from resource leases, MotorBridge registration, feedback
   freshness, mode transitions, and commands while retaining an explicit

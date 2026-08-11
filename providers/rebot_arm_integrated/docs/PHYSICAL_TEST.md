@@ -43,6 +43,24 @@ Stop immediately on unexpected descent, path shape, collision classification,
 profile mismatch, loss of gravity support, transport error, or uncertain
 physical outcome. Do not automatically retry.
 
+## Current development observation
+
+On 2026-08-11, the operator reported successful execution of several 6-DoF
+free-space motions during development of commit `f246ae7` with the selected
+`rebot_b601_dm.5_inch_blade` assembly. After final tuning, the checked-in
+development profile records 0.33 kg total effector mass and COM
+`[-0.165, 0.0, -0.03]` m in `end_link`. Its four temporary collision spheres
+remain owned by that profile in `rebot_arm_tool`.
+
+This is a development observation, not a guarded-physical qualification
+record. The report did not preserve the exact requested poses, log identifiers,
+authority interval, acceptance measurements, or terminal safe-state evidence
+required by the repository validation contract. It demonstrates that the
+arbitrary 6-DoF path was exercised successfully, but it does not qualify every
+pose, obstacle arrangement, clearance boundary, failure path, or the temporary
+collision envelope. Keep the profile and controller qualification at
+`DEVELOPMENT` until a bounded run records all required evidence.
+
 ## Excluded tests
 
 Do not use this Provider to test gripping, cutting, pushing, pressing,

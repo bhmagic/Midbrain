@@ -97,11 +97,21 @@ arm-only, allowing the central assembly selection to pair the same arm with a
 different gripper or fixed tool without copying effector geometry into the arm
 profile.
 It also owns the effector inertial mass and center of mass used by Basic's
-gravity model. The provisional `5 inch blade` profile begins from the former
-tool mass as a lower-bound tuning value and a geometric blade-center estimate.
-Its current values remain operator-tuned development data, not a physical
-qualification. They must be measured or tuned before relying on MIT gravity
-float. Profile edits require Basic and its higher dependents to restart.
+gravity model. The checked-in development `5 inch blade` profile currently
+records a total effector mass of 0.33 kg and a center of mass of
+`[-0.165, 0.0, -0.03]` m in `end_link`. Its temporary collision envelope is
+expressed in `rebot_arm_tool` as four spheres:
+
+- center `[-0.005, 0.0, -0.07]` m, radius 0.005 m;
+- center `[-0.03, 0.0, -0.07]` m, radius 0.015 m;
+- center `[-0.09, 0.0, -0.07]` m, radius 0.035 m; and
+- center `[-0.15, 0.0, -0.07]` m, radius 0.035 m.
+
+These are operator-tuned development values, not metrology measurements or a
+physical qualification of the complete operating envelope. A later inertial
+or geometry change must create a new profile revision and repeat the applicable
+gravity-float and free-space tests. Profile edits require Basic and its higher
+dependents to restart.
 
 A fixed-tool profile can list unavailable model joints in
 `inactive_joint_names`. Basic excludes them from the six-axis arm group without
