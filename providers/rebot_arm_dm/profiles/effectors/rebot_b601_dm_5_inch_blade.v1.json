@@ -2,7 +2,7 @@
   "schema": "midbrain.mounted_effector_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.5_inch_blade",
-  "profile_revision": "rebot-b601-dm-5-inch-blade-v2",
+  "profile_revision": "rebot-b601-dm-5-inch-blade-v3",
   "display_name": "5 inch blade",
   "assembly_type": "MOUNTED_TOOL",
   "qualification": "DEVELOPMENT",
@@ -148,7 +148,7 @@
             "requires_all_points": true,
             "missing_point_policy": "REJECT_OBSERVATION"
           },
-          "description_for_vlm": "Locate only the military-green handle clamped by the two black gripper fingers. The attached tool body is context only: do not classify it as a knife, blade, spatula, scraper, or any other object, and do not reject the scene because of its apparent type, material, color, or shape. Annotate exactly two physical features on the green handle: knife_handle_blade_junction is the center of the handle end adjoining the attached non-green tool body, and knife_handle_rear_endpoint is the center of the opposite longitudinal handle end. Select both RGB points on visible military-green handle surface, slightly inside its silhouette, then independently select valid registered-depth pixels on the same physical green handle surface. Do not select either black gripper finger, any part of the attached tool body, an edge shared with the background, a highlight, the background, or another object. Reject the scene only when one or both required handle features cannot be located on the green handle or cannot be registered to valid same-surface depth.",
+          "description_for_vlm": "Locate only the military-green handle clamped by the two black gripper fingers. A metallic blade extends from one end of the handle and is context for identifying that end; its metallic surface may contain bright or dark reflections. Do not reject the scene because of the metallic blade's exact shape, reflectance, finish, or apparent tool subtype. Annotate exactly two physical features on the green handle: knife_handle_blade_junction is the center of the handle end adjoining the metallic blade, and knife_handle_rear_endpoint is the center of the opposite longitudinal handle end. Select both RGB points on visible military-green handle surface, slightly inside its silhouette, then independently select valid registered-depth pixels on the same physical green handle surface. Do not select either black gripper finger, any part of the metallic blade, an edge shared with the background, a highlight, the background, or another object. Reject the scene only when one or both required handle features cannot be located on the green handle or cannot be registered to valid same-surface depth.",
           "tool_point_binding": {
             "source": "USER_SUPPLIED_TRIAL_OFFSET",
             "runtime_key": null,
@@ -158,7 +158,7 @@
             "measurement_note": "Initial trial assumption: the vector from the active controlled/IK frame origin to the arithmetic mean of the blade-junction and rear-handle points is [-90, +10, -70] mm in the controlled frame. Reverse both signs if the supplied measurement direction was handle mean to controlled origin."
           },
           "visibility": {
-            "material_note": "The alignment target is only the military-green handle surface held by the two-finger black grip. The attached tool body is contextual and its visual classification is irrelevant.",
+            "material_note": "The alignment target is only the military-green handle surface held by the two-finger black grip. The adjoining metallic blade is contextual; its reflective metallic surface is not a landmark surface.",
             "missing_exact_depth_policy": "VLM_RESELECT_ONCE_THEN_REJECT"
           },
           "relationship_to_controlled_frame": "USER_TRIAL_CONTROLLED_ORIGIN_TO_HANDLE_ENDPOINT_MEAN_XYZ_M_NEG0P090_POS0P010_NEG0P070"

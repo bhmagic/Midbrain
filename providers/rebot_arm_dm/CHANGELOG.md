@@ -23,6 +23,10 @@ work.
 
 ## Unreleased
 
+- Revise the five-inch-blade VLM landmark description to identify the adjoining
+  blade as metallic while retaining the military-green handle as the only
+  alignment surface. Blade reflectance, finish, and apparent subtype cannot by
+  themselves make the scene unsuitable.
 - Move VLM arm-root translation alignment data from a Skill-private gripper
   profile into optional namespaced extensions of the Provider-owned mounted-
   effector profiles. The aligner now follows Basic's active assembly selection,

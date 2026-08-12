@@ -115,14 +115,15 @@ def test_blade_profile_contains_user_trial_handle_landmark() -> None:
     profile = load_effector_profile(BLADE_PROFILE_PATH)
     landmark = select_visual_landmark(profile)
 
-    assert profile["profile_revision"] == "rebot-b601-dm-5-inch-blade-v2"
+    assert profile["profile_revision"] == "rebot-b601-dm-5-inch-blade-v3"
     assert landmark["required_point_ids"] == [
         "knife_handle_blade_junction",
         "knife_handle_rear_endpoint",
     ]
     description = landmark["description_for_vlm"]
     assert "military-green handle" in description
-    assert "do not classify it as a knife" in description
+    assert "metallic blade" in description
+    assert "white" not in description.lower()
     assert "Reject the scene only when" in description
     assert np.allclose(
         resolve_tool_landmark_point(landmark),
