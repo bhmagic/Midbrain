@@ -339,10 +339,3 @@ class ArmConfiguration:
     def fingerprint(self) -> str:
         encoded = json.dumps({"model": self.model, "calibration": self.calibration}, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
-
-    def save_calibration(self, path: str | Path) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(json.dumps(self.calibration, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(target)

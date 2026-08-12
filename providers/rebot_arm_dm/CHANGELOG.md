@@ -23,6 +23,15 @@ work.
 
 ## Unreleased
 
+- Treat an omitted control `resource_id` and the canonical root resource ID as
+  the same root authority across acquire, renew, command, payload,
+  gravity-float, and release requests. Declared child resources retain
+  actuator-group routing, and unknown resources remain rejected.
+- Retire the abandoned automatic friction-calibration workflow from the
+  Hardware Development UI and Provider. Remove its motion, fit, persistence,
+  session-replay, and range-search APIs while retaining attended pointer-
+  deadman joint testing, measured-state display, local collision diagnostics,
+  gravity float, and safe home.
 - Revise the five-inch-blade VLM landmark description to identify the adjoining
   blade as metallic while retaining the military-green handle as the only
   alignment surface. Blade reflectance, finish, and apparent subtype cannot by

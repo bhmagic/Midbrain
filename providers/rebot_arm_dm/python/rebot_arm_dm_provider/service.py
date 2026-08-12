@@ -1,17 +1,13 @@
-"""Provider HTTP service, platform publication, and calibration experiments."""
+"""Provider HTTP service and platform publication."""
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 import json
 import threading
 import time
 import uuid
 
-import numpy as np
-
-from .calibration import SessionRecorder, fit_two_parameter_friction
 from .assembly import RobotAssemblyConfiguration
 from .controller import ArmController, CommandEnvelope, JointCommand, ProviderState, LeasePermissionError
 from .fabric import PlatformPublisher
@@ -21,13 +17,13 @@ from .models import ArmConfiguration
 
 class ArmProviderService:
     def __init__(self, configuration: ArmConfiguration, controller: ArmController, kinematics: RebotKinematics,
-                 calibration_path: str|Path, listen_host: str, listen_port: int,
+                 listen_host: str, listen_port: int,
                  manager_url: str|None = None, fabric_url: str|None = None,
                  allow_hardware_calibration: bool = False, simulation: bool = False,
                  read_only: bool = False,
                  assembly: RobotAssemblyConfiguration|None = None):
         self.configuration=configuration; self.controller=controller; self.kinematics=kinematics
-        self.calibration_path=Path(calibration_path); self.listen_host=listen_host; self.listen_port=listen_port
+        self.listen_host=listen_host; self.listen_port=listen_port
         self.control_url=f"http://{listen_host}:{listen_port}"; self.instance_id=str(uuid.uuid4()); self.boot_id=str(uuid.uuid4())
         self.publisher=PlatformPublisher("robot_arm.rebot_dm",self.instance_id,self.boot_id,manager_url,fabric_url)
         self.allow_hardware_calibration=allow_hardware_calibration; self.simulation=simulation
@@ -47,12 +43,10 @@ class ArmProviderService:
         self.platform_safety_block_active=False
         self.manager_request_results: dict[str, dict[str, Any]] = {}
         self.manager_request_lock = threading.Lock()
-        self.recorder=SessionRecorder(self.calibration_path.parent/'sessions')
-        self.experiment_lock=threading.Lock(); self.experiment_cancel_event=threading.Event()
 
     def start(self) -> None:
         self.controller.start()
-        # Physical startup is gravity-supported by default. Calibration
+        # Physical startup is gravity-supported by default. Attended development
         # permission is independent from whether the arm receives safe support.
         if not self.read_only and self.controller.state == ProviderState.READ_ONLY:
             self.controller.enable()
@@ -235,7 +229,7 @@ class ArmProviderService:
             int(payload["fencing_generation"]),
             float(payload.get("mass_kg", 0.0)),
             payload.get("com_tool_m", [0.0, 0.0, 0.0]),
-            str(payload.get("resource_id") or "") or None,
+            self._group_resource_id(payload),
         )
         return {"status": "payload_updated", "payload": value}
 
@@ -367,15 +361,15 @@ class ArmProviderService:
         if not isinstance(request_payload, dict):
             request_payload = {}
         if action == "gravity_float":
-            resource_id = str(request_payload.get("resource_id") or "").strip()
-            if resource_id:
+            group_resource_id = self._group_resource_id(request_payload)
+            if group_resource_id is not None:
                 self.controller.request_group_float(
-                    resource_id,
+                    group_resource_id,
                     str(request_payload.get("reason", "manager request")),
                 )
                 result = {
                     "status": "group_gravity_float",
-                    "resource_id": resource_id,
+                    "resource_id": group_resource_id,
                 }
             else:
                 self.controller.request_gravity_float(
@@ -444,6 +438,16 @@ class ArmProviderService:
             "operational_control_api_version": 2,
         }
 
+    def _group_resource_id(self, payload: dict[str, Any]) -> str | None:
+        """Return a requested child resource, or None for root authority."""
+
+        resource_id = str(payload.get("resource_id") or "").strip()
+        # Root leases carry their canonical resource ID in service responses,
+        # so field presence alone cannot distinguish root from group authority.
+        if not resource_id or resource_id == self.controller.resource_root:
+            return None
+        return resource_id
+
 
     def acquire_operational_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._assert_operational_authority()
@@ -455,15 +459,15 @@ class ArmProviderService:
             self.controller.enable()
         # Acquire ownership before changing the motor state. This prevents a
         # rejected contender from disturbing the current lease holder.
-        resource_id = str(payload.get("resource_id") or "").strip()
+        group_resource_id = self._group_resource_id(payload)
         with self.controller.ingress_lock:
             control_was_active = bool(
                 self.controller.lease is not None
                 or self.controller.group_leases
             )
-        if resource_id:
+        if group_resource_id is not None:
             lease = self.controller.acquire_group_lease(
-                resource_id,
+                group_resource_id,
                 str(payload.get("holder", "runtime_controller")),
                 int(payload.get("duration_ms", self.configuration.model["control"]["lease_timeout_ms"])),
             )
@@ -482,10 +486,10 @@ class ArmProviderService:
         }
 
     def release_operational_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
-        resource_id = str(payload.get("resource_id") or "").strip()
-        if resource_id:
+        group_resource_id = self._group_resource_id(payload)
+        if group_resource_id is not None:
             siblings_remain = self.controller.release_group_lease(
-                resource_id,
+                group_resource_id,
                 str(payload["lease_id"]),
                 int(payload["fencing_generation"]),
             )
@@ -500,13 +504,19 @@ class ArmProviderService:
                 fallback_to_float=True,
             )
             status = "released_gravity_float"
-        return {"status": status, "resource_id": resource_id or self.controller.resource_root}
+        return {
+            "status": status,
+            "resource_id": group_resource_id or self.controller.resource_root,
+        }
 
     def acquire_lease(self,payload:dict[str,Any]) -> dict[str,Any]:
         if self.read_only:
             raise PermissionError("control leases are blocked in explicit read-only mode")
         if not self.simulation and not self.allow_hardware_calibration:
-            raise PermissionError("hardware calibration control requires --allow-hardware-calibration")
+            raise PermissionError(
+                "attended hardware development control requires the compatibility flag "
+                "--allow-hardware-calibration"
+            )
         if self.controller.state == ProviderState.DISCONNECTED:
             self.controller.start()
         if self.controller.state == ProviderState.READ_ONLY:
@@ -516,15 +526,15 @@ class ArmProviderService:
 
     def renew_lease(self,payload:dict[str,Any]) -> dict[str,Any]:
         started=time.monotonic()
-        resource_id=str(payload.get("resource_id") or "").strip()
+        group_resource_id=self._group_resource_id(payload)
         lease=(
             self.controller.renew_group_lease(
-                resource_id,
+                group_resource_id,
                 str(payload["lease_id"]),
                 int(payload["fencing_generation"]),
                 int(payload.get("duration_ms",700)),
             )
-            if resource_id
+            if group_resource_id is not None
             else self.controller.renew_lease(str(payload["lease_id"]),int(payload["fencing_generation"]),int(payload.get("duration_ms",700)))
         )
         elapsed_ms=(time.monotonic()-started)*1000.0
@@ -539,304 +549,17 @@ class ArmProviderService:
             index=int(raw["joint_index"]); mode=str(raw["mode"]); values=dict(raw.get("values",{}))
             commands[index]=JointCommand(mode,values)
         timeout_ms=int(payload.get("timeout_ms",250))
-        resource_id=str(payload.get("resource_id") or "").strip()
+        group_resource_id=self._group_resource_id(payload)
         envelope=CommandEnvelope(str(payload.get("command_id",uuid.uuid4())),str(payload["lease_id"]),int(payload["fencing_generation"]),
-                                 commands,time.monotonic()+timeout_ms/1000.0,resource_id=resource_id or None)
-        if resource_id:
+                                 commands,time.monotonic()+timeout_ms/1000.0,resource_id=group_resource_id)
+        if group_resource_id is not None:
             self.controller.submit_group(envelope)
         else:
             self.controller.submit(envelope)
         elapsed_ms=(time.monotonic()-started)*1000.0
         if elapsed_ms>100.0:
             print(f"[basic-ingress] slow endpoint=command elapsed_ms={elapsed_ms:.1f}")
-        return {"accepted":True,"command_id":envelope.command_id,"resource_id":resource_id or self.controller.resource_root,"state":self.controller.state.value,"ingress_latency_ms":elapsed_ms}
-
-    def run_experiment(self,payload:dict[str,Any]) -> dict[str,Any]:
-        if not self.simulation and not self.allow_hardware_calibration:
-            raise PermissionError("hardware calibration experiments require --allow-hardware-calibration")
-        if not bool(payload.get("workspace_confirmed",False)):
-            raise PermissionError("workspace confirmation is required")
-        if not self.experiment_lock.acquire(blocking=False): raise RuntimeError("another experiment is running")
-        self.experiment_cancel_event.clear()
-        try:
-            return self._run_experiment_locked(payload)
-        finally:
-            self.experiment_cancel_event.clear()
-            self.experiment_lock.release()
-
-    def _run_experiment_locked(self,payload:dict[str,Any]) -> dict[str,Any]:
-        joint_index=int(payload["joint_index"])
-        minimum=float(payload["minimum_rad"])
-        maximum=float(payload["maximum_rad"])
-        speeds=[float(x) for x in payload.get("speeds_rad_s",[0.16,0.32])]
-        if len(speeds)<2:
-            speeds=(speeds+[speeds[0]*2.0])[:2]
-        speeds=sorted(max(0.05,min(float(value),0.5)) for value in speeds[:2])
-        if speeds[1]-speeds[0] < 0.06:
-            raise ValueError("the two friction-test speeds must differ by at least 0.06 rad/s")
-        save_raw_samples=bool(payload.get("save_raw_samples",False))
-        if minimum>=maximum:
-            raise ValueError("minimum_rad must be lower than maximum_rad")
-        operation=self.configuration.operational_limits[joint_index]
-        if minimum<operation[0] or maximum>operation[1]:
-            raise ValueError("experiment range is outside the provider operational range")
-        if self.controller.state == ProviderState.DISCONNECTED:
-            self.controller.start()
-        if self.controller.state == ProviderState.READ_ONLY:
-            self.controller.enable()
-
-        snapshot=self.controller.snapshot()
-        measured=np.asarray(snapshot.get("positions_rad",[]),dtype=float)
-        if measured.shape!=(7,):
-            raise RuntimeError("seven-joint measured state is required")
-        anchor=np.asarray(payload.get("anchor_positions_rad",measured.tolist()),dtype=float)
-        if anchor.shape!=(7,) or not np.all(np.isfinite(anchor)):
-            raise ValueError("anchor_positions_rad must contain seven finite joint angles")
-        for index,(value,limits) in enumerate(zip(anchor,self.configuration.operational_limits)):
-            if value<limits[0] or value>limits[1]:
-                raise ValueError(f"anchor joint {index+1} is outside the provider operational range")
-        non_test=[index for index in range(7) if index!=joint_index]
-        if non_test and float(np.max(np.abs(measured[non_test]-anchor[non_test])))>0.12:
-            raise RuntimeError("arm moved away from the captured calibration pose; recapture the gravity-float pose")
-        if not (minimum<=anchor[joint_index]<=maximum):
-            raise ValueError("captured joint angle must be inside its requested calibration range")
-
-        metadata={
-            "joint_index":joint_index,
-            "minimum_rad":minimum,
-            "maximum_rad":maximum,
-            "anchor_positions_rad":anchor.tolist(),
-            "speeds_rad_s":speeds,
-            "control_mode":"POSITION_VELOCITY_LIMITED",
-            "save_raw_samples":save_raw_samples,
-            "excitation_profile":"FRICTION_TWO_SPEED_POS_VEL_V2",
-            "factory_gravity_retained":True,
-            "simulation":self.simulation,
-            "model_revision":self.configuration.model_revision,
-            "calibration_revision":self.configuration.calibration_revision,
-        }
-        session_id,path=self.recorder.start(metadata,write_metadata=False)
-        lease=self.controller.acquire_lease(f"experiment:{session_id}",1500)
-        samples:list[dict[str,Any]]=[]
-        started=time.monotonic()
-        hold_active=False
-        try:
-            anchor_value=float(anchor[joint_index])
-
-            # Automatic calibration uses POS_VEL for every joint. Six joints
-            # hold the captured pose while the selected joint performs the test.
-            # No MIT command is used anywhere in this experiment path.
-            self.controller.request_position_hold(
-                "friction calibration armed", positions=anchor, velocity_limit=min(speeds[0], 0.20)
-            )
-            self._sweep_to(joint_index,anchor_value,speeds[0],lease,samples,started,session_id,"anchor_entry",anchor,record=False)
-            self._sweep_to(joint_index,minimum,speeds[0],lease,samples,started,session_id,"positioning_to_minimum",anchor,record=False)
-            self._sweep_to(joint_index,maximum,speeds[0],lease,samples,started,session_id,"friction_slow_positive",anchor,record=True)
-            self._sweep_to(joint_index,minimum,speeds[0],lease,samples,started,session_id,"friction_slow_negative",anchor,record=True)
-            self._sweep_to(joint_index,maximum,speeds[1],lease,samples,started,session_id,"friction_fast_positive",anchor,record=True)
-            self._sweep_to(joint_index,minimum,speeds[1],lease,samples,started,session_id,"friction_fast_negative",anchor,record=True)
-            self._sweep_to(joint_index,anchor_value,speeds[0],lease,samples,started,session_id,"anchor_return",anchor,record=False)
-
-            # Keep a full motor-side position hold active before fitting or file
-            # work. The user explicitly releases this hold to gravity-float.
-            self.controller.request_position_hold(
-                "friction calibration motion completed", positions=anchor, velocity_limit=min(speeds[0], 0.20)
-            )
-            hold_active=True
-
-            fit=fit_two_parameter_friction(samples)
-            status="ACCEPTED" if fit.accepted else "MANUAL_REVIEW_REQUIRED"
-            result={
-                "session_id":session_id,
-                "status":status,
-                "fit":fit.to_dict(),
-                "pair_count":fit.pair_count,
-                "raw_sample_count":len(samples),
-                "anchor_positions_rad":anchor.tolist(),
-                "excitation_profile":"FRICTION_TWO_SPEED_POS_VEL_V2",
-                "factory_gravity_retained":True,
-                "metadata":metadata,
-            }
-            if save_raw_samples:
-                self.recorder.write_samples(path,samples)
-            self.recorder.write_result(path,result)
-            return result
-        finally:
-            if not hold_active:
-                try:
-                    self.controller.request_position_hold("friction calibration interrupted")
-                except Exception:
-                    pass
-            self.controller.release_lease(lease.lease_id,lease.fencing_generation,fallback_to_float=False)
-
-    def _check_experiment_state(self) -> None:
-        if self.experiment_cancel_event.is_set():
-            self.controller.request_position_hold("experiment cancelled")
-            raise RuntimeError("experiment cancelled into speed-limited hold")
-        if self.controller.state in {ProviderState.FAULTED,ProviderState.EMERGENCY_DISABLED}:
-            raise RuntimeError("provider faulted during experiment")
-
-    def _record_experiment_sample(self,index:int,target:float,speed:float,phase:str,samples:list[dict[str,Any]],start:float) -> dict[str,Any]:
-        snapshot=self.controller.snapshot()
-        positions=[float(value) for value in snapshot["positions_rad"]]
-        velocities=[float(value) for value in snapshot["velocities_rad_s"]]
-        torques=[float(value) for value in snapshot["torques_nm"]]
-        sample={
-            "time_s":time.monotonic()-start,
-            "phase":phase,
-            "target_position_rad":float(target),
-            "commanded_speed_rad_s":float(speed),
-            "position_rad":positions[index],
-            "velocity_rad_s":velocities[index],
-            "measured_torque_nm":torques[index],
-            # Retained for diagnostics only. Factory gravity is not fitted.
-            "nominal_gravity_nm":float(self.controller.dynamics.nominal_gravity_component(positions,index)),
-        }
-        samples.append(sample)
-        return sample
-
-    def _send_experiment_target(self,index:int,target:float,speed:float,lease,samples:list[dict[str,Any]],start:float,session_id:str,phase:str,anchor:np.ndarray,record:bool=True) -> dict[str,Any]:
-        self._check_experiment_state()
-        self.controller.renew_lease(lease.lease_id,lease.fencing_generation,1500)
-        hold_speed=min(max(float(speed),0.05),0.20)
-        commands={
-            joint_index:JointCommand("POSITION_VELOCITY_LIMITED",{
-                "position_rad":float(target if joint_index==index else anchor[joint_index]),
-                "velocity_limit_rad_s":float(speed if joint_index==index else hold_speed),
-            })
-            for joint_index in range(7)
-        }
-        envelope=CommandEnvelope(
-            f"{session_id}:{phase}:{time.monotonic_ns()}",
-            lease.lease_id,
-            lease.fencing_generation,
-            commands,
-            time.monotonic()+0.3,
-        )
-        self.controller.submit(envelope)
-        # 20 Hz recording and refresh is enough for friction fitting and keeps
-        # raw sessions compact while remaining well inside the command deadline.
-        time.sleep(0.05)
-        if record:
-            return self._record_experiment_sample(index,target,speed,phase,samples,start)
-        snapshot=self.controller.snapshot()
-        return {
-            "position_rad":float(snapshot["positions_rad"][index]),
-            "velocity_rad_s":float(snapshot["velocities_rad_s"][index]),
-        }
-
-    def _sweep_to(self,index:int,target:float,speed:float,lease,samples:list[dict[str,Any]],start:float,session_id:str,phase:str,anchor:np.ndarray,record:bool=True) -> None:
-        current=float(self.controller.snapshot().get("positions_rad",[target]*7)[index])
-        deadline=time.monotonic()+max(4.0,abs(target-current)/max(speed,0.01)*2.8)
-        settled=0
-        while time.monotonic()<deadline:
-            sample=self._send_experiment_target(index,target,speed,lease,samples,start,session_id,phase,anchor,record=record)
-            if abs(float(sample["position_rad"])-target)<0.015 and abs(float(sample["velocity_rad_s"]))<0.05:
-                settled+=1
-                if settled>=3:
-                    return
-            else:
-                settled=0
-        raise TimeoutError(f"joint {index+1} did not reach experiment target")
-
-    def _dwell(self,index:int,target:float,duration_s:float,speed:float,lease,samples:list[dict[str,Any]],start:float,session_id:str,phase:str,anchor:np.ndarray) -> None:
-        deadline=time.monotonic()+duration_s
-        while time.monotonic()<deadline:
-            self._send_experiment_target(index,target,speed,lease,samples,start,session_id,phase,anchor)
-
-    def _multisine_excitation(self,index:int,minimum:float,maximum:float,anchor_value:float,speed:float,lease,samples:list[dict[str,Any]],start:float,session_id:str,anchor:np.ndarray) -> None:
-        left=anchor_value-minimum
-        right=maximum-anchor_value
-        geometric_amplitude=0.80*min(left,right)
-        base_frequency_hz=0.12
-        harmonics=((0.55,1.0,0.0),(0.30,2.2,np.pi/3.0),(0.15,3.4,np.pi/7.0))
-        velocity_factor=sum(weight*multiple for weight,multiple,_ in harmonics)
-        speed_amplitude=0.85*speed/(2*np.pi*base_frequency_hz*velocity_factor)
-        amplitude=min(0.35,geometric_amplitude,speed_amplitude)
-        if amplitude<0.04:
-            return
-        duration=max(16.0,2.2/base_frequency_hz)
-        ramp=min(1.5,duration*0.12)
-        started=time.monotonic()
-        while True:
-            elapsed=time.monotonic()-started
-            if elapsed>=duration:
-                break
-            if elapsed<ramp:
-                envelope=0.5-0.5*np.cos(np.pi*elapsed/ramp)
-            elif elapsed>duration-ramp:
-                envelope=0.5-0.5*np.cos(np.pi*(duration-elapsed)/ramp)
-            else:
-                envelope=1.0
-            signal=0.0
-            for weight,multiple,phase in harmonics:
-                signal+=weight*np.sin(2*np.pi*base_frequency_hz*multiple*elapsed+phase)
-            target=float(np.clip(anchor+envelope*amplitude*signal,minimum,maximum))
-            self._send_experiment_target(index,target,speed,torque_ratio,lease,samples,start,session_id,"multisine")
-        self._sweep_to(index,anchor,speed,torque_ratio,lease,samples,start,session_id,"multisine_return")
-
-    def apply_fit(self,payload:dict[str,Any]) -> dict[str,Any]:
-        index=int(payload["joint_index"])
-        fit=dict(payload["fit"])
-        joint=self.configuration.joints[index]
-        if not bool(fit.get("accepted",False)) or not bool(fit.get("friction_identifiable",False)):
-            raise ValueError("only a validated two-parameter friction fit can be applied")
-
-        target=self.configuration.calibration_by_name[joint.name]
-        quality=target.setdefault("quality",{})
-        coulomb=float(fit.get("coulomb_friction_nm",fit.get("coulomb_friction",0.0)))
-        viscous=float(fit.get("viscous_friction_nm_per_rad_s",fit.get("viscous_friction",0.0)))
-        target["coulomb_friction_nm"]=coulomb
-        target["coulomb_friction_positive_nm"]=coulomb
-        target["coulomb_friction_negative_nm"]=coulomb
-        target["viscous_friction_nm_per_rad_s"]=viscous
-        quality["friction"]="CALIBRATED_TWO_PARAMETER"
-        quality["gravity"]="NOMINAL_RETAINED"
-        quality["gravity_phase"]="NOT_CALIBRATED"
-        quality["effective_inertia"]="NOT_CALIBRATED"
-        quality["breakaway"]="NOT_CALIBRATED"
-        target["last_fit_metrics"]={key:fit.get(key) for key in (
-            "training_rms_residual_nm","validation_rms_residual_nm","validation_max_residual_nm",
-            "condition_number","pair_count","slow_pair_count","fast_pair_count",
-            "slow_speed_rad_s","fast_speed_rad_s","factory_gravity_retained")}
-
-        qualities=[item.setdefault("quality",{}) for item in self.configuration.calibration["joints"]]
-        values=[q.get("friction","UNMEASURED") for q in qualities]
-        if all(value.startswith("CALIBRATED") for value in values):
-            self.configuration.calibration["quality"]["friction"]="CALIBRATED"
-        elif any(value.startswith("CALIBRATED") for value in values):
-            self.configuration.calibration["quality"]["friction"]="PARTIAL"
-        else:
-            self.configuration.calibration["quality"]["friction"]="UNMEASURED"
-        self.configuration.calibration["quality"]["gravity"]="NOMINAL_URDF"
-        self.configuration.calibration["quality"]["effective_inertia"]="UNMEASURED"
-
-        self.configuration.calibration["calibration_revision"]=f"cal-{time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())}-{uuid.uuid4().hex[:6]}"
-        self.configuration.save_calibration(self.calibration_path)
-        if self.assembly is not None:
-            self.assembly.update_calibration_binding(self.configuration.calibration)
-
-        # Publish the updated intrinsic model immediately; normal publication
-        # continues periodically afterward.
-        try:
-            self.publisher.publish(
-                "robot_arm.model",
-                "physical_agent.robot_arm_model",
-                self.configuration.public_model(),
-                self.configuration.model["frames"]["base"],
-                self.configuration.calibration_revision,
-                5000,
-            )
-        except Exception as error:
-            self.publisher.last_error=str(error)
-
-        return {
-            "saved":True,
-            "calibration_revision":self.configuration.calibration_revision,
-            "joint_quality":quality,
-            "overall_quality":self.configuration.calibration["quality"],
-            "factory_gravity_retained":True,
-        }
+        return {"accepted":True,"command_id":envelope.command_id,"resource_id":group_resource_id or self.controller.resource_root,"state":self.controller.state.value,"ingress_latency_ms":elapsed_ms}
 
     def _handler_type(self):
         service=self
@@ -957,9 +680,6 @@ class ArmProviderService:
                             "success":success,
                             "details":service.controller.snapshot().get("last_safe_home_result"),
                         })
-                    if self.path=='/v1/calibration/experiment': return self._json(200,service.run_experiment(body))
-                    if self.path=='/v1/calibration/experiment/cancel': service.experiment_cancel_event.set(); service.controller.request_position_hold('experiment cancelled'); return self._json(200,{'status':'cancelling_into_position_hold'})
-                    if self.path=='/v1/calibration/apply-fit': return self._json(200,service.apply_fit(body))
                     return self._json(404,{"error":"not found"})
                 except LeasePermissionError as error:
                     status = 409 if error.error_code in {

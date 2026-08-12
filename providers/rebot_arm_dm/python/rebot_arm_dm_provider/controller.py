@@ -23,7 +23,6 @@ class ProviderState(str, Enum):
     CALIBRATION_MANUAL = "CALIBRATION_MANUAL"
     TRAJECTORY_CONTROL = "TRAJECTORY_CONTROL"
     SAFE_HOLD_GRAVITY_FLOAT = "SAFE_HOLD_GRAVITY_FLOAT"
-    CALIBRATION_POSITION_HOLD = "CALIBRATION_POSITION_HOLD"
     SAFE_HOME = "SAFE_HOME"
     FAULTED = "FAULTED"
     EMERGENCY_DISABLED = "EMERGENCY_DISABLED"
@@ -165,8 +164,6 @@ class ArmController:
             "gripper_policy": "PRESERVE_MEASURED_ANGLE",
             "gripper_target_rad": None,
         }
-        self.last_position_hold_reason: str | None = None
-        self.position_hold_velocity_limit = 0.12
         self.loop_count = 0
         # missed_deadlines is retained for API compatibility and now means the
         # number of skipped 10 ms schedule slots, not catch-up loop iterations.
@@ -902,28 +899,6 @@ class ArmController:
                     apply_now=True,
                 )
         return siblings_remain
-
-    def request_position_hold(self, reason: str = "requested", positions: np.ndarray | list[float] | None = None, velocity_limit: float = 0.12) -> None:
-        """Hold every joint using the motor-side position/velocity mode."""
-        with self.ingress_lock:
-            self.pending=None
-            self.group_pending.clear()
-        with self.lock:
-            if self.feedback is None:
-                raise RuntimeError("joint feedback is unavailable")
-            requested = self.feedback.positions_rad if positions is None else np.asarray(positions, dtype=float)
-            if requested.shape != (7,) or not np.all(np.isfinite(requested)):
-                raise ValueError("position hold requires seven finite joint angles")
-            for index, value in enumerate(requested):
-                limits = self.configuration.operational_limits[index]
-                if value < limits[0] or value > limits[1]:
-                    raise ValueError(f"position hold joint {index+1} is outside the operational range")
-            self.hold_reference = requested.copy()
-            self.position_hold_velocity_limit = float(np.clip(velocity_limit, 0.02, 0.5))
-            self.state = ProviderState.CALIBRATION_POSITION_HOLD
-            self.last_position_hold_reason = reason
-            self.last_error = None if self.health == "HEALTHY" else self.last_error
-            self._apply_position_hold_locked()
 
     def submit(self, envelope: CommandEnvelope) -> None:
         # Validate the lease and publish the newest command through the fast ingress
@@ -1665,8 +1640,6 @@ class ArmController:
                 self._enter_gravity_float_locked("no active lease", immediate=True, apply_now=True)
             elif self.state == ProviderState.SAFE_HOLD_GRAVITY_FLOAT:
                 self._apply_gravity_float_locked(now)
-            elif self.state == ProviderState.CALIBRATION_POSITION_HOLD:
-                self._apply_position_hold_locked()
             sample=self.snapshot_locked()
             self._store_snapshot_cache(sample)
         if self.on_sample is not None:
@@ -1921,14 +1894,6 @@ class ArmController:
             raise
 
 
-    def _apply_position_hold_locked(self) -> None:
-        """Continuously hold all joints with POS_VEL; no MIT commands are sent."""
-        assert self.feedback is not None
-        for index in self.active_joint_indices:
-            self.backend.send_position_velocity(index, float(self.hold_reference[index]), self.position_hold_velocity_limit)
-            self.active_command_modes[index] = "POSITION_VELOCITY_LIMITED"
-            self.mit_moving_target[index] = float(self.hold_reference[index])
-
     def _apply_gravity_float_locked(self, now: float) -> None:
         assert self.feedback is not None
         desired_gravity=self._gravity_with_payload_locked(self.feedback.positions_rad)
@@ -2112,7 +2077,6 @@ class ArmController:
             },
             "last_error":self.last_error,"last_float_reason":self.last_float_reason,
             "last_safe_home_result":copy.deepcopy(self.last_safe_home_result),
-            "last_position_hold_reason":self.last_position_hold_reason,
             "lease_diagnostics":lease_diagnostics,
             "payload":self.dynamics.payload_snapshot(),
             "gravity_compensation":{

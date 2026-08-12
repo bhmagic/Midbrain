@@ -12,8 +12,8 @@ contribution, fenced payload updates, TMAX clipping, staged motor-mode
 transitions, serial-I/O telemetry, responsive cached state delivery during a
 blocked control lock, lease, timeout, gravity-float, safe-home gripper-state
 preservation, gripper `POSITION_EFFORT_LIMITED` to `FORCE_POS` translation, measured-speed
-hysteretic brake/hold and recovery, MotorBridge, calibration, and Midbrain
-integration regressions.
+hysteretic brake/hold and recovery, MotorBridge, the attended Hardware
+Development UI, and Midbrain integration regressions.
 
 Python compilation, provider JSON parsing, and PowerShell syntax validation
 pass. On 2026-08-11, the operator reported successful gravity balancing and

@@ -14,10 +14,6 @@ The Basic Controller enforces the minimum `kp` at configuration load and command
 
 Command expiration, GUI loss, lease expiry, and normal manual cancellation transition to this state. If feedback or the gravity model is invalid, the provider cannot promise gravity support and must fault or use the best available restricted response.
 
-## Automatic calibration
-
-Automatic friction calibration never uses MIT. All seven motors are commanded in `POSITION_VELOCITY_LIMITED`: six hold the captured pose and one performs the test sweep. After motion and while fitting or writing results, all seven remain in speed-limited position hold. The operator explicitly chooses when to transition back to gravity-float.
-
 ## Graceful termination
 
 A normal stop fences the active operational lease, clears pending commands,
@@ -36,9 +32,15 @@ requires it.
 
 A process crash, complete power loss, USB bridge loss, or some motor faults may make powered support and safe-home impossible. Mechanical counterbalance, brakes, backup power, or an independent low-level safety controller are needed to cover those cases.
 
-## Calibration motion
+## Hardware-development motion
 
-The GUI excludes raw velocity mode. User ranges must be strictly inside Basic Controller hard limits. The GUI may reduce ranges further using its temporary collision model. The Basic Controller independently enforces absolute and configured operational limits, speed caps, MIT `kp` floors, torque caps, and deadlines.
+The attended UI excludes raw velocity mode and automatic calibration motion.
+Each manual slider is a pointer deadman; releasing it requests gravity float.
+User test ranges must remain strictly inside Basic Controller hard limits. The
+UI's temporary collision model reports only the current measured pose and does
+not approve a range. Basic independently enforces leases, deadlines, absolute
+and configured operational limits, speed caps, MIT `kp` floors, and torque
+caps.
 
 ## Seamless safe-home transition
 

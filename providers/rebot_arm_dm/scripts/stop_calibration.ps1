@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $provider = Get-ProviderRoot
 $pidFile = Join-Path $provider "run\calibration_gui.pid.json"
 if (-not (Test-Path -LiteralPath $pidFile)) {
-    if (-not $Quiet) { Write-Host "Calibration GUI is not recorded as running." }
+    if (-not $Quiet) { Write-Host "Hardware Development GUI is not recorded as running." }
     exit 0
 }
 
@@ -15,4 +15,4 @@ if ($null -ne $process) {
     Stop-Process -Id $process.Id -Force
 }
 Remove-Item -LiteralPath $pidFile -Force
-if (-not $Quiet) { Write-Host "Calibration GUI stopped." }
+if (-not $Quiet) { Write-Host "Hardware Development GUI stopped." }

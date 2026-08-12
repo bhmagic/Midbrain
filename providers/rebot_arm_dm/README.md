@@ -31,7 +31,7 @@ when discussing the named device or Integrated profile.
 |---|---|---|---|
 | `IMPEDANCE` | MIT | `PRESS_MIT` | Cyclic position, velocity, stiffness, damping, and feed-forward torque setpoint |
 | `POSITION_VELOCITY_LIMITED` | `POS_VEL` | `TRANSIT_SPEED` | Latched position endpoint with a velocity limit |
-| `VELOCITY` | `VEL` | No reviewed Integrated profile | Continuous velocity command; excluded from the calibration GUI |
+| `VELOCITY` | `VEL` | No reviewed Integrated profile | Continuous velocity command; excluded from the Hardware Development UI |
 | `POSITION_EFFORT_LIMITED` | `FORCE_POS` | `CONTACT_WORK` / `POS_TOR` | Latched position endpoint with velocity and effort-ratio limits |
 
 `POS_TOR` is not an additional Basic command mode: it is Integrated terminology
@@ -73,7 +73,8 @@ Basic owns:
 - calibrated arm and declared-payload gravity feed-forward;
 - gravity-float, explicit Manager `HOT` fault requalification, and safe-home
   sequencing; and
-- bounded calibration primitives and machine-local calibration output.
+- bounded attended manual-test primitives. Basic consumes a reviewed
+  calibration profile but does not generate or modify it.
 
 A control fault never restores motion authority automatically. A later Manager
 `HOT` request may recover only after Basic has received a recent complete
@@ -86,6 +87,12 @@ Basic rejects every group command that includes a joint outside that group.
 The arm and gripper groups may be leased concurrently, while a root lease
 conflicts with both. This permits a separate grip controller to retain its
 hold while the free-space controller moves the arm.
+
+At the service boundary, an omitted `resource_id` and the configured canonical
+root ID both select root authority. Only a declared child resource selects
+actuator-group authority. Lease responses include their canonical resource ID,
+which clients may round-trip unchanged through renew, command, payload,
+gravity-float, and release requests.
 
 Basic exposes motor primitives and hard safety enforcement. The Integrated
 free-space Provider owns reviewed Cartesian profiles, path previews,
@@ -131,9 +138,10 @@ Human and installation-agent entry points:
 - [Windows setup and bring-up](docs/WINDOWS_INSTALL_COMPILE_RUN.md) — install,
   simulation, first read-only connection, operation, and shutdown.
 - [Safety behavior](docs/SAFETY.md) — load-bearing stiffness, gravity support,
-  calibration motion, failures, and safe-home invariants.
-- [Calibration](docs/CALIBRATION.md) — attended friction-calibration workflow
-  and the fitted model.
+  attended development motion, failures, and safe-home invariants.
+- [Hardware Development UI](docs/DEVELOPMENT_UI.md) — bounded manual joint
+  testing, local collision diagnostics, and the explicit non-calibration
+  boundary.
 - [Validation](VALIDATION.md) — stopped coverage and physical checks that
   remain outstanding.
 

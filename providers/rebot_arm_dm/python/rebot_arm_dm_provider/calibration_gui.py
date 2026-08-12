@@ -1,4 +1,4 @@
-"""Standalone local calibration web application."""
+"""Standalone local hardware-development web application."""
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,7 +39,7 @@ class CalibrationApplication:
 
     def serve(self):
         handler=self._handler(); self.server=ThreadingHTTPServer((self.host,self.port),handler); self.server.daemon_threads=True
-        url=f'http://{self.host}:{self.port}/'; print(f'Calibration GUI: {url}',flush=True)
+        url=f'http://{self.host}:{self.port}/'; print(f'Hardware Development GUI: {url}',flush=True)
         if self.open_browser: webbrowser.open(url)
         try: self.server.serve_forever()
         except KeyboardInterrupt: pass
@@ -48,7 +48,7 @@ class CalibrationApplication:
     def _handler(self):
         app=self
         class Handler(BaseHTTPRequestHandler):
-            server_version='RebotCalibrationGUI/0.1'
+            server_version='RebotHardwareDevelopmentGUI/0.1'
             def log_message(self,format,*args):
                 # Routine successful HTTP requests are intentionally silent.
                 try:
@@ -86,19 +86,13 @@ class CalibrationApplication:
                     if self.path=='/api/safe-home': return self._json(200,app.provider.post('/v1/calibration/safe-home',body,60))
                     if self.path=='/api/collision/check':
                         state=body['positions_rad']; return self._json(200,app.guard.check(state,float(body['table_height_m']),float(body['table_clearance_m'])).to_dict())
-                    if self.path=='/api/collision/range':
-                        result=app.guard.safe_interval(body['positions_rad'],int(body['joint_index']),float(body['requested_minimum_rad']),float(body['requested_maximum_rad']),float(body['table_height_m']),float(body['table_clearance_m']))
-                        return self._json(200,result)
-                    if self.path=='/api/experiment': return self._json(200,app.provider.post('/v1/calibration/experiment',body,600))
-                    if self.path=='/api/experiment/cancel': return self._json(200,app.provider.post('/v1/calibration/experiment/cancel',body))
-                    if self.path=='/api/apply-fit': return self._json(200,app.provider.post('/v1/calibration/apply-fit',body))
                     return self._json(404,{'error':'not found'})
                 except Exception as error: return self._json(500,{'error':str(error)})
         return Handler
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description='reBot Arm standalone calibration GUI')
+    parser=argparse.ArgumentParser(description='reBot Arm standalone hardware-development GUI')
     parser.add_argument('--provider-url',default='http://127.0.0.1:8791')
     parser.add_argument('--collision-config',required=True); parser.add_argument('--host',default='127.0.0.1'); parser.add_argument('--port',type=int,default=8792)
     parser.add_argument('--no-browser',action='store_true'); args=parser.parse_args(argv)

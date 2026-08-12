@@ -10,7 +10,7 @@
       "read_only": true
     },
     "developer": {
-      "label": "Calibration and Hardware Development GUI",
+      "label": "Basic Controller Hardware Development GUI",
       "url": "http://127.0.0.1:8792/",
       "launch_command": ".\\providers\\rebot_arm_dm\\scripts\\run_calibration.ps1",
       "stop_command": ".\\providers\\rebot_arm_dm\\scripts\\stop_calibration.ps1",
@@ -23,7 +23,6 @@
     "COLD"
   ],
   "capabilities": [
-    "robot_arm.calibration",
     "robot_arm.control.high_kp_floor_enforced",
     "robot_arm.control.impedance",
     "robot_arm.control.position_effort_limited",
@@ -97,7 +96,7 @@
     "ctrl_c_behavior": "SAFE_HOME_THEN_DISABLE_THEN_EXIT",
     "runtime_lease_acquisition": "CONFLICT_ON_VALID_OWNER; NO_SILENT_REPLACEMENT",
     "runtime_lease_release": "EXACT_LEASE_ID_AND_FENCING_GENERATION_REQUIRED",
-    "actuator_group_authority": "ROOT_CONFLICTS_WITH_ALL_GROUPS; DISJOINT_ARM_AND_GRIPPER_GROUPS_MAY_RUN_CONCURRENTLY; EVERY_COMMAND_IS_MEMBERSHIP_CHECKED",
+    "actuator_group_authority": "RESOURCE_ID_OMISSION_OR_CANONICAL_ROOT_SELECTS_ROOT; DECLARED_CHILD_SELECTS_GROUP; ROOT_CONFLICTS_WITH_ALL_GROUPS; DISJOINT_ARM_AND_GRIPPER_GROUPS_MAY_RUN_CONCURRENTLY; EVERY_COMMAND_IS_MEMBERSHIP_CHECKED",
     "manager_disconnect": "REVOKE_PROVIDER_LOCAL_LEASE_AND_GRAVITY_FLOAT",
     "global_motion_inhibit": "BLOCK_NEW_OPERATIONAL_LEASES_RENEWS_AND_COMMANDS; REVOKE_ACTIVE_LEASE",
     "motor_endpoint_output": "CHANGED_ENDPOINT_IMMEDIATE; UNCHANGED_POS_VEL_POS_TOR_AT_10HZ",
@@ -110,21 +109,22 @@
   "calibration_utility": {
     "type": "standalone_local_gui",
     "launcher": "scripts/run_calibration.ps1",
+    "purpose": "ATTENDED_MANUAL_HARDWARE_DEVELOPMENT",
     "collision_guard_location": "calibration_gui_only",
     "external_obstacle_model": "desktop_plane_only",
     "simulation_supported": true,
-    "automatic_excitation_profile": "FRICTION_TWO_SPEED_POS_VEL_V2",
-    "automatic_start_pose": "captured_measured_gravity_float_pose",
-    "automatic_control_mode": "POSITION_VELOCITY_LIMITED_ALL_JOINTS"
+    "automatic_calibration_supported": false,
+    "calibration_write_supported": false,
+    "manual_pointer_deadman": true
   },
   "known_limitations": [
     "The supplied hard limits are observations from the provided Unity bridge and must be verified on the physical assembly.",
     "DM-J4310 hardware revision and true configured TMAX must be confirmed per installed motor.",
     "The calibration collision guard is not an operational workspace planner.",
-    "The capsule collision profile is software-tested but not physically qualified and does not implement self-collision.",
+    "The simplified capsule self-collision and desktop-plane profile is software-tested but not physically qualified and does not model other external obstacles.",
     "Basic publishes the selected static assembly but does not yet host authoritative runtime held-object attachment state.",
     "Total host power loss cannot execute safe-home without independent hardware power or braking.",
-    "Friction-only calibration retains factory mass, center-of-mass, inertia, and gravity parameters.",
+    "The Hardware Development UI does not estimate or write calibration parameters.",
     "Windows user-space scheduling is not hard real-time; loop overrun telemetry must be reviewed before active manipulation."
   ],
   "operator_aliases": [
