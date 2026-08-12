@@ -2,7 +2,7 @@
   "schema": "midbrain.mounted_effector_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.5_inch_blade",
-  "profile_revision": "rebot-b601-dm-5-inch-blade-v1",
+  "profile_revision": "rebot-b601-dm-5-inch-blade-v2",
   "display_name": "5 inch blade",
   "assembly_type": "MOUNTED_TOOL",
   "qualification": "DEVELOPMENT",
@@ -47,7 +47,7 @@
       "primitive_id": "temporary_gripper_envelope_tip",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.005, 0.0, -0.07],
+        "translation_m": [-0.005, 0.0, -0.08],
         "rpy_rad": [0.0, 0.0, 0.0]
       },
       "shape": {"type": "SPHERE", "radius_m": 0.005},
@@ -57,7 +57,7 @@
       "primitive_id": "temporary_gripper_envelope_front",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.03, 0.0, -0.07],
+        "translation_m": [-0.03, 0.0, -0.08],
         "rpy_rad": [0.0, 0.0, 0.0]
       },
       "shape": {"type": "SPHERE", "radius_m": 0.015},
@@ -67,7 +67,7 @@
       "primitive_id": "temporary_gripper_envelope_middle",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [ -0.09, 0.0, -0.07],
+        "translation_m": [ -0.09, 0.0, -0.08],
         "rpy_rad": [0.0, 0.0, 0.0]
       },
       "shape": {"type": "SPHERE", "radius_m": 0.035},
@@ -77,7 +77,7 @@
       "primitive_id": "temporary_gripper_envelope_rear",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.15, 0.0, -0.07],
+        "translation_m": [-0.15, 0.0, -0.08],
         "rpy_rad": [0.0, 0.0, 0.0]
       },
       "shape": {"type": "SPHERE", "radius_m": 0.035},
@@ -100,6 +100,82 @@
   },
   "inactive_joint_names": ["gripper"],
   "actuator_groups": [],
+  "extensions": {
+    "midbrain.skill.refine_arm_root_translation.v1": {
+      "schema": "midbrain.effector_visual_alignment",
+      "schema_version": 1,
+      "qualification_state": "DEVELOPMENT",
+      "arm_base_frame": "rebot_arm_base",
+      "capture_motion_policy": {
+        "maximum_landmark_motion_m": 0.005,
+        "additional_camera_timing_margin_us": 20000,
+        "arm_transform_timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+        "arm_feedback_age_field_path": ["data", "feedback_age_ms"],
+        "fallback_arm_feedback_age_ms": 20.0,
+        "maximum_arm_feedback_age_ms": 100.0,
+        "preferred_arm_feedback_observation_age_ms": 100.0,
+        "maximum_transform_wait_ms": 1500.0,
+        "transform_retry_interval_ms": 10.0,
+        "temporal_sample_count": 5,
+        "qualification": "DEVELOPMENT_DEFAULTS_REQUIRE_LIVE_TIMING_REFINEMENT",
+        "policy_note": "The initial knife-handle landmark uses the existing timestamp-coherent capture policy. Live trials must confirm visibility, depth stability, timing margin, and motion bounds."
+      },
+      "refinement_policy": {
+        "second_vlm_review_raw_delta_threshold_m": 0.005,
+        "maximum_raw_translation_delta_m": 0.1,
+        "maximum_adopted_translation_delta_m": 0.025,
+        "minimum_landmark_confidence": 0.75,
+        "minimum_same_surface_confidence": 0.75
+      },
+      "default_visual_alignment_landmark": "knife_handle_endpoint_mean",
+      "landmark_fallback_policy": {
+        "selection_order": ["knife_handle_endpoint_mean"],
+        "automatic_substitution_allowed": false,
+        "no_hardware_modification_strategy": "Use the existing military-green knife handle and its two visible longitudinal endpoints without adding a fiducial.",
+        "optional_physical_fiducial_policy": "Any future fiducial requires a separately revised mounted-effector profile and must not silently replace the handle landmark."
+      },
+      "visual_alignment_landmarks": [
+        {
+          "landmark_id": "knife_handle_endpoint_mean",
+          "display_name": "Military-green knife-handle endpoint mean",
+          "geometry": "MEAN_OF_REGISTERED_3D_POINTS",
+          "required_point_ids": [
+            "knife_handle_blade_junction",
+            "knife_handle_rear_endpoint"
+          ],
+          "aggregation_policy": {
+            "method": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS",
+            "requires_all_points": true,
+            "missing_point_policy": "REJECT_OBSERVATION"
+          },
+          "description_for_vlm": "Locate only the military-green handle clamped by the two black gripper fingers. The attached tool body is context only: do not classify it as a knife, blade, spatula, scraper, or any other object, and do not reject the scene because of its apparent type, material, color, or shape. Annotate exactly two physical features on the green handle: knife_handle_blade_junction is the center of the handle end adjoining the attached non-green tool body, and knife_handle_rear_endpoint is the center of the opposite longitudinal handle end. Select both RGB points on visible military-green handle surface, slightly inside its silhouette, then independently select valid registered-depth pixels on the same physical green handle surface. Do not select either black gripper finger, any part of the attached tool body, an edge shared with the background, a highlight, the background, or another object. Reject the scene only when one or both required handle features cannot be located on the green handle or cannot be registered to valid same-surface depth.",
+          "tool_point_binding": {
+            "source": "USER_SUPPLIED_TRIAL_OFFSET",
+            "runtime_key": null,
+            "controlled_frame_to_landmark_translation_m": [-0.09, 0.01, -0.07],
+            "landmark_to_controlled_frame_translation_m": [0.09, -0.01, 0.07],
+            "qualification": "USER_SUPPLIED_TRIAL_2026_08_11_UNVERIFIED",
+            "measurement_note": "Initial trial assumption: the vector from the active controlled/IK frame origin to the arithmetic mean of the blade-junction and rear-handle points is [-90, +10, -70] mm in the controlled frame. Reverse both signs if the supplied measurement direction was handle mean to controlled origin."
+          },
+          "visibility": {
+            "material_note": "The alignment target is only the military-green handle surface held by the two-finger black grip. The attached tool body is contextual and its visual classification is irrelevant.",
+            "missing_exact_depth_policy": "VLM_RESELECT_ONCE_THEN_REJECT"
+          },
+          "relationship_to_controlled_frame": "USER_TRIAL_CONTROLLED_ORIGIN_TO_HANDLE_ENDPOINT_MEAN_XYZ_M_NEG0P090_POS0P010_NEG0P070"
+        }
+      ],
+      "reference_image_policy": {
+        "implementation_status": "FUTURE",
+        "maximum_images_per_call": 3,
+        "note": "A swappable knife reference image is planned but not yet connected to the production asset resolver. Live RGB-D and this profile description are the current inputs."
+      },
+      "invalidation_conditions": [
+        "Knife handle, blade, adapter, or mount geometry changes",
+        "The trial controlled-frame-to-handle-mean vector is revised",
+        "The active mounted-effector identity, revision, or assembly fingerprint changes"
+      ]
+    }
+  },
   "invalidation_conditions": [
     "Measured mass or center of mass differs from the provisional inertial values",
     "Knife, adapter, or mount replacement or remount",

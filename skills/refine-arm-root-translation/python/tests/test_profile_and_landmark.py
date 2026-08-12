@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from jsonschema import validate
+from jsonschema import ValidationError, validate
 
 from refine_arm_root_translation import (
     InvalidDepthSelectionError,
@@ -27,7 +27,16 @@ from refine_arm_root_translation import (
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v3.json"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+PROFILE_PATH = (
+    WORKSPACE_ROOT
+    / "providers"
+    / "rebot_arm_dm"
+    / "profiles"
+    / "effectors"
+    / "rebot_b601_dm_bare_gripper.v2.json"
+)
+BLADE_PROFILE_PATH = PROFILE_PATH.with_name("rebot_b601_dm_5_inch_blade.v1.json")
 
 
 def detection_for(landmark: dict, *, confidence: float = 0.95) -> dict:
@@ -71,21 +80,13 @@ def test_gripper_profile_uses_measured_rail_center_by_default() -> None:
         "rail_lateral_right",
     ]
     assert "neon-green" in rail["description_for_vlm"]
-    assert profile["action_frames"][0]["semantic_role"] == (
-        "IK_CONTROLLED_FRAME"
-    )
+    assert "TOOL_CENTER_POINT" in profile["action_frames"][0]["semantic_roles"]
     assert profile["robot_compatibility"]["controlled_frame"] == (
         "rebot_arm_tool"
     )
     assert profile["robot_compatibility"]["arm_base_frame"] == (
         "rebot_arm_base"
     )
-    assert profile["action_frames"][0]["coincident_visual_landmark_id"] == (
-        "gripper_tip_pair_mean"
-    )
-    assert profile["action_frames"][0][
-        "default_visual_alignment_landmark_id"
-    ] == "rail_lateral_endpoint_mean"
     assert profile["kinematic_attachment"][
         "terminal_joint_to_controlled_frame"
     ]["translation_m"] == [0.0, 0.0, 0.15539]
@@ -96,6 +97,11 @@ def test_gripper_profile_uses_measured_rail_center_by_default() -> None:
     assert not profile["landmark_fallback_policy"][
         "automatic_substitution_allowed"
     ]
+    assert rail["aggregation_policy"] == {
+        "method": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS",
+        "requires_all_points": True,
+        "missing_point_policy": "REJECT_OBSERVATION",
+    }
     assert profile["refinement_policy"] == {
         "second_vlm_review_raw_delta_threshold_m": 0.005,
         "maximum_raw_translation_delta_m": 0.1,
@@ -103,6 +109,28 @@ def test_gripper_profile_uses_measured_rail_center_by_default() -> None:
         "minimum_landmark_confidence": 0.75,
         "minimum_same_surface_confidence": 0.75,
     }
+
+
+def test_blade_profile_contains_user_trial_handle_landmark() -> None:
+    profile = load_effector_profile(BLADE_PROFILE_PATH)
+    landmark = select_visual_landmark(profile)
+
+    assert profile["profile_revision"] == "rebot-b601-dm-5-inch-blade-v2"
+    assert landmark["required_point_ids"] == [
+        "knife_handle_blade_junction",
+        "knife_handle_rear_endpoint",
+    ]
+    description = landmark["description_for_vlm"]
+    assert "military-green handle" in description
+    assert "do not classify it as a knife" in description
+    assert "Reject the scene only when" in description
+    assert np.allclose(
+        resolve_tool_landmark_point(landmark),
+        [-0.09, 0.01, -0.07],
+    )
+    assert landmark["tool_point_binding"][
+        "landmark_to_controlled_frame_translation_m"
+    ] == [0.09, -0.01, 0.07]
 
 
 @pytest.mark.parametrize(
@@ -151,6 +179,59 @@ def test_profile_schema_file_is_valid_json() -> None:
     validate(instance=load_effector_profile(PROFILE_PATH), schema=schema)
 
 
+def test_public_mounted_effector_schema_validates_known_profiles() -> None:
+    schema = json.loads(
+        (
+            WORKSPACE_ROOT
+            / "contracts"
+            / "schemas"
+            / "mounted_effector_profile.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    for path in (PROFILE_PATH, BLADE_PROFILE_PATH):
+        validate(
+            instance=json.loads(path.read_text(encoding="utf-8")),
+            schema=schema,
+        )
+
+
+def test_mounted_effector_schema_allows_namespaced_unknown_extensions() -> None:
+    schema = json.loads(
+        (
+            WORKSPACE_ROOT
+            / "contracts"
+            / "schemas"
+            / "mounted_effector_profile.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    profile["extensions"]["example.consumer.experimental.v1"] = {
+        "consumer_owned_setting": True
+    }
+
+    validate(instance=profile, schema=schema)
+
+
+def test_known_alignment_extension_remains_strict() -> None:
+    schema = json.loads(
+        (
+            WORKSPACE_ROOT
+            / "contracts"
+            / "schemas"
+            / "mounted_effector_profile.v1.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    landmark = profile["extensions"][
+        "midbrain.skill.refine_arm_root_translation.v1"
+    ]["visual_alignment_landmarks"][0]
+    del landmark["aggregation_policy"]["requires_all_points"]
+
+    with pytest.raises(ValidationError):
+        validate(instance=profile, schema=schema)
+
+
 def test_every_machine_schema_has_a_unique_identifier() -> None:
     schemas = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -176,7 +257,7 @@ def test_measured_rail_center_to_tip_offset_has_explicit_inverse() -> None:
         "controlled_frame_to_landmark_translation_m"
     ] == [-0.08, 0.0, 0.0]
     assert (
-        "controlled/final-joint +X"
+        "controlled-frame +X"
         in rail["tool_point_binding"]["measurement_note"]
     )
 
@@ -332,6 +413,64 @@ def test_landmark_midpoint_is_mean_of_registered_3d_points() -> None:
     assert resolved["registered_depth_landmark_pixel_yx"] != [5, 5]
 
 
+def test_three_point_landmark_requires_all_points_and_uses_3d_mean() -> None:
+    landmark = {
+        "landmark_id": "three_point_test",
+        "geometry": "MEAN_OF_REGISTERED_3D_POINTS",
+        "required_point_ids": ["point_a", "point_b", "point_c"],
+    }
+    detection = {
+        "schema": "midbrain.effector_landmark_detection",
+        "schema_version": 2,
+        "scene_suitable": True,
+        "landmark_id": "three_point_test",
+        "coordinate_space": "NORMALIZED_YX_0_1000_PER_IMAGE",
+        "reason": "All three configured features are visible.",
+        "points": [
+            {
+                "point_id": point_id,
+                "rgb_yx_0_1000": [500, x],
+                "registered_depth_yx_0_1000": [500, x],
+                "confidence": 0.95,
+                "same_surface_confidence": 0.95,
+                "reason": "Configured feature and same-surface depth are visible.",
+            }
+            for point_id, x in zip(
+                landmark["required_point_ids"],
+                [300, 500, 700],
+                strict=True,
+            )
+        ],
+    }
+    depth = np.ones((11, 11), dtype=np.float64)
+
+    resolved = resolve_profile_landmark(
+        detection=detection,
+        landmark=landmark,
+        rgb_grid=(11, 11),
+        registered_depth_m=depth,
+        intrinsics={"fx": 10.0, "fy": 10.0, "cx": 5.0, "cy": 5.0},
+        world_from_camera=np.eye(4),
+    )
+    points = np.asarray(
+        [item["camera_system_point_m"] for item in resolved["registered_points"]]
+    )
+    assert np.allclose(
+        resolved["camera_system_landmark_point_m"],
+        np.mean(points, axis=0),
+    )
+
+    missing = json.loads(json.dumps(detection))
+    missing["points"].pop()
+    with pytest.raises(RuntimeError, match="did not return every required point"):
+        validate_landmark_detection(
+            missing,
+            landmark=landmark,
+            rgb_grid=(11, 11),
+            registered_depth_grid=(11, 11),
+        )
+
+
 def test_exact_vlm_selected_depth_is_required_without_neighbor_snap() -> None:
     profile = load_effector_profile(PROFILE_PATH)
     landmark = select_visual_landmark(profile)
@@ -394,6 +533,7 @@ def test_prompt_requires_semantic_rgb_to_depth_correspondence() -> None:
 
     assert "independently select a valid depth pixel" in prompt
     assert "every selected depth coordinate must land on WHITE" in prompt
+    assert "display-name metadata are not visual classification requirements" in prompt
     assert "Do not choose the same numeric pixel by default" in prompt
     assert "reflection" in prompt
     assert "exactly these seven top-level keys and no others" in prompt

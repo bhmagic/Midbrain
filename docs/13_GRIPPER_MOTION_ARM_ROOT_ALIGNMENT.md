@@ -52,12 +52,26 @@ rigid effector landmark. It estimates and optionally applies only XYZ
 translation; rotation is copied exactly and the Skill submits no physical
 motion.
 
-The current reBot B601-DM bare-gripper profile consistently observes the mean
-of the two lateral endpoints of the neon-green rail. It stores the measured
-rail-center-to-controller-tip vector as `[+0.080, 0, 0]` m in controlled-frame
-coordinates and the exact inverse solver point. This keeps Rebot-specific
-attachment geometry, visual descriptions, alternative landmarks, and future
-tool/effector changes outside the generic refinement mathematics.
+The Skill follows the Provider-owned mounted-effector profile selected by Basic
+in `robot_arm.assembly_state`; it has no second private effector selector. Its
+optional namespaced alignment extension owns the VLM description, required
+point IDs, capture and refinement policy, and rigid landmark offset. The
+current bare-gripper profile observes the mean of the two lateral endpoints of
+the neon-green rail. It stores the measured rail-center-to-controller-tip
+vector as `[+0.080, 0, 0]` m in controlled-frame coordinates and the exact
+inverse solver point. The five-inch-blade profile instead observes the
+blade-side and rear endpoints of its military-green handle and starts with the
+unverified controlled-origin-to-handle-mean vector
+`[-0.090, +0.010, -0.070]` m.
+
+Landmarks may declare one through eight points, but every declared point is
+mandatory. Each point is registered independently in 3D, and the arithmetic
+mean is computed only after the complete set passes exact-depth checks. Missing,
+repeated, or extra points reject the observation; a partial mean is never used.
+Reference-image selection is profile-swappable policy but remains marked as
+future implementation. A mounted effector without the optional alignment
+extension remains usable by Basic and other consumers; this Skill returns a
+typed unavailable result without VLM work or state mutation.
 
 The caller selects an adoption factor from zero to one and may request one to
 five independent observations. Multi-sample mode averages the accepted raw XYZ
@@ -198,12 +212,15 @@ nested states without weakening preview lineage.
 ## Effector-profile boundary
 
 Keep the translation solver, RGB-D/VLM orchestration, Manager adapter, and
-state logic independent of a particular arm. Put the arm model ID and revision,
-arm-base frame, terminal and controlled frames, terminal-joint-to-controlled-
-frame transform, arm feedback-timing semantics, capture-motion thresholds,
-visual landmark descriptions,
-translation-review and per-call delta limits, tool-to-landmark coordinates,
-and CAD reference-asset IDs in a versioned effector profile.
+state logic independent of a particular arm. Basic owns selection of one
+Provider-owned mounted-effector profile and publishes the resolved profile in
+`robot_arm.assembly_state`. Strict core profile fields own the robot model
+compatibility, terminal and controlled frames, attachment transform, collision
+geometry, inertia, and actuators. The optional namespaced
+`midbrain.skill.refine_arm_root_translation.v1` extension owns the arm-base
+frame, feedback-timing semantics, capture-motion thresholds, visual landmark
+descriptions and complete point sets, translation-review and per-call delta
+limits, tool-to-landmark coordinates, and reference-image policy.
 
 The first profile describes the current reBot B601-DM bare gripper. Its default
 visual point is the mean of the two lateral endpoints of the strongly visible
@@ -214,10 +231,15 @@ controlled/final-joint +X, so the profile records rail-center-to-tip as
 `[-0.080, 0, 0]` m. Timestamped FK rotates that offset; it is never applied in
 world or arm-base X. Refinement reconstructs the controller-tip position from
 the observed rail center before solving base translation, without changing base
-rotation. A held tool or replacement effector requires a new profile
-revision with its own terminal geometry, observed landmarks, and bidirectional
-landmark-to-controlled-frame offsets. An optional non-reflective ball is
-profile-specific and not a baseline dependency.
+rotation. The fixed five-inch-blade profile declares two required points: the
+handle beginning at the blade junction and the rear handle endpoint. Its first
+trial records controlled origin to their 3D mean as
+`[-0.090, +0.010, -0.070]` m and the exact inverse; this direction is explicitly
+unverified and must be reversed if the physical measurement was supplied in
+the opposite direction. A held tool or replacement effector requires a new
+profile revision with its own terminal geometry, observed landmarks, and
+bidirectional landmark-to-controlled-frame offsets. An optional non-reflective
+ball is profile-specific and not a baseline dependency.
 
 ## Close-range timestamp-coherent refinement
 

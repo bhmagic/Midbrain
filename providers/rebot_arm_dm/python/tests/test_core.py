@@ -79,10 +79,10 @@ class AssemblyConfigurationTests(unittest.TestCase):
                 for item in state['mounted_effector']['collision_primitives']
             ],
             [
-                ([-0.005, 0.0, -0.07], 0.005),
-                ([-0.03, 0.0, -0.07], 0.015),
-                ([-0.09, 0.0, -0.07], 0.035),
-                ([-0.15, 0.0, -0.07], 0.035),
+                ([-0.005, 0.0, -0.08], 0.005),
+                ([-0.03, 0.0, -0.08], 0.015),
+                ([-0.09, 0.0, -0.08], 0.035),
+                ([-0.15, 0.0, -0.08], 0.035),
             ],
         )
         normalized = assembly.normalized_arm_model()

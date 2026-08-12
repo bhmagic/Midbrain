@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,160 @@ import numpy as np
 
 PROFILE_SCHEMA = "midbrain.effector_alignment_profile"
 PROFILE_SCHEMA_VERSION = 1
+MOUNTED_EFFECTOR_SCHEMA = "midbrain.mounted_effector_profile"
+MOUNTED_EFFECTOR_SCHEMA_VERSION = 1
+ALIGNMENT_EXTENSION_ID = "midbrain.skill.refine_arm_root_translation.v1"
+ALIGNMENT_EXTENSION_SCHEMA = "midbrain.effector_visual_alignment"
+ALIGNMENT_EXTENSION_SCHEMA_VERSION = 1
 
 
 def load_effector_profile(path: str | Path) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(value, dict) and value.get("schema") == MOUNTED_EFFECTOR_SCHEMA:
+        value = normalize_mounted_effector_profile(value)
     return validate_effector_profile(value)
+
+
+def normalize_mounted_effector_profile(value: Any) -> dict[str, Any]:
+    """Build the Skill's strict internal view from one mounted-effector profile."""
+
+    if not isinstance(value, dict):
+        raise ValueError("mounted effector profile must be an object")
+    if value.get("schema") != MOUNTED_EFFECTOR_SCHEMA:
+        raise ValueError("mounted effector profile schema is invalid")
+    if value.get("schema_version") != MOUNTED_EFFECTOR_SCHEMA_VERSION:
+        raise ValueError("mounted effector profile version is unsupported")
+    extensions = value.get("extensions")
+    if not isinstance(extensions, dict):
+        raise ValueError(
+            "mounted effector profile has no optional extensions object"
+        )
+    alignment = extensions.get(ALIGNMENT_EXTENSION_ID)
+    if not isinstance(alignment, dict):
+        raise ValueError(
+            "mounted effector profile does not support arm-root translation "
+            "refinement"
+        )
+    if alignment.get("schema") != ALIGNMENT_EXTENSION_SCHEMA:
+        raise ValueError("effector visual-alignment extension schema is invalid")
+    if alignment.get("schema_version") != ALIGNMENT_EXTENSION_SCHEMA_VERSION:
+        raise ValueError(
+            "effector visual-alignment extension version is unsupported"
+        )
+    compatibility = value.get("robot_compatibility")
+    attachment = value.get("kinematic_attachment")
+    controlled_frame = value.get("controlled_frame")
+    if not isinstance(compatibility, dict):
+        raise ValueError("mounted effector robot_compatibility is missing")
+    if not isinstance(attachment, dict):
+        raise ValueError("mounted effector kinematic_attachment is missing")
+    if not isinstance(controlled_frame, dict):
+        raise ValueError("mounted effector controlled_frame is missing")
+    terminal_transform = _compose_rpy_transforms(
+        attachment.get("transform"),
+        controlled_frame.get("transform"),
+    )
+    normalized = {
+        "schema": PROFILE_SCHEMA,
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "profile_id": value.get("profile_id"),
+        "profile_revision": value.get("profile_revision"),
+        "display_name": value.get("display_name"),
+        "assembly_type": value.get("assembly_type"),
+        "qualification_state": alignment.get("qualification_state"),
+        "robot_compatibility": {
+            "model_id": compatibility.get("model_id"),
+            "model_revision": compatibility.get("model_revision"),
+            "arm_base_frame": alignment.get("arm_base_frame"),
+            "terminal_frame": compatibility.get("terminal_frame"),
+            "controlled_frame": controlled_frame.get("frame_id"),
+        },
+        "kinematic_attachment": {
+            "source_schema": MOUNTED_EFFECTOR_SCHEMA,
+            "source_reference": (
+                f"{value.get('profile_id')}@{value.get('profile_revision')}"
+            ),
+            "parent_link": attachment.get("parent_frame"),
+            "controlled_link": controlled_frame.get("frame_id"),
+            "terminal_joint_to_controlled_frame": terminal_transform,
+            "qualification": attachment.get("qualification"),
+            "replacement_policy": (
+                "Changing the selected mounted-effector identity or revision "
+                "invalidates this visual-alignment configuration."
+            ),
+        },
+        "capture_motion_policy": copy_json(alignment.get("capture_motion_policy")),
+        "refinement_policy": copy_json(alignment.get("refinement_policy")),
+        "default_visual_alignment_landmark": alignment.get(
+            "default_visual_alignment_landmark"
+        ),
+        "landmark_fallback_policy": copy_json(
+            alignment.get("landmark_fallback_policy")
+        ),
+        "visual_alignment_landmarks": copy_json(
+            alignment.get("visual_alignment_landmarks")
+        ),
+        "action_frames": copy_json(value.get("acting_frames") or []),
+        "invalidation_conditions": list(
+            dict.fromkeys(
+                [
+                    *[str(item) for item in value.get("invalidation_conditions") or []],
+                    *[
+                        str(item)
+                        for item in alignment.get("invalidation_conditions") or []
+                    ],
+                ]
+            )
+        ),
+    }
+    return validate_effector_profile(normalized)
+
+
+def copy_json(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def _compose_rpy_transforms(first: Any, second: Any) -> dict[str, list[float]]:
+    first_matrix = _rpy_transform(first, "mounted effector attachment transform")
+    second_matrix = _rpy_transform(second, "mounted effector controlled transform")
+    composed = first_matrix @ second_matrix
+    rotation = composed[:3, :3]
+    pitch = math.asin(float(np.clip(-rotation[2, 0], -1.0, 1.0)))
+    if abs(math.cos(pitch)) > 1e-9:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(float(-rotation[0, 1]), float(rotation[1, 1]))
+    return {
+        "translation_m": composed[:3, 3].tolist(),
+        "rpy_rad": [roll, pitch, yaw],
+    }
+
+
+def _rpy_transform(value: Any, label: str) -> np.ndarray:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    translation = np.asarray(value.get("translation_m"), dtype=np.float64)
+    rpy = np.asarray(value.get("rpy_rad"), dtype=np.float64)
+    if (
+        translation.shape != (3,)
+        or rpy.shape != (3,)
+        or not np.all(np.isfinite(translation))
+        or not np.all(np.isfinite(rpy))
+    ):
+        raise ValueError(f"{label} must contain finite translation and RPY vectors")
+    roll, pitch, yaw = [float(item) for item in rpy]
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rotation_x = np.asarray([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+    rotation_y = np.asarray([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+    rotation_z = np.asarray([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = rotation_z @ rotation_y @ rotation_x
+    result[:3, 3] = translation
+    return result
 
 
 def validate_effector_profile(value: Any) -> dict[str, Any]:
@@ -197,6 +347,7 @@ def validate_effector_profile(value: Any) -> dict[str, Any]:
         if (
             not isinstance(point_ids, list)
             or not point_ids
+            or len(point_ids) > 8
             or not all(isinstance(item, str) and item for item in point_ids)
             or len(set(point_ids)) != len(point_ids)
         ):
@@ -206,7 +357,26 @@ def validate_effector_profile(value: Any) -> dict[str, Any]:
         if geometry == "SINGLE_REGISTERED_3D_POINT" and len(point_ids) != 1:
             raise ValueError(f"landmark {landmark_id} requires one point")
         if geometry == "MEAN_OF_REGISTERED_3D_POINTS" and len(point_ids) < 2:
-            raise ValueError(f"landmark {landmark_id} requires paired points")
+            raise ValueError(f"landmark {landmark_id} requires at least two points")
+        aggregation = landmark.get("aggregation_policy")
+        if not isinstance(aggregation, dict):
+            raise ValueError(
+                f"landmark {landmark_id} aggregation policy is missing"
+            )
+        if aggregation.get("method") != (
+            "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS"
+        ):
+            raise ValueError(
+                f"landmark {landmark_id} aggregation method is unsupported"
+            )
+        if aggregation.get("requires_all_points") is not True:
+            raise ValueError(
+                f"landmark {landmark_id} must require every configured point"
+            )
+        if aggregation.get("missing_point_policy") != "REJECT_OBSERVATION":
+            raise ValueError(
+                f"landmark {landmark_id} missing-point policy is unsupported"
+            )
         description = landmark.get("description_for_vlm")
         if not isinstance(description, str) or len(description.strip()) < 20:
             raise ValueError(f"landmark {landmark_id} VLM description is missing")

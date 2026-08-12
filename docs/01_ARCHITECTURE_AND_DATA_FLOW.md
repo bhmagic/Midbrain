@@ -72,16 +72,26 @@ from one observed point.
 1. The Reference Agent discovers the Skill from its manifest. Its generic
    external-Skill host loads the Skill-owned hardware bridge and launches the
    numerical runtime from the Skill's private Python environment.
-2. The host verifies the active alignment, camera/VIO/arm identities, selected
-   effector profile, and a current local arm FK path before starting VLM work.
+2. The host reads `robot_arm.assembly_state`, follows Basic's selected
+   Provider-owned mounted-effector profile, and binds the run to the assembly
+   fingerprint and effector identity/revision. It verifies the active
+   alignment, camera/VIO/arm identities, the selected profile's optional
+   alignment extension, and a current local arm FK path before starting VLM
+   work. An effector without that extension remains a valid assembly but is
+   reported as unavailable for this Skill without starting VLM work.
 3. For each requested sample, it captures one fresh RGB/registered-depth pair,
    brackets the immutable capture window with timestamped arm FK, and rejects
    the sample when profile-bounded landmark motion exceeds its limit.
-4. The VLM marks the profile-selected physical feature in both RGB and
-   registered depth. The current bare-gripper profile uses the mean of the two
-   lateral endpoints of the neon-green rail. Invalid exact depth permits at
-   most one VLM reselection; coded nearest-pixel repair is not used.
-5. The profile rotates its measured rigid landmark offset with timestamped FK.
+4. The VLM marks every profile-selected physical feature in both RGB and
+   registered depth. The profile may name one through eight required points.
+   All must be detected and registered before their arithmetic 3D mean is
+   valid; partial means are rejected. The bare-gripper profile uses the two
+   lateral endpoints of the neon-green rail, while the blade profile uses the
+   blade-side and rear endpoints of the military-green handle. Invalid exact
+   depth permits at most one VLM reselection; coded nearest-pixel repair is not
+   used.
+5. The profile's Skill-owned namespaced extension rotates its configured rigid
+   landmark offset with timestamped FK.
    For the current gripper, rail center to controller tip is
    `[+0.080, 0, 0]` m in controlled-frame coordinates. The Skill reconstructs
    the controller tip and estimates only the base translation while preserving

@@ -11,6 +11,7 @@ from .landmark import (
 from .manager_state import ManagerCompactAlignmentStore
 from .profile import (
     load_effector_profile,
+    normalize_mounted_effector_profile,
     resolve_tool_landmark_point,
     select_visual_landmark,
     validate_effector_profile,
@@ -54,6 +55,7 @@ __all__ = [
     "build_visual_annotations",
     "finalize_translation_refinement",
     "load_effector_profile",
+    "normalize_mounted_effector_profile",
     "parse_landmark_detection",
     "parse_quality_review",
     "prepare_translation_refinement",

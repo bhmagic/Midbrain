@@ -17,6 +17,9 @@ import numpy as np
 from PIL import Image
 
 
+ALIGNMENT_EXTENSION_ID = "midbrain.skill.refine_arm_root_translation.v1"
+
+
 class ManagerProtocol(Protocol):
     async def providers(self) -> list[dict[str, Any]]: ...
 
@@ -62,9 +65,17 @@ class ArmDataDependencyError(RuntimeError):
         reason: str,
         *,
         provider_id: str | None = None,
+        required_capability: str = "robot_arm.joint_state",
+        dependency_kind: str = "LOCAL_ARM_FK_STREAM",
     ) -> None:
         super().__init__(str(reason))
         self.provider_id = str(provider_id or "").strip() or None
+        self.required_capability = str(required_capability).strip()
+        self.dependency_kind = str(dependency_kind).strip()
+
+
+class EffectorAlignmentUnavailableError(RuntimeError):
+    """The selected effector intentionally has no compatible alignment extension."""
 
 
 class ArmRootTranslationRefinementAdapter:
@@ -79,7 +90,6 @@ class ArmRootTranslationRefinementAdapter:
         spatial: SpatialProtocol,
         vlm_router: VlmRouterProtocol,
         visual_evidence_store: VisualEvidenceProtocol,
-        profile_path: Path,
         runtime_landmark_bindings: dict[str, Any] | None = None,
         reference_assets: dict[str, Path] | None = None,
     ) -> None:
@@ -89,12 +99,6 @@ class ArmRootTranslationRefinementAdapter:
         self.spatial = spatial
         self.vlm_router = vlm_router
         self.visual_evidence_store = visual_evidence_store
-        self.profile_path = Path(profile_path).resolve()
-        profiles_root = (self.skill_root / "profiles").resolve()
-        if profiles_root not in self.profile_path.parents:
-            raise ValueError(
-                "effector profile must be inside the Skill profiles directory"
-            )
         venv_python = (
             self.skill_root / ".venv" / "Scripts" / "python.exe"
             if os.name == "nt"
@@ -114,7 +118,8 @@ class ArmRootTranslationRefinementAdapter:
             str(asset_id): Path(path).resolve()
             for asset_id, path in (reference_assets or {}).items()
         }
-        self.profile = self._read_profile()
+        self.profile: dict[str, Any] | None = None
+        self._assembly_binding: dict[str, Any] | None = None
         self._context: Any | None = None
         self._session_dir: Path | None = None
         self._arm_dependency_error: ArmDataDependencyError | None = None
@@ -142,7 +147,7 @@ class ArmRootTranslationRefinementAdapter:
             raise RuntimeError(
                 "translation-refinement private venv is missing; run its scripts/setup.ps1"
             )
-        if not self.entrypoint_path.is_file() or not self.profile_path.is_file():
+        if not self.entrypoint_path.is_file():
             raise RuntimeError("translation-refinement Skill installation is incomplete")
         arguments = {
             "adoption_factor": adoption_factor,
@@ -152,6 +157,7 @@ class ArmRootTranslationRefinementAdapter:
         async with self._lock:
             self._arm_dependency_error = None
             try:
+                await self._load_active_effector_profile()
                 await self._preflight_arm_data()
                 with tempfile.TemporaryDirectory(
                     prefix="midbrain-arm-root-refinement-"
@@ -164,6 +170,11 @@ class ArmRootTranslationRefinementAdapter:
                         self._session_dir = None
             except ArmDataDependencyError as error:
                 result = await self._dependency_unavailable(
+                    arguments=arguments,
+                    error=error,
+                )
+            except EffectorAlignmentUnavailableError as error:
+                result = self._effector_alignment_unavailable(
                     arguments=arguments,
                     error=error,
                 )
@@ -180,21 +191,22 @@ class ArmRootTranslationRefinementAdapter:
         return result
 
     async def _preflight_arm_data(self) -> None:
-        compatibility = self.profile.get("robot_compatibility")
-        if not isinstance(compatibility, dict):
-            raise RuntimeError("effector profile robot compatibility is missing")
+        profile = self._require_profile()
+        alignment = self._alignment_extension(profile)
         arm_base_frame = self._text(
-            compatibility,
+            alignment,
             "arm_base_frame",
-            "effector profile robot compatibility",
+            "mounted-effector alignment extension",
         )
         controlled_frame = self._text(
-            compatibility,
-            "controlled_frame",
-            "effector profile robot compatibility",
+            profile["controlled_frame"],
+            "frame_id",
+            "mounted-effector controlled frame",
         )
         try:
             identity = await self._arm_identity({})
+        except ArmDataDependencyError:
+            raise
         except Exception as error:
             raise ArmDataDependencyError(
                 f"current arm model identity is unavailable: {error}"
@@ -229,6 +241,125 @@ class ArmRootTranslationRefinementAdapter:
                 str(error),
                 provider_id=identity["arm_provider_id"],
             ) from error
+
+    async def _load_active_effector_profile(self) -> None:
+        observation, state = await self._active_assembly_state()
+        mounted = state.get("mounted_effector")
+        if not isinstance(mounted, dict):
+            raise ArmDataDependencyError(
+                "robot_arm.assembly_state has no mounted-effector profile",
+                provider_id=str(observation.get("provider_id") or "") or None,
+                required_capability="robot_arm.assembly_state",
+                dependency_kind="ACTIVE_ROBOT_ASSEMBLY",
+            )
+        fingerprint = self._text(
+            state,
+            "assembly_fingerprint",
+            "robot assembly state",
+        )
+        profile_hashes = state.get("profile_file_sha256")
+        effector_hash = (
+            str(profile_hashes.get("mounted_effector") or "").strip()
+            if isinstance(profile_hashes, dict)
+            else ""
+        )
+        self.profile = copy.deepcopy(mounted)
+        self._assembly_binding = {
+            "assembly_id": self._text(state, "assembly_id", "robot assembly state"),
+            "assembly_revision": self._text(
+                state,
+                "assembly_revision",
+                "robot assembly state",
+            ),
+            "assembly_fingerprint": fingerprint,
+            "effector_profile_id": self._text(
+                mounted,
+                "profile_id",
+                "mounted-effector profile",
+            ),
+            "effector_profile_revision": self._text(
+                mounted,
+                "profile_revision",
+                "mounted-effector profile",
+            ),
+            "effector_profile_sha256": effector_hash or None,
+        }
+        extensions = mounted.get("extensions")
+        alignment = (
+            extensions.get(ALIGNMENT_EXTENSION_ID)
+            if isinstance(extensions, dict)
+            else None
+        )
+        if not isinstance(alignment, dict):
+            profile_id = str(mounted.get("profile_id") or "unknown")
+            revision = str(mounted.get("profile_revision") or "unknown")
+            raise EffectorAlignmentUnavailableError(
+                f"selected mounted effector {profile_id}@{revision} does not "
+                "declare the optional arm-root translation-refinement extension"
+            )
+        if alignment.get("schema") != "midbrain.effector_visual_alignment":
+            raise EffectorAlignmentUnavailableError(
+                "selected mounted effector has an unsupported visual-alignment schema"
+            )
+        if alignment.get("schema_version") != 1:
+            raise EffectorAlignmentUnavailableError(
+                "selected mounted effector has an unsupported visual-alignment version"
+            )
+
+    async def _active_assembly_state(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        observation = await self.fabric.latest_optional("robot_arm.assembly_state")
+        if not isinstance(observation, dict):
+            raise ArmDataDependencyError(
+                "current robot_arm.assembly_state observation is unavailable",
+                required_capability="robot_arm.assembly_state",
+                dependency_kind="ACTIVE_ROBOT_ASSEMBLY",
+            )
+        state = observation.get("data")
+        if not isinstance(state, dict):
+            raise ArmDataDependencyError(
+                "current robot_arm.assembly_state data is unavailable",
+                provider_id=str(observation.get("provider_id") or "") or None,
+                required_capability="robot_arm.assembly_state",
+                dependency_kind="ACTIVE_ROBOT_ASSEMBLY",
+            )
+        if (
+            state.get("schema") != "midbrain.robot_assembly_state"
+            or state.get("schema_version") != 1
+        ):
+            raise ArmDataDependencyError(
+                "current robot_arm.assembly_state schema is unsupported",
+                provider_id=str(observation.get("provider_id") or "") or None,
+                required_capability="robot_arm.assembly_state",
+                dependency_kind="ACTIVE_ROBOT_ASSEMBLY",
+            )
+        return observation, state
+
+    @staticmethod
+    def _alignment_extension(profile: dict[str, Any]) -> dict[str, Any]:
+        extensions = profile.get("extensions")
+        alignment = (
+            extensions.get(ALIGNMENT_EXTENSION_ID)
+            if isinstance(extensions, dict)
+            else None
+        )
+        if not isinstance(alignment, dict):
+            raise RuntimeError("active mounted-effector alignment extension is missing")
+        return alignment
+
+    def _capture_motion_policy(self) -> dict[str, Any]:
+        policy = self._alignment_extension(self._require_profile()).get(
+            "capture_motion_policy"
+        )
+        if not isinstance(policy, dict):
+            raise RuntimeError("mounted-effector capture-motion policy is missing")
+        return policy
+
+    def _require_profile(self) -> dict[str, Any]:
+        if not isinstance(self.profile, dict):
+            raise RuntimeError("active mounted-effector profile was not loaded")
+        return self.profile
 
     @staticmethod
     def _validate_arm_observation_identity(
@@ -276,7 +407,7 @@ class ArmRootTranslationRefinementAdapter:
             None,
         )
         provider_snapshot = self._provider_snapshot(configured)
-        required_capability = "robot_arm.joint_state"
+        required_capability = error.required_capability
         if provider_id and configured is not None:
             required_next_tool = {
                 "name": "set_provider_residency",
@@ -334,7 +465,7 @@ class ArmRootTranslationRefinementAdapter:
             },
             "required_capability": required_capability,
             "dependency": {
-                "kind": "LOCAL_ARM_FK_STREAM",
+                "kind": error.dependency_kind,
                 "provider_id": provider_id,
                 "provider": provider_snapshot,
                 "manager_inspection_error": manager_error,
@@ -345,6 +476,53 @@ class ArmRootTranslationRefinementAdapter:
                 "arguments": copy.deepcopy(arguments),
             },
             "message": next_step,
+            "physical_motion_submitted": False,
+            "physical_motion_authorized": False,
+            "rotation_change_allowed": False,
+            "rotation_change_rad": 0.0,
+        }
+
+    def _effector_alignment_unavailable(
+        self,
+        *,
+        arguments: dict[str, Any],
+        error: EffectorAlignmentUnavailableError,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "midbrain.arm_root_translation_refinement",
+            "schema_version": 1,
+            "status": "EFFECTOR_ALIGNMENT_UNAVAILABLE",
+            "workflow_complete": True,
+            "eligible_for_state_update": False,
+            "state_update_applied": False,
+            "retry_same_tool": False,
+            "reason": str(error),
+            "multi_sample_refinement": {
+                "feature_name": "MULTI_SAMPLE_REFINEMENT",
+                "requested_sample_count": int(arguments["sample_count"]),
+                "completed_sample_count": 0,
+                "accepted_sample_count": 0,
+                "excluded_sample_count": 0,
+                "accepted_sample_indexes": [],
+                "excluded_sample_indexes": [],
+                "aggregation": "NOT_STARTED_EFFECTOR_ALIGNMENT_UNAVAILABLE",
+                "aggregation_population": "NO_ACCEPTED_SAMPLES",
+                "threshold_scale": 0,
+                "threshold_scale_basis": "ACCEPTED_SAMPLE_COUNT",
+                "samples": [],
+            },
+            "landmark_depth_reselection": {
+                "required": False,
+                "attempt_count": 1,
+                "outcome": "NOT_REQUIRED",
+                "initial_invalid_points": [],
+            },
+            "selected_effector": copy.deepcopy(self._assembly_binding),
+            "message": (
+                "Select a mounted-effector profile that declares the optional "
+                f"{ALIGNMENT_EXTENSION_ID} extension, or install no VLM "
+                "alignment Skill for this effector."
+            ),
             "physical_motion_submitted": False,
             "physical_motion_authorized": False,
             "rotation_change_allowed": False,
@@ -375,6 +553,11 @@ class ArmRootTranslationRefinementAdapter:
 
     async def _run_process(self, arguments: dict[str, Any]) -> dict[str, Any]:
         assert self._session_dir is not None
+        profile_path = self._session_dir / "selected-mounted-effector-profile.json"
+        profile_path.write_text(
+            json.dumps(self._require_profile(), indent=2) + "\n",
+            encoding="utf-8",
+        )
         creationflags = (
             subprocess.CREATE_NO_WINDOW
             if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW")
@@ -384,7 +567,7 @@ class ArmRootTranslationRefinementAdapter:
             str(self.python_path),
             str(self.entrypoint_path),
             "--profile",
-            str(self.profile_path),
+            str(profile_path),
             "--session-dir",
             str(self._session_dir),
             cwd=str(self.skill_root),
@@ -518,7 +701,20 @@ class ArmRootTranslationRefinementAdapter:
         data = observation.get("data")
         if not isinstance(data, dict):
             raise RuntimeError("current robot_arm.model data is unavailable")
-        return {
+        assembly_observation, assembly = await self._active_assembly_state()
+        mounted = assembly.get("mounted_effector")
+        if not isinstance(mounted, dict):
+            raise RuntimeError("current assembly has no mounted-effector profile")
+        model_identity = assembly.get("arm_model_identity")
+        if not isinstance(model_identity, dict):
+            raise RuntimeError("current assembly has no arm-model identity")
+        profile_hashes = assembly.get("profile_file_sha256")
+        effector_hash = (
+            str(profile_hashes.get("mounted_effector") or "").strip()
+            if isinstance(profile_hashes, dict)
+            else ""
+        )
+        result = {
             "arm_provider_id": self._text(observation, "provider_id", "arm model"),
             "arm_provider_instance_id": self._text(
                 observation,
@@ -532,7 +728,61 @@ class ArmRootTranslationRefinementAdapter:
                 "model_revision",
                 "arm model data",
             ),
+            "assembly_id": self._text(
+                assembly,
+                "assembly_id",
+                "robot assembly state",
+            ),
+            "assembly_revision": self._text(
+                assembly,
+                "assembly_revision",
+                "robot assembly state",
+            ),
+            "assembly_fingerprint": self._text(
+                assembly,
+                "assembly_fingerprint",
+                "robot assembly state",
+            ),
+            "effector_profile_id": self._text(
+                mounted,
+                "profile_id",
+                "mounted-effector profile",
+            ),
+            "effector_profile_revision": self._text(
+                mounted,
+                "profile_revision",
+                "mounted-effector profile",
+            ),
+            "effector_profile_sha256": effector_hash or None,
         }
+        if result["arm_model_id"] != self._text(
+            model_identity,
+            "model_id",
+            "assembly arm-model identity",
+        ):
+            raise RuntimeError("arm model observation does not match assembly state")
+        if result["arm_model_revision"] != self._text(
+            model_identity,
+            "model_revision",
+            "assembly arm-model identity",
+        ):
+            raise RuntimeError(
+                "arm model revision observation does not match assembly state"
+            )
+        assembly_provider_id = str(
+            assembly_observation.get("provider_id") or ""
+        ).strip()
+        if assembly_provider_id and assembly_provider_id != result["arm_provider_id"]:
+            raise RuntimeError(
+                "arm model and assembly state came from different Providers"
+            )
+        if self._assembly_binding is not None:
+            for field, expected in self._assembly_binding.items():
+                if result.get(field) != expected:
+                    raise RuntimeError(
+                        f"active robot assembly changed during refinement ({field})"
+                    )
+        return result
 
     async def _capture(self, parameters: dict[str, Any]) -> dict[str, Any]:
         assert self._session_dir is not None
@@ -558,7 +808,7 @@ class ArmRootTranslationRefinementAdapter:
         joint_state = await self.fabric.latest_optional("robot_arm.joint_state")
         joint_state_read_at_us = time.time_ns() // 1000
         feedback_age = self._arm_feedback_age(joint_state)
-        policy = self.profile["capture_motion_policy"]
+        policy = self._capture_motion_policy()
         timing_margin_us = int(policy["additional_camera_timing_margin_us"])
         rgb_timestamp_us = int(rgbd_timing["rgb_timestamp_us"])
         depth_timestamp_us = int(rgbd_timing["registered_depth_timestamp_us"])
@@ -771,7 +1021,6 @@ class ArmRootTranslationRefinementAdapter:
                 "active alignment",
             ),
             **arm,
-            "effector_profile_revision": self.profile["profile_revision"],
         }
 
     async def _invoke_vlm(self, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -849,7 +1098,7 @@ class ArmRootTranslationRefinementAdapter:
         return results
 
     def _arm_feedback_age(self, observation: Any) -> dict[str, Any]:
-        policy = self.profile["capture_motion_policy"]
+        policy = self._capture_motion_policy()
         fallback_ms = float(policy["fallback_arm_feedback_age_ms"])
         maximum_ms = float(policy["maximum_arm_feedback_age_ms"])
         preferred_observation_age_ms = float(
@@ -1022,7 +1271,7 @@ class ArmRootTranslationRefinementAdapter:
         session_epoch: str | None,
         label: str,
     ) -> dict[str, Any]:
-        policy = self.profile["capture_motion_policy"]
+        policy = self._capture_motion_policy()
         wait_s = float(policy["maximum_transform_wait_ms"]) / 1000.0
         retry_s = float(policy["transform_retry_interval_ms"]) / 1000.0
         deadline = time.monotonic() + wait_s
@@ -1162,14 +1411,6 @@ class ArmRootTranslationRefinementAdapter:
             raise RuntimeError("Skill RPC file is unavailable")
         return path
 
-    def _read_profile(self) -> dict[str, Any]:
-        if not self.profile_path.is_file():
-            raise RuntimeError(f"effector profile is unavailable: {self.profile_path}")
-        value = json.loads(self.profile_path.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise RuntimeError("effector profile must be an object")
-        return value
-
     @staticmethod
     def _text(source: dict[str, Any], field: str, scope: str) -> str:
         value = source.get(field)
@@ -1186,22 +1427,8 @@ def create_host_adapter(
 ) -> ArmRootTranslationRefinementAdapter:
     """Create the Skill-owned bridge against neutral platform services."""
 
-    profiles = manifest.get("effector_profiles")
-    if not isinstance(profiles, list) or len(profiles) != 1:
-        raise RuntimeError(
-            "translation-refinement manifest must declare exactly one default "
-            "effector profile"
-        )
-    profiles_root = (Path(skill_root) / "profiles").resolve()
-    profile_path = (Path(skill_root) / str(profiles[0])).resolve()
-    if profiles_root not in profile_path.parents:
-        raise RuntimeError(
-            "translation-refinement effector profile must remain inside the "
-            "Skill profiles directory"
-        )
     return ArmRootTranslationRefinementAdapter(
         skill_root=skill_root,
-        profile_path=profile_path,
         manager=services.manager,
         fabric=services.fabric,
         spatial=services.spatial,

@@ -27,7 +27,8 @@
         "REJECTED_QUALITY_REVIEW",
         "REJECTED_CONTEXT_CHANGED",
         "STALE_ACTIVE_REVISION",
-        "DEPENDENCY_UNAVAILABLE"
+        "DEPENDENCY_UNAVAILABLE",
+        "EFFECTOR_ALIGNMENT_UNAVAILABLE"
       ]
     },
     "workflow_complete": {"type": "boolean"},
@@ -140,7 +141,8 @@
             "SINGLE_SAMPLE",
             "ARITHMETIC_MEAN_OF_RAW_TRANSLATION_DELTAS",
             "INCOMPLETE_NO_UPDATE",
-            "NOT_STARTED_DEPENDENCY_UNAVAILABLE"
+            "NOT_STARTED_DEPENDENCY_UNAVAILABLE",
+            "NOT_STARTED_EFFECTOR_ALIGNMENT_UNAVAILABLE"
           ]
         },
         "aggregation_population": {

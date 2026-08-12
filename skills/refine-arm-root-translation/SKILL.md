@@ -44,13 +44,18 @@ does not belong in VLM prompts or arm-alignment mathematics.
 5. Require a trusted active rotation and a known tool-frame coordinate for the
    selected landmark. How the active alignment was initially established is
    outside this Skill's contract.
-6. Require the active arm model ID, arm model revision, arm-base frame, and
-   effector profile revision to match the selected profile before interpreting
-   FK. Keep arm-specific frame names, terminal-joint geometry, feedback timing
-   semantics, capture-motion limits, landmark bindings, and reference-asset IDs
-   in the profile. A
-   replacement effector or held tool needs a new profile revision with its own
-   qualified terminal-joint geometry and visual landmarks.
+6. Read `robot_arm.assembly_state` and use the exact Provider-owned mounted-
+   effector profile selected for Basic. Bind the run to its assembly ID,
+   assembly revision, assembly fingerprint, effector identity, effector
+   revision, and optional profile digest. Require those values and the active
+   arm model identity to remain unchanged before interpreting FK or updating
+   state. The optional namespaced
+   `midbrain.skill.refine_arm_root_translation.v1` extension owns arm-specific
+   timing policy, visual descriptions, point sets, landmark bindings, and
+   reference-image policy. If the selected effector omits that extension,
+   return `EFFECTOR_ALIGNMENT_UNAVAILABLE` without VLM work or state mutation;
+   the mounted effector remains valid for consumers that do not install or use
+   this Skill.
 7. Show the VLM both RGB and registered depth. Require separate RGB and depth
    coordinates for each named physical feature on the Skill-owned canonical
    0-to-1000 YX grid. Convert each coordinate deterministically to its own
@@ -67,9 +72,11 @@ does not belong in VLM prompts or arm-alignment mathematics.
    host into the same non-mutating evidence result. Let the host own RPC/VLM
    deadlines. Correlate every multiplexed request and response by RPC ID so a
    timeout or out-of-order completion cannot desynchronize the Skill protocol.
-8. Register each selected depth pixel independently in 3D. For paired
-   landmarks, calculate the mean of the registered 3D points, not a mean image
-   pixel.
+8. Register every profile-named depth pixel independently in 3D. A landmark
+   may declare one through eight points. Every declared point is mandatory:
+   reject missing, repeated, or extra points. Only after all points have valid
+   registered depth, calculate their arithmetic mean in 3D; never average image
+   pixels or use a partial-point mean.
 9. Estimate only the three arm-root translation parameters. Copy the active
    rotation without modification.
 10. Calculate the raw full translation delta before applying the caller's
@@ -133,17 +140,23 @@ using 5 samples." Treat "5x refinement" only as a friendly alias because it can
 otherwise sound like multiplying one correction instead of averaging five
 independent observations.
 
-The first profile observes the mean of the two lateral endpoints of the rigid
-neon-green Rail-Bracket on every default call. Keep the controller IK/FK origin
-at the gripper-tip midpoint. Apply the user-measured vector from rail center to
-controller tip as `[+0.080, 0, 0]` metres along controlled/final-joint +X. Store
-the solver-facing controlled-origin-to-observed-landmark point as the exact
-inverse `[-0.080, 0, 0]` metres. Rotate this offset with the timestamped
-controlled-frame FK. Reconstruct the controller-tip position from the observed
-rail center first, then solve the base translation while preserving base
-rotation exactly. Never add 80 mm in world or arm-base X and never ask the VLM
-to infer the tip. The profile also pins the current bare-gripper
-terminal-joint translation and rotation to the existing arm-model revision.
+The Provider-owned bare-gripper profile observes the mean of the two lateral
+endpoints of the rigid neon-green Rail-Bracket on every default call. Keep the
+controller IK/FK origin at the gripper-tip midpoint. Apply the user-measured
+vector from rail center to controller tip as `[+0.080, 0, 0]` metres along
+controlled-frame +X. Store the solver-facing controlled-origin-to-observed-
+landmark point as the exact inverse `[-0.080, 0, 0]` metres. Rotate this offset
+with the timestamped controlled-frame FK. Reconstruct the controller-tip
+position from the observed rail center first, then solve the base translation
+while preserving base rotation exactly. Never add 80 mm in world or arm-base X
+and never ask the VLM to infer the tip.
+
+The Provider-owned five-inch-blade profile instead requires the blade-side and
+rear endpoints of the military-green knife handle and uses their complete
+two-point 3D mean. Its initial unverified controlled-origin-to-handle-mean trial
+vector is `[-0.090, +0.010, -0.070]` metres. Both profiles mark swappable
+reference-image resolution as future work; their live VLM descriptions remain
+profile data and are usable without a reference image.
 
 The no-hardware-modification baseline is a profile-qualified rigid proximal
 feature with reliable depth and an explicit bidirectional offset to the
@@ -152,8 +165,10 @@ separately revised profile and is never a baseline dependency. Landmark
 substitution is explicit because each landmark owns a different controlled-
 frame coordinate.
 
-Versioned machine-readable schemas for the effector profile, both VLM outputs,
-the compact active state, and the refinement result are retained in `schemas`.
+The public mounted-effector schema validates the known alignment extension.
+The Skill retains a normalized internal profile schema plus versioned schemas
+for both VLM outputs, compact active state, and the refinement result in
+`schemas`.
 
 The timing margin is a conservative profile setting, not proof that every
 camera timestamps the exposure midpoint. Remaining sources of error include

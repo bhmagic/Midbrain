@@ -87,31 +87,46 @@ patterns.
 ### Keep replaceable-effector geometry in profiles
 
 Visual arm Skills should not hard-code one gripper, final-joint length, tool
-offset, landmark material, or VLM description into otherwise reusable
-alignment mathematics. The
+offset, landmark material, point count, VLM description, or reference-image
+choice into otherwise reusable alignment mathematics. The
 [`refine_arm_root_translation`](../skills/refine-arm-root-translation/SKILL.md)
 Skill demonstrates the profile boundary:
 
-- `robot_compatibility` names the arm model, base, terminal, and controlled
-  frames without making those names universal contracts;
-- `kinematic_attachment` pins the qualified final-joint-to-controlled-frame
-  geometry for that installed effector revision;
-- each visual landmark declares its physical point names, VLM description,
-  same-surface depth policy, separation bounds, and explicit bidirectional
-  controlled-frame offset;
+- Basic publishes the active Provider-owned mounted-effector profile through
+  `robot_arm.assembly_state`; the Skill must follow that selection and must not
+  maintain a second private effector selector;
+- strict core fields retain kinematics, controlled frames, collision geometry,
+  inertia, and actuator ownership for all mounted-effector consumers;
+- the optional namespaced
+  `extensions.midbrain.skill.refine_arm_root_translation.v1` object owns only
+  this Skill's timing policy, landmark descriptions, point sets, aggregation,
+  offsets, and reference-image policy;
+- each visual landmark declares one through eight physical point names. Every
+  declared point must be detected and registered; only the arithmetic mean of
+  the complete 3D point set is accepted;
 - the default bare-gripper landmark is a non-reflective proximal rail midpoint,
-  while the controller point remains the gripper tip; and
-- replacing the gripper or holding a rigid tool requires a new profile revision
-  with its own attachment and landmark relationship, not a conditional inside
-  the generic solver.
+  while the controller point remains the gripper tip;
+- the blade profile instead describes its two knife-handle endpoints and owns
+  its independent controlled-frame offset; and
+- replacing the gripper or fixed tool requires a new mounted-effector profile
+  revision with its own attachment and landmark relationship, not a
+  conditional inside the generic solver.
+
+The mounted-effector core remains closed to unknown ad hoc fields, while the
+`extensions` map is deliberately open to namespaced object-valued additions.
+Known extension namespaces are validated by the shared schema; unknown
+namespaces are preserved for their owning modules. This lets Basic use an
+effector when the VLM aligner is absent, and lets an effector omit the alignment
+extension when it is not qualified for visual refinement.
 
 Store both controlled-frame-to-landmark and landmark-to-controlled-frame
 vectors and validate that they are exact inverses. Rotate those vectors with
 timestamped controlled-frame FK; never reinterpret them as world or arm-base
 axis offsets. Profiles may change the landmark description when a tip becomes
-reflective or occluded without changing the refinement algorithm. Optional
-physical fiducials belong in separate profiles and must not become an implicit
-baseline requirement.
+reflective or occluded without changing the refinement algorithm. Reference
+images are profile-swappable policy but currently marked `FUTURE` until asset
+resolution is implemented. Optional physical fiducials belong in separate
+profile revisions and must not become an implicit baseline requirement.
 
 ## Connect another Agent framework
 

@@ -12,8 +12,67 @@ from jsonschema import validate
 import numpy as np
 
 from refine_arm_root_translation.host_adapter import (
+    ALIGNMENT_EXTENSION_ID,
     ArmRootTranslationRefinementAdapter,
 )
+
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _example_mounted_effector() -> dict:
+    return {
+        "schema": "midbrain.mounted_effector_profile",
+        "schema_version": 1,
+        "profile_id": "example_arm.example_effector",
+        "profile_revision": "example-effector-v1",
+        "display_name": "Example Effector",
+        "assembly_type": "REPLACEABLE_EFFECTOR",
+        "robot_compatibility": {
+            "model_id": "example_arm",
+            "model_revision": "example-arm-revision-1",
+            "terminal_frame": "example_terminal",
+        },
+        "kinematic_attachment": {
+            "parent_frame": "example_terminal",
+            "child_frame": "example_effector",
+            "transform": {
+                "translation_m": [0.0, 0.0, 0.1],
+                "rpy_rad": [0.0, 0.0, 0.0],
+            },
+            "qualification": "TEST",
+        },
+        "controlled_frame": {
+            "frame_id": "example_tool_point",
+            "parent_frame": "example_effector",
+            "transform": {
+                "translation_m": [0.0, 0.0, 0.0],
+                "rpy_rad": [0.0, 0.0, 0.0],
+            },
+            "semantic_role": "FREE_SPACE_CONTROLLED_FRAME",
+        },
+        "extensions": {
+            ALIGNMENT_EXTENSION_ID: {
+                "schema": "midbrain.effector_visual_alignment",
+                "schema_version": 1,
+                "arm_base_frame": "example_arm_base",
+                "capture_motion_policy": {
+                    "maximum_landmark_motion_m": 0.005,
+                    "additional_camera_timing_margin_us": 20_000,
+                    "arm_transform_timestamp_semantics": (
+                        "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE"
+                    ),
+                    "arm_feedback_age_field_path": ["data", "feedback_age_ms"],
+                    "fallback_arm_feedback_age_ms": 20.0,
+                    "maximum_arm_feedback_age_ms": 100.0,
+                    "preferred_arm_feedback_observation_age_ms": 100.0,
+                    "maximum_transform_wait_ms": 100.0,
+                    "transform_retry_interval_ms": 1.0,
+                    "temporal_sample_count": 5,
+                },
+            }
+        },
+    }
 
 
 class _Manager:
@@ -59,8 +118,9 @@ class _Manager:
 
 
 class _Fabric:
-    def __init__(self) -> None:
+    def __init__(self, mounted_effector: dict | None = None) -> None:
         self.transform_calls: list[dict] = []
+        self.mounted_effector = mounted_effector or _example_mounted_effector()
 
     async def latest_optional(self, stream: str):
         if stream == "robot_arm.model":
@@ -86,6 +146,30 @@ class _Fabric:
                         "timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
                         "freshness_verified": True,
                         "timestamp_uncertainty_us": 50,
+                    },
+                },
+            }
+        if stream == "robot_arm.assembly_state":
+            compatibility = self.mounted_effector["robot_compatibility"]
+            return {
+                "provider_id": "robot_arm.example",
+                "provider_instance_id": "arm-instance-1",
+                "boot_id": "arm-boot-1",
+                "data": {
+                    "schema": "midbrain.robot_assembly_state",
+                    "schema_version": 1,
+                    "assembly_id": "example-assembly",
+                    "assembly_revision": "example-assembly-v1",
+                    "assembly_fingerprint": "example-assembly-fingerprint",
+                    "arm_model_identity": {
+                        "model_id": compatibility["model_id"],
+                        "model_revision": compatibility["model_revision"],
+                    },
+                    "mounted_effector": json.loads(
+                        json.dumps(self.mounted_effector)
+                    ),
+                    "profile_file_sha256": {
+                        "mounted_effector": "a" * 64,
                     },
                 },
             }
@@ -237,6 +321,19 @@ class _EndToEndManager:
 
 
 class _EndToEndFabric(_Fabric):
+    def __init__(self) -> None:
+        mounted = json.loads(
+            (
+                WORKSPACE_ROOT
+                / "providers"
+                / "rebot_arm_dm"
+                / "profiles"
+                / "effectors"
+                / "rebot_b601_dm_bare_gripper.v2.json"
+            ).read_text(encoding="utf-8")
+        )
+        super().__init__(mounted_effector=mounted)
+
     async def latest_optional(self, stream: str):
         if stream == "robot_arm.model":
             return {
@@ -251,6 +348,12 @@ class _EndToEndFabric(_Fabric):
                 },
             }
         if stream == "robot_arm.joint_state":
+            observation = await super().latest_optional(stream)
+            return {
+                **observation,
+                "provider_id": "robot_arm.test",
+            }
+        if stream == "robot_arm.assembly_state":
             observation = await super().latest_optional(stream)
             return {
                 **observation,
@@ -410,64 +513,22 @@ class ArmRootTranslationRefinementAdapterTests(
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.skill_root = Path(self.temporary.name) / "generic-skill"
-        profiles = self.skill_root / "profiles"
-        profiles.mkdir(parents=True)
-        self.profile_path = profiles / "example_effector.v1.json"
-        self.profile_path.write_text(
-            json.dumps(
-                {
-                    "profile_revision": "example-effector-v1",
-                    "robot_compatibility": {
-                        "arm_base_frame": "example_arm_base",
-                        "controlled_frame": "example_tool_point",
-                    },
-                    "capture_motion_policy": {
-                        "maximum_landmark_motion_m": 0.005,
-                        "additional_camera_timing_margin_us": 20_000,
-                        "arm_feedback_age_field_path": [
-                            "data",
-                            "feedback_age_ms",
-                        ],
-                        "fallback_arm_feedback_age_ms": 20.0,
-                        "maximum_arm_feedback_age_ms": 100.0,
-                        "preferred_arm_feedback_observation_age_ms": 100.0,
-                        "maximum_transform_wait_ms": 100.0,
-                        "transform_retry_interval_ms": 1.0,
-                        "temporal_sample_count": 5,
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+        self.skill_root.mkdir(parents=True)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
     def _adapter(self) -> ArmRootTranslationRefinementAdapter:
-        return ArmRootTranslationRefinementAdapter(
+        adapter = ArmRootTranslationRefinementAdapter(
             skill_root=self.skill_root,
-            profile_path=self.profile_path,
             manager=_Manager(),
             fabric=_Fabric(),
             spatial=_Spatial(),
             vlm_router=_Vlm(),
             visual_evidence_store=_Evidence(),
         )
-
-    def test_profile_must_be_selected_inside_skill_profiles(self) -> None:
-        outside = Path(self.temporary.name) / "outside.json"
-        outside.write_text("{}", encoding="utf-8")
-
-        with self.assertRaisesRegex(ValueError, "profiles directory"):
-            ArmRootTranslationRefinementAdapter(
-                skill_root=self.skill_root,
-                profile_path=outside,
-                manager=_Manager(),
-                fabric=_Fabric(),
-                spatial=_Spatial(),
-                vlm_router=_Vlm(),
-                visual_evidence_store=_Evidence(),
-            )
+        adapter.profile = _example_mounted_effector()
+        return adapter
 
     async def test_host_rpc_preserves_manager_http_conflict(self) -> None:
         class _ConflictResponse:
@@ -486,13 +547,13 @@ class ArmRootTranslationRefinementAdapterTests(
 
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=self.skill_root,
-            profile_path=self.profile_path,
             manager=_ConflictManager(),
             fabric=_Fabric(),
             spatial=_Spatial(),
             vlm_router=_Vlm(),
             visual_evidence_store=_Evidence(),
         )
+        adapter.profile = _example_mounted_effector()
         sink = _RpcResponseSink()
         process = SimpleNamespace(stdin=sink)
 
@@ -540,14 +601,14 @@ class ArmRootTranslationRefinementAdapterTests(
                 for sample in temporal["base_from_tool_samples"]
             )
         )
-        self.assertEqual(temporal["arm_feedback_age_us"], 2_000)
+        self.assertEqual(temporal["arm_feedback_age_us"], 0)
         self.assertEqual(
             temporal["world_from_camera_temporal_provenance"]["at_us"],
             temporal["registered_depth_timestamp_us"],
         )
         self.assertEqual(
             temporal["fk_reference_timestamp_us"],
-            temporal["registered_depth_timestamp_us"] + 2_000,
+            temporal["registered_depth_timestamp_us"],
         )
 
     async def test_capture_rejects_fk_that_cannot_be_bracketed(self) -> None:
@@ -560,10 +621,14 @@ class ArmRootTranslationRefinementAdapterTests(
 
         adapter = self._adapter()
         adapter.fabric = _ExtrapolatingFabric()
-        adapter.profile["capture_motion_policy"][
+        adapter.profile["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ][
             "maximum_transform_wait_ms"
         ] = 5.0
-        adapter.profile["capture_motion_policy"][
+        adapter.profile["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ][
             "transform_retry_interval_ms"
         ] = 1.0
         with tempfile.TemporaryDirectory() as session:
@@ -600,7 +665,9 @@ class ArmRootTranslationRefinementAdapterTests(
         self,
     ) -> None:
         adapter = self._adapter()
-        adapter.profile["capture_motion_policy"][
+        adapter.profile["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ][
             "arm_transform_timestamp_semantics"
         ] = "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE"
         timing = adapter._arm_feedback_age(
@@ -628,7 +695,9 @@ class ArmRootTranslationRefinementAdapterTests(
         self,
     ) -> None:
         adapter = self._adapter()
-        adapter.profile["capture_motion_policy"][
+        adapter.profile["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ][
             "arm_transform_timestamp_semantics"
         ] = "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE"
 
@@ -669,9 +738,6 @@ class ArmRootTranslationRefinementAdapterTests(
         vlm = _DetectionVlm()
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
-            profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
-            ),
             manager=manager,
             fabric=_EndToEndFabric(),
             spatial=_EndToEndSpatial(),
@@ -706,9 +772,6 @@ class ArmRootTranslationRefinementAdapterTests(
         vlm = _ConcurrentDetectionVlm()
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
-            profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
-            ),
             manager=manager,
             fabric=_EndToEndFabric(),
             spatial=_EndToEndSpatial(),
@@ -741,6 +804,41 @@ class ArmRootTranslationRefinementAdapterTests(
         )
         validate(instance=result, schema=schema)
 
+    async def test_effector_without_alignment_extension_is_typed_unavailable(
+        self,
+    ) -> None:
+        workspace = Path(__file__).resolve().parents[4]
+        skill_root = workspace / "skills" / "refine-arm-root-translation"
+        skill_python = skill_root / ".venv" / "Scripts" / "python.exe"
+        if not skill_python.is_file():
+            self.skipTest("translation-refinement private venv is not installed")
+        fabric = _EndToEndFabric()
+        fabric.mounted_effector.pop("extensions")
+        vlm = _DetectionVlm()
+        adapter = ArmRootTranslationRefinementAdapter(
+            skill_root=skill_root,
+            manager=_EndToEndManager(),
+            fabric=fabric,
+            spatial=_EndToEndSpatial(),
+            vlm_router=vlm,
+            visual_evidence_store=_Evidence(),
+        )
+
+        result = await adapter.run(sample_count=3)
+
+        self.assertEqual(result["status"], "EFFECTOR_ALIGNMENT_UNAVAILABLE")
+        self.assertTrue(result["workflow_complete"])
+        self.assertFalse(result["state_update_applied"])
+        self.assertEqual(vlm.calls, 0)
+        schema = json.loads(
+            (
+                skill_root
+                / "schemas"
+                / "arm_root_translation_refinement.v1.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+        validate(instance=result, schema=schema)
+
     async def test_missing_arm_transform_returns_recoverable_dependency(
         self,
     ) -> None:
@@ -749,21 +847,21 @@ class ArmRootTranslationRefinementAdapterTests(
         skill_python = skill_root / ".venv" / "Scripts" / "python.exe"
         if not skill_python.is_file():
             self.skipTest("translation-refinement private venv is not installed")
+        fabric = _UnavailableLocalTransformFabric()
+        fabric.mounted_effector["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ]["maximum_transform_wait_ms"] = 5.0
+        fabric.mounted_effector["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ]["transform_retry_interval_ms"] = 1.0
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
-            profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
-            ),
             manager=_EndToEndManager(),
-            fabric=_UnavailableLocalTransformFabric(),
+            fabric=fabric,
             spatial=_EndToEndSpatial(),
             vlm_router=_DetectionVlm(),
             visual_evidence_store=_Evidence(),
         )
-        adapter.profile["capture_motion_policy"][
-            "maximum_transform_wait_ms"
-        ] = 5.0
-
         result = await adapter.run(sample_count=5)
 
         self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")
@@ -807,22 +905,21 @@ class ArmRootTranslationRefinementAdapterTests(
         if not skill_python.is_file():
             self.skipTest("translation-refinement private venv is not installed")
         fabric = _FailsAfterPreflightFabric()
+        fabric.mounted_effector["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ]["maximum_transform_wait_ms"] = 5.0
+        fabric.mounted_effector["extensions"][ALIGNMENT_EXTENSION_ID][
+            "capture_motion_policy"
+        ]["transform_retry_interval_ms"] = 1.0
         vlm = _DetectionVlm()
         adapter = ArmRootTranslationRefinementAdapter(
             skill_root=skill_root,
-            profile_path=(
-                skill_root / "profiles" / "rebot_b601_dm_gripper.v3.json"
-            ),
             manager=_EndToEndManager(),
             fabric=fabric,
             spatial=_EndToEndSpatial(),
             vlm_router=vlm,
             visual_evidence_store=_Evidence(),
         )
-        adapter.profile["capture_motion_policy"][
-            "maximum_transform_wait_ms"
-        ] = 5.0
-
         result = await adapter.run(sample_count=3)
 
         self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")

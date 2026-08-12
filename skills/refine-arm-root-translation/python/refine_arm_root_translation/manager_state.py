@@ -101,6 +101,13 @@ class ManagerCompactAlignmentStore:
             "arm_boot_id": arm_identity.get("arm_boot_id"),
             "arm_model_id": arm_identity.get("arm_model_id"),
             "arm_model_revision": arm_identity.get("arm_model_revision"),
+            "assembly_id": arm_identity.get("assembly_id"),
+            "assembly_revision": arm_identity.get("assembly_revision"),
+            "assembly_fingerprint": arm_identity.get("assembly_fingerprint"),
+            "effector_profile_id": arm_identity.get("effector_profile_id"),
+            "effector_profile_revision": arm_identity.get(
+                "effector_profile_revision"
+            ),
         }
         for field, value in required_arm_identity.items():
             if not isinstance(value, str) or not value.strip():
@@ -114,6 +121,23 @@ class ManagerCompactAlignmentStore:
             raise RuntimeError(
                 "current arm model revision does not match the effector profile"
             )
+        if required_arm_identity["effector_profile_id"] != self.profile["profile_id"]:
+            raise RuntimeError(
+                "current mounted-effector identity does not match the alignment profile"
+            )
+        if (
+            required_arm_identity["effector_profile_revision"]
+            != self.profile["profile_revision"]
+        ):
+            raise RuntimeError(
+                "current mounted-effector revision does not match the alignment profile"
+            )
+        effector_profile_sha256 = arm_identity.get("effector_profile_sha256")
+        if effector_profile_sha256 is not None and (
+            not isinstance(effector_profile_sha256, str)
+            or not effector_profile_sha256.strip()
+        ):
+            raise RuntimeError("current mounted-effector profile digest is invalid")
         identities = {
             "world_frame": self._record_text(record, "world_frame"),
             "vio_session_epoch": self._record_text(record, "session_epoch"),
@@ -129,7 +153,7 @@ class ManagerCompactAlignmentStore:
                 "camera_calibration_revision",
             ),
             **required_arm_identity,
-            "effector_profile_revision": self.profile["profile_revision"],
+            "effector_profile_sha256": effector_profile_sha256,
         }
         self._active_record = record
         self._source_pose = copy.deepcopy(source_pose)

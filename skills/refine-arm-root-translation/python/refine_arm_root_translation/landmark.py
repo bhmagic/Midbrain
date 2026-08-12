@@ -420,8 +420,10 @@ def build_landmark_prompt(
 ) -> str:
     point_ids = ", ".join(str(item) for item in landmark["required_point_ids"])
     return (
-        f"You are locating landmark {landmark['landmark_id']} on "
-        f"{profile['display_name']}. {landmark['description_for_vlm']} "
+        f"You are locating configured landmark {landmark['landmark_id']} for "
+        "the active mounted-effector profile. Profile identity and display-name "
+        "metadata are not visual classification requirements. Follow the "
+        f"profile landmark description: {landmark['description_for_vlm']} "
         "First identify each named physical feature in RGB. Then, in the "
         "registered-depth view, independently select a valid depth pixel whose "
         "sample belongs to the same physical surface. The separate registered-"
@@ -431,7 +433,10 @@ def build_landmark_prompt(
         "numeric pixel by default, a nearest foreground object, a reflection, "
         "the background, or a support surface. Return no points and mark the "
         "scene unsuitable if correspondence is uncertain. Required point IDs: "
-        f"{point_ids}. RGB grid is height={int(rgb_grid[0])}, "
+        f"{point_ids}. Every configured point is mandatory. The host rejects "
+        "a missing, repeated, or extra point and calculates the registered 3D "
+        "arithmetic mean only after every required point is present. RGB grid "
+        f"is height={int(rgb_grid[0])}, "
         f"width={int(rgb_grid[1])}. Registered-depth grid is "
         f"height={int(registered_depth_grid[0])}, "
         f"width={int(registered_depth_grid[1])}. Return exactly one JSON "

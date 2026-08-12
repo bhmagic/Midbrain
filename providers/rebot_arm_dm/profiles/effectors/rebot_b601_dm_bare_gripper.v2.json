@@ -2,7 +2,7 @@
   "schema": "midbrain.mounted_effector_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.bare_gripper",
-  "profile_revision": "rebot-b601-dm-bare-gripper-v2",
+  "profile_revision": "rebot-b601-dm-bare-gripper-v3",
   "display_name": "reBot B601-DM Bare Gripper",
   "assembly_type": "REPLACEABLE_EFFECTOR",
   "qualification": "DEVELOPMENT",
@@ -110,6 +110,127 @@
       ]
     }
   ],
+  "extensions": {
+    "midbrain.skill.refine_arm_root_translation.v1": {
+      "schema": "midbrain.effector_visual_alignment",
+      "schema_version": 1,
+      "qualification_state": "DEVELOPMENT",
+      "arm_base_frame": "rebot_arm_base",
+      "capture_motion_policy": {
+        "maximum_landmark_motion_m": 0.005,
+        "additional_camera_timing_margin_us": 20000,
+        "arm_transform_timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
+        "arm_feedback_age_field_path": ["data", "feedback_age_ms"],
+        "fallback_arm_feedback_age_ms": 20.0,
+        "maximum_arm_feedback_age_ms": 100.0,
+        "preferred_arm_feedback_observation_age_ms": 100.0,
+        "maximum_transform_wait_ms": 1500.0,
+        "transform_retry_interval_ms": 10.0,
+        "temporal_sample_count": 5,
+        "qualification": "DEVELOPMENT_DEFAULTS_REQUIRE_LIVE_TIMING_REFINEMENT",
+        "policy_note": "The DM arm transform timestamps use the measured joint-batch acquisition estimate. Exact transform bracketing and the measured landmark-motion bound remain authoritative."
+      },
+      "refinement_policy": {
+        "second_vlm_review_raw_delta_threshold_m": 0.005,
+        "maximum_raw_translation_delta_m": 0.1,
+        "maximum_adopted_translation_delta_m": 0.025,
+        "minimum_landmark_confidence": 0.75,
+        "minimum_same_surface_confidence": 0.75
+      },
+      "default_visual_alignment_landmark": "rail_lateral_endpoint_mean",
+      "landmark_fallback_policy": {
+        "selection_order": [
+          "rail_lateral_endpoint_mean",
+          "gripper_tip_pair_mean"
+        ],
+        "automatic_substitution_allowed": false,
+        "no_hardware_modification_strategy": "Prefer a qualified rigid proximal feature with reliable same-surface depth, such as the neon-green Rail-Bracket, when the controlled tip is reflective or occluded.",
+        "optional_physical_fiducial_policy": "A non-reflective fiducial may be added only in a separately revised mounted-effector profile and is not a baseline dependency."
+      },
+      "visual_alignment_landmarks": [
+        {
+          "landmark_id": "gripper_tip_pair_mean",
+          "display_name": "Bare gripper tip-pair mean",
+          "geometry": "MEAN_OF_REGISTERED_3D_POINTS",
+          "required_point_ids": [
+            "gripper_tip_left",
+            "gripper_tip_right"
+          ],
+          "aggregation_policy": {
+            "method": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS",
+            "requires_all_points": true,
+            "missing_point_policy": "REJECT_OBSERVATION"
+          },
+          "description_for_vlm": "Locate the foremost physical peak of each bare gripper jaw. Select the named peak in RGB, then independently select a valid registered-depth pixel on the same physical jaw-tip surface. Do not select the work object, background, highlight, or nearest unrelated foreground.",
+          "tool_point_binding": {
+            "source": "CONTROLLED_FRAME_ORIGIN",
+            "runtime_key": null,
+            "controlled_frame_to_landmark_translation_m": [0.0, 0.0, 0.0],
+            "landmark_to_controlled_frame_translation_m": [0.0, 0.0, 0.0],
+            "qualification": "USER_CONFIRMED_CURRENT_IK_FK_GRIPPER_TIP_POINT"
+          },
+          "pair_separation_m": {
+            "minimum": 0.001,
+            "maximum": 0.25,
+            "nominal": null,
+            "qualification": "JAW_STATE_DEPENDENT"
+          },
+          "visibility": {
+            "material_note": "Jaw peaks may be reflective or lack exact depth.",
+            "missing_exact_depth_policy": "VLM_RESELECT_ONCE_THEN_REJECT"
+          }
+        },
+        {
+          "landmark_id": "rail_lateral_endpoint_mean",
+          "display_name": "Neon-green Rail-Bracket lateral midpoint",
+          "geometry": "MEAN_OF_REGISTERED_3D_POINTS",
+          "required_point_ids": [
+            "rail_lateral_left",
+            "rail_lateral_right"
+          ],
+          "aggregation_policy": {
+            "method": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS",
+            "requires_all_points": true,
+            "missing_point_policy": "REJECT_OBSERVATION"
+          },
+          "description_for_vlm": "Always locate the two opposite lateral terminal-face centers of the rigid neon-green gripper Rail-Bracket, then use their mean as the observed rail center. Select the neon-green rail endpoints, not either jaw tip, not the space between the jaws, and not any work object. For each endpoint, select the physical feature in RGB and a valid registered-depth pixel on that same terminal face, slightly inside the silhouette rather than on a mixed foreground-background edge. Do not move either selection toward the gripper tip; the effector profile applies the measured rail-center-to-tip offset deterministically.",
+          "tool_point_binding": {
+            "source": "USER_MEASURED_RIGID_OFFSET",
+            "runtime_key": null,
+            "controlled_frame_to_landmark_translation_m": [-0.08, 0.0, 0.0],
+            "landmark_to_controlled_frame_translation_m": [0.08, 0.0, 0.0],
+            "qualification": "USER_MEASURED_2026_08_07",
+            "measurement_note": "The measured vector from the neon-green rail center to the controller IK/FK tip is +80 mm along controlled-frame +X. The solver consumes the exact inverse from the controlled-frame origin to the observed rail center."
+          },
+          "pair_separation_m": {
+            "minimum": 0.16,
+            "maximum": 0.20,
+            "nominal": 0.18406952,
+            "qualification": "CAD_BOUND_APPROXIMATION_REQUIRES_PHYSICAL_CONFIRMATION"
+          },
+          "visibility": {
+            "material_note": "The physical Rail-Bracket is strongly visible neon green.",
+            "missing_exact_depth_policy": "VLM_RESELECT_ONCE_THEN_REJECT"
+          },
+          "cad_asset_ids": [
+            "rebot_b601_dm.rail_bracket.step.v1",
+            "rebot_b601_dm.gripper_centered_mesh.v1",
+            "rebot_b601_dm.gripper_reference_atlas.v1"
+          ],
+          "relationship_to_controlled_frame": "MEASURED_RIGID_OFFSET_RAIL_CENTER_TO_IK_TIP_PLUS_X_0P080_M"
+        }
+      ],
+      "reference_image_policy": {
+        "implementation_status": "FUTURE",
+        "maximum_images_per_call": 3,
+        "note": "Reference-image asset resolution is intentionally deferred. The alignment remains usable from live RGB-D and the profile description without reference images."
+      },
+      "invalidation_conditions": [
+        "A configured visual landmark or its measured controlled-frame offset changes",
+        "The active mounted-effector identity, revision, or assembly fingerprint changes"
+      ]
+    }
+  },
   "invalidation_conditions": [
     "Effector replacement or remount",
     "Robot model or terminal-frame revision change",

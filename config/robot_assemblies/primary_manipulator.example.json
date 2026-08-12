@@ -2,7 +2,7 @@
   "schema": "midbrain.robot_assembly_selection",
   "schema_version": 1,
   "assembly_id": "primary_manipulator",
-  "assembly_revision": "rebot-b601-dm-5-inch-blade-development-v1",
+  "assembly_revision": "rebot-b601-dm-5-inch-blade-development-v2",
   "arm_resource_id": "robot_arm.primary",
   "arm_provider": {
     "provider_id": "robot_arm.rebot_dm",
@@ -27,7 +27,7 @@
       "relative_path": "profiles/effectors/rebot_b601_dm_5_inch_blade.v1.json",
       "expected_schema": "midbrain.mounted_effector_profile",
       "expected_id": "rebot_b601_dm.5_inch_blade",
-      "expected_revision": "rebot-b601-dm-5-inch-blade-v1",
+      "expected_revision": "rebot-b601-dm-5-inch-blade-v2",
       "sha256": null
     },
     "collision_geometry": {

@@ -1,6 +1,6 @@
 {
   "skill_type": "refine_arm_root_translation",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "display_name": "Refine Arm-Root Translation",
   "ui": {
     "observation": {
@@ -14,7 +14,7 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "refine_arm_root_translation",
-    "description": "Observe a profile-defined rigid effector landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The caller may request one to five independent samples; the Skill excludes failed samples, averages accepted raw corrections, and performs at most one compact state update. Slow arm motion is accepted only when sampled landmark motion stays within the profile limit. Adoption defaults to one. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
+    "description": "Follow Basic's active mounted-effector selection, observe its profile-defined rigid visual landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The configured landmark may contain one to eight required points; every point must be detected and registered independently before their 3D arithmetic mean is usable. The caller may request one to five independent samples; the Skill excludes failed samples, averages accepted raw corrections, and performs at most one compact state update. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
     "when_to_use": [
       "A valid world-to-arm-base alignment already exists and only its translation needs local refinement.",
       "A quick calibration update is useful between movements, or while the arm moves slowly enough to remain within the capture-time landmark-motion bound.",
@@ -27,7 +27,7 @@
     ],
     "side_effects": [
       "Before starting VLM work, the host verifies that the active arm provider identity, joint-state stream, and profile-selected local FK path are present and can bracket a current timestamp. A missing dependency returns a typed lifecycle recovery request without changing calibration state.",
-      "Reads one or more synchronized RGB and registered-depth observations plus bracketed timestamped arm FK and active calibration state.",
+      "Reads Basic's active assembly state and binds the selected mounted-effector identity, revision, and assembly fingerprint before reading synchronized RGB-D, bracketed FK, and active calibration state.",
       "Captures requested refinement samples sequentially from distinct RGB-D frames, then analyzes their independent VLM workflows concurrently. Each call carries a unique run/sample/phase request ID; a sample permits one exact-depth reselection only when needed and conditionally calls a quality-review VLM when its raw translation delta exceeds the configured review threshold.",
       "Returns a translation-only compare-and-swap update candidate and visual evidence; a Manager compare-and-swap conflict remains a structured non-applied result across the Skill process boundary; the Skill never commands, previews, or authorizes robot motion."
     ],
@@ -89,10 +89,10 @@
     "world.tracking.identity",
     "robot_arm.transforms.local",
     "robot_arm.model_identity",
+    "robot_arm.assembly_state",
     "perception.vision_language"
   ],
   "optional_capabilities": [
-    "assets.reference_images",
     "camera.rgbd.route.generic_shared_memory",
     "camera.rgbd.route.direct_shared_memory",
     "perception.object_pose"
@@ -134,9 +134,6 @@
     "activation_requires_atomic_revision_match": true,
     "visual_evidence_contract": "midbrain.visual_evidence.v1"
   },
-  "effector_profiles": [
-    "profiles/rebot_b601_dm_gripper.v3.json"
-  ],
   "installation": {
     "setup_entrypoint": "scripts/setup.ps1"
   },

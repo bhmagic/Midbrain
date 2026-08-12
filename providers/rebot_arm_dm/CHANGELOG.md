@@ -23,6 +23,15 @@ work.
 
 ## Unreleased
 
+- Move VLM arm-root translation alignment data from a Skill-private gripper
+  profile into optional namespaced extensions of the Provider-owned mounted-
+  effector profiles. The aligner now follows Basic's active assembly selection,
+  requires every configured landmark point before taking their 3D arithmetic
+  mean, and supports independently configurable VLM descriptions and rigid
+  controlled-frame offsets. The five-inch blade begins with a two-endpoint
+  military-green handle landmark and an unverified
+  `[-0.090, +0.010, -0.070]` m trial offset. Reference-image resolution remains
+  explicitly future work.
 - Record the final checked-in development values for the `5 inch blade`
   mounted-effector profile: 0.33 kg total effector mass, center of mass
   `[-0.165, 0.0, -0.03]` m in `end_link`, and the four operator-tuned temporary

@@ -52,6 +52,15 @@ qualification, and unavailable to every root or group lease. Active actuator
 groups plus inactive joints must account for the complete legacy model without
 overlap.
 
+A mounted-effector profile may also contain an optional `extensions` map for
+namespaced consumer configuration. Core mounted-effector fields remain strict;
+unknown extension keys must be namespaced and their values must be objects.
+The shared schema validates extensions it knows, while a consumer validates
+and owns only its namespace. Other consumers preserve unknown extensions and
+must not acquire the extension owner's duties. Therefore a missing visual-
+alignment extension does not invalidate Basic's mounted-effector selection; it
+only makes that alignment Skill unavailable for the selected effector.
+
 Changing a mounted effector invalidates existing previews, authorizations,
 tool registrations, payload assumptions, collision geometry, and controller
 qualification. Runtime attachment changes invalidate any preview that bound a

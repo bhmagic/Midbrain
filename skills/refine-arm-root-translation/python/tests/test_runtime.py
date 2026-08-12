@@ -8,11 +8,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from refine_arm_root_translation import TranslationRefinementSkill
+from refine_arm_root_translation import TranslationRefinementSkill, load_effector_profile
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_PATH = SKILL_ROOT / "profiles" / "rebot_b601_dm_gripper.v3.json"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+PROFILE_PATH = (
+    WORKSPACE_ROOT
+    / "providers"
+    / "rebot_arm_dm"
+    / "profiles"
+    / "effectors"
+    / "rebot_b601_dm_bare_gripper.v2.json"
+)
 IDENTITIES = {
     "world_frame": "local_vio/epoch-1",
     "vio_session_epoch": "epoch-1",
@@ -24,7 +32,12 @@ IDENTITIES = {
     "arm_boot_id": "arm-boot",
     "arm_model_id": "rebot_arm_b601_dm",
     "arm_model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
-    "effector_profile_revision": "rebot-b601-dm-gripper-alignment-v3",
+    "assembly_id": "primary_manipulator",
+    "assembly_revision": "test-assembly-v1",
+    "assembly_fingerprint": "assembly-fingerprint-test",
+    "effector_profile_id": "rebot_b601_dm.bare_gripper",
+    "effector_profile_revision": "rebot-b601-dm-bare-gripper-v3",
+    "effector_profile_sha256": None,
 }
 
 
@@ -1018,7 +1031,7 @@ def test_rail_landmark_sends_configured_cad_atlas_to_vlm(
             }
         ]
 
-    profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    profile = load_effector_profile(PROFILE_PATH)
     rail = next(
         item
         for item in profile["visual_alignment_landmarks"]

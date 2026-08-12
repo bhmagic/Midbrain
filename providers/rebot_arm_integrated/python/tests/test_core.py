@@ -559,22 +559,22 @@ class ControllerTests(unittest.TestCase):
             [
                 {
                     "primitive_id": "temporary_gripper_envelope_tip",
-                    "translation_m": [-0.005, 0.0, -0.07],
+                    "translation_m": [-0.005, 0.0, -0.08],
                     "radius_m": 0.005,
                 },
                 {
                     "primitive_id": "temporary_gripper_envelope_front",
-                    "translation_m": [-0.03, 0.0, -0.07],
+                    "translation_m": [-0.03, 0.0, -0.08],
                     "radius_m": 0.015,
                 },
                 {
                     "primitive_id": "temporary_gripper_envelope_middle",
-                    "translation_m": [-0.09, 0.0, -0.07],
+                    "translation_m": [-0.09, 0.0, -0.08],
                     "radius_m": 0.035,
                 },
                 {
                     "primitive_id": "temporary_gripper_envelope_rear",
-                    "translation_m": [-0.15, 0.0, -0.07],
+                    "translation_m": [-0.15, 0.0, -0.08],
                     "radius_m": 0.035,
                 },
             ],

@@ -107,8 +107,10 @@ def build_quality_review_prompt(
         or f"Locate the named profile points: {point_ids}."
     )
     return (
-        f"Quality-check the marked {landmark['landmark_id']} evidence for "
-        f"{profile['display_name']}. The raw XYZ arm-root translation delta is "
+        f"Quality-check the marked {landmark['landmark_id']} evidence for the "
+        "active mounted-effector profile. Profile identity and display-name "
+        "metadata are not visual classification requirements. The raw XYZ "
+        "arm-root translation delta is "
         f"{[float(item) for item in raw_translation_delta_m]} m with norm "
         f"{float(raw_translation_delta_norm_m):.6f} m. Confirm that every mark "
         "is on its named physical feature and that every marked registered-depth "

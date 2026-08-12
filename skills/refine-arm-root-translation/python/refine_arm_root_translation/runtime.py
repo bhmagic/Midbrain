@@ -1433,6 +1433,7 @@ class TranslationRefinementSkill:
         expected_identities = {
             "arm_model_id": compatibility["model_id"],
             "arm_model_revision": compatibility["model_revision"],
+            "effector_profile_id": self.profile["profile_id"],
             "effector_profile_revision": self.profile["profile_revision"],
         }
         for field, expected in expected_identities.items():

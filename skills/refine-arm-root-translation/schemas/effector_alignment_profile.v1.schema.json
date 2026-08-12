@@ -24,7 +24,7 @@
   "properties": {
     "schema": {"const": "midbrain.effector_alignment_profile"},
     "schema_version": {"const": 1},
-    "profile_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+    "profile_id": {"type": "string", "pattern": "^[a-z0-9_.-]{3,160}$"},
     "profile_revision": {"type": "string", "minLength": 3, "maxLength": 160},
     "display_name": {"type": "string", "minLength": 3, "maxLength": 160},
     "assembly_type": {"enum": ["FIXED_EFFECTOR", "REPLACEABLE_EFFECTOR", "MOUNTED_TOOL", "HELD_TOOL"]},
@@ -172,6 +172,7 @@
           "display_name",
           "geometry",
           "required_point_ids",
+          "aggregation_policy",
           "description_for_vlm",
           "tool_point_binding",
           "visibility"
@@ -186,6 +187,16 @@
             "maxItems": 8,
             "uniqueItems": true,
             "items": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"}
+          },
+          "aggregation_policy": {
+            "type": "object",
+            "required": ["method", "requires_all_points", "missing_point_policy"],
+            "properties": {
+              "method": {"const": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS"},
+              "requires_all_points": {"const": true},
+              "missing_point_policy": {"const": "REJECT_OBSERVATION"}
+            },
+            "additionalProperties": false
           },
           "description_for_vlm": {"type": "string", "minLength": 20},
           "tool_point_binding": {

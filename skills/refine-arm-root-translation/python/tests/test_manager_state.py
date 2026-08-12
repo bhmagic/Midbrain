@@ -82,6 +82,11 @@ def generic_effector_profile() -> dict:
                 "display_name": "Rigid housing center",
                 "geometry": "SINGLE_REGISTERED_3D_POINT",
                 "required_point_ids": ["housing_center"],
+                "aggregation_policy": {
+                    "method": "ARITHMETIC_MEAN_OF_ALL_REGISTERED_3D_POINTS",
+                    "requires_all_points": True,
+                    "missing_point_policy": "REJECT_OBSERVATION",
+                },
                 "description_for_vlm": (
                     "Locate the center of the rigid matte gripper housing face."
                 ),
@@ -159,6 +164,12 @@ async def generic_arm_identity(_record: dict) -> dict:
         "arm_boot_id": "arm-boot-1",
         "arm_model_id": "example_six_axis_arm",
         "arm_model_revision": "example-six-axis-arm-v3",
+        "assembly_id": "example-assembly",
+        "assembly_revision": "example-assembly-v1",
+        "assembly_fingerprint": "example-assembly-fingerprint",
+        "effector_profile_id": "example_parallel_gripper",
+        "effector_profile_revision": "example-parallel-gripper-v1",
+        "effector_profile_sha256": None,
     }
 
 
