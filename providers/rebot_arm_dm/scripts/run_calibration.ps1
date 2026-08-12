@@ -32,7 +32,7 @@ $process = Start-Process `
 $deadline = (Get-Date).AddSeconds(30)
 do {
     if ($process.HasExited) {
-        throw "Calibration GUI exited with code $($process.ExitCode)."
+        throw "Hardware Development GUI exited with code $($process.ExitCode)."
     }
     try {
         Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 1 | Out-Null
@@ -43,7 +43,7 @@ do {
     }
 } while ((Get-Date) -lt $deadline)
 if ((Get-Date) -ge $deadline) {
-    throw "Timed out waiting for the calibration GUI."
+    throw "Timed out waiting for the Hardware Development GUI."
 }
 if (-not $NoBrowser) {
     Start-Process "http://127.0.0.1:$Port/"

@@ -87,19 +87,20 @@ path and confirm:
 Stop immediately on an unexpected identity, direction, joint value, motor
 mode, communication fault, or command counter.
 
-## Calibration boundary
+## Calibration configuration and development UI boundary
 
-Factory model data is not measured installation calibration. Use the package's
-calibration workflow only with a separately reviewed range, collision model,
-load-bearing stiffness, powered support, padding, and an attended stop gate.
+Factory model data is not measured installation calibration. Basic consumes a
+reviewed machine-local calibration profile but does not generate one. The
+Hardware Development UI provides attended manual joint testing only; it does
+not estimate or write calibration parameters.
 
 See:
 
-- [Calibration workflow and mathematics](CALIBRATION.md)
+- [Hardware Development UI](DEVELOPMENT_UI.md)
 - [Safety behavior](SAFETY.md)
 
-Calibration output remains machine-local. Review it before allowing ordinary
-Provider startup to consume it.
+Provision and review calibration configuration separately before allowing
+ordinary Provider startup to consume it.
 
 ## Manager and Fabric operation
 

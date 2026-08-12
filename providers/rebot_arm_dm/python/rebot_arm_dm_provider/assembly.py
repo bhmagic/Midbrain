@@ -629,18 +629,3 @@ class RobotAssemblyConfiguration:
             "resource_groups": self.resource_groups(),
             "qualified_control_roles": copy.deepcopy(self.selection["qualified_control_roles"]),
         }
-
-    def update_calibration_binding(self, calibration: dict[str, Any]) -> None:
-        """Atomically bind a newly written calibration revision into the active selection."""
-        if str(calibration.get("model_id")) != str(self.profiles["arm_model"]["model_id"]):
-            raise AssemblyConfigurationError("new calibration model_id does not match the assembly")
-        reference = self.selection["profiles"]["calibration"]
-        reference["expected_revision"] = str(calibration["calibration_revision"])
-        raw = self.calibration_path.read_bytes()
-        if reference.get("sha256") is not None:
-            reference["sha256"] = hashlib.sha256(raw).hexdigest()
-        temporary = self.selection_path.with_suffix(self.selection_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(self.selection, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(self.selection_path)
-        self.profiles["calibration"] = copy.deepcopy(calibration)
-        self.profile_file_sha256["calibration"] = hashlib.sha256(raw).hexdigest()

@@ -1,7 +1,7 @@
-"""Calibration-GUI-only conservative collision checks.
+"""Hardware-Development-UI-only conservative current-pose collision checks.
 
 This module is not imported by the Basic Controller. It exists solely in the standalone
-calibration application and must not be treated as an operational planner.
+hardware development application and must not be treated as an operational planner.
 """
 from __future__ import annotations
 
@@ -75,29 +75,3 @@ class CalibrationCollisionGuard:
                 if margin<minimum_margin: minimum_margin=margin; corresponding_clearance=clearance; reason=f'link {i+1} approaches link {j+1}'; pair=[i,j]
         safe=bool(minimum_margin>=0.0)
         return CollisionResult(safe,float(corresponding_clearance),float(minimum_margin),None if safe else reason,pair)
-
-    def trajectory(self,states:list[list[float]],table_height_m:float,table_clearance_m:float) -> CollisionResult:
-        worst=CollisionResult(True,math.inf,math.inf,None,None)
-        for state in states:
-            result=self.check(state,table_height_m,table_clearance_m)
-            if result.minimum_safety_margin_m<worst.minimum_safety_margin_m: worst=result
-            if not result.safe: return result
-        return worst
-
-    def safe_interval(self,positions_rad:Any,joint_index:int,requested_min:float,requested_max:float,table_height_m:float,table_clearance_m:float) -> dict[str,Any]:
-        q=np.asarray(positions_rad,dtype=float); step=max(0.005,float(self.configuration['sampling'].get('joint_step_rad',0.02)))
-        if not requested_min <= float(q[joint_index]) <= requested_max:
-            return {'safe':False,'reason':'requested range must contain the current joint angle'}
-        grid=np.arange(requested_min,requested_max+step*0.5,step); safe=[]; clear=[]; margins=[]
-        for value in grid:
-            state=q.copy(); state[joint_index]=float(value); result=self.check(state,table_height_m,table_clearance_m)
-            safe.append(result.safe); clear.append(result.minimum_clearance_m); margins.append(result.minimum_safety_margin_m)
-        current=float(q[joint_index]); center=int(np.argmin(np.abs(grid-current)))
-        if not safe[center]: return {'safe':False,'reason':'current configuration is unsafe in the calibration model'}
-        lo=center; hi=center
-        while lo>0 and safe[lo-1]: lo-=1
-        while hi<len(grid)-1 and safe[hi+1]: hi+=1
-        angular_margin=max(step*2,math.radians(2.0)); minimum=float(grid[lo]+angular_margin); maximum=float(grid[hi]-angular_margin)
-        if minimum>=maximum: return {'safe':False,'reason':'collision-free interval is too small'}
-        return {'safe':True,'minimum_rad':minimum,'maximum_rad':maximum,'minimum_clearance_m':float(min(clear[lo:hi+1])),'minimum_safety_margin_m':float(min(margins[lo:hi+1])),
-                'requested_minimum_rad':requested_min,'requested_maximum_rad':requested_max}

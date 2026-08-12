@@ -11,7 +11,6 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 
-from rebot_arm_dm_provider.calibration import fit_two_parameter_friction, robust_fit
 from rebot_arm_dm_provider.assembly import AssemblyConfigurationError, RobotAssemblyConfiguration
 from rebot_arm_dm_provider.collision import CalibrationCollisionGuard
 from rebot_arm_dm_provider.controller import ArmController, CommandEnvelope, JointCommand, LeasePermissionError, ProviderState
@@ -143,7 +142,6 @@ class AssemblyConfigurationTests(unittest.TestCase):
             configuration,
             controller,
             kinematics,
-            assembly.calibration_path,
             '127.0.0.1',
             0,
             None,
@@ -1494,8 +1492,7 @@ class CoreTests(unittest.TestCase):
         controller.state=ProviderState.SAFE_HOME
         with tempfile.TemporaryDirectory() as temp:
             service=ArmProviderService(
-                self.config,controller,self.kin,Path(temp)/'calibration.json',
-                '127.0.0.1',0,None,None,True,True
+                self.config,controller,self.kin,'127.0.0.1',0,None,None,True,True
             )
             service.manager_registered=True
             with patch.object(
@@ -1514,18 +1511,6 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque); controller=ArmController(self.config,backend,self.dyn); controller.start()
         self.assertTrue(controller.enter_warm()); self.assertEqual(controller.state,ProviderState.DISCONNECTED)
         controller.start(); self.assertEqual(controller.state,ProviderState.READ_ONLY); controller.close(force=True)
-
-    def test_calibration_regression(self):
-        rng=np.random.default_rng(5); samples=[]
-        for t in np.linspace(0,20,2000):
-            q=.45*np.sin(.7*t)+.22*np.sin(1.9*t+.3)
-            qd=.315*np.cos(.7*t)+.418*np.cos(1.9*t+.3)
-            qdd=-.2205*np.sin(.7*t)-.7942*np.sin(1.9*t+.3)
-            g=2*np.sin(q)+.2*np.cos(.5*q)+.1
-            tau=1.08*g+.14*qdd+.09*np.tanh(qd/.03)+.04*qd-.03+rng.normal(0,.01)
-            samples.append({'time_s':float(t),'position_rad':float(q),'velocity_rad_s':float(qd),'acceleration_rad_s2':float(qdd),'nominal_gravity_nm':float(g),'measured_torque_nm':float(tau)})
-        fit=robust_fit(samples,True); self.assertTrue(fit.accepted); self.assertAlmostEqual(fit.gravity_scale,1.08,delta=.03); self.assertAlmostEqual(fit.effective_inertia,.14,delta=.03)
-
 
     def test_official_and_unity_control_defaults(self):
         expected=[(120.0,8.0,60.0),(120.0,8.0,60.0),(120.0,8.0,60.0),
@@ -1667,7 +1652,7 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         with tempfile.TemporaryDirectory() as temp:
-            service=ArmProviderService(self.config,controller,self.kin,Path(temp)/'calibration.json','127.0.0.1',0,None,None,True,True)
+            service=ArmProviderService(self.config,controller,self.kin,'127.0.0.1',0,None,None,True,True)
             service.start()
             self.assertEqual(controller.state,ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
             service.shutdown(False)
@@ -1676,7 +1661,7 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         with tempfile.TemporaryDirectory() as temp:
-            service=ArmProviderService(self.config,controller,self.kin,Path(temp)/'calibration.json','127.0.0.1',0,None,None,False,True)
+            service=ArmProviderService(self.config,controller,self.kin,'127.0.0.1',0,None,None,False,True)
             service.start()
             self.assertEqual(controller.state,ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
             self.assertFalse(service.health()['allow_hardware_calibration'])
@@ -1686,7 +1671,7 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         with tempfile.TemporaryDirectory() as temp:
-            service=ArmProviderService(self.config,controller,self.kin,Path(temp)/'calibration.json','127.0.0.1',0,None,None,False,True,True)
+            service=ArmProviderService(self.config,controller,self.kin,'127.0.0.1',0,None,None,False,True,True)
             service.start()
             self.assertEqual(controller.state,ProviderState.READ_ONLY)
             self.assertTrue(service.health()['read_only'])
@@ -1698,7 +1683,7 @@ class CoreTests(unittest.TestCase):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         with tempfile.TemporaryDirectory() as temp:
-            service=ArmProviderService(self.config,controller,self.kin,Path(temp)/'calibration.json','127.0.0.1',0,None,None,True,True)
+            service=ArmProviderService(self.config,controller,self.kin,'127.0.0.1',0,None,None,True,True)
             service.start()
             controller.acquire_lease('test',1000)
             with patch.object(controller,'safe_home',side_effect=AssertionError('safe-home must not run')):
@@ -1708,12 +1693,12 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(controller.last_float_reason,'test interrupt')
             service.shutdown(False)
 
-    def test_no_lease_forces_position_hold_back_to_gravity_float(self):
+    def test_no_lease_forces_manual_control_back_to_gravity_float(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)
         controller.start(); controller.enable()
         with controller.lock:
-            controller.state=ProviderState.CALIBRATION_POSITION_HOLD
+            controller.state=ProviderState.CALIBRATION_MANUAL
         time.sleep(0.05)
         self.assertEqual(controller.state,ProviderState.SAFE_HOLD_GRAVITY_FLOAT)
         self.assertEqual(controller.last_float_reason,'no active lease')
@@ -1732,7 +1717,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(controller.deadline_overrun_events,1)
         self.assertEqual(controller.missed_deadlines,expected_missed)
 
-    def test_manager_entry_enables_calibration_float_and_gui_has_reset(self):
+    def test_manager_entry_enables_attended_control_and_gui_has_manual_reset(self):
         entry=json.loads((ROOT/'config_templates'/'provider_entry.json').read_text())
         self.assertIn('--allow-hardware-calibration',entry['args'])
         launcher=(ROOT/'scripts'/'run_provider.ps1').read_text()
@@ -1741,10 +1726,10 @@ class CoreTests(unittest.TestCase):
         html=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'index.html').read_text()
         script=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'app.js').read_text()
         self.assertIn('reset-manual-defaults',html)
-        self.assertIn('reset-auto-defaults',html)
+        self.assertNotIn('reset-auto-defaults',html)
         self.assertIn('snapRowToMeasured',script)
         self.assertIn('target_rate_limit_rad_s',script)
-        self.assertIn('timeout_ms:150',script)
+        self.assertIn('timeout_ms: 150',script)
         self.assertIn('manual-motion-status',html)
 
 
@@ -1825,7 +1810,7 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn('event.preventDefault()',script)
         self.assertNotIn("event.code==='Space'",script)
         self.assertIn("window.addEventListener(eventName",script)
-        self.assertIn("state.activePointerId=event.pointerId",script)
+        self.assertIn("state.activePointerId = event.pointerId",script)
         self.assertIn('setManualSlidersEnabled(true)',script)
         self.assertIn('disabled aria-label=',script)
         self.assertIn('id="manual-motion-status"',html)
@@ -1833,96 +1818,38 @@ class CoreTests(unittest.TestCase):
     def test_manual_slider_release_remains_gravity_float_only(self):
         script=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'app.js').read_text()
         release=script[script.index('async function releaseDeadman'):script.index('function snapRowToMeasured')]
-        self.assertIn("api('/api/gravity-float','POST')",release)
+        self.assertIn("api('/api/gravity-float', 'POST')",release)
         self.assertIn('snapRowToMeasured(row)',release)
         self.assertNotIn("api('/api/safe-home'",release)
+
+    def test_abandoned_automatic_calibration_surface_is_absent(self):
+        root = ROOT / 'python' / 'rebot_arm_dm_provider'
+        script = (root / 'calibration_web' / 'app.js').read_text()
+        html = (root / 'calibration_web' / 'index.html').read_text()
+        gui = (root / 'calibration_gui.py').read_text()
+        service = (root / 'service.py').read_text()
+        controller = (root / 'controller.py').read_text()
+        manifest = json.loads((ROOT / 'manifest.json').read_text())
+
+        self.assertNotIn('data-tab="automatic"', html)
+        self.assertNotIn('/api/experiment', script)
+        self.assertNotIn('/api/experiment', gui)
+        self.assertNotIn('/api/apply-fit', gui)
+        self.assertNotIn('/api/collision/range', gui)
+        self.assertNotIn('/v1/calibration/experiment', service)
+        self.assertNotIn('/v1/calibration/apply-fit', service)
+        self.assertNotIn('CALIBRATION_POSITION_HOLD', controller)
+        self.assertFalse((root / 'calibration.py').exists())
+        self.assertFalse((root / 'replay_session.py').exists())
+        self.assertNotIn('robot_arm.calibration', manifest['capabilities'])
+        self.assertFalse(
+            manifest['calibration_utility']['automatic_calibration_supported']
+        )
 
     def test_collision_guard(self):
         guard=CalibrationCollisionGuard.load(self.kin,str(ROOT/'config_templates'/'calibration_collision_model.json'))
         result=guard.check(self.config.home_positions,table_height_m=-0.25,table_clearance_m=.01)
         self.assertTrue(np.isfinite(result.minimum_clearance_m))
-
-    def test_rich_calibration_fit_recovers_phase_and_asymmetric_friction(self):
-        rng=np.random.default_rng(11); samples=[]
-        gravity_scale=1.12; phase_offset=0.035; inertia=0.18; fc_pos=0.12; fc_neg=0.08; viscous=0.05; bias=-0.025
-        for t in np.linspace(0,30,3000):
-            q=.32*np.sin(.75*t)+.12*np.sin(2.1*t+.4)
-            qd=.24*np.cos(.75*t)+.252*np.cos(2.1*t+.4)
-            qdd=-.18*np.sin(.75*t)-.5292*np.sin(2.1*t+.4)
-            g=2.2*np.sin(q)+.3*np.cos(.4*q)
-            dg=2.2*np.cos(q)-.12*np.sin(.4*q)
-            sign=np.tanh(qd/.03)
-            friction=fc_pos*max(sign,0.0)+fc_neg*min(sign,0.0)+viscous*qd
-            tau=gravity_scale*g+(gravity_scale*phase_offset)*dg+inertia*qdd+friction+bias+rng.normal(0,.012)
-            samples.append({'time_s':float(t),'position_rad':float(q),'velocity_rad_s':float(qd),'acceleration_rad_s2':float(qdd),'nominal_gravity_nm':float(g),'gravity_gradient_nm_per_rad':float(dg),'measured_torque_nm':float(tau)})
-        fit=robust_fit(samples,True)
-        self.assertTrue(fit.accepted)
-        self.assertAlmostEqual(fit.gravity_scale,gravity_scale,delta=.04)
-        self.assertAlmostEqual(fit.gravity_phase_offset_rad,phase_offset,delta=.015)
-        self.assertAlmostEqual(fit.effective_inertia,inertia,delta=.04)
-        self.assertAlmostEqual(fit.coulomb_friction_positive_nm,fc_pos,delta=.03)
-        self.assertAlmostEqual(fit.coulomb_friction_negative_nm,fc_neg,delta=.03)
-
-    def test_automatic_calibration_uses_captured_pose_and_minimal_friction_excitation(self):
-        script=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'app.js').read_text()
-        html=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'index.html').read_text()
-        service=(ROOT/'python'/'rebot_arm_dm_provider'/'service.py').read_text()
-        self.assertIn('autoAnchorPose',script)
-        self.assertIn('anchor_positions_rad:anchor',script)
-        self.assertIn('Capture current gravity-float pose',html)
-        self.assertIn('value="0.16"',html)
-        self.assertIn('value="0.32"',html)
-        self.assertNotIn('include-inertia',html)
-        self.assertNotIn('id="passes"',html)
-        self.assertIn('save-raw-samples',html)
-        auto=script[script.index('async function startAutomatic'):script.index('function renderFit')]
-        self.assertNotIn("api('/api/safe-home'",auto)
-        self.assertIn('FRICTION_TWO_SPEED_POS_VEL_V2',service)
-        self.assertIn('friction_slow_positive',service)
-        self.assertIn('friction_slow_negative',service)
-        self.assertIn('friction_fast_positive',service)
-        self.assertIn('friction_fast_negative',service)
-        self.assertNotIn('static_hold_',service)
-
-
-    def test_two_parameter_friction_fit_cancels_factory_gravity(self):
-        rng=np.random.default_rng(21)
-        samples=[]
-        coulomb=0.11
-        viscous=0.075
-        for label,speed in (("slow",0.16),("fast",0.32)):
-            for direction in (1.0,-1.0):
-                phase=f"friction_{label}_{'positive' if direction>0 else 'negative'}"
-                for q in np.linspace(-0.35,0.35,180):
-                    velocity=direction*speed*(0.94+0.03*np.cos(3*q))
-                    gravity=1.8*np.sin(q)+0.22*np.cos(2*q)
-                    bias=0.06
-                    torque=gravity+bias+direction*coulomb+viscous*velocity+rng.normal(0,0.006)
-                    samples.append({
-                        'time_s':float(len(samples)*0.05),
-                        'phase':phase,
-                        'commanded_speed_rad_s':speed,
-                        'position_rad':float(q),
-                        'velocity_rad_s':float(velocity),
-                        'measured_torque_nm':float(torque),
-                        'nominal_gravity_nm':float(gravity),
-                    })
-        fit=fit_two_parameter_friction(samples)
-        self.assertTrue(fit.accepted)
-        self.assertTrue(fit.factory_gravity_retained)
-        self.assertAlmostEqual(fit.coulomb_friction_nm,coulomb,delta=0.02)
-        self.assertAlmostEqual(fit.viscous_friction_nm_per_rad_s,viscous,delta=0.03)
-
-    def test_experiment_keeps_speed_limited_hold_before_fit_and_file_work(self):
-        service=(ROOT/'python'/'rebot_arm_dm_provider'/'service.py').read_text()
-        hold=service.index('self.controller.request_position_hold(\n                "friction calibration motion completed"')
-        fit=service.index('fit=fit_two_parameter_friction(samples)')
-        write=service.index('self.recorder.write_result(path,result)')
-        self.assertLess(hold,fit)
-        self.assertLess(hold,write)
-        experiment=service[service.index('def _run_experiment_locked'):service.index('def _check_experiment_state')]
-        self.assertNotIn('request_gravity_float',experiment)
-        self.assertIn('"control_mode":"POSITION_VELOCITY_LIMITED"',experiment)
 
     def test_routine_polling_logs_are_suppressed(self):
         gui=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_gui.py').read_text()
@@ -1930,30 +1857,6 @@ class CoreTests(unittest.TestCase):
         self.assertIn("'/api/state'",gui)
         self.assertIn("'/api/collision/check'",gui)
         self.assertIn("'/v1/arm/state'",provider)
-        script=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'app.js').read_text()
-        self.assertIn("slice(-16)",script)
-
-    def test_friction_apply_does_not_modify_factory_gravity_fields(self):
-        backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
-        controller=ArmController(self.config,backend,self.dyn)
-        original=self.config.calibration_by_name['joint4'].copy()
-        with tempfile.TemporaryDirectory() as temp:
-            calibration_path=Path(temp)/'arm_calibration.json'
-            calibration_path.write_text(json.dumps(self.config.calibration))
-            service=ArmProviderService(self.config,controller,self.kin,calibration_path,'127.0.0.1',0,None,None,True,True)
-            result=service.apply_fit({'joint_index':3,'fit':{
-                'accepted':True,'friction_identifiable':True,'coulomb_friction_nm':0.12,
-                'viscous_friction_nm_per_rad_s':0.04,'factory_gravity_retained':True,
-                'condition_number':5.0,'pair_count':30,'slow_pair_count':15,'fast_pair_count':15,
-                'slow_speed_rad_s':0.16,'fast_speed_rad_s':0.32,
-            }})
-        updated=self.config.calibration_by_name['joint4']
-        self.assertEqual(updated.get('gravity_scale'),original.get('gravity_scale'))
-        self.assertEqual(updated.get('gravity_phase_offset_rad'),original.get('gravity_phase_offset_rad'))
-        self.assertEqual(updated.get('effective_inertia_kg_m2'),original.get('effective_inertia_kg_m2'))
-        self.assertAlmostEqual(updated['coulomb_friction_nm'],0.12)
-        self.assertAlmostEqual(updated['viscous_friction_nm_per_rad_s'],0.04)
-        self.assertTrue(result['factory_gravity_retained'])
 
     def test_gravity_phase_offset_is_applied_only_to_gravity_model(self):
         q=self.config.home_positions.copy(); q[1]=-0.7; q[2]=-0.5
@@ -1980,13 +1883,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(actual,expected)
         for index,joint in enumerate(self.config.model['joints']):
             self.assertEqual(float(joint['provider_test_caps']['min_kp']),expected[index])
-
-    def test_automatic_gui_does_not_request_float_between_joints(self):
-        script=(ROOT/'python'/'rebot_arm_dm_provider'/'calibration_web'/'app.js').read_text()
-        auto=script[script.index('async function startAutomatic'):script.index('function renderFit')]
-        self.assertNotIn("api('/api/gravity-float'",auto)
-        self.assertIn('Speed-limited position hold remains active',auto)
-
 
     def test_safe_home_kp_is_never_below_load_bearing_floor(self):
         configured=np.asarray(self.config.model['control']['safe_home_kp'],dtype=float)
@@ -2190,7 +2086,6 @@ class PlatformIsolationTests(unittest.TestCase):
             config,
             controller,
             kin,
-            Path(temporary.name)/'calibration.json',
             '127.0.0.1',
             0,
             'http://manager',
@@ -2304,7 +2199,6 @@ class MidbrainAuditTests(unittest.TestCase):
             self.config,
             controller,
             self.kin,
-            Path(temp.name) / 'calibration.json',
             '127.0.0.1',
             0,
             None,
@@ -2319,6 +2213,194 @@ class MidbrainAuditTests(unittest.TestCase):
             else None
         )
         return service, controller
+
+    def configure_resource_groups(self, controller):
+        controller.configure_resource_groups(
+            'robot_arm.primary',
+            [
+                {
+                    'resource_id': 'robot_arm.primary/arm',
+                    'joint_names': [
+                        'joint1', 'joint2', 'joint3',
+                        'joint4', 'joint5', 'joint6',
+                    ],
+                },
+                {
+                    'resource_id': 'robot_arm.primary/gripper',
+                    'joint_names': ['gripper'],
+                },
+            ],
+        )
+
+    def test_calibration_root_lease_round_trips_renewal_response(self):
+        service, controller = self.make_service()
+        acquired = service.acquire_lease(
+            {'holder': 'standalone_calibration_gui', 'duration_ms': 2000}
+        )
+
+        first_renewal = service.renew_lease(
+            {**acquired, 'duration_ms': 2000}
+        )
+        second_renewal = service.renew_lease(
+            {**first_renewal, 'duration_ms': 2000}
+        )
+
+        self.assertEqual(first_renewal['resource_id'], controller.resource_root)
+        self.assertEqual(second_renewal['resource_id'], controller.resource_root)
+        self.assertIsNotNone(controller.lease)
+        self.assertEqual(controller.lease.lease_id, acquired['lease_id'])
+        self.assertFalse(controller.group_leases)
+
+    def test_operational_root_resource_round_trips_through_all_entrypoints(self):
+        service, controller = self.make_service()
+        service.manager_registered = True
+        lease = service.acquire_operational_lease({
+            'holder': 'legacy-root-controller',
+            'duration_ms': 2000,
+            'resource_id': controller.resource_root,
+        })
+        renewed = service.renew_operational_lease(
+            {**lease, 'duration_ms': 2000}
+        )
+
+        payload_result = service.operational_payload({
+            **renewed,
+            'mass_kg': 0.2,
+            'com_tool_m': [0.0, 0.0, 0.05],
+        })
+        with (
+            patch.object(controller, 'submit', wraps=controller.submit) as submit,
+            patch.object(controller, 'submit_group', wraps=controller.submit_group)
+            as submit_group,
+        ):
+            command_result = service.operational_command({
+                **renewed,
+                'command_id': 'root-round-trip-command',
+                'commands': [],
+                'timeout_ms': 500,
+            })
+        with (
+            patch.object(
+                controller,
+                'request_gravity_float',
+                wraps=controller.request_gravity_float,
+            ) as request_root_float,
+            patch.object(
+                controller,
+                'request_group_float',
+                wraps=controller.request_group_float,
+            ) as request_group_float,
+        ):
+            float_result = service.handle_manager_request({
+                'action': 'gravity_float',
+                'payload': {
+                    'reason': 'root round-trip test',
+                    'resource_id': controller.resource_root,
+                },
+            })
+        release_result = service.release_operational_lease(renewed)
+
+        self.assertEqual(renewed['resource_id'], controller.resource_root)
+        self.assertEqual(payload_result['status'], 'payload_updated')
+        self.assertEqual(command_result['resource_id'], controller.resource_root)
+        submit.assert_called_once()
+        submit_group.assert_not_called()
+        request_root_float.assert_called_once_with('root round-trip test')
+        request_group_float.assert_not_called()
+        self.assertEqual(float_result['status'], 'gravity_float')
+        self.assertEqual(release_result, {
+            'status': 'released_gravity_float',
+            'resource_id': controller.resource_root,
+        })
+        self.assertIsNone(controller.lease)
+        self.assertFalse(controller.group_leases)
+
+    def test_operational_child_resource_keeps_group_routing(self):
+        service, controller = self.make_service()
+        self.configure_resource_groups(controller)
+        service.manager_registered = True
+        arm_resource = 'robot_arm.primary/arm'
+
+        with self.assertRaisesRegex(LeasePermissionError, 'unknown actuator resource'):
+            service.acquire_operational_lease({
+                'holder': 'unknown-controller',
+                'duration_ms': 2000,
+                'resource_id': 'robot_arm.primary/unknown',
+            })
+
+        lease = service.acquire_operational_lease({
+            'holder': 'integrated-free-space',
+            'duration_ms': 2000,
+            'resource_id': arm_resource,
+        })
+        renewed = service.renew_operational_lease(
+            {**lease, 'duration_ms': 2000}
+        )
+        payload_result = service.operational_payload({
+            **renewed,
+            'mass_kg': 0.2,
+            'com_tool_m': [0.0, 0.0, 0.05],
+        })
+        with (
+            patch.object(controller, 'submit', wraps=controller.submit) as submit,
+            patch.object(controller, 'submit_group', wraps=controller.submit_group)
+            as submit_group,
+        ):
+            command_result = service.operational_command({
+                **renewed,
+                'command_id': 'group-round-trip-command',
+                'commands': [{
+                    'joint_index': 0,
+                    'mode': 'IMPEDANCE',
+                    'values': {
+                        'position_rad': 0.1,
+                        'velocity_rad_s': 0.0,
+                        'target_rate_limit_rad_s': 0.25,
+                        'kp': 120.0,
+                        'kd': 1.0,
+                        'feedforward_torque_nm': 0.0,
+                    },
+                }],
+                'timeout_ms': 500,
+            })
+        with (
+            patch.object(
+                controller,
+                'request_gravity_float',
+                wraps=controller.request_gravity_float,
+            ) as request_root_float,
+            patch.object(
+                controller,
+                'request_group_float',
+                wraps=controller.request_group_float,
+            ) as request_group_float,
+        ):
+            float_result = service.handle_manager_request({
+                'action': 'gravity_float',
+                'payload': {
+                    'reason': 'group routing test',
+                    'resource_id': arm_resource,
+                },
+            })
+        release_result = service.release_operational_lease(renewed)
+
+        self.assertEqual(renewed['resource_id'], arm_resource)
+        self.assertEqual(payload_result['status'], 'payload_updated')
+        self.assertEqual(command_result['resource_id'], arm_resource)
+        submit.assert_not_called()
+        submit_group.assert_called_once()
+        request_root_float.assert_not_called()
+        request_group_float.assert_called_once_with(
+            arm_resource,
+            'group routing test',
+        )
+        self.assertEqual(float_result['status'], 'group_gravity_float')
+        self.assertEqual(release_result, {
+            'status': 'released_gravity_float',
+            'resource_id': arm_resource,
+        })
+        self.assertIsNone(controller.lease)
+        self.assertFalse(controller.group_leases)
 
     def test_operational_motion_requires_manager_and_clear_inhibit(self):
         service, controller = self.make_service()

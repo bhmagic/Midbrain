@@ -4,7 +4,10 @@
 
 The Basic Controller is the sole owner of the motor device. It contains no desktop geometry, self-collision model, general obstacle map, or MoveIt dependency. Its local safety boundary consists of command freshness, lease fencing, joint limits, speed/torque caps, motor health, powered support, and safe-home.
 
-The calibration application is a separate client. It owns the temporary desktop plane, simplified collision bodies, calibration trajectories, and user workspace confirmation.
+The Hardware Development UI is a separate attended client. It owns the
+temporary desktop plane and simplified collision display. It does not own or
+execute automatic trajectories and cannot write the active calibration
+profile.
 
 ## Safety authority
 
@@ -20,7 +23,6 @@ velocity damping and is not a substitute for the enforced `kp` floor.
 - `DISCONNECTED`: no device.
 - `READ_ONLY`: feedback and publication, no commanded motion.
 - `CALIBRATION_MANUAL`: a valid calibration lease controls bounded motion.
-- `CALIBRATION_POSITION_HOLD`: all joints held by motor-side `POSITION_VELOCITY_LIMITED`; used throughout automatic calibration and result processing.
 - `TRAJECTORY_CONTROL`: reserved for the planning provider.
 - `SAFE_HOLD_GRAVITY_FLOAT`: factory gravity torque plus high-`kp` MIT whose position target follows measured position each cycle.
 - `SAFE_HOME`: powered movement to the configured home vector.
@@ -32,15 +34,20 @@ velocity damping and is not a substitute for the enforced `kp` floor.
 
 - `IMPEDANCE`: MIT position, velocity, spring stiffness `kp`, velocity damping `kd`, and feed-forward torque.
 - `POSITION_VELOCITY_LIMITED`: motor-side position with velocity limit.
-- `VELOCITY`: continuous velocity command; excluded from the calibration GUI.
+- `VELOCITY`: continuous velocity command; excluded from the Hardware Development UI.
 - `POSITION_EFFORT_LIMITED`: motor-side force-limited position using target, velocity limit, and torque ratio.
 
-## Automatic calibration boundary
+## Hardware Development UI boundary
 
-Automatic calibration uses only `POSITION_VELOCITY_LIMITED` and includes all
-seven joints in every request, preventing an uncommanded joint from falling
-back to another mode. The attended sequence and fitted model are defined in
-[Automatic friction calibration](CALIBRATION.md).
+The attended UI uses a fenced root lease and exposes only bounded manual joint
+commands, gravity float, and safe home. Missing `resource_id` and the canonical
+root resource ID both select root authority. Only a declared child resource ID
+selects actuator-group authority. Service responses include the canonical
+resource ID so clients can round-trip their exact authority scope.
+
+The UI's collision check evaluates only the current measured pose against its
+local simplified model. It is diagnostic evidence, not a range approver or an
+operational planner. See [Hardware Development UI](DEVELOPMENT_UI.md).
 
 ## Timing
 

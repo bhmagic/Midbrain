@@ -55,7 +55,7 @@ def main() -> int:
     kinematics=RebotKinematics(configuration.model); dynamics=RebotDynamics(configuration,kinematics)
     backend=SimulationBackend(configuration,dynamics.calibrated_gravity_torque) if args.simulate else MotorBridgeBackend(configuration,args.port,args.baudrate)
     controller=ArmController(configuration,backend,dynamics)
-    service=ArmProviderService(configuration,controller,kinematics,calibration_path,args.listen_host,args.listen_port,
+    service=ArmProviderService(configuration,controller,kinematics,args.listen_host,args.listen_port,
                                args.manager_url,args.fabric_url,args.allow_hardware_calibration,args.simulate,args.read_only,
                                assembly)
     shutdown_started = False
