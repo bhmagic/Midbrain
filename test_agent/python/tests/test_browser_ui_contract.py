@@ -409,6 +409,13 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("refreshWorldAnnotations", app)
         self.assertIn('sphere.get("sphere_id")', app)
         self.assertIn('"visualization_limit": 240', app)
+        self.assertIn('"boxes": list(boxes.values())', app)
+        self.assertIn("function boxLineVertices(corners)", app)
+        self.assertIn(
+            "syncAnnotationLabels([...worldAnnotationMarkers, ...worldAnnotationBoxes])",
+            app,
+        )
+        self.assertIn('"show_label": False', app)
         self.assertIn("scene display ${displayedSceneCount}/${sourceSceneCount}", app)
         self.assertIn(
             "Only user-declared KEEP_OUT geometry is blocking",

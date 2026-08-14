@@ -37,6 +37,11 @@ clearance to `KEEP_OUT`, and applies zero additional clearance to
 `WORK_OBJECT`. Zero additional margin is not contact permission: robot and
 object geometry still may not intersect.
 
+The collision consumer accepts canonical sphere layers named
+`GRIPPER_0P5M`, `ARM_BASE_1P2M`, and `HAND_ANGULAR_4PI`. The last is a bounded
+hand-centric level-of-detail producer profile, not a different collision
+primitive: all hits arrive as ordinary base-frame spheres.
+
 General obstacle rerouting is not implemented. The controller does not invent
 a clearance-Z or lateral path because those templates can create surprising
 motion unrelated to observed obstacle geometry. If the direct path cannot

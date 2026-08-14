@@ -770,6 +770,12 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
                             "health": "DEGRADED",
                             "ready": False,
                             "expired": False,
+                            "details": {
+                                "last_error": "semantic coverage is unavailable",
+                                "diagnostics": {
+                                    "status": "WAITING_FOR_INITIAL_VLM_ANNOTATION"
+                                },
+                            },
                         },
                     }
                 ]
@@ -806,7 +812,202 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["lifecycle_request_complete"])
         self.assertEqual(result["readiness"]["status"], "TIMED_OUT")
         self.assertFalse(result["readiness"]["provider_ready"])
+        self.assertEqual(
+            result["readiness"]["provider"]["last_error"],
+            "semantic coverage is unavailable",
+        )
+        self.assertEqual(
+            result["readiness"]["provider"]["diagnostics"]["status"],
+            "WAITING_FOR_INITIAL_VLM_ANNOTATION",
+        )
         self.assertIn("did not become HOT and ready", result["agent_instruction"])
+
+    async def test_hot_timeout_reports_manager_resolved_dependency_diagnostics(
+        self,
+    ) -> None:
+        class _SceneManager(_Manager):
+            async def providers(self):
+                return [
+                    {
+                        "config": {"id": "world_model.arm_scene_compiler"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "world_model.arm_scene_compiler",
+                            "residency": "HOT",
+                            "health": "DEGRADED",
+                            "ready": False,
+                            "expired": False,
+                            "details": {
+                                "last_error": (
+                                    "REQUIRED_SEMANTIC_COVERAGE_UNAVAILABLE"
+                                )
+                            },
+                        },
+                    },
+                    {
+                        "config": {"id": "perception.sam2_scene_tracker"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "perception.sam2_scene_tracker",
+                            "residency": "HOT",
+                            "health": "DEGRADED",
+                            "ready": False,
+                            "expired": False,
+                            "details": {
+                                "last_error": "semantic coverage is not ready",
+                                "diagnostics": {
+                                    "status": "WAITING_FOR_INITIAL_VLM_ANNOTATION"
+                                },
+                            },
+                        },
+                    },
+                ]
+
+            async def set_residency(self, provider_id: str, action: str):
+                return {
+                    "provider_id": provider_id,
+                    "action": action,
+                    "manager_hot_dependencies": [
+                        "perception.sam2_scene_tracker"
+                    ],
+                }
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_SceneManager(),
+            developer_mode=True,
+            provider_hot_readiness_timeout_s=0.001,
+            provider_hot_readiness_timeout_overrides_s={
+                "world_model.arm_scene_compiler": 0.005
+            },
+            provider_hot_readiness_poll_interval_s=0.001,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                None,
+                json.dumps(
+                    {
+                        "provider_id": "world_model.arm_scene_compiler",
+                        "action": "hot",
+                        "required_capability": "world_model.arm.semantic_scene",
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(result["readiness"]["timeout_s"], 0.005)
+        self.assertEqual(
+            result["readiness"]["provider"]["last_error"],
+            "REQUIRED_SEMANTIC_COVERAGE_UNAVAILABLE",
+        )
+        self.assertEqual(
+            result["readiness"]["dependencies"][0]["provider_id"],
+            "perception.sam2_scene_tracker",
+        )
+        self.assertEqual(
+            result["readiness"]["dependencies"][0]["diagnostics"]["status"],
+            "WAITING_FOR_INITIAL_VLM_ANNOTATION",
+        )
+
+    async def test_hot_readiness_stops_on_structured_external_prerequisite(
+        self,
+    ) -> None:
+        class _BlockedSceneManager(_Manager):
+            async def providers(self):
+                return [
+                    {
+                        "config": {"id": "world_model.arm_scene_compiler"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "world_model.arm_scene_compiler",
+                            "residency": "HOT",
+                            "health": "DEGRADED",
+                            "ready": False,
+                            "expired": False,
+                        },
+                    },
+                    {
+                        "config": {"id": "perception.sam2_scene_tracker"},
+                        "process_state": "running",
+                        "report": {
+                            "provider_id": "perception.sam2_scene_tracker",
+                            "residency": "HOT",
+                            "health": "DEGRADED",
+                            "ready": False,
+                            "expired": False,
+                            "details": {
+                                "diagnostics": {
+                                    "status": (
+                                        "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_"
+                                        "2D_TRACKING_ACTIVE"
+                                    ),
+                                    "blocking_prerequisite": {
+                                        "status": "TRANSFORM_UNAVAILABLE",
+                                        "requires_external_action": True,
+                                        "from_frame": "camera",
+                                        "to_frame": "rebot_arm_base",
+                                    },
+                                }
+                            },
+                        },
+                    },
+                ]
+
+            async def set_residency(self, provider_id: str, action: str):
+                return {
+                    "provider_id": provider_id,
+                    "action": action,
+                    "manager_hot_dependencies": [
+                        "perception.sam2_scene_tracker"
+                    ],
+                }
+
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_BlockedSceneManager(),
+            developer_mode=True,
+            provider_hot_readiness_timeout_s=30.0,
+            provider_hot_readiness_poll_interval_s=0.001,
+        )
+        tool = {
+            candidate.name: candidate for candidate in driver.agent.tools
+        }["set_provider_residency"]
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                None,
+                json.dumps(
+                    {
+                        "provider_id": "world_model.arm_scene_compiler",
+                        "action": "hot",
+                        "required_capability": "world_model.arm.semantic_scene",
+                    }
+                ),
+            )
+        )
+
+        self.assertEqual(
+            result["readiness"]["status"],
+            "BLOCKED_BY_PREREQUISITE",
+        )
+        self.assertFalse(result["lifecycle_request_complete"])
+        self.assertEqual(
+            result["readiness"]["blocking_prerequisites"][0]["status"],
+            "TRANSFORM_UNAVAILABLE",
+        )
+        self.assertIn("external prerequisite", result["agent_instruction"])
 
     async def test_start_dependency_timeout_requires_exact_hot_continuation(
         self,

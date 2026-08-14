@@ -14,7 +14,8 @@ SUPPORTED_OBJECT_TYPES = {KEEP_OUT, PUSHABLE, WORK_OBJECT}
 SCENE_CONTRACT_VERSION = 2
 GRIPPER_ROI = "GRIPPER_0P5M"
 ARM_BASE_ROI = "ARM_BASE_1P2M"
-SUPPORTED_ROI_SCOPES = {GRIPPER_ROI, ARM_BASE_ROI}
+HAND_ANGULAR_ROI = "HAND_ANGULAR_4PI"
+SUPPORTED_ROI_SCOPES = {GRIPPER_ROI, ARM_BASE_ROI, HAND_ANGULAR_ROI}
 ROI_LIMITS = {
     GRIPPER_ROI: {
         "radius_m": 0.5,
@@ -23,6 +24,10 @@ ROI_LIMITS = {
     ARM_BASE_ROI: {
         "radius_m": 1.2,
         "minimum_sphere_radius_m": 0.06,
+    },
+    HAND_ANGULAR_ROI: {
+        "radius_m": 1.5,
+        "minimum_sphere_radius_m": 0.005,
     },
 }
 

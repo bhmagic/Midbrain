@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -186,7 +186,8 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "description for the independent SAM2 arm exclusion mask. "
                 "Unclaimed visible geometry remains PUSHABLE and non-blocking. "
                 "After publishing, request only "
-                "world_model.arm_scene_compiler HOT; Manager owns transitive "
+                "world_model.arm_scene_compiler HOT with exact required_capability="
+                "world_model.arm.semantic_scene; Manager owns transitive "
                 "activation of its declared SAM2, camera, and Basic "
                 "dependencies. Then call inspect_arm_semantic_scene. Do not "
                 "report that the scan worked "
@@ -220,8 +221,48 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "roll",
             "toilet paper",
             "workpiece",
+            "work piece",
         )
     )
+    bounds_terms = any(
+        term in normalized
+        for term in (
+            "bounding box",
+            "aabb",
+            "corner",
+            "right-forward",
+            "right forward",
+            "left-forward",
+            "left forward",
+            "right-backward",
+            "right backward",
+            "left-backward",
+            "left backward",
+        )
+    )
+    if item_terms and bounds_terms:
+        return {
+            "route": "SEMANTIC_WORK_OBJECT_BOUNDS",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                "inspect_arm_semantic_scene",
+                "tool_search",
+            },
+            "instruction": (
+                "This request refers to a work-object bound or named corner. "
+                "Use inspect_arm_semantic_scene and select the fresh "
+                "VISIBLE_SURFACE_AABB whose object_id or description matches "
+                "the requested object. Use only its named corners_m values "
+                "and report frame_id, observed_at_us, expires_at_us, and that "
+                "the extent covers the currently visible surface. In the "
+                "canonical arm-base convention, forward is +X, right is -Y, "
+                "and up is +Z. Do not substitute the first sphere or infer a "
+                "tracked solid extent. If no matching fresh AABB exists, "
+                "report that explicitly instead of guessing. This route is "
+                "read-only and never authorizes movement."
+            ),
+        }
     location_terms = any(
         term in normalized
         for term in ("locate", "location", "position", "where", "identify")
@@ -233,6 +274,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "inspect_midbrain_runtime",
                 "set_provider_residency",
                 "locate_item",
+                "inspect_arm_semantic_scene",
                 "tool_search",
             },
             "instruction": (
@@ -345,6 +387,25 @@ def _provider_readiness_snapshot(
         return None
     report = provider.get("report")
     report = report if isinstance(report, dict) else {}
+    details = report.get("details")
+    details = details if isinstance(details, dict) else {}
+    diagnostics = details.get("diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    diagnostic_summary = {
+        key: diagnostics[key]
+        for key in (
+            "status",
+            "coverage",
+            "mapping_failure",
+            "annotation_error",
+            "segmentation_errors",
+            "quality_review",
+            "vlm_router",
+            "transform_error",
+            "blocking_prerequisite",
+        )
+        if key in diagnostics
+    }
     return {
         "provider_id": str(
             provider.get("config", {}).get("id") or report.get("provider_id") or ""
@@ -357,7 +418,20 @@ def _provider_readiness_snapshot(
         "instance_id": report.get("instance_id"),
         "boot_id": report.get("boot_id"),
         "last_seen": report.get("last_seen"),
+        "last_error": details.get("last_error"),
+        "manager_error": details.get("manager_error"),
+        "capability_readiness": details.get("capability_readiness"),
+        "diagnostics": diagnostic_summary,
     }
+
+
+def _resolve_workspace_root(workspace_root: Path | None) -> Path:
+    if workspace_root is not None:
+        return workspace_root.resolve()
+    configured_root = os.getenv("PHYSICAL_AGENT_ROOT")
+    if configured_root:
+        return Path(configured_root).resolve()
+    return Path(__file__).resolve().parents[3]
 
 
 async def wait_for_provider_hot_readiness(
@@ -367,6 +441,7 @@ async def wait_for_provider_hot_readiness(
     required_capability: str | None,
     timeout_s: float,
     poll_interval_s: float = 0.25,
+    dependency_provider_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     timeout = float(timeout_s)
     poll_interval = float(poll_interval_s)
@@ -397,6 +472,24 @@ async def wait_for_provider_hot_readiness(
             None,
         )
         snapshot = _provider_readiness_snapshot(latest_provider)
+        dependency_snapshots = [
+            dependency_snapshot
+            for dependency_id in dependency_provider_ids
+            for dependency_snapshot in (
+                _provider_readiness_snapshot(
+                    next(
+                        (
+                            provider
+                            for provider in providers
+                            if str(provider.get("config", {}).get("id") or "")
+                            == dependency_id
+                        ),
+                        None,
+                    )
+                ),
+            )
+            if dependency_snapshot is not None
+        ]
         provider_ready = bool(
             snapshot
             and snapshot["residency"] == "HOT"
@@ -429,6 +522,41 @@ async def wait_for_provider_hot_readiness(
                 and not latest_capability.get("expired")
             )
         )
+        blocking_prerequisites = [
+            {
+                "provider_id": candidate.get("provider_id"),
+                **candidate["diagnostics"]["blocking_prerequisite"],
+            }
+            for candidate in [snapshot, *dependency_snapshots]
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("diagnostics"), dict)
+            and isinstance(
+                candidate["diagnostics"].get("blocking_prerequisite"),
+                dict,
+            )
+            and candidate["diagnostics"]["blocking_prerequisite"].get(
+                "requires_external_action"
+            )
+            is True
+        ]
+        if blocking_prerequisites:
+            return {
+                "status": "BLOCKED_BY_PREREQUISITE",
+                "provider_ready": provider_ready,
+                "required_capability": required_capability,
+                "capability_advertised": capability_advertised,
+                "capability_ready": capability_ready,
+                "provider": snapshot,
+                "dependencies": dependency_snapshots,
+                "capability": latest_capability,
+                "advertised_capabilities": sorted(
+                    str(capability.get("capability") or "")
+                    for capability in advertised_capabilities
+                    if capability.get("capability")
+                ),
+                "blocking_prerequisites": blocking_prerequisites,
+                "timeout_s": timeout,
+            }
         if provider_ready and capability_ready is not False:
             return {
                 "status": "READY",
@@ -437,6 +565,7 @@ async def wait_for_provider_hot_readiness(
                 "capability_advertised": capability_advertised,
                 "capability_ready": capability_ready,
                 "provider": snapshot,
+                "dependencies": dependency_snapshots,
                 "capability": latest_capability,
                 "advertised_capabilities": sorted(
                     str(capability.get("capability") or "")
@@ -455,6 +584,7 @@ async def wait_for_provider_hot_readiness(
                 "capability_advertised": capability_advertised,
                 "capability_ready": capability_ready,
                 "provider": snapshot,
+                "dependencies": dependency_snapshots,
                 "capability": latest_capability,
                 "advertised_capabilities": sorted(
                     str(capability.get("capability") or "")
@@ -795,6 +925,9 @@ class PrototypeAgentDriver:
         adapter_timeout_s: float = 60.0,
         stationary_calibration_timeout_s: float = 600.0,
         provider_hot_readiness_timeout_s: float = 45.0,
+        provider_hot_readiness_timeout_overrides_s: (
+            Mapping[str, float] | None
+        ) = None,
         provider_hot_readiness_poll_interval_s: float = 0.25,
         max_turns: int = 16,
         session_history_item_limit: int | None = None,
@@ -814,6 +947,23 @@ class PrototypeAgentDriver:
         self.provider_hot_readiness_timeout_s = float(
             provider_hot_readiness_timeout_s
         )
+        self.provider_hot_readiness_timeout_overrides_s: dict[str, float] = {}
+        for provider_id, value in dict(
+            provider_hot_readiness_timeout_overrides_s or {}
+        ).items():
+            normalized_provider_id = str(provider_id).strip()
+            timeout = float(value)
+            if not normalized_provider_id:
+                raise ValueError(
+                    "provider HOT readiness timeout override IDs must be non-empty"
+                )
+            if not math.isfinite(timeout) or timeout <= 0.0:
+                raise ValueError(
+                    "provider HOT readiness timeout overrides must be positive"
+                )
+            self.provider_hot_readiness_timeout_overrides_s[
+                normalized_provider_id
+            ] = timeout
         self.provider_hot_readiness_poll_interval_s = float(
             provider_hot_readiness_poll_interval_s
         )
@@ -831,7 +981,7 @@ class PrototypeAgentDriver:
             raise ValueError(
                 "provider_hot_readiness_poll_interval_s must be positive"
             )
-        root = workspace_root or Path(__file__).resolve().parents[3]
+        root = _resolve_workspace_root(workspace_root)
         eligible = set(
             eligible_tool_names or {"identify_pointed_object"}
         )
@@ -1411,14 +1561,23 @@ class PrototypeAgentDriver:
                 if action == "hot" or (
                     action == "start" and required_capability is not None
                 ):
+                    dependency_provider_ids = tuple(
+                        str(value).strip()
+                        for value in result.get("manager_hot_dependencies", [])
+                        if str(value).strip()
+                    )
                     readiness = await wait_for_provider_hot_readiness(
                         manager,
                         provider_id,
                         required_capability=required_capability,
-                        timeout_s=self.provider_hot_readiness_timeout_s,
+                        timeout_s=self.provider_hot_readiness_timeout_overrides_s.get(
+                            provider_id,
+                            self.provider_hot_readiness_timeout_s,
+                        ),
                         poll_interval_s=(
                             self.provider_hot_readiness_poll_interval_s
                         ),
+                        dependency_provider_ids=dependency_provider_ids,
                     )
                 lifecycle_complete = bool(
                     readiness is None or readiness["status"] == "READY"
@@ -1447,6 +1606,19 @@ class PrototypeAgentDriver:
                         "do not inspect the runtime again or finish before "
                         "the Skill returns. If the user requested only this "
                         "lifecycle change, report the observed readiness."
+                    )
+                elif (
+                    readiness is not None
+                    and readiness.get("status") == "BLOCKED_BY_PREREQUISITE"
+                ):
+                    agent_instruction = (
+                        f"Manager accepted the {action.upper()} request, but "
+                        "structured Provider evidence reports an external "
+                        "prerequisite. Do not wait for the timeout or retry "
+                        "this lifecycle transition. Report the exact "
+                        "blocking_prerequisites. A read-only diagnostic Skill "
+                        "may be called once if the original task requires its "
+                        "typed result."
                     )
                 elif readiness is not None:
                     agent_instruction = (

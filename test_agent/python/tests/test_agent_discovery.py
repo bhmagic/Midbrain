@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +12,7 @@ pytest.importorskip("agents")
 
 from physical_agent_test.agent_driver import (
     PrototypeAgentDriver,
+    _resolve_workspace_root,
     deterministic_intent_tool_route,
 )
 from physical_agent_test.gemini_pointing_skill import PointingIdentificationSkill
@@ -149,6 +152,14 @@ class _ColdBindingManager:
 
 
 class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_workspace_root_uses_launcher_environment_when_installed(self) -> None:
+        workspace = Path(__file__).resolve().parents[3]
+        with patch.dict(
+            os.environ,
+            {"PHYSICAL_AGENT_ROOT": str(workspace)},
+        ):
+            self.assertEqual(_resolve_workspace_root(None), workspace.resolve())
+
     def test_explicit_world_axis_only_route_excludes_arm_calibration(self) -> None:
         route = deterministic_intent_tool_route(
             "establish the world axis (not the arm base)"
@@ -171,7 +182,21 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(route["route"], "METRIC_ITEM_LOCATION")
         self.assertIn("locate_item", route["allowed_tools"])
+        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
         self.assertNotIn("analyze_visual_scene", route["allowed_tools"])
+
+    def test_workpiece_corner_route_uses_fresh_arm_base_aabb(self) -> None:
+        route = deterministic_intent_tool_route(
+            "where is the right-forward-up corner of the work piece"
+        )
+
+        self.assertEqual(route["route"], "SEMANTIC_WORK_OBJECT_BOUNDS")
+        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
+        self.assertNotIn("locate_item", route["allowed_tools"])
+        self.assertIn("forward is +X", route["instruction"])
+        self.assertIn("right is -Y", route["instruction"])
+        self.assertIn("currently visible surface", route["instruction"])
+        self.assertIn("never authorizes movement", route["instruction"])
 
     def test_move_close_route_uses_composed_no_contact_planner(self) -> None:
         route = deterministic_intent_tool_route(
@@ -252,6 +277,10 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(
             "world_model.arm_scene_compiler",
+            route["instruction"],
+        )
+        self.assertIn(
+            "required_capability=world_model.arm.semantic_scene",
             route["instruction"],
         )
         self.assertIn(

@@ -25,5 +25,7 @@
   "maximum_source_points": 120000,
   "maximum_spheres": 20000,
   "scene_freshness_ms": 10000,
-  "poll_interval_s": 0.05
+  "poll_interval_s": 0.25,
+  "failure_retry_initial_s": 0.5,
+  "failure_retry_maximum_s": 5.0
 }

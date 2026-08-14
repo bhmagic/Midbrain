@@ -40,6 +40,119 @@ def dilate_binary_mask(mask: np.ndarray, dilation_pixels: int) -> np.ndarray:
     )
 
 
+def erode_mask_by_metric_boundary(
+    *,
+    mask: np.ndarray,
+    depth_m: np.ndarray,
+    intrinsics: dict[str, Any],
+    erosion_m: float,
+    minimum_depth_m: float = 0.05,
+    maximum_depth_m: float = 5.0,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Erode a 2D mask by an approximate metric distance at registered depth.
+
+    One mean registered depth is measured for the semantic mask, then the
+    metric margin is projected to one constant image-space radius. The same
+    pixel erosion is applied along the complete mask boundary.
+    """
+
+    binary = np.ascontiguousarray(np.asarray(mask, dtype=bool))
+    depth = np.asarray(depth_m, dtype=np.float32)
+    if binary.ndim != 2 or depth.shape != binary.shape:
+        raise ValueError("semantic mask and depth must share one 2D shape")
+    erosion = float(erosion_m)
+    if not math.isfinite(erosion) or not 0.0 <= erosion <= 0.1:
+        raise ValueError("mask erosion must be in [0, 0.1] metres")
+
+    input_pixels = int(np.count_nonzero(binary))
+    if erosion == 0.0 or input_pixels == 0:
+        return binary, {
+            "status": "DISABLED" if erosion == 0.0 else "EMPTY_INPUT",
+            "erosion_m": erosion,
+            "input_mask_pixels": input_pixels,
+            "valid_depth_pixels": 0,
+            "output_mask_pixels": input_pixels,
+            "removed_pixels": 0,
+        }
+
+    minimum_depth = float(minimum_depth_m)
+    maximum_depth = float(maximum_depth_m)
+    if (
+        not math.isfinite(minimum_depth)
+        or not math.isfinite(maximum_depth)
+        or not 0.0 < minimum_depth < maximum_depth
+    ):
+        raise ValueError("depth bounds are invalid")
+    fx = float(intrinsics.get("fx") or 0.0)
+    fy = float(intrinsics.get("fy") or 0.0)
+    if min(fx, fy) <= 0.0 or not all(math.isfinite(value) for value in (fx, fy)):
+        raise ValueError("camera intrinsics are invalid")
+
+    valid = (
+        binary
+        & np.isfinite(depth)
+        & (depth >= minimum_depth)
+        & (depth <= maximum_depth)
+    )
+    valid_pixels = int(np.count_nonzero(valid))
+    if valid_pixels == 0:
+        empty = np.zeros(binary.shape, dtype=bool)
+        return empty, {
+            "status": "NO_VALID_DEPTH",
+            "erosion_m": erosion,
+            "input_mask_pixels": input_pixels,
+            "valid_depth_pixels": 0,
+            "output_mask_pixels": 0,
+            "removed_pixels": input_pixels,
+        }
+
+    occupied_rows = np.flatnonzero(np.any(binary, axis=1))
+    occupied_columns = np.flatnonzero(np.any(binary, axis=0))
+    y0, y1 = int(occupied_rows[0]), int(occupied_rows[-1]) + 1
+    x0, x1 = int(occupied_columns[0]), int(occupied_columns[-1]) + 1
+    binary_roi = binary[y0:y1, x0:x1]
+    valid_roi = valid[y0:y1, x0:x1]
+    depth_roi = depth[y0:y1, x0:x1]
+    padded = cv2.copyMakeBorder(
+        binary_roi.astype(np.uint8),
+        1,
+        1,
+        1,
+        1,
+        cv2.BORDER_CONSTANT,
+        value=0,
+    )
+    boundary_distance_px = cv2.distanceTransform(
+        padded,
+        cv2.DIST_L2,
+        cv2.DIST_MASK_3,
+    )[1:-1, 1:-1]
+    focal_scale_px = math.sqrt(fx * fy)
+    mean_depth_m = float(np.mean(depth_roi[valid_roi], dtype=np.float64))
+    projected_radius_px = erosion * focal_scale_px / mean_depth_m
+    erosion_radius_px = max(1, int(round(projected_radius_px)))
+    eroded_roi = valid_roi & (boundary_distance_px > erosion_radius_px)
+    eroded = np.zeros(binary.shape, dtype=bool)
+    eroded[y0:y1, x0:x1] = eroded_roi
+    eroded = np.ascontiguousarray(eroded)
+    output_pixels = int(np.count_nonzero(eroded))
+    return eroded, {
+        "status": "APPLIED",
+        "method": "MEAN_REGISTERED_DEPTH_CONSTANT_PIXEL_EROSION",
+        "erosion_m": erosion,
+        "input_mask_pixels": input_pixels,
+        "valid_depth_pixels": valid_pixels,
+        "output_mask_pixels": output_pixels,
+        "removed_pixels": input_pixels - output_pixels,
+        "focal_scale_px": focal_scale_px,
+        "mean_depth_m": mean_depth_m,
+        "projected_radius_px": projected_radius_px,
+        "erosion_radius_px": erosion_radius_px,
+        "processed_roi_yxyx": [y0, x0, y1, x1],
+        "processed_roi_pixels": int(binary_roi.size),
+    }
+
+
 def constrain_mask_to_prompted_depth_component(
     *,
     mask: np.ndarray,

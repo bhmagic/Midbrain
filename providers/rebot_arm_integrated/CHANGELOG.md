@@ -7,6 +7,9 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Accept the canonical `HAND_ANGULAR_4PI` scene layer and its 5 mm minimum
+  sphere radius. The existing capsule/sphere collision evaluator consumes the
+  projected hits without adding another collision primitive or planner.
 - Calculate weighted Jacobian quality before the IK solver's already-satisfied
   early return. Replanning an orientation already within tolerance no longer
   reports a synthetic zero singular value and rejects the no-op alignment.

@@ -72,6 +72,174 @@
           "semantic_source": {"type": "string", "minLength": 1}
         }
       }
+    },
+    "angular_projection": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "roi_scope",
+        "origin_frame_id",
+        "origin_m",
+        "observed_at_us",
+        "direction_count",
+        "occupied_direction_count",
+        "nominal_half_angle_rad",
+        "covering_half_angle_rad",
+        "angular_radius_scale",
+        "minimum_radius_m",
+        "radial_padding_m",
+        "maximum_range_m",
+        "hit_selection",
+        "keep_out_boundary_mode"
+      ],
+      "properties": {
+        "profile_id": {
+          "const": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1"
+        },
+        "roi_scope": {"const": "HAND_ANGULAR_4PI"},
+        "origin_frame_id": {"const": "rebot_arm_base"},
+        "origin_m": {"$ref": "#/$defs/point3"},
+        "observed_at_us": {"type": "integer", "minimum": 1},
+        "direction_count": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 20000
+        },
+        "occupied_direction_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000
+        },
+        "nominal_half_angle_rad": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "covering_half_angle_rad": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "angular_radius_scale": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "minimum_radius_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "radial_padding_m": {"type": "number", "minimum": 0},
+        "maximum_range_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "hit_selection": {
+          "const": "NEAREST_SURFACE_HIT_PER_OCCUPIED_DIRECTION"
+        },
+        "keep_out_boundary_mode": {"const": "HAND_RAY_TANGENT"}
+      }
+    },
+    "visible_surface_aabbs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "extent_kind",
+          "object_id",
+          "description",
+          "type",
+          "frame_id",
+          "convention_id",
+          "observed_at_us",
+          "freshness_ms",
+          "expires_at_us",
+          "minimum_m",
+          "maximum_m",
+          "center_m",
+          "size_m",
+          "corners_m",
+          "axis_semantics",
+          "visible_sample_count",
+          "source_frame_number",
+          "source_policy_revision"
+        ],
+        "properties": {
+          "extent_kind": {"const": "VISIBLE_SURFACE_AABB"},
+          "object_id": {"type": "string", "minLength": 1},
+          "description": {"type": "string", "minLength": 1},
+          "type": {"const": "WORK_OBJECT"},
+          "frame_id": {"const": "rebot_arm_base"},
+          "convention_id": {
+            "const": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+          },
+          "observed_at_us": {"type": "integer", "minimum": 1},
+          "freshness_ms": {"type": "integer", "minimum": 1},
+          "expires_at_us": {"type": "integer", "minimum": 1},
+          "minimum_m": {"$ref": "#/$defs/point3"},
+          "maximum_m": {"$ref": "#/$defs/point3"},
+          "center_m": {"$ref": "#/$defs/point3"},
+          "size_m": {"$ref": "#/$defs/point3"},
+          "corners_m": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "right_forward_up",
+              "left_forward_up",
+              "right_backward_up",
+              "left_backward_up",
+              "right_forward_down",
+              "left_forward_down",
+              "right_backward_down",
+              "left_backward_down"
+            ],
+            "properties": {
+              "right_forward_up": {"$ref": "#/$defs/point3"},
+              "left_forward_up": {"$ref": "#/$defs/point3"},
+              "right_backward_up": {"$ref": "#/$defs/point3"},
+              "left_backward_up": {"$ref": "#/$defs/point3"},
+              "right_forward_down": {"$ref": "#/$defs/point3"},
+              "left_forward_down": {"$ref": "#/$defs/point3"},
+              "right_backward_down": {"$ref": "#/$defs/point3"},
+              "left_backward_down": {"$ref": "#/$defs/point3"}
+            }
+          },
+          "axis_semantics": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "forward",
+              "backward",
+              "left",
+              "right",
+              "up",
+              "down"
+            ],
+            "properties": {
+              "forward": {"const": "+X"},
+              "backward": {"const": "-X"},
+              "left": {"const": "+Y"},
+              "right": {"const": "-Y"},
+              "up": {"const": "+Z"},
+              "down": {"const": "-Z"}
+            }
+          },
+          "visible_sample_count": {"type": "integer", "minimum": 1},
+          "source_frame_number": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "source_policy_revision": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "point3": {
+      "type": "array",
+      "items": {"type": "number"},
+      "minItems": 3,
+      "maxItems": 3
     }
   }
 }

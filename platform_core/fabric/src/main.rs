@@ -32,6 +32,7 @@ const ARM_SEMANTIC_ASSERTIONS_SCHEMA: &str = "physical_agent.arm_semantic_assert
 const SEMANTIC_SCENE_CONTRACT_VERSION: u64 = 2;
 const GRIPPER_ROI_SCOPE: &str = "GRIPPER_0P5M";
 const ARM_BASE_ROI_SCOPE: &str = "ARM_BASE_1P2M";
+const HAND_ANGULAR_ROI_SCOPE: &str = "HAND_ANGULAR_4PI";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Observation {
@@ -718,8 +719,193 @@ fn semantic_roi_limits(scope: &str) -> Option<(f64, f64)> {
     match scope {
         GRIPPER_ROI_SCOPE => Some((0.5, 0.02)),
         ARM_BASE_ROI_SCOPE => Some((1.2, 0.06)),
+        HAND_ANGULAR_ROI_SCOPE => Some((1.5, 0.005)),
         _ => None,
     }
+}
+
+fn validate_visible_surface_aabbs(
+    data: &serde_json::Map<String, Value>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let Some(raw_aabbs) = data.get("visible_surface_aabbs") else {
+        return Ok(());
+    };
+    let aabbs = raw_aabbs.as_array().ok_or_else(|| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "visible_surface_aabbs must be an array",
+        )
+    })?;
+    if aabbs.len() > 1024 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "visible_surface_aabbs exceeds 1024 work objects",
+        ));
+    }
+    let mut object_ids = HashSet::new();
+    let corner_layout = [
+        ("right_forward_up", [1, 0, 1]),
+        ("left_forward_up", [1, 1, 1]),
+        ("right_backward_up", [0, 0, 1]),
+        ("left_backward_up", [0, 1, 1]),
+        ("right_forward_down", [1, 0, 0]),
+        ("left_forward_down", [1, 1, 0]),
+        ("right_backward_down", [0, 0, 0]),
+        ("left_backward_down", [0, 1, 0]),
+    ];
+    for raw_aabb in aabbs {
+        let aabb = raw_aabb.as_object().ok_or_else(|| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB must be an object",
+            )
+        })?;
+        if aabb.get("extent_kind").and_then(Value::as_str) != Some("VISIBLE_SURFACE_AABB")
+            || aabb.get("type").and_then(Value::as_str) != Some("WORK_OBJECT")
+            || aabb.get("frame_id").and_then(Value::as_str) != Some("rebot_arm_base")
+            || aabb.get("convention_id").and_then(Value::as_str)
+                != Some("MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2")
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABBs must describe WORK_OBJECT coordinates in rebot_arm_base",
+            ));
+        }
+        let object_id = aabb
+            .get("object_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    "visible surface AABB requires object_id",
+                )
+            })?;
+        if !object_ids.insert(object_id.to_string()) {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB object_id values must be unique",
+            ));
+        }
+        if aabb
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB requires a description",
+            ));
+        }
+        let observed_at_us = aabb
+            .get("observed_at_us")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let freshness_ms = aabb
+            .get("freshness_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let expires_at_us = aabb
+            .get("expires_at_us")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if observed_at_us == 0
+            || freshness_ms == 0
+            || expires_at_us != observed_at_us.saturating_add(freshness_ms.saturating_mul(1000))
+        {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB timestamps are invalid",
+            ));
+        }
+        let minimum = finite_vec3(aabb.get("minimum_m"));
+        let maximum = finite_vec3(aabb.get("maximum_m"));
+        let center = finite_vec3(aabb.get("center_m"));
+        let size = finite_vec3(aabb.get("size_m"));
+        let (Some(minimum), Some(maximum), Some(center), Some(size)) =
+            (minimum, maximum, center, size)
+        else {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB geometry must contain finite 3-vectors",
+            ));
+        };
+        for axis in 0..3 {
+            if maximum[axis] < minimum[axis]
+                || (center[axis] - (minimum[axis] + maximum[axis]) * 0.5).abs() > 1e-9
+                || (size[axis] - (maximum[axis] - minimum[axis])).abs() > 1e-9
+            {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "visible surface AABB minimum, maximum, center, and size disagree",
+                ));
+            }
+        }
+        let corners = aabb
+            .get("corners_m")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    "visible surface AABB requires eight named corners",
+                )
+            })?;
+        if corners.len() != corner_layout.len() {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "visible surface AABB requires exactly eight named corners",
+            ));
+        }
+        for (name, selector) in corner_layout {
+            let corner = finite_vec3(corners.get(name)).ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    format!("visible surface AABB corner {name:?} is invalid"),
+                )
+            })?;
+            for axis in 0..3 {
+                let expected = if selector[axis] == 0 {
+                    minimum[axis]
+                } else {
+                    maximum[axis]
+                };
+                if (corner[axis] - expected).abs() > 1e-9 {
+                    return Err(api_error(
+                        StatusCode::BAD_REQUEST,
+                        format!("visible surface AABB corner {name:?} disagrees with its bounds"),
+                    ));
+                }
+            }
+        }
+        let axis_semantics = aabb
+            .get("axis_semantics")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                api_error(
+                    StatusCode::BAD_REQUEST,
+                    "visible surface AABB requires arm-base axis semantics",
+                )
+            })?;
+        for (name, expected) in [
+            ("forward", "+X"),
+            ("backward", "-X"),
+            ("left", "+Y"),
+            ("right", "-Y"),
+            ("up", "+Z"),
+            ("down", "-Z"),
+        ] {
+            if axis_semantics.get(name).and_then(Value::as_str) != Some(expected) {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "visible surface AABB axis semantics are not canonical",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_arm_point_cloud_observation(
@@ -952,6 +1138,7 @@ fn validate_arm_semantic_assertions_observation(
             ));
         }
     }
+    validate_visible_surface_aabbs(data)?;
     Ok(())
 }
 
@@ -1151,6 +1338,7 @@ fn validate_semantic_sphere_scene_observation(
             ));
         }
     }
+    validate_visible_surface_aabbs(data)?;
     Ok(())
 }
 
@@ -2305,6 +2493,62 @@ mod tests {
     }
 
     #[test]
+    fn canonical_hand_angular_semantic_scene_is_accepted() {
+        let observation = semantic_scene_observation(json!({
+            "contract_version": 2,
+            "scene_revision": "scene-hand-angular-1",
+            "frame_id": "rebot_arm_base",
+            "roi_layers": [
+                {
+                    "scope": "HAND_ANGULAR_4PI",
+                    "center_m": [0.42, -0.03, 0.31],
+                    "radius_m": 1.5,
+                    "minimum_sphere_radius_m": 0.005,
+                    "projection": {
+                        "profile_id": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1",
+                        "direction_count": 4096,
+                        "origin_frame_id": "rebot_arm_base",
+                        "origin_m": [0.42, -0.03, 0.31]
+                    }
+                }
+            ],
+            "spheres": [
+                {
+                    "sphere_id": "table:angular:27",
+                    "object_id": "table",
+                    "center_m": [0.56, -0.08, 0.18],
+                    "radius_m": 0.012,
+                    "type": "KEEP_OUT",
+                    "roi_scope": "HAND_ANGULAR_4PI"
+                }
+            ]
+        }));
+
+        assert!(validate_semantic_sphere_scene_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn hand_angular_semantic_scene_rejects_noncanonical_radius_policy() {
+        let observation = semantic_scene_observation(json!({
+            "contract_version": 2,
+            "scene_revision": "scene-hand-angular-invalid",
+            "frame_id": "rebot_arm_base",
+            "roi_layers": [
+                {
+                    "scope": "HAND_ANGULAR_4PI",
+                    "center_m": [0.42, -0.03, 0.31],
+                    "radius_m": 1.5,
+                    "minimum_sphere_radius_m": 0.02
+                }
+            ],
+            "spheres": []
+        }));
+
+        let error = validate_semantic_sphere_scene_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn tracked_semantic_spheres_allow_repeated_object_with_unique_geometry_ids() {
         let observation = semantic_assertions_observation(json!([
             {
@@ -2328,6 +2572,69 @@ mod tests {
         ]));
 
         assert!(validate_arm_semantic_assertions_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn work_object_visible_surface_aabb_is_accepted() {
+        let mut observation = semantic_assertions_observation(json!([]));
+        observation.data["visible_surface_aabbs"] = json!([
+            {
+                "extent_kind": "VISIBLE_SURFACE_AABB",
+                "object_id": "workpiece",
+                "description": "the workpiece",
+                "type": "WORK_OBJECT",
+                "frame_id": "rebot_arm_base",
+                "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+                "observed_at_us": 1_000_000,
+                "freshness_ms": 5000,
+                "expires_at_us": 6_000_000,
+                "minimum_m": [0.2, -0.1, 0.1],
+                "maximum_m": [0.4, 0.1, 0.3],
+                "center_m": [0.3, 0.0, 0.2],
+                "size_m": [0.2, 0.2, 0.2],
+                "corners_m": {
+                    "right_forward_up": [0.4, -0.1, 0.3],
+                    "left_forward_up": [0.4, 0.1, 0.3],
+                    "right_backward_up": [0.2, -0.1, 0.3],
+                    "left_backward_up": [0.2, 0.1, 0.3],
+                    "right_forward_down": [0.4, -0.1, 0.1],
+                    "left_forward_down": [0.4, 0.1, 0.1],
+                    "right_backward_down": [0.2, -0.1, 0.1],
+                    "left_backward_down": [0.2, 0.1, 0.1]
+                },
+                "axis_semantics": {
+                    "forward": "+X",
+                    "backward": "-X",
+                    "left": "+Y",
+                    "right": "-Y",
+                    "up": "+Z",
+                    "down": "-Z"
+                },
+                "visible_sample_count": 10,
+                "source_frame_number": 7,
+                "source_policy_revision": "policy-1"
+            }
+        ]);
+
+        assert!(validate_arm_semantic_assertions_observation(&observation).is_ok());
+    }
+
+    #[test]
+    fn obstacle_visible_surface_aabb_is_rejected() {
+        let mut observation = semantic_assertions_observation(json!([]));
+        observation.data["visible_surface_aabbs"] = json!([
+            {
+                "extent_kind": "VISIBLE_SURFACE_AABB",
+                "object_id": "table",
+                "description": "the table",
+                "type": "KEEP_OUT",
+                "frame_id": "rebot_arm_base",
+                "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+            }
+        ]);
+
+        let error = validate_arm_semantic_assertions_observation(&observation).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
     }
 
     #[test]

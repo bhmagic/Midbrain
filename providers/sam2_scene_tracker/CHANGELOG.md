@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- Replace the two-tier semantic collision output with a bounded hand-centric
+  4 pi projection using 4,096 near-uniform spherical Fibonacci directions by
+  default. Retain one nearest visible hit per occupied direction and scale its
+  sphere radius with range while preserving a 5 mm close-range floor.
+- Publish shared angular profile and timestamped hand-origin metadata once per
+  observation, and round sphere geometry to micrometre precision, instead of
+  repeating projection diagnostics on every sphere.
+- Publish five-second `WORK_OBJECT` visible-surface AABBs aligned to the
+  canonical arm-base axes so agents can refer to deterministic corners without
+  treating the extent as a tracked solid model. Obstacles remain sphere-only.
+- Make the SAM2 tracking rate a fixed 1-4 Hz setting with a 1 Hz default. VLM
+  annotation keeps its independent motion/confidence refresh policy.
+- Erode reviewed geometry masks by a registered-depth metric margin before
+  point-cloud projection: 10 mm for work objects and 20 mm for obstacles by
+  default. Semantic fusion, collision spheres, and work-object AABBs now share
+  this eroded source mask. Use one constant pixel radius per object, calculated
+  from that mask's mean registered depth.
+- Publish a current-policy invalid mapping result with a structured external
+  prerequisite when the camera-to-arm-base transform is unavailable, while
+  keeping reviewed 2D mask tracking active.
+
 ## 0.2.1 - 2026-08-04
 
 - Represent reviewed visible KEEP_OUT depth as boundary-tangent collision

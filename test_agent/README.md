@@ -69,6 +69,12 @@ and canonical signed commit envelope out of model-visible arguments. It does
 not calculate a relative move in the language model and does not authorize
 contact work.
 
+The developer 3D view draws fresh `WORK_OBJECT` visible-surface AABBs as
+wireframe boxes. A work-object label is attached once to its box; individual
+dense semantic spheres remain visible but unlabeled. Obstacles receive neither
+AABBs nor text labels. The viewer projection does not change the controller's
+collision scene or authorize motion.
+
 World-direction and absolute workcell-world resolution give priority to the
 active reviewed transform. A
 `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` activation remains usable when

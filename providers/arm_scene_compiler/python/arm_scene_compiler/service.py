@@ -78,12 +78,41 @@ class FabricClient:
             f"{self.base_url}/v1/observations",
             json=observation,
         )
-        response.raise_for_status()
+        if response.is_error:
+            try:
+                detail: Any = response.json()
+            except Exception:
+                detail = response.text[:2048]
+            raise RuntimeError(
+                "Fabric rejected the compiled scene with HTTP "
+                f"{response.status_code}: {detail}"
+            )
         value = response.json()
         return value if isinstance(value, dict) else {"result": value}
 
     def close(self) -> None:
         self.http.close()
+
+
+def bounded_failure_retry_delay_s(
+    consecutive_failures: int,
+    *,
+    initial_s: float,
+    maximum_s: float,
+) -> float:
+    failures = max(1, int(consecutive_failures))
+    initial = float(initial_s)
+    maximum = float(maximum_s)
+    if not math.isfinite(initial) or initial <= 0.0:
+        raise ValueError(
+            "failure retry initial delay must be positive and finite"
+        )
+    if not math.isfinite(maximum) or maximum < initial:
+        raise ValueError(
+            "failure retry maximum delay must be finite and at least the initial delay"
+        )
+    exponent = min(failures - 1, 16)
+    return min(maximum, initial * (2.0**exponent))
 
 
 def _quaternion_rotation_xyzw(value: Any) -> np.ndarray:
@@ -217,7 +246,11 @@ class SceneCompilerEngine:
 
     def compile_once(self, *, force: bool = False) -> dict[str, Any] | None:
         now_us = time.time_ns() // 1000
-        semantic_objects, semantic_diagnostics = self._semantic_objects(
+        (
+            semantic_objects,
+            semantic_aabbs,
+            semantic_diagnostics,
+        ) = self._semantic_objects(
             now_us=now_us,
             max_extrapolation_us=int(
                 self.config.get("maximum_transform_extrapolation_us", 750_000)
@@ -401,6 +434,10 @@ class SceneCompilerEngine:
             self_exclusion_spheres=self_spheres,
             self_filter_revision=self_revision,
             semantic_objects=semantic_objects,
+            semantic_aabbs=semantic_aabbs,
+            semantic_angular_projection=semantic_diagnostics.get(
+                "angular_projection"
+            ),
             source_provenance={
                 "point_stream": source.get("stream"),
                 "point_provider_id": source.get("provider_id"),
@@ -510,6 +547,7 @@ class SceneCompilerEngine:
             "source_point_count": int(raw_points.shape[0]),
             "transformed_point_count": int(points_base.shape[0]),
             "semantic_object_count": len(semantic_objects),
+            "semantic_aabb_count": len(semantic_aabbs),
             "semantic_assertions": semantic_diagnostics,
             "scene_sphere_count": len(scene["spheres"]),
             "depth_mode": scene["production"]["depth_mode"],
@@ -785,10 +823,16 @@ class SceneCompilerEngine:
         *,
         now_us: int,
         max_extrapolation_us: int,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
         base_frame = str(self.config.get("arm_base_frame") or "rebot_arm_base")
         max_age_ms = int(self.config.get("semantic_assertion_max_age_ms", 5000))
         output: list[dict[str, Any]] = []
+        aabb_output: list[dict[str, Any]] = []
+        angular_projection_output: list[dict[str, Any]] = []
         skipped: list[dict[str, str]] = []
         accepted_sources: list[dict[str, Any]] = []
         for stream in self.config.get("semantic_assertion_streams") or []:
@@ -818,6 +862,131 @@ class SceneCompilerEngine:
                     at_us=int(observation.get("observed_at_us") or now_us),
                     max_extrapolation_us=max_extrapolation_us,
                 )
+            raw_angular_projection = data.get("angular_projection")
+            if isinstance(raw_angular_projection, dict):
+                try:
+                    projection_frame = str(
+                        raw_angular_projection.get("origin_frame_id")
+                        or source_frame
+                    ).strip()
+                    if not projection_frame:
+                        raise ValueError("angular projection frame is missing")
+                    origin = np.asarray(
+                        raw_angular_projection.get("origin_m"),
+                        dtype=np.float64,
+                    ).reshape(1, 3)
+                    if not np.all(np.isfinite(origin)):
+                        raise ValueError("angular projection origin is invalid")
+                    if projection_frame != base_frame:
+                        projection_transform = self.fabric.transform(
+                            from_frame=projection_frame,
+                            to_frame=base_frame,
+                            at_us=int(
+                                raw_angular_projection.get("observed_at_us")
+                                or observation.get("observed_at_us")
+                                or now_us
+                            ),
+                            max_extrapolation_us=max_extrapolation_us,
+                        )
+                        origin = transform_points(origin, projection_transform)
+                    angular_projection_output.append(
+                        {
+                            **raw_angular_projection,
+                            "origin_frame_id": base_frame,
+                            "origin_m": origin[0].tolist(),
+                        }
+                    )
+                except Exception as error:
+                    skipped.append(
+                        {
+                            "stream": str(stream),
+                            "reason": f"angular_projection: {error}",
+                        }
+                    )
+            raw_aabbs = data.get("visible_surface_aabbs", [])
+            if not isinstance(raw_aabbs, list):
+                skipped.append(
+                    {
+                        "stream": str(stream),
+                        "reason": "visible_surface_aabbs_not_array",
+                    }
+                )
+                raw_aabbs = []
+            for raw_aabb in raw_aabbs:
+                if not isinstance(raw_aabb, dict):
+                    skipped.append(
+                        {
+                            "stream": str(stream),
+                            "reason": "visible_surface_aabb_not_object",
+                        }
+                    )
+                    continue
+                if (
+                    str(raw_aabb.get("type") or "").strip().upper()
+                    != "WORK_OBJECT"
+                ):
+                    continue
+                expires_at_us = int(raw_aabb.get("expires_at_us") or 0)
+                if expires_at_us <= 0 or now_us > expires_at_us:
+                    continue
+                try:
+                    aabb_frame = str(
+                        raw_aabb.get("frame_id") or source_frame
+                    ).strip()
+                    if not aabb_frame:
+                        raise ValueError("visible surface AABB frame is missing")
+                    minimum = np.asarray(
+                        raw_aabb.get("minimum_m"), dtype=np.float64
+                    )
+                    maximum = np.asarray(
+                        raw_aabb.get("maximum_m"), dtype=np.float64
+                    )
+                    if (
+                        minimum.shape != (3,)
+                        or maximum.shape != (3,)
+                        or not np.all(np.isfinite(minimum))
+                        or not np.all(np.isfinite(maximum))
+                        or np.any(maximum < minimum)
+                    ):
+                        raise ValueError("visible surface AABB bounds are invalid")
+                    corners = np.asarray(
+                        [
+                            [x, y, z]
+                            for x in (minimum[0], maximum[0])
+                            for y in (minimum[1], maximum[1])
+                            for z in (minimum[2], maximum[2])
+                        ],
+                        dtype=np.float64,
+                    )
+                    if aabb_frame != base_frame:
+                        aabb_transform = self.fabric.transform(
+                            from_frame=aabb_frame,
+                            to_frame=base_frame,
+                            at_us=int(
+                                raw_aabb.get("observed_at_us")
+                                or observation.get("observed_at_us")
+                                or now_us
+                            ),
+                            max_extrapolation_us=max_extrapolation_us,
+                        )
+                        corners = transform_points(corners, aabb_transform)
+                    transformed_minimum = corners.min(axis=0)
+                    transformed_maximum = corners.max(axis=0)
+                    aabb_output.append(
+                        {
+                            **raw_aabb,
+                            "frame_id": base_frame,
+                            "convention_id": (
+                                "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                            ),
+                            "minimum_m": transformed_minimum.tolist(),
+                            "maximum_m": transformed_maximum.tolist(),
+                        }
+                    )
+                except Exception as error:
+                    skipped.append(
+                        {"stream": str(stream), "reason": f"AABB: {error}"}
+                    )
             accepted_before = len(output)
             for raw in assertions:
                 if not isinstance(raw, dict):
@@ -883,8 +1052,25 @@ class SceneCompilerEngine:
             )
             if geometry_id:
                 by_id[geometry_id] = value
-        return list(by_id.values()), {
+        aabbs_by_object: dict[str, dict[str, Any]] = {}
+        for value in aabb_output:
+            object_id = str(value.get("object_id") or "").strip()
+            if not object_id:
+                continue
+            current = aabbs_by_object.get(object_id)
+            if current is None or int(value.get("observed_at_us") or 0) > int(
+                current.get("observed_at_us") or 0
+            ):
+                aabbs_by_object[object_id] = value
+        angular_projection = max(
+            angular_projection_output,
+            key=lambda value: int(value.get("observed_at_us") or 0),
+            default=None,
+        )
+        return list(by_id.values()), list(aabbs_by_object.values()), {
             "accepted": len(by_id),
+            "accepted_visible_surface_aabbs": len(aabbs_by_object),
+            "angular_projection": angular_projection,
             "accepted_sources": accepted_sources,
             "skipped": skipped,
         }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Accept the canonical `HAND_ANGULAR_4PI` 1.5 m / 5 mm semantic-scene ROI in
+  World State Fabric so the 4096-direction scene compiler output can cross the
+  state-plane contract boundary.
+- Validate work-object visible-surface AABBs at the Fabric boundary, including
+  their arm-base frame, center, size, eight named corners, timestamps, and axis
+  convention, and reject obstacle AABBs.
+
 - Add a mainframe mounted-effector selector backed by the machine-local central
   assembly selection. Manager discovers only arm-compatible Provider-owned
   profiles and refuses changes while Basic or a transitive dependent is live.

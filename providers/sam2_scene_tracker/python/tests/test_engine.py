@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import time
 
 import numpy as np
 
@@ -21,19 +22,33 @@ def _prompt(object_id: str) -> VisualPrompt:
 
 
 class _Fabric:
-    def __init__(self, *, with_policy: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        with_policy: bool = True,
+        include_work_object: bool = False,
+    ) -> None:
         self.published = []
+        objects = [
+            {
+                "object_id": "table",
+                "type": "KEEP_OUT",
+                "description": "the table",
+            }
+        ]
+        if include_work_object:
+            objects.append(
+                {
+                    "object_id": "roll",
+                    "type": "WORK_OBJECT",
+                    "description": "the toilet paper roll",
+                }
+            )
         self.policy = (
             {
                 "contract_version": 1,
                 "policy_id": "test",
-                "objects": [
-                    {
-                        "object_id": "table",
-                        "type": "KEEP_OUT",
-                        "description": "the table",
-                    }
-                ],
+                "objects": objects,
                 "arm_description": "the complete robot arm and gripper",
             }
             if with_policy
@@ -71,7 +86,7 @@ class _Capture:
             rgb=np.zeros((6, 8, 3), dtype=np.uint8),
             depth_m=np.ones((6, 8), dtype=np.float32) * 0.4,
             intrinsics={"fx": 10.0, "fy": 10.0, "cx": 3.5, "cy": 2.5},
-            observed_at_us=1_000_000,
+            observed_at_us=time.time_ns() // 1000,
             frame_number=1,
             camera_frame="camera",
             session_epoch="epoch-1",
@@ -93,18 +108,22 @@ class _Capture:
 
 
 class _Annotator:
-    def annotate(self, _image, _policy):
+    def annotate(self, _image, policy):
         return {
             ARM_OBJECT_ID: [_prompt(ARM_OBJECT_ID)],
-            "table": [_prompt("table")],
+            **{
+                value.object_id: [_prompt(value.object_id)]
+                for value in policy.objects
+            },
         }
 
     def close(self):
         pass
 
-    def validate_masks(self, _image, _depth, masks, _policy):
+    def validate_masks(self, _image, _depth, masks, policy):
         return {
-            "accepted": set(masks) == {ARM_OBJECT_ID, "table"},
+            "accepted": set(masks)
+            == {ARM_OBJECT_ID, *(value.object_id for value in policy.objects)},
             "object_results": [],
             "model_id": "test-vlm",
         }
@@ -121,6 +140,8 @@ class _Tracker:
         mask = np.zeros(self.shape, dtype=bool)
         if prompts[0].object_id == ARM_OBJECT_ID:
             mask[:, 3:5] = True
+        elif prompts[0].object_id == "roll":
+            mask[:3, :3] = True
         else:
             mask[3:, :] = True
         return mask, 0.95
@@ -218,10 +239,61 @@ def test_engine_waits_for_vlm_then_publishes_only_declared_obstacle() -> None:
         assert assertions
         assert {value["object_id"] for value in assertions} == {"table"}
         assert {value["type"] for value in assertions} == {"KEEP_OUT"}
+        assert {value["roi_scope"] for value in assertions} == {
+            "HAND_ANGULAR_4PI"
+        }
+        projection = observation["data"]["angular_projection"]
+        assert projection["profile_id"] == (
+            "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1"
+        )
+        assert projection["direction_count"] == 4096
+        assert projection["occupied_direction_count"] == len(assertions)
+        assert projection["observed_at_us"] == (
+            engine.last_diagnostics["source_observed_at_us"]
+        )
+        aabbs = observation["data"]["visible_surface_aabbs"]
+        assert aabbs == []
         assert engine.latest_visualization_png is not None
         assert engine.last_diagnostics["unclaimed_visible_policy"] == (
             "PUSHABLE_IGNORED"
         )
+        erosion = engine.last_diagnostics["mask_erosion"]["table"]
+        assert erosion["type"] == "KEEP_OUT"
+        assert erosion["erosion_m"] == 0.02
+        assert erosion["status"] == "APPLIED"
+    finally:
+        engine.close()
+
+
+def test_engine_publishes_aabb_only_for_work_object() -> None:
+    fabric = _Fabric(include_work_object=True)
+    engine = Sam2SceneTrackerEngine(
+        fabric=fabric,  # type: ignore[arg-type]
+        capture=_Capture(),  # type: ignore[arg-type]
+        annotator=_Annotator(),
+        tracker=_Tracker(),
+        semantic_map=PersistentSemanticVoxelMap(fusion_voxel_edge_m=0.02),
+        config=_config(),
+        provider_id="tracker",
+        provider_instance_id="instance",
+        boot_id="boot",
+    )
+    try:
+        assert engine.tick() is None
+        assert engine.annotation_future is not None
+        engine.annotation_future.result(timeout=1.0)
+
+        observation = engine.tick()
+
+        assert observation is not None
+        aabbs = observation["data"]["visible_surface_aabbs"]
+        assert len(aabbs) == 1
+        assert aabbs[0]["object_id"] == "roll"
+        assert aabbs[0]["type"] == "WORK_OBJECT"
+        assert aabbs[0]["freshness_ms"] == 5000
+        erosion = engine.last_diagnostics["mask_erosion"]["roll"]
+        assert erosion["erosion_m"] == 0.01
+        assert erosion["output_mask_pixels"] <= erosion["input_mask_pixels"]
     finally:
         engine.close()
 
@@ -243,13 +315,29 @@ def test_engine_keeps_rgb_depth_and_masks_live_without_arm_transform() -> None:
         assert engine.annotation_future is not None
         engine.annotation_future.result(timeout=1.0)
 
-        assert engine.tick() is None
+        observation = engine.tick()
+        assert observation is not None
+        assert observation["valid"] is False
+        assert observation["data"]["mapping_failure"]["status"] == (
+            "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_2D_TRACKING_ACTIVE"
+        )
+        assert observation["data"]["coverage"]["attempt_count"] == 0
         assert engine.latest_rgb_png is not None
         assert engine.latest_depth_png is not None
         assert engine.latest_visualization_png is not None
         assert engine.last_diagnostics["status"] == (
             "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_2D_TRACKING_ACTIVE"
         )
+        assert engine.last_diagnostics["blocking_prerequisite"] == {
+            "status": "TRANSFORM_UNAVAILABLE",
+            "requires_external_action": True,
+            "from_frame": "camera",
+            "to_frame": "rebot_arm_base",
+            "message": (
+                "Establish or restore the current camera-to-arm-base "
+                "calibration before requesting 3D semantic geometry."
+            ),
+        }
     finally:
         engine.close()
 

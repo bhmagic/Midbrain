@@ -6,6 +6,7 @@ import pytest
 from arm_scene_compiler.compiler import (
     ARM_BASE_ROI,
     GRIPPER_ROI,
+    HAND_ANGULAR_ROI,
     build_layered_scene,
     build_profile_self_exclusion_spheres,
     build_self_exclusion_spheres,
@@ -236,3 +237,62 @@ def test_untyped_semantic_geometry_defaults_to_pushable() -> None:
         ],
     )
     assert scene["spheres"][0]["type"] == "PUSHABLE"
+
+
+def test_hand_angular_spheres_and_visible_aabb_survive_scene_compilation() -> None:
+    self_spheres, revision = _self_geometry()
+    scene = build_layered_scene(
+        raw_points_arm_base_m=[],
+        gripper_center_arm_base_m=[0.0, 0.0, 0.7],
+        self_exclusion_spheres=self_spheres,
+        self_filter_revision=revision,
+        semantic_objects=[
+            {
+                "sphere_id": "sam2:HAND_ANGULAR_4PI:7",
+                "object_id": "workpiece",
+                "description": "the workpiece",
+                "center_m": [0.8, 0.0, 0.2],
+                "radius_m": 0.01,
+                "type": "WORK_OBJECT",
+                "roi_scope": HAND_ANGULAR_ROI,
+                "semantic_source": "SAM2_TRACKED_USER_DECLARED",
+                "angular_profile": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1",
+                "angular_bin_index": 7,
+            }
+        ],
+        semantic_aabbs=[
+            {
+                "extent_kind": "VISIBLE_SURFACE_AABB",
+                "object_id": "workpiece",
+                "description": "the workpiece",
+                "type": "WORK_OBJECT",
+                "frame_id": "rebot_arm_base",
+                "observed_at_us": 1_000_000,
+                "freshness_ms": 5000,
+                "expires_at_us": 6_000_000,
+                "minimum_m": [0.5, -0.2, 0.1],
+                "maximum_m": [0.8, 0.1, 0.3],
+            }
+        ],
+        semantic_angular_projection={
+            "profile_id": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1",
+            "roi_scope": "HAND_ANGULAR_4PI",
+            "origin_frame_id": "rebot_arm_base",
+            "origin_m": [0.1, 0.0, 0.7],
+            "observed_at_us": 1_000_000,
+            "direction_count": 4096,
+            "occupied_direction_count": 1,
+        },
+    )
+
+    angular_layer = next(
+        value for value in scene["roi_layers"] if value["scope"] == HAND_ANGULAR_ROI
+    )
+    assert angular_layer["minimum_sphere_radius_m"] == 0.005
+    assert angular_layer["center_m"] == [0.1, 0.0, 0.7]
+    assert angular_layer["projection"]["direction_count"] == 4096
+    assert scene["spheres"][0]["radius_m"] == 0.01
+    assert scene["spheres"][0]["angular_bin_index"] == 7
+    aabb = scene["visible_surface_aabbs"][0]
+    assert aabb["center_m"] == [0.65, -0.05, 0.2]
+    assert aabb["corners_m"]["right_forward_up"] == [0.8, -0.2, 0.3]

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Resolve the external Skill catalog from the explicit workspace root or the
+  bounded launcher's `PHYSICAL_AGENT_ROOT` when the Agent runs from an
+  installed wheel. Wheel installs no longer mistake `.venv` for the workspace
+  and fail startup because mandatory motion Skill descriptors appear absent.
+
+- Stop Provider HOT readiness polling when structured dependency evidence says
+  an external prerequisite is required, and make semantic-scene inspection
+  report a missing camera-to-arm-base transform immediately.
+
+- Render compiled `WORK_OBJECT` visible-surface AABBs as wireframe boxes in the
+  developer 3D view. Labels belong to the single work-object box instead of
+  dense semantic spheres, a same-object metric marker does not add a duplicate
+  label, and obstacles receive neither AABBs nor labels.
+- Give scene-mapping activation its own 180-second bounded readiness window,
+  route it through the exact semantic-scene capability, and retain sanitized
+  target/dependency diagnostics in lifecycle tool results and the run journal.
+  Scene-inspection prerequisite results now also return an exact lifecycle
+  continuation instead of requiring the Agent to infer a capability name.
+- Return only individually fresh arm-base-aligned `WORK_OBJECT`
+  visible-surface AABBs from `inspect_arm_semantic_scene`, including
+  deterministic named corners.
+- Route work-object corner inspection requests to the semantic-scene inspector
+  and forbid substituting an arbitrary sphere or treating a visible-surface
+  AABB as a tracked solid extent. Metric item-location routing may also inspect
+  these bounds when a fresh semantic scene already exists.
 - Halve the default Integrated relative-motion duration used when no speed was
   requested from 3.0 to 1.5 seconds.
 - Prefer an active reviewed

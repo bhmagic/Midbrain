@@ -434,6 +434,12 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         provider_hot_readiness_timeout_s=(
             settings.provider_hot_readiness_timeout_s
         ),
+        provider_hot_readiness_timeout_overrides_s={
+            "world_model.arm_scene_compiler": (
+                settings.scene_mapping_readiness_timeout_s
+            )
+        },
+        workspace_root=settings.workspace_root,
         max_turns=settings.openai_agent_max_turns,
         session_history_item_limit=(
             settings.openai_agent_session_history_items
@@ -452,6 +458,7 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
     ),
     defer_loading=False,
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
+    workspace_root=settings.workspace_root,
     max_turns=settings.openai_agent_max_turns,
 )
 
@@ -2471,7 +2478,7 @@ async def _annotation_frame_transform(
 
 @app.get("/api/world-annotations")
 async def world_annotations() -> dict[str, Any]:
-    """Project semantic spheres, the last item, and profile collision geometry."""
+    """Project semantic spheres, visible AABBs, and robot geometry."""
 
     point_cloud_status = await world_point_cloud.status()
     world_frame = str(point_cloud_status.get("world_frame") or "")
@@ -2483,6 +2490,7 @@ async def world_annotations() -> dict[str, Any]:
         )
     now_us = time.time_ns() // 1000
     markers: dict[str, dict[str, Any]] = {}
+    boxes: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
     scene_metadata: dict[str, Any] = {"status": "NO_SCENE"}
     gripper_metadata: dict[str, Any] = {
@@ -2553,6 +2561,19 @@ async def world_annotations() -> dict[str, Any]:
         source_frame = str(data.get("frame_id") or "")
         spheres = data.get("spheres")
         spheres = spheres if isinstance(spheres, list) else []
+        visible_surface_aabbs = data.get("visible_surface_aabbs")
+        visible_surface_aabbs = (
+            visible_surface_aabbs
+            if isinstance(visible_surface_aabbs, list)
+            else []
+        )
+        visible_surface_aabbs = [
+            value
+            for value in visible_surface_aabbs
+            if isinstance(value, dict)
+            and str(value.get("type") or "").strip().upper()
+            == "WORK_OBJECT"
+        ]
         expires_at_us = int(scene.get("expires_at_us") or 0)
         scene_stale = expires_at_us > 0 and expires_at_us <= now_us
         scene_metadata = {
@@ -2560,6 +2581,7 @@ async def world_annotations() -> dict[str, Any]:
             "scene_revision": data.get("scene_revision"),
             "source_frame": source_frame,
             "sphere_count": len(spheres),
+            "visible_surface_aabb_count": len(visible_surface_aabbs),
             "expires_at_us": expires_at_us or None,
         }
         try:
@@ -2629,7 +2651,70 @@ async def world_annotations() -> dict[str, Any]:
                     "semantic_source": sphere.get("semantic_source"),
                     "source": "ARM_SCENE_COMPILER",
                     "stale": scene_stale,
-                    "show_label": sphere in semantic,
+                    "show_label": False,
+                }
+            for aabb in visible_surface_aabbs:
+                if not isinstance(aabb, dict):
+                    continue
+                object_id = str(aabb.get("object_id") or "").strip()
+                aabb_frame = str(aabb.get("frame_id") or source_frame)
+                raw_corners = aabb.get("corners_m")
+                raw_corners = (
+                    raw_corners if isinstance(raw_corners, dict) else {}
+                )
+                required_corner_names = (
+                    "right_forward_up",
+                    "left_forward_up",
+                    "right_backward_up",
+                    "left_backward_up",
+                    "right_forward_down",
+                    "left_forward_down",
+                    "right_backward_down",
+                    "left_backward_down",
+                )
+                if (
+                    not object_id
+                    or aabb_frame != source_frame
+                    or any(
+                        not isinstance(raw_corners.get(name), list)
+                        or len(raw_corners[name]) != 3
+                        for name in required_corner_names
+                    )
+                ):
+                    continue
+                projected_corners = {
+                    name: _transform_annotation_center(
+                        list(raw_corners[name]),
+                        transform,
+                    )
+                    for name in required_corner_names
+                }
+                center_m = _transform_annotation_center(
+                    list(aabb.get("center_m") or []),
+                    transform,
+                )
+                aabb_expires_at_us = int(aabb.get("expires_at_us") or 0)
+                box_id = f"visible-surface-aabb:{object_id}"
+                boxes[box_id] = {
+                    "box_id": box_id,
+                    "object_id": object_id,
+                    "label": str(aabb.get("description") or object_id),
+                    "center_m": center_m,
+                    "corners_m": projected_corners,
+                    "type": str(aabb.get("type") or "WORK_OBJECT"),
+                    "extent_kind": "VISIBLE_SURFACE_AABB",
+                    "source_frame": source_frame,
+                    "source": "ARM_SCENE_COMPILER",
+                    "stale": (
+                        scene_stale
+                        or aabb_expires_at_us <= 0
+                        or aabb_expires_at_us <= now_us
+                    ),
+                    "show_label": True,
+                    "observed_at_us": int(
+                        aabb.get("observed_at_us") or 0
+                    ),
+                    "expires_at_us": aabb_expires_at_us or None,
                 }
             collision_geometry = data.get("robot_collision_geometry")
             collision_geometry = (
@@ -2763,7 +2848,10 @@ async def world_annotations() -> dict[str, Any]:
                 "semantic_source": "METRIC_ITEM_LOCATOR",
                 "source": "LAST_TRUSTED_METRIC_ITEM_RESULT",
                 "stale": item_age_ms is None or item_age_ms > 60_000.0,
-                "show_label": True,
+                "show_label": not any(
+                    value.get("object_id") == object_id
+                    for value in boxes.values()
+                ),
                 "observed_at_us": item.get("observed_at_us"),
                 "age_ms": item_age_ms,
                 "uncertainty_radius_m": location.get(
@@ -2775,7 +2863,7 @@ async def world_annotations() -> dict[str, Any]:
 
     return {
         "schema": "physical_agent.world_annotation_snapshot",
-        "schema_version": 1,
+        "schema_version": 2,
         "world_frame": world_frame,
         "session_epoch": session_epoch,
         "observed_at_us": now_us,
@@ -2783,6 +2871,8 @@ async def world_annotations() -> dict[str, Any]:
         "gripper": gripper_metadata,
         "marker_count": len(markers),
         "markers": list(markers.values()),
+        "box_count": len(boxes),
+        "boxes": list(boxes.values()),
         "warnings": warnings,
     }
 
@@ -5023,6 +5113,8 @@ let dynamicAxisFrames = [];
 let worldAnnotationGroups = [];
 let worldAnnotationMarkers = [];
 let worldAnnotationSnapshotMarkers = [];
+let worldAnnotationBoxes = [];
+let worldAnnotationSnapshotBoxes = [];
 let worldAnnotationSnapshot = null;
 let axisUiSignature = '';
 const AXIS_VISIBILITY_KEY = 'midbrain.spatial-axis-visibility.v2';
@@ -5074,7 +5166,10 @@ function updateAnnotationVisibility() {
   ]) {
     control.disabled = !showAnnotations.checked;
   }
-  rebuildWorldAnnotationBuffers(worldAnnotationSnapshotMarkers);
+  rebuildWorldAnnotationBuffers(
+    worldAnnotationSnapshotMarkers,
+    worldAnnotationSnapshotBoxes
+  );
   updateAnnotationStats();
 }
 
@@ -5247,7 +5342,9 @@ function syncFrameLabels(frames) {
 const annotationLabelNodes = new Map();
 function syncAnnotationLabels(markers) {
   const labeled = markers.filter(marker => marker.show_label);
-  const activeIds = new Set(labeled.map(marker => marker.marker_id));
+  const activeIds = new Set(
+    labeled.map(marker => marker.marker_id || marker.box_id)
+  );
   for (const [markerId, node] of annotationLabelNodes.entries()) {
     if (!activeIds.has(markerId)) {
       node.remove();
@@ -5255,14 +5352,16 @@ function syncAnnotationLabels(markers) {
     }
   }
   for (const marker of labeled) {
-    let node = annotationLabelNodes.get(marker.marker_id);
+    const annotationId = marker.marker_id || marker.box_id;
+    let node = annotationLabelNodes.get(annotationId);
     if (!node) {
       node = document.createElement('span');
       node.className = 'frame-label annotation-label';
       frameLabels.append(node);
-      annotationLabelNodes.set(marker.marker_id, node);
+      annotationLabelNodes.set(annotationId, node);
     }
-    node.textContent = marker.label + ' · ' + marker.type;
+    node.textContent = marker.label + ' · ' + marker.type +
+      (marker.extent_kind === 'VISIBLE_SURFACE_AABB' ? ' AABB' : '');
     node.title = JSON.stringify(marker, null, 2);
   }
 }
@@ -5290,7 +5389,29 @@ function sphereLineVertices(center, radius, segments) {
   return values;
 }
 
-function rebuildWorldAnnotationBuffers(markers) {
+function boxLineVertices(corners) {
+  const edgeNames = [
+    ['right_forward_up', 'left_forward_up'],
+    ['left_forward_up', 'left_backward_up'],
+    ['left_backward_up', 'right_backward_up'],
+    ['right_backward_up', 'right_forward_up'],
+    ['right_forward_down', 'left_forward_down'],
+    ['left_forward_down', 'left_backward_down'],
+    ['left_backward_down', 'right_backward_down'],
+    ['right_backward_down', 'right_forward_down'],
+    ['right_forward_up', 'right_forward_down'],
+    ['left_forward_up', 'left_forward_down'],
+    ['right_backward_up', 'right_backward_down'],
+    ['left_backward_up', 'left_backward_down']
+  ];
+  const values = [];
+  for (const [firstName, secondName] of edgeNames) {
+    values.push(...corners[firstName], ...corners[secondName]);
+  }
+  return values;
+}
+
+function rebuildWorldAnnotationBuffers(markers, boxes) {
   if (!gl) return;
   for (const group of worldAnnotationGroups) gl.deleteBuffer(group.buffer);
   worldAnnotationGroups = [];
@@ -5304,6 +5425,31 @@ function rebuildWorldAnnotationBuffers(markers) {
     radius_m: Number(marker.radius_m)
   }));
   worldAnnotationMarkers = worldAnnotationSnapshotMarkers.filter(
+    annotationIsVisible
+  );
+  const requiredCornerNames = [
+    'right_forward_up', 'left_forward_up',
+    'right_backward_up', 'left_backward_up',
+    'right_forward_down', 'left_forward_down',
+    'right_backward_down', 'left_backward_down'
+  ];
+  worldAnnotationSnapshotBoxes = boxes.filter(box =>
+    box && box.corners_m &&
+    requiredCornerNames.every(name =>
+      Array.isArray(box.corners_m[name]) &&
+      box.corners_m[name].length === 3 &&
+      box.corners_m[name].every(value => Number.isFinite(Number(value)))
+    ) &&
+    Array.isArray(box.center_m) && box.center_m.length === 3 &&
+    box.center_m.every(value => Number.isFinite(Number(value)))
+  ).map(box => ({
+    ...box,
+    center_m: box.center_m.map(Number),
+    corners_m: Object.fromEntries(
+      requiredCornerNames.map(name => [name, box.corners_m[name].map(Number)])
+    )
+  }));
+  worldAnnotationBoxes = worldAnnotationSnapshotBoxes.filter(
     annotationIsVisible
   );
   const styles = {
@@ -5331,7 +5477,22 @@ function rebuildWorldAnnotationBuffers(markers) {
       color: styles[type]
     });
   }
-  syncAnnotationLabels(worldAnnotationMarkers);
+  for (const type of ['KEEP_OUT', 'PUSHABLE', 'WORK_OBJECT']) {
+    const values = [];
+    for (const box of worldAnnotationBoxes.filter(item => item.type === type)) {
+      values.push(...boxLineVertices(box.corners_m));
+    }
+    if (!values.length) continue;
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(values), gl.DYNAMIC_DRAW);
+    worldAnnotationGroups.push({
+      buffer,
+      vertexCount: values.length / 3,
+      color: styles[type]
+    });
+  }
+  syncAnnotationLabels([...worldAnnotationMarkers, ...worldAnnotationBoxes]);
 }
 
 function rebuildDynamicAxisBuffers(frames) {
@@ -5552,6 +5713,19 @@ function updateFrameLabelPositions(projection, view) {
     node.style.left = ((ndc[0] * 0.5 + 0.5) * canvas.clientWidth).toFixed(1) + 'px';
     node.style.top = ((1 - (ndc[1] * 0.5 + 0.5)) * canvas.clientHeight).toFixed(1) + 'px';
   }
+  for (const box of worldAnnotationBoxes) {
+    const node = annotationLabelNodes.get(box.box_id);
+    if (!node) continue;
+    const cameraPoint = transformMat4(view, [...box.center_m, 1]);
+    const clip = transformMat4(projection, cameraPoint);
+    const w = clip[3] || 1;
+    const ndc = [clip[0] / w, clip[1] / w, clip[2] / w];
+    const outside = ndc[0] < -1.05 || ndc[0] > 1.05 || ndc[1] < -1.05 || ndc[1] > 1.05 || ndc[2] < -1 || ndc[2] > 1;
+    node.hidden = outside;
+    if (outside) continue;
+    node.style.left = ((ndc[0] * 0.5 + 0.5) * canvas.clientWidth).toFixed(1) + 'px';
+    node.style.top = ((1 - (ndc[1] * 0.5 + 0.5)) * canvas.clientHeight).toFixed(1) + 'px';
+  }
 }
 
 function resizeCanvas() {
@@ -5673,7 +5847,8 @@ async function refreshWorldAnnotations() {
     const snapshot = await response.json();
     worldAnnotationSnapshot = snapshot;
     const markers = Array.isArray(snapshot.markers) ? snapshot.markers : [];
-    rebuildWorldAnnotationBuffers(markers);
+    const boxes = Array.isArray(snapshot.boxes) ? snapshot.boxes : [];
+    rebuildWorldAnnotationBuffers(markers, boxes);
     updateAnnotationStats();
   } catch (error) {
     annotationStats.textContent = 'Semantic annotations: ' + error;
@@ -5707,7 +5882,8 @@ function updateAnnotationStats() {
     ? ` · scene display ${displayedSceneCount}/${sourceSceneCount}`
     : '';
   annotationStats.textContent =
-    `${worldAnnotationMarkers.length}/${worldAnnotationSnapshotMarkers.length} visible` +
+    `${worldAnnotationMarkers.length}/${worldAnnotationSnapshotMarkers.length} spheres visible` +
+    ` · ${worldAnnotationBoxes.length}/${worldAnnotationSnapshotBoxes.length} AABBs visible` +
     ` · ${summary || 'none'}${sceneDisplay} · scene ${sceneStatus} · gripper ${gripperStatus}`;
 }
 
@@ -5722,6 +5898,9 @@ function fitVisibleAxes() {
       marker.center_m.map(value => value - marker.radius_m),
       marker.center_m.map(value => value + marker.radius_m)
     );
+  }
+  for (const box of worldAnnotationBoxes) {
+    points.push(...Object.values(box.corners_m));
   }
   if (!points.length) return;
   const minimum = [...points[0]];

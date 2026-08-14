@@ -75,6 +75,13 @@ authorized transit as intended.
 Scene semantics must remain upstream-described. Visible material, color, or
 location must not silently turn every object into an obstacle. Close-range
 geometry should refine only the selected workpiece or relevant obstacle.
+The current hand-centric angular projection and five-second arm-base-aligned
+visible-surface AABBs still require physical qualification across thin,
+occluded, and depth-poor objects. Named AABB corners are agent-planning
+references only; they do not establish a tracked solid extent or collision
+authority. A separate, general absolute arm-base free-space goal contract is
+still required before an Agent may turn one of these coordinates into motion;
+the perception path must not own that operation.
 
 ### Generalize the no-contact closed loop
 

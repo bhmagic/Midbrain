@@ -20,7 +20,12 @@ if str(LOCAL_PYTHON_ROOT) not in sys.path:
 
 import httpx
 
-from arm_scene_compiler.service import FabricClient, PointCloudReader, SceneCompilerEngine
+from arm_scene_compiler.service import (
+    FabricClient,
+    PointCloudReader,
+    SceneCompilerEngine,
+    bounded_failure_retry_delay_s,
+)
 
 
 PROVIDER_ID = "world_model.arm_scene_compiler"
@@ -55,6 +60,8 @@ class ArmSceneCompilerProvider:
         self.last_error: str | None = None
         self.manager_error: str | None = None
         self.last_compile_at_us: int | None = None
+        self.consecutive_compile_failures = 0
+        self.current_failure_retry_s = 0.0
         self.lock = threading.RLock()
         self.iteration_lock = threading.Lock()
         self.shutdown_event = threading.Event()
@@ -186,6 +193,10 @@ class ArmSceneCompilerProvider:
                 "last_error": self.last_error,
                 "manager_error": self.manager_error,
                 "last_compile_at_us": self.last_compile_at_us,
+                "consecutive_compile_failures": (
+                    self.consecutive_compile_failures
+                ),
+                "current_failure_retry_s": self.current_failure_retry_s,
                 "last_scene_revision": last_scene_data.get("scene_revision"),
                 "last_scene_sphere_count": len(last_scene_data.get("spheres") or []),
                 "diagnostics": self.engine.last_diagnostics,
@@ -210,7 +221,18 @@ class ArmSceneCompilerProvider:
         self.register()
         self.start_hot()
         heartbeat_at = 0.0
-        poll_interval = float(self.config.get("poll_interval_s", 0.05))
+        poll_interval = max(
+            0.05,
+            float(self.config.get("poll_interval_s", 0.25)),
+        )
+        failure_retry_initial = max(
+            poll_interval,
+            float(self.config.get("failure_retry_initial_s", 0.5)),
+        )
+        failure_retry_maximum = max(
+            failure_retry_initial,
+            float(self.config.get("failure_retry_maximum_s", 5.0)),
+        )
         while not self.shutdown_event.is_set():
             now = time.monotonic()
             if now >= heartbeat_at:
@@ -221,8 +243,11 @@ class ArmSceneCompilerProvider:
                 continue
             try:
                 result = self.compile_once()
+                with self.lock:
+                    self.consecutive_compile_failures = 0
+                    self.current_failure_retry_s = 0.0
                 if result is None:
-                    time.sleep(poll_interval)
+                    self.shutdown_event.wait(poll_interval)
             except Exception as error:
                 with self.lock:
                     # A recycled camera slot is expected with a finite ring
@@ -231,7 +256,14 @@ class ArmSceneCompilerProvider:
                     self.ready = self._last_scene_is_current()
                     self.health = "DEGRADED"
                     self.last_error = str(error)
-                time.sleep(max(0.05, poll_interval))
+                    self.consecutive_compile_failures += 1
+                    retry_delay = bounded_failure_retry_delay_s(
+                        self.consecutive_compile_failures,
+                        initial_s=failure_retry_initial,
+                        maximum_s=failure_retry_maximum,
+                    )
+                    self.current_failure_retry_s = retry_delay
+                self.shutdown_event.wait(retry_delay)
         return 0
 
     def close(self) -> None:

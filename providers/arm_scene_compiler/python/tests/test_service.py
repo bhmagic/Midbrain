@@ -7,7 +7,49 @@ import numpy as np
 import pytest
 
 import arm_scene_compiler.service as service_module
-from arm_scene_compiler.service import SceneCompilerEngine
+from arm_scene_compiler.service import (
+    FabricClient,
+    SceneCompilerEngine,
+    bounded_failure_retry_delay_s,
+)
+
+
+def test_fabric_publish_preserves_rejection_detail() -> None:
+    def reject(
+        request: service_module.httpx.Request,
+    ) -> service_module.httpx.Response:
+        return service_module.httpx.Response(
+            400,
+            request=request,
+            json={"error": "unsupported semantic ROI scope HAND_ANGULAR_4PI"},
+        )
+
+    client = FabricClient("http://fabric")
+    client.http.close()
+    client.http = service_module.httpx.Client(
+        transport=service_module.httpx.MockTransport(reject)
+    )
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="unsupported semantic ROI scope HAND_ANGULAR_4PI",
+        ):
+            client.publish({"schema": "test"})
+    finally:
+        client.close()
+
+
+def test_compile_failure_retry_delay_is_bounded_exponential() -> None:
+    delays = [
+        bounded_failure_retry_delay_s(
+            failures,
+            initial_s=0.5,
+            maximum_s=5.0,
+        )
+        for failures in range(1, 7)
+    ]
+
+    assert delays == [0.5, 1.0, 2.0, 4.0, 5.0, 5.0]
 
 
 def _assembly_observation() -> dict[str, Any]:
@@ -339,6 +381,8 @@ def _tracked_table_observation(*, coverage_ready: bool) -> dict[str, Any]:
                     "type": "KEEP_OUT",
                     "description": "the table is the only obstacle",
                     "semantic_source": "SAM2_TRACKED_KEEP_OUT",
+                    "roi_scope": "HAND_ANGULAR_4PI",
+                    "angular_bin_index": 1,
                 },
                 {
                     "assertion_id": "table:cell:2",
@@ -349,7 +393,42 @@ def _tracked_table_observation(*, coverage_ready: bool) -> dict[str, Any]:
                     "type": "KEEP_OUT",
                     "description": "the table is the only obstacle",
                     "semantic_source": "SAM2_TRACKED_KEEP_OUT",
+                    "roi_scope": "HAND_ANGULAR_4PI",
+                    "angular_bin_index": 2,
                 },
+            ],
+            "angular_projection": {
+                "profile_id": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1",
+                "roi_scope": "HAND_ANGULAR_4PI",
+                "origin_frame_id": "rebot_arm_base",
+                "origin_m": [0.0, 0.0, 0.0],
+                "observed_at_us": now_us,
+                "direction_count": 4096,
+                "occupied_direction_count": 2,
+                "nominal_half_angle_rad": 0.031,
+                "covering_half_angle_rad": 0.047,
+                "angular_radius_scale": 1.5,
+                "minimum_radius_m": 0.005,
+                "radial_padding_m": 0.003,
+                "maximum_range_m": 1.2,
+                "hit_selection": (
+                    "NEAREST_SURFACE_HIT_PER_OCCUPIED_DIRECTION"
+                ),
+                "keep_out_boundary_mode": "HAND_RAY_TANGENT",
+            },
+            "visible_surface_aabbs": [
+                {
+                    "extent_kind": "VISIBLE_SURFACE_AABB",
+                    "object_id": "table",
+                    "description": "the table is the only obstacle",
+                    "type": "KEEP_OUT",
+                    "frame_id": "rebot_arm_base",
+                    "observed_at_us": now_us,
+                    "freshness_ms": 5000,
+                    "expires_at_us": now_us + 5_000_000,
+                    "minimum_m": [0.3, -0.2, 0.0],
+                    "maximum_m": [0.8, 0.2, 0.1],
+                }
             ],
         },
     }
@@ -390,6 +469,13 @@ def test_tracked_table_cells_remain_distinct_and_satisfy_required_coverage() -> 
         "table:cell:2",
     }
     assert all(value["type"] == "KEEP_OUT" for value in table_cells)
+    assert result["data"]["visible_surface_aabbs"] == []
+    angular_layer = next(
+        value
+        for value in result["data"]["roi_layers"]
+        if value["scope"] == "HAND_ANGULAR_4PI"
+    )
+    assert angular_layer["projection"]["direction_count"] == 4096
     sources = result["data"]["production"]["source_provenance"][
         "semantic_assertions"
     ]["accepted_sources"]

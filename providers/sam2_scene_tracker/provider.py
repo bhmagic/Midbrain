@@ -67,14 +67,39 @@ def load_config(path: Path) -> dict[str, Any]:
         refresh = float(value.get(name, default))
         if not 2.0 <= refresh <= 60.0:
             raise ValueError(f"{name} must be in [2, 60]")
-    for name, default in (
-        ("tracking_motion_interval_s", 0.8),
-        ("tracking_baseline_interval_s", 4.0 / 3.0),
-        ("tracking_stationary_interval_s", 4.0),
-    ):
-        interval = float(value.get(name, default))
-        if not 0.1 <= interval <= 8.0:
-            raise ValueError(f"{name} must be in [0.1, 8.0]")
+    tracking_rate_hz = float(value.get("tracking_rate_hz", 1.0))
+    if not 1.0 <= tracking_rate_hz <= 4.0:
+        raise ValueError("tracking_rate_hz must be in [1, 4]")
+    value["tracking_rate_hz"] = tracking_rate_hz
+    angular_direction_count = int(value.get("angular_direction_count", 4096))
+    if not 128 <= angular_direction_count <= 20_000:
+        raise ValueError("angular_direction_count must be in [128, 20000]")
+    angular_radius_scale = float(value.get("angular_radius_scale", 1.5))
+    if not 1.0 <= angular_radius_scale <= 3.0:
+        raise ValueError("angular_radius_scale must be in [1, 3]")
+    angular_minimum_radius_m = float(
+        value.get("angular_minimum_radius_m", 0.005)
+    )
+    if not 0.005 <= angular_minimum_radius_m <= 0.1:
+        raise ValueError("angular_minimum_radius_m must be in [0.005, 0.1]")
+    angular_radial_padding_m = float(
+        value.get("angular_radial_padding_m", 0.003)
+    )
+    if not 0.0 <= angular_radial_padding_m <= 0.05:
+        raise ValueError("angular_radial_padding_m must be in [0, 0.05]")
+    angular_maximum_range_m = float(
+        value.get("angular_maximum_range_m", 1.2)
+    )
+    if not 0.1 <= angular_maximum_range_m <= 1.2:
+        raise ValueError("angular_maximum_range_m must be in [0.1, 1.2]")
+    maximum_assertions = int(value.get("maximum_assertions", 20_000))
+    if not angular_direction_count <= maximum_assertions <= 20_000:
+        raise ValueError(
+            "maximum_assertions must be between angular_direction_count and 20000"
+        )
+    aabb_freshness_ms = int(value.get("aabb_freshness_ms", 5000))
+    if not 1000 <= aabb_freshness_ms <= 60_000:
+        raise ValueError("aabb_freshness_ms must be in [1000, 60000]")
     attempts = int(value.get("mask_quality_maximum_attempts", 3))
     if attempts != 3:
         raise ValueError("mask_quality_maximum_attempts must be 3")
@@ -84,6 +109,14 @@ def load_config(path: Path) -> dict[str, Any]:
     connectivity = float(value.get("semantic_depth_connectivity_m", 0.035))
     if not 0.001 <= connectivity <= 0.25:
         raise ValueError("semantic_depth_connectivity_m must be in [0.001, 0.25]")
+    for name, default in (
+        ("work_object_mask_erosion_m", 0.01),
+        ("keep_out_mask_erosion_m", 0.02),
+    ):
+        erosion_m = float(value.get(name, default))
+        if not 0.0 <= erosion_m <= 0.1:
+            raise ValueError(f"{name} must be in [0, 0.1]")
+        value[name] = erosion_m
     candidates = value.get("vlm_candidates")
     if not isinstance(candidates, list) or not candidates:
         raise ValueError("vlm_candidates must be a non-empty ordered list")
@@ -104,8 +137,8 @@ class Sam2SceneTrackerProvider:
         self.manager_error: str | None = None
         self.last_tick_at_us: int | None = None
         self.last_arm_motion_monotonic: float | None = None
-        self.current_tracking_interval_s = float(
-            self.config.get("tracking_baseline_interval_s", 4.0 / 3.0)
+        self.current_tracking_interval_s = 1.0 / float(
+            self.config.get("tracking_rate_hz", 1.0)
         )
         self.lock = threading.RLock()
         self.iteration_lock = threading.Lock()
@@ -163,18 +196,7 @@ class Sam2SceneTrackerProvider:
         return last is not None and now - last <= hold_s
 
     def _recommended_tracking_interval(self) -> float:
-        if self.engine.scene_motion_active:
-            return float(self.config.get("tracking_motion_interval_s", 0.8))
-        low_confidence = (
-            self.engine.last_min_sam2_score is None
-            or self.engine.last_min_sam2_score
-            < float(self.config.get("sam2_low_confidence_threshold", 0.60))
-        )
-        if not self.ready or low_confidence:
-            return float(
-                self.config.get("tracking_baseline_interval_s", 4.0 / 3.0)
-            )
-        return float(self.config.get("tracking_stationary_interval_s", 4.0))
+        return 1.0 / float(self.config.get("tracking_rate_hz", 1.0))
 
     def register(self) -> None:
         response = self.http.post(
@@ -282,7 +304,7 @@ class Sam2SceneTrackerProvider:
                     "vram_mb_measured_allocated": 476,
                     "vram_mb_measured_reserved": 1100,
                     "hot_advantage": (
-                        "one loaded SAM2 model, adaptive 1-5 Hz mask tracking, "
+                        "one loaded SAM2 model, configurable fixed-rate mask tracking, "
                         "occlusion-retained semantic voxel fusion, and slow "
                         "asynchronous VLM label refresh"
                     ),

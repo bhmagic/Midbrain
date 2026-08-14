@@ -5,6 +5,7 @@ import numpy as np
 from sam2_scene_tracker.policy import parse_policy
 from sam2_scene_tracker.segmentation import (
     constrain_mask_to_prompted_depth_component,
+    erode_mask_by_metric_boundary,
     partition_semantic_masks,
     project_masked_depth_to_frame,
 )
@@ -85,6 +86,53 @@ def test_unclaimed_visible_pixels_default_to_pushable() -> None:
 
     assert partition.object_masks["table"].sum() == 12
     assert partition.pushable_mask.sum() == 18
+
+
+def test_metric_mask_erosion_projects_metres_to_pixels_at_registered_depth() -> None:
+    mask = np.zeros((11, 11), dtype=bool)
+    mask[2:9, 2:9] = True
+    depth = np.ones(mask.shape, dtype=np.float32)
+    intrinsics = {"fx": 100.0, "fy": 100.0}
+
+    work_object, work_diagnostics = erode_mask_by_metric_boundary(
+        mask=mask,
+        depth_m=depth,
+        intrinsics=intrinsics,
+        erosion_m=0.01,
+    )
+    keep_out, obstacle_diagnostics = erode_mask_by_metric_boundary(
+        mask=mask,
+        depth_m=depth,
+        intrinsics=intrinsics,
+        erosion_m=0.02,
+    )
+
+    assert work_object.sum() == 25
+    assert keep_out.sum() == 9
+    assert work_diagnostics["erosion_radius_px"] == 1
+    assert obstacle_diagnostics["erosion_radius_px"] == 2
+
+
+def test_metric_mask_erosion_uses_one_radius_from_mean_registered_depth() -> None:
+    mask = np.zeros((9, 20), dtype=bool)
+    mask[1:8, 1:8] = True
+    mask[1:8, 12:19] = True
+    depth = np.ones(mask.shape, dtype=np.float32)
+    depth[:, :10] = 0.5
+
+    eroded, diagnostics = erode_mask_by_metric_boundary(
+        mask=mask,
+        depth_m=depth,
+        intrinsics={"fx": 100.0, "fy": 100.0},
+        erosion_m=0.01,
+    )
+
+    assert eroded[:, :10].sum() == 25
+    assert eroded[:, 10:].sum() == 25
+    assert diagnostics["input_mask_pixels"] == 98
+    assert diagnostics["output_mask_pixels"] == 50
+    assert diagnostics["mean_depth_m"] == 0.75
+    assert diagnostics["erosion_radius_px"] == 1
 
 
 def test_masked_depth_projects_with_camera_transform() -> None:

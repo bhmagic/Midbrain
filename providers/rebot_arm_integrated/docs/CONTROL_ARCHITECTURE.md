@@ -101,6 +101,12 @@ The scene uses stable base-frame spheres and object IDs:
 Classification never authorizes contact. Unclaimed depth remains non-blocking
 `PUSHABLE` telemetry under the current explicit policy.
 
+Canonical scenes may use `HAND_ANGULAR_4PI` in addition to the legacy
+`GRIPPER_0P5M` and `ARM_BASE_1P2M` scopes. The angular scope is hand-centric at
+scene-production time, but its resulting centers and radii are frozen in
+`rebot_arm_base` for the immutable preview. Integrated performs the same
+capsule/sphere and sphere/sphere clearance calculations for all three scopes.
+
 The scene compiler uses the active assembly's arm capsules and effector spheres
 for robot-self exclusion, preventing the selected tool from reappearing as a
 work object. It publishes those exact sphere revisions with the scene so the

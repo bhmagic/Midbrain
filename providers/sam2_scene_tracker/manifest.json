@@ -41,9 +41,9 @@
     "contract_version": 1,
     "policy_contract_version": 1,
     "tracking_rate_hz": {
-      "stationary": 0.25,
-      "baseline_or_low_confidence": 0.75,
-      "motion": 1.25
+      "default": 1.0,
+      "configuration_minimum": 1.0,
+      "configuration_maximum": 4.0
     },
     "vlm_refresh_rate_hz": {
       "stationary": 0.025,
@@ -56,8 +56,41 @@
     "maximum_annotation_segmentation_review_attempts": 3,
     "rejected_mapping_publishes_no_collision_spheres": true,
     "arm_mask_dilation_pixels": 18,
+    "post_segmentation_mask_erosion": {
+      "method": "MEAN_REGISTERED_DEPTH_CONSTANT_PIXEL_EROSION",
+      "work_object_default_m": 0.01,
+      "keep_out_default_m": 0.02,
+      "applies_before": [
+        "MASKED_DEPTH_PROJECTION",
+        "SEMANTIC_VOXEL_FUSION",
+        "HAND_ANGULAR_COLLISION_PROJECTION",
+        "VISIBLE_SURFACE_AABB"
+      ]
+    },
     "persistent_obstacles": true,
     "duplicate_suppression": "SEMANTIC_VOXEL_NEIGHBOR_FUSION",
+    "collision_projection": {
+      "profile": "SPHERICAL_FIBONACCI_NEAR_UNIFORM_V1",
+      "default_direction_count": 4096,
+      "configuration_minimum_direction_count": 128,
+      "configuration_maximum_direction_count": 20000,
+      "origin": "CURRENT_CONTROLLED_HAND_CENTER",
+      "axis_frame": "rebot_arm_base",
+      "maximum_one_sphere_per_direction": true,
+      "default_angular_radius_scale": 1.5,
+      "default_minimum_radius_m": 0.005,
+      "default_radial_padding_m": 0.003,
+      "default_maximum_surface_range_m": 1.2,
+      "keep_out_boundary_mode": "HAND_RAY_TANGENT",
+      "shared_projection_metadata": true,
+      "sphere_geometry_precision_m": 0.000001
+    },
+    "semantic_bounds": {
+      "kind": "VISIBLE_SURFACE_AABB",
+      "object_type": "WORK_OBJECT",
+      "frame_id": "rebot_arm_base",
+      "default_freshness_ms": 5000
+    },
     "default_unclaimed_type": "PUSHABLE",
     "pushable_collision_geometry_published": false,
     "keep_out_requires_user_or_upstream_description": true

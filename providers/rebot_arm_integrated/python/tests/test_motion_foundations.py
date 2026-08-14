@@ -586,6 +586,12 @@ class ScenePlanningTests(unittest.TestCase):
                         "radius_m": 1.2,
                         "minimum_sphere_radius_m": 0.06,
                     },
+                    {
+                        "scope": "HAND_ANGULAR_4PI",
+                        "center_m": [0.4, 0.0, 0.3],
+                        "radius_m": 1.5,
+                        "minimum_sphere_radius_m": 0.005,
+                    },
                 ],
                 "spheres": [
                     {
@@ -603,6 +609,13 @@ class ScenePlanningTests(unittest.TestCase):
                         "radius_m": 0.06,
                         "roi_scope": "ARM_BASE_1P2M",
                     },
+                    {
+                        "sphere_id": "angular-obstacle-1",
+                        "object_id": "angular-obstacle-1",
+                        "center_m": [0.41, 0.0, 0.3],
+                        "radius_m": 0.005,
+                        "roi_scope": "HAND_ANGULAR_4PI",
+                    },
                 ],
             }
         )
@@ -610,6 +623,20 @@ class ScenePlanningTests(unittest.TestCase):
         self.assertEqual(scene.contract_version, 2)
         self.assertEqual(scene.spheres[0].object_type, "WORK_OBJECT")
         self.assertEqual(scene.spheres[1].object_type, "KEEP_OUT")
+        self.assertEqual(scene.spheres[2].roi_scope, "HAND_ANGULAR_4PI")
+        angular_collision = configuration_clearance(
+            [[0.40, 0.0, 0.30], [0.42, 0.0, 0.30]],
+            scene,
+            [0.001],
+        )
+        self.assertFalse(angular_collision["collision_free"])
+        self.assertIn(
+            "angular-obstacle-1",
+            {
+                value["sphere_id"]
+                for value in angular_collision["collisions"]
+            },
+        )
 
         with self.assertRaisesRegex(ValueError, "minimum radius"):
             SceneSnapshot.from_payload(

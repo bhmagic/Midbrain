@@ -15,9 +15,11 @@ SEMANTIC_SCENE_STREAM = "robot_arm.primary.integrated.scene"
 
 GRIPPER_ROI = "GRIPPER_0P5M"
 ARM_BASE_ROI = "ARM_BASE_1P2M"
+HAND_ANGULAR_ROI = "HAND_ANGULAR_4PI"
 ROI_POLICIES = {
     GRIPPER_ROI: {"radius_m": 0.5, "minimum_sphere_radius_m": 0.02},
     ARM_BASE_ROI: {"radius_m": 1.2, "minimum_sphere_radius_m": 0.06},
+    HAND_ANGULAR_ROI: {"radius_m": 1.5, "minimum_sphere_radius_m": 0.005},
 }
 
 _TYPE_ALIASES = {
@@ -211,6 +213,7 @@ def _normalize_semantic_object(
     value: dict[str, Any],
     *,
     gripper_center: np.ndarray,
+    angular_origin: np.ndarray,
 ) -> dict[str, Any]:
     object_id = str(value.get("object_id") or value.get("assertion_id") or "").strip()
     if not object_id:
@@ -225,7 +228,22 @@ def _normalize_semantic_object(
             f"KEEP_OUT semantic object {object_id!r} requires a user/upstream description"
         )
     center = _point(value.get("center_m"), f"semantic object {object_id} center_m")
-    if float(np.linalg.norm(center - gripper_center)) <= 0.5:
+    requested_scope = str(value.get("roi_scope") or "").strip().upper()
+    if requested_scope == HAND_ANGULAR_ROI:
+        scope = HAND_ANGULAR_ROI
+        roi_center = angular_origin
+    elif requested_scope == GRIPPER_ROI:
+        scope = GRIPPER_ROI
+        roi_center = gripper_center
+    elif requested_scope == ARM_BASE_ROI:
+        scope = ARM_BASE_ROI
+        roi_center = np.zeros(3, dtype=np.float64)
+    elif requested_scope:
+        raise ValueError(
+            f"semantic object {object_id!r} has unsupported ROI scope "
+            f"{requested_scope!r}"
+        )
+    elif float(np.linalg.norm(center - gripper_center)) <= 0.5:
         scope = GRIPPER_ROI
         roi_center = gripper_center
     elif float(np.linalg.norm(center)) <= 1.2:
@@ -241,7 +259,7 @@ def _normalize_semantic_object(
         ROI_POLICIES[scope]["radius_m"]
     ):
         raise ValueError(f"semantic object {object_id!r} is outside {scope}")
-    return {
+    normalized = {
         "sphere_id": str(value.get("sphere_id") or f"object:{object_id}"),
         "object_id": object_id,
         "center_m": center.tolist(),
@@ -250,6 +268,117 @@ def _normalize_semantic_object(
         "roi_scope": scope,
         "semantic_source": str(value.get("semantic_source") or "UPSTREAM_EXPLICIT"),
         "description": description,
+    }
+    if scope == HAND_ANGULAR_ROI:
+        for key in (
+            "angular_profile",
+            "angular_bin_index",
+            "angular_direction_count",
+            "angular_nominal_half_angle_rad",
+            "angular_covering_half_angle_rad",
+            "surface_center_m",
+            "surface_boundary_mode",
+            "surface_range_from_hand_m",
+        ):
+            if key in value:
+                normalized[key] = value[key]
+    return normalized
+
+
+def _normalize_hand_angular_projection(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("hand angular projection must be an object")
+    profile_id = str(value.get("profile_id") or "").strip()
+    if not profile_id:
+        raise ValueError("hand angular projection profile_id must be non-empty")
+    if str(value.get("roi_scope") or "").strip().upper() != HAND_ANGULAR_ROI:
+        raise ValueError("hand angular projection ROI scope is invalid")
+    if str(value.get("origin_frame_id") or "") != "rebot_arm_base":
+        raise ValueError("hand angular projection must use rebot_arm_base")
+    origin = _point(value.get("origin_m"), "hand angular projection origin_m")
+    observed_at_us = int(value.get("observed_at_us") or 0)
+    direction_count = int(value.get("direction_count") or 0)
+    occupied_count = int(value.get("occupied_direction_count") or 0)
+    if observed_at_us <= 0:
+        raise ValueError("hand angular projection observed_at_us must be positive")
+    if not 128 <= direction_count <= 20_000:
+        raise ValueError("hand angular projection direction_count is invalid")
+    if not 0 <= occupied_count <= direction_count:
+        raise ValueError("hand angular projection occupied count is invalid")
+    return {
+        **value,
+        "profile_id": profile_id,
+        "roi_scope": HAND_ANGULAR_ROI,
+        "origin_frame_id": "rebot_arm_base",
+        "origin_m": origin.tolist(),
+        "observed_at_us": observed_at_us,
+        "direction_count": direction_count,
+        "occupied_direction_count": occupied_count,
+    }
+
+
+def _normalize_visible_surface_aabb(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("visible surface AABBs must be objects")
+    if str(value.get("extent_kind") or "") != "VISIBLE_SURFACE_AABB":
+        raise ValueError("semantic AABB extent_kind must be VISIBLE_SURFACE_AABB")
+    object_id = str(value.get("object_id") or "").strip()
+    if not object_id:
+        raise ValueError("semantic AABB object_id must be non-empty")
+    if str(value.get("type") or "").strip().upper() != "WORK_OBJECT":
+        raise ValueError("visible surface AABBs are only valid for WORK_OBJECT")
+    if str(value.get("frame_id") or "") != "rebot_arm_base":
+        raise ValueError("semantic AABB must be transformed into rebot_arm_base")
+    minimum = _point(value.get("minimum_m"), f"semantic AABB {object_id} minimum_m")
+    maximum = _point(value.get("maximum_m"), f"semantic AABB {object_id} maximum_m")
+    if np.any(maximum < minimum):
+        raise ValueError("semantic AABB maximum_m must not be below minimum_m")
+    observed_at_us = int(value.get("observed_at_us") or 0)
+    freshness_ms = int(value.get("freshness_ms") or 0)
+    expires_at_us = int(value.get("expires_at_us") or 0)
+    if (
+        observed_at_us <= 0
+        or freshness_ms <= 0
+        or expires_at_us != observed_at_us + freshness_ms * 1000
+    ):
+        raise ValueError("semantic AABB timestamp or expiry is invalid")
+    center = (minimum + maximum) * 0.5
+    size = maximum - minimum
+    xmin, ymin, zmin = minimum.tolist()
+    xmax, ymax, zmax = maximum.tolist()
+    return {
+        **value,
+        "extent_kind": "VISIBLE_SURFACE_AABB",
+        "object_id": object_id,
+        "type": "WORK_OBJECT",
+        "frame_id": "rebot_arm_base",
+        "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+        "minimum_m": minimum.tolist(),
+        "maximum_m": maximum.tolist(),
+        "center_m": center.tolist(),
+        "size_m": size.tolist(),
+        "corners_m": {
+            "right_forward_up": [xmax, ymin, zmax],
+            "left_forward_up": [xmax, ymax, zmax],
+            "right_backward_up": [xmin, ymin, zmax],
+            "left_backward_up": [xmin, ymax, zmax],
+            "right_forward_down": [xmax, ymin, zmin],
+            "left_forward_down": [xmax, ymax, zmin],
+            "right_backward_down": [xmin, ymin, zmin],
+            "left_backward_down": [xmin, ymax, zmin],
+        },
+        "axis_semantics": {
+            "forward": "+X",
+            "backward": "-X",
+            "left": "+Y",
+            "right": "-Y",
+            "up": "+Z",
+            "down": "-Z",
+        },
     }
 
 
@@ -353,6 +482,8 @@ def build_layered_scene(
     self_exclusion_spheres: list[dict[str, Any]],
     self_filter_revision: str,
     semantic_objects: list[dict[str, Any]] | None = None,
+    semantic_aabbs: list[dict[str, Any]] | None = None,
+    semantic_angular_projection: dict[str, Any] | None = None,
     source_provenance: dict[str, Any] | None = None,
     maximum_spheres: int = 20_000,
     self_filter_margin_m: float = 0.01,
@@ -360,7 +491,7 @@ def build_layered_scene(
     robot_collision_geometry: dict[str, Any] | None = None,
     scene_revision: str | None = None,
 ) -> dict[str, Any]:
-    """Compile simultaneous gripper/base ROI layers into contract version 2."""
+    """Compile semantic angular and legacy point-cloud ROI scene layers."""
 
     gripper_center = _point(gripper_center_arm_base_m, "gripper center")
     points = _points(raw_points_arm_base_m)
@@ -384,10 +515,33 @@ def build_layered_scene(
         output_sphere_radii_m=output_sphere_radii,
     )
 
+    angular_projection = _normalize_hand_angular_projection(
+        semantic_angular_projection
+    )
+    angular_origin = (
+        _point(angular_projection["origin_m"], "hand angular projection origin_m")
+        if angular_projection is not None
+        else gripper_center
+    )
     objects = [
-        _normalize_semantic_object(value, gripper_center=gripper_center)
+        _normalize_semantic_object(
+            value,
+            gripper_center=gripper_center,
+            angular_origin=angular_origin,
+        )
         for value in (semantic_objects or [])
     ]
+    aabbs_by_object: dict[str, dict[str, Any]] = {}
+    for value in semantic_aabbs or []:
+        if str(value.get("type") or "").strip().upper() != "WORK_OBJECT":
+            continue
+        aabb = _normalize_visible_surface_aabb(value)
+        current = aabbs_by_object.get(aabb["object_id"])
+        if current is None or int(aabb["observed_at_us"]) > int(
+            current["observed_at_us"]
+        ):
+            aabbs_by_object[aabb["object_id"]] = aabb
+    visible_surface_aabbs = list(aabbs_by_object.values())
     objects, semantic_self_removed = _filter_sam2_semantic_self_geometry(
         objects,
         self_exclusion_spheres,
@@ -460,29 +614,43 @@ def build_layered_scene(
         if sam2_semantics
         else "SEMANTIC_ONLY"
     )
+    roi_layers = [
+        {
+            "scope": GRIPPER_ROI,
+            "center_m": gripper_center.tolist(),
+            "radius_m": 0.5,
+            "minimum_sphere_radius_m": float(
+                ROI_POLICIES[GRIPPER_ROI]["minimum_sphere_radius_m"]
+            ),
+        },
+        {
+            "scope": ARM_BASE_ROI,
+            "center_m": [0.0, 0.0, 0.0],
+            "radius_m": 1.2,
+            "minimum_sphere_radius_m": float(
+                ROI_POLICIES[ARM_BASE_ROI]["minimum_sphere_radius_m"]
+            ),
+        },
+    ]
+    if any(value["roi_scope"] == HAND_ANGULAR_ROI for value in objects):
+        angular_layer = {
+            "scope": HAND_ANGULAR_ROI,
+            "center_m": angular_origin.tolist(),
+            "radius_m": float(ROI_POLICIES[HAND_ANGULAR_ROI]["radius_m"]),
+            "minimum_sphere_radius_m": float(
+                ROI_POLICIES[HAND_ANGULAR_ROI]["minimum_sphere_radius_m"]
+            ),
+        }
+        if angular_projection is not None:
+            angular_layer["projection"] = angular_projection
+        roi_layers.append(angular_layer)
     return {
         "contract_version": SEMANTIC_SCENE_CONTRACT_VERSION,
         "scene_revision": revision,
         "frame_id": "rebot_arm_base",
-        "roi_layers": [
-            {
-                "scope": GRIPPER_ROI,
-                "center_m": gripper_center.tolist(),
-                "radius_m": 0.5,
-                "minimum_sphere_radius_m": float(
-                    ROI_POLICIES[GRIPPER_ROI]["minimum_sphere_radius_m"]
-                ),
-            },
-            {
-                "scope": ARM_BASE_ROI,
-                "center_m": [0.0, 0.0, 0.0],
-                "radius_m": 1.2,
-                "minimum_sphere_radius_m": float(
-                    ROI_POLICIES[ARM_BASE_ROI]["minimum_sphere_radius_m"]
-                ),
-            },
-        ],
+        "roi_layers": roi_layers,
         "spheres": spheres,
+        "visible_surface_aabbs": visible_surface_aabbs,
         "robot_collision_geometry": dict(robot_collision_geometry or {}),
         "production": {
             "default_unclassified_type": "PUSHABLE",

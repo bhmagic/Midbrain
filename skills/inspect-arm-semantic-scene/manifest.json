@@ -7,11 +7,12 @@
     "schema_version": 1,
     "discoverable": true,
     "tool_name": "inspect_arm_semantic_scene",
-    "description": "Inspect the latest Fabric-hosted semantic sphere scene produced for the integrated arm controller. Reports freshness, ROI policies, obstacle/work-object/pushable counts, producer identity, depth fallback mode, and optionally a bounded list of spheres. This Skill never starts hardware and never authorizes motion.",
+    "description": "Inspect the latest Fabric-hosted semantic sphere scene produced for the integrated arm controller. Reports freshness, ROI policies, obstacle/work-object/pushable counts, producer identity, depth fallback mode, fresh arm-base-aligned WORK_OBJECT visible-surface AABBs with named corners, a missing camera-to-arm-base transform prerequisite, and optionally a bounded list of spheres. This Skill never starts hardware and never authorizes motion.",
     "when_to_use": [
       "The operator asks whether semantic sphere marking is running or ready to test.",
       "An agent needs to verify that the integrated controller has a fresh environment scene.",
-      "A test needs the current gripper/base ROI policies, sphere classes, or depth fallback state."
+      "A test needs the current hand-angular or legacy ROI policies, sphere classes, or depth fallback state.",
+      "An agent needs a fresh right/left, forward/backward, or up/down corner of a visible work object in the arm-base frame."
     ],
     "when_not_to_use": [
       "A new point cloud or semantic classification must be produced; publish an upstream Fabric observation or activate the scene compiler Provider.",

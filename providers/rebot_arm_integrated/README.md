@@ -58,6 +58,13 @@ profile supplies its capsule chain; the selected mounted-effector profile
 supplies controlled-frame collision spheres. The scene compiler, controller,
 and main 3D viewer consume those same profile revisions.
 
+Environment collision geometry remains sphere-based. In addition to the
+legacy gripper/base ROI names, Integrated accepts the compiler's bounded
+`HAND_ANGULAR_4PI` layer with its 5 mm minimum radius. The layer may contain up
+to one sphere per occupied direction from a 4,096-direction hand-centric
+projection; collision checking is unchanged because every projected hit is an
+ordinary arm-base-frame sphere.
+
 ## Profiles and configuration
 
 The machine-local central selection is

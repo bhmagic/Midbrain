@@ -13,10 +13,17 @@
   persistent transform/session lineage, confidence/uncertainty propagation for
   every source, multi-publisher semantic stream arbitration, and exact scene
   lineage binding through preview, authorization, and execution.
-- Preserve the implemented arm-scene ROI and level-of-detail contract: 0.5 m around the
-  measured gripper with a 20 mm minimum sphere radius, 1.2 m around the arm base
-  with a 60 mm minimum sphere radius, conservative inflation of smaller
-  geometry, and voxel/cluster merging before canonical publication.
+- Preserve the implemented arm-scene level-of-detail contract: explicit
+  semantic depth uses a bounded hand-centric 4 pi projection with 4,096
+  near-uniform Fibonacci directions by default, one nearest hit per occupied
+  direction, a 5 mm close-range radius floor, and range-scaled conservative
+  spheres. The legacy unclaimed point-cloud path retains its 0.5 m
+  gripper/20 mm and 1.2 m arm-base/60 mm tiers when diagnostic publication is
+  explicitly enabled.
+- Physically qualify the five-second `WORK_OBJECT` `VISIBLE_SURFACE_AABB`
+  planning extent and its arm-base-aligned named corners. It is current
+  visible-surface evidence, not tracked solid geometry and not a controller
+  collision primitive; obstacles remain sphere-only.
 - Preserve the implemented semantic-policy authority and precedence: only
   user/upstream-described `KEEP_OUT` objects become blocking geometry,
   unclaimed visible geometry is ignored `PUSHABLE` telemetry, the selected

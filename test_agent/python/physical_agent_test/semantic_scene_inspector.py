@@ -12,6 +12,8 @@ SEMANTIC_SCENE_STREAM = "robot_arm.primary.integrated.scene"
 SEMANTIC_SCENE_SCHEMA = "physical_agent.arm_semantic_sphere_scene"
 TRACKED_ASSERTION_STREAM = "robot_arm.scene.tracked_semantic_assertions"
 TRACKED_ASSERTION_PROVIDER_ID = "perception.sam2_scene_tracker"
+TRACKED_ASSERTION_CAPABILITY = "perception.scene.semantic_obstacles"
+SEMANTIC_SCENE_CAPABILITY = "world_model.arm.semantic_scene"
 SCENE_POLICY_STREAM = "robot_arm.scene.segmentation_policy"
 SCENE_POLICY_SCHEMA = "physical_agent.arm_scene_segmentation_policy"
 
@@ -131,12 +133,43 @@ class SemanticSceneInspector:
                 self._tracked_policy_revision(tracked) == current_revision
                 and mapping_failure.get("status")
             ):
+                failure_status = str(mapping_failure.get("status") or "")
+                if "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE" in failure_status:
+                    prerequisite = mapping_failure.get("blocking_prerequisite")
+                    prerequisite = (
+                        prerequisite if isinstance(prerequisite, dict) else {}
+                    )
+                    return None, {
+                        "status": "ARM_BASE_TRANSFORM_REQUIRED",
+                        "workflow_complete": False,
+                        "physical_motion_authorized": False,
+                        "policy_revision": current_revision,
+                        "reason": failure_status,
+                        "required_transform": {
+                            "from_frame": (
+                                prerequisite.get("from_frame")
+                                or mapping_failure.get("from_frame")
+                            ),
+                            "to_frame": (
+                                prerequisite.get("to_frame")
+                                or mapping_failure.get("to_frame")
+                                or "rebot_arm_base"
+                            ),
+                        },
+                        "mapping_failure": mapping_failure,
+                        "message": (
+                            "SAM2 accepted the 2D masks, but no current "
+                            "camera-to-arm-base transform is available. "
+                            "Establish or restore the arm-base calibration, "
+                            "then run scene mapping again."
+                        ),
+                    }
                 return None, {
                     "status": "SCENE_MAPPING_FAILED",
                     "workflow_complete": False,
                     "physical_motion_authorized": False,
                     "policy_revision": current_revision,
-                    "reason": mapping_failure.get("status"),
+                    "reason": failure_status,
                     "mapping_failure": mapping_failure,
                     "message": (
                         "The VLM rejected the SAM2 mapping after three "
@@ -259,6 +292,11 @@ class SemanticSceneInspector:
                 if tracker_ready
                 else self.tracked_assertion_provider_id
             )
+            required_capability = (
+                SEMANTIC_SCENE_CAPABILITY
+                if tracker_ready
+                else TRACKED_ASSERTION_CAPABILITY
+            )
             return {
                 "status": (
                     "NO_SCENE"
@@ -272,6 +310,15 @@ class SemanticSceneInspector:
                 "tracked_coverage": coverage,
                 "required_provider_id": required_provider_id,
                 "required_provider_residency": "HOT",
+                "required_capability": required_capability,
+                "required_next_tool": {
+                    "name": "set_provider_residency",
+                    "arguments": {
+                        "provider_id": required_provider_id,
+                        "action": "hot",
+                        "required_capability": required_capability,
+                    },
+                },
                 "message": (
                     (
                         "Tracked SAM2 coverage is ready, but no compiled arm "
@@ -307,6 +354,29 @@ class SemanticSceneInspector:
         spheres = spheres if isinstance(spheres, list) else []
         layers = data.get("roi_layers")
         layers = layers if isinstance(layers, list) else []
+        raw_aabbs = data.get("visible_surface_aabbs")
+        raw_aabbs = raw_aabbs if isinstance(raw_aabbs, list) else []
+        visible_surface_aabbs: list[dict[str, Any]] = []
+        expired_aabb_count = 0
+        for value in raw_aabbs:
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("type") or "").strip().upper() != "WORK_OBJECT":
+                continue
+            aabb_observed_at_us = int(value.get("observed_at_us") or 0)
+            aabb_freshness_ms = int(value.get("freshness_ms") or 0)
+            aabb_expires_at_us = int(value.get("expires_at_us") or 0)
+            aabb_fresh = (
+                aabb_observed_at_us > 0
+                and aabb_freshness_ms > 0
+                and now_us - aabb_observed_at_us <= aabb_freshness_ms * 1000
+                and aabb_expires_at_us > 0
+                and now_us <= aabb_expires_at_us
+            )
+            if aabb_fresh:
+                visible_surface_aabbs.append(value)
+            else:
+                expired_aabb_count += 1
         type_counts: dict[str, int] = {}
         scope_counts: dict[str, int] = {}
         object_counts: dict[str, int] = {}
@@ -350,6 +420,9 @@ class SemanticSceneInspector:
             "sphere_type_counts": type_counts,
             "sphere_scope_counts": scope_counts,
             "sphere_object_counts": object_counts,
+            "visible_surface_aabb_count": len(visible_surface_aabbs),
+            "expired_visible_surface_aabb_count": expired_aabb_count,
+            "visible_surface_aabbs": visible_surface_aabbs,
             "production": data.get("production"),
             "truncated": bool(include_spheres and len(spheres) > limit),
             "message": (

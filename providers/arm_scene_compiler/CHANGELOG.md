@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Back off repeated compile/publish failures from 0.5 seconds to a bounded
+  5-second maximum, reduce unchanged-source polling to 4 Hz, and preserve
+  Fabric rejection bodies in diagnostics instead of retrying a large rejected
+  scene at 20 Hz with only a generic HTTP status.
+
+- Preserve the bounded `HAND_ANGULAR_4PI` semantic sphere layer without
+  expanding its close-range radii to the legacy 20/60 mm point-cloud tiers.
+- Preserve the upstream projection descriptor and its timestamped arm-base
+  hand origin so compilation cannot silently recenter an older sphere shell on
+  a newer hand pose.
+- Transform, deduplicate, and publish fresh `WORK_OBJECT` visible-surface AABBs
+  with deterministic arm-axis corner names for agent planning. Obstacle bounds
+  are discarded, and the work-object bounds do not become controller collision
+  geometry.
 - Replace the hard-coded link/tool exclusion chain with the active Basic
   assembly-state arm capsules and mounted-effector spheres.
 - Publish the exact profile-driven effector spheres with each compiled scene so

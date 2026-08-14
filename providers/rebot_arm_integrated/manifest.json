@@ -47,6 +47,7 @@
     "robot_arm.integrated.motion_inhibit_consumer",
     "robot_arm.integrated.capability_readiness",
     "robot_arm.integrated.semantic_scene_consumer",
+    "robot_arm.integrated.hand_angular_sphere_scene_consumer",
     "robot_arm.integrated.nonphysical_path_preview",
     "robot_arm.integrated.free_space_only_role"
   ],
@@ -96,6 +97,14 @@
     "orientation": "SELECTABLE_6DOF_POSE_IK",
     "controlled_frame": "ASSEMBLY_PROFILE_CONTROLLED_FRAME",
     "rpy_matrix": "CORRECTED_STANDARD_RZ_RY_RX"
+  },
+  "semantic_scene_input": {
+    "collision_primitives": ["SPHERE"],
+    "supported_roi_scopes": [
+      "GRIPPER_0P5M",
+      "ARM_BASE_1P2M",
+      "HAND_ANGULAR_4PI"
+    ]
   },
   "limitations": [
     "Physical hardware validation is required; this release is software-tested only",

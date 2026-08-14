@@ -117,6 +117,9 @@ class Settings:
     provider_hot_readiness_timeout_s: float = float(
         os.getenv("PROVIDER_HOT_READINESS_TIMEOUT_S", "45")
     )
+    scene_mapping_readiness_timeout_s: float = float(
+        os.getenv("SCENE_MAPPING_READINESS_TIMEOUT_S", "180")
+    )
     local_vio_provider_id: str = os.getenv("LOCAL_VIO_PROVIDER_ID", "localization.local_vio")
     space_cognition_timeout_s: float = float(os.getenv("SPACE_COGNITION_TIMEOUT_S", "45"))
     auto_initialize_space_cognition: bool = os.getenv("AUTO_INITIALIZE_SPACE_COGNITION", "true").lower() in {"1", "true", "yes", "on"}

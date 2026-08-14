@@ -10,6 +10,12 @@ import cv2
 import numpy as np
 
 from .clients import FabricClient
+from .angular_geometry import (
+    ANGULAR_PROFILE_ID,
+    build_hand_angular_assertions,
+    build_visible_surface_aabb,
+    hand_angular_projection_metadata,
+)
 from .fusion import PersistentSemanticVoxelMap
 from .policy import SceneSegmentationPolicy, parse_policy
 from .prompts import ARM_OBJECT_ID, VisualPrompt
@@ -17,6 +23,7 @@ from .rgbd import RgbdCapture, RgbdFrame
 from .sam_backend import Sam2ImageTracker, prompt_from_mask
 from .segmentation import (
     constrain_mask_to_prompted_depth_component,
+    erode_mask_by_metric_boundary,
     partition_semantic_masks,
     project_masked_depth_to_frame,
 )
@@ -99,6 +106,9 @@ class Sam2SceneTrackerEngine:
         self.last_min_sam2_score: float | None = None
         self.quality_failure_policy_identity: str | None = None
         self.last_quality_review: dict[str, Any] | None = None
+        self.latest_angular_assertions: list[dict[str, Any]] = []
+        self.latest_angular_projection: dict[str, Any] | None = None
+        self.latest_visible_surface_aabbs: list[dict[str, Any]] = []
 
     def set_arm_motion_active(self, active: bool) -> None:
         self.arm_motion_active = bool(active)
@@ -155,6 +165,9 @@ class Sam2SceneTrackerEngine:
             self.policy = policy
             self.prompts = {}
             self.previous_masks = {}
+            self.latest_angular_assertions = []
+            self.latest_angular_projection = None
+            self.latest_visible_surface_aabbs = []
             self.annotation_error = None
             self.quality_failure_policy_identity = None
             self.last_quality_review = None
@@ -595,6 +608,7 @@ class Sam2SceneTrackerEngine:
                 frame,
                 policy,
                 failure_status="VLM_MASK_QUALITY_REJECTED_AFTER_3_ATTEMPTS",
+                attempt_count=3,
                 failure_details={
                     "quality_review": self.last_quality_review,
                     "prompt_depth_constraints": prompt_constraints,
@@ -620,15 +634,32 @@ class Sam2SceneTrackerEngine:
                     self._map_identity(frame, policy, target_from_camera)
                 )
             except Exception as error:
-                self.last_diagnostics = {
-                    "status": "ARM_MASK_AND_CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE",
-                    "policy": policy.as_dict(),
-                    "segmentation_errors": segmentation_errors,
-                    "annotation_error": self.annotation_error,
-                    "transform_error": str(error),
-                    "vlm_router": self._annotator_status(),
-                }
-                return None
+                return self._publish_mapping_failure(
+                    frame,
+                    policy,
+                    failure_status=(
+                        "ARM_MASK_AND_CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE"
+                    ),
+                    attempt_count=0,
+                    failure_details={
+                        "transform_error": str(error),
+                        "from_frame": frame.camera_frame,
+                        "to_frame": "rebot_arm_base",
+                        "blocking_prerequisite": {
+                            "status": "TRANSFORM_UNAVAILABLE",
+                            "requires_external_action": True,
+                            "from_frame": frame.camera_frame,
+                            "to_frame": "rebot_arm_base",
+                            "message": (
+                                "Establish or restore the current camera-to-arm-base "
+                                "calibration before requesting 3D semantic geometry."
+                            ),
+                        },
+                        "segmentation_errors": segmentation_errors,
+                        "annotation_error": self.annotation_error,
+                        "vlm_router": self._annotator_status(),
+                    },
+                )
             self.last_diagnostics = {
                 "status": "ARM_MASK_UNAVAILABLE_RETAINING_PRIOR_MAP",
                 "policy": policy.as_dict(),
@@ -674,32 +705,73 @@ class Sam2SceneTrackerEngine:
                 ),
             )
         except Exception as error:
-            self.last_diagnostics = {
-                "status": "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_2D_TRACKING_ACTIVE",
-                "policy": policy.as_dict(),
-                "transform_error": str(error),
-                "mask_partition": partition.diagnostics,
-                "prompt_depth_constraints": prompt_constraints,
-                "quality_review": self.last_quality_review,
-                "sam2_scores": scores,
-                "segmentation_errors": segmentation_errors,
-                "annotation_error": self.annotation_error,
-                "annotation_refreshed": annotation_refreshed,
-                "vlm_router": self._annotator_status(),
-                "scene_motion_active": self.scene_motion_active,
-                "visual_motion_score": self.visual_motion_score,
-            }
-            return None
+            return self._publish_mapping_failure(
+                frame,
+                policy,
+                failure_status=(
+                    "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_2D_TRACKING_ACTIVE"
+                ),
+                attempt_count=0,
+                failure_details={
+                    "transform_error": str(error),
+                    "from_frame": frame.camera_frame,
+                    "to_frame": "rebot_arm_base",
+                    "tracking_mode": "2D_MASK_TRACKING_ACTIVE",
+                    "blocking_prerequisite": {
+                        "status": "TRANSFORM_UNAVAILABLE",
+                        "requires_external_action": True,
+                        "from_frame": frame.camera_frame,
+                        "to_frame": "rebot_arm_base",
+                        "message": (
+                            "Establish or restore the current camera-to-arm-base "
+                            "calibration before requesting 3D semantic geometry."
+                        ),
+                    },
+                    "mask_partition": partition.diagnostics,
+                    "prompt_depth_constraints": prompt_constraints,
+                    "quality_review": self.last_quality_review,
+                    "sam2_scores": scores,
+                    "segmentation_errors": segmentation_errors,
+                    "annotation_error": self.annotation_error,
+                    "annotation_refreshed": annotation_refreshed,
+                    "vlm_router": self._annotator_status(),
+                    "scene_motion_active": self.scene_motion_active,
+                    "visual_motion_score": self.visual_motion_score,
+                },
+            )
         identity_reset = self.semantic_map.bind_identity(
             self._map_identity(frame, policy, target_from_camera)
         )
         updates: dict[str, Any] = {}
+        semantic_surfaces: list[dict[str, Any]] = []
+        visible_surface_aabbs: list[dict[str, Any]] = []
+        mask_erosion: dict[str, Any] = {}
         descriptions = {value.object_id: value for value in policy.objects}
         for object_id, mask in partition.object_masks.items():
             description = descriptions[object_id]
+            erosion_m = {
+                "KEEP_OUT": float(
+                    self.config.get("keep_out_mask_erosion_m", 0.02)
+                ),
+                "WORK_OBJECT": float(
+                    self.config.get("work_object_mask_erosion_m", 0.01)
+                ),
+            }.get(description.object_type, 0.0)
+            geometry_mask, erosion_diagnostics = erode_mask_by_metric_boundary(
+                mask=mask,
+                depth_m=frame.depth_m,
+                intrinsics=frame.intrinsics,
+                erosion_m=erosion_m,
+                minimum_depth_m=float(self.config.get("minimum_depth_m", 0.05)),
+                maximum_depth_m=float(self.config.get("maximum_depth_m", 5.0)),
+            )
+            mask_erosion[object_id] = {
+                "type": description.object_type,
+                **erosion_diagnostics,
+            }
             points = project_masked_depth_to_frame(
                 depth_m=frame.depth_m,
-                mask=mask,
+                mask=geometry_mask,
                 intrinsics=frame.intrinsics,
                 target_from_camera=target_from_camera,
                 pixel_stride=int(self.config.get("depth_pixel_stride", 2)),
@@ -707,6 +779,29 @@ class Sam2SceneTrackerEngine:
                 maximum_depth_m=float(self.config.get("maximum_depth_m", 5.0)),
             )
             points = points[np.linalg.norm(points, axis=1) <= 1.2]
+            semantic_surfaces.append(
+                {
+                    "object_id": object_id,
+                    "type": description.object_type,
+                    "description": description.description,
+                    "points_m": points,
+                }
+            )
+            if description.object_type == "WORK_OBJECT":
+                aabb = build_visible_surface_aabb(
+                    object_id=object_id,
+                    object_type=description.object_type,
+                    description=description.description,
+                    points_m=points,
+                    observed_at_us=frame.observed_at_us,
+                    freshness_ms=int(
+                        self.config.get("aabb_freshness_ms", 5000)
+                    ),
+                    source_frame_number=frame.frame_number,
+                    source_policy_revision=policy.revision,
+                )
+                if aabb is not None:
+                    visible_surface_aabbs.append(aabb)
             updates[object_id] = self.semantic_map.update(
                 object_id=object_id,
                 object_type=description.object_type,
@@ -718,6 +813,44 @@ class Sam2SceneTrackerEngine:
                     dtype=np.float64,
                 ),
             )
+        gripper = self._gripper_center(frame)
+        direction_count = int(self.config.get("angular_direction_count", 4096))
+        angular_radius_scale = float(
+            self.config.get("angular_radius_scale", 1.5)
+        )
+        angular_minimum_radius_m = float(
+            self.config.get("angular_minimum_radius_m", 0.005)
+        )
+        angular_radial_padding_m = float(
+            self.config.get("angular_radial_padding_m", 0.003)
+        )
+        angular_maximum_range_m = float(
+            self.config.get("angular_maximum_range_m", 1.2)
+        )
+        self.latest_angular_assertions = build_hand_angular_assertions(
+            semantic_surfaces,
+            hand_center_m=gripper,
+            direction_count=direction_count,
+            angular_radius_scale=angular_radius_scale,
+            minimum_radius_m=angular_minimum_radius_m,
+            radial_padding_m=angular_radial_padding_m,
+            maximum_range_m=angular_maximum_range_m,
+            include_pushable=bool(
+                self.config.get("publish_pushable_geometry", False)
+            ),
+            maximum_assertions=int(self.config.get("maximum_assertions", 20_000)),
+        )
+        self.latest_angular_projection = hand_angular_projection_metadata(
+            hand_center_m=gripper,
+            observed_at_us=frame.observed_at_us,
+            direction_count=direction_count,
+            occupied_direction_count=len(self.latest_angular_assertions),
+            angular_radius_scale=angular_radius_scale,
+            minimum_radius_m=angular_minimum_radius_m,
+            radial_padding_m=angular_radial_padding_m,
+            maximum_range_m=angular_maximum_range_m,
+        )
+        self.latest_visible_surface_aabbs = visible_surface_aabbs
         return self._publish(
             frame,
             policy,
@@ -725,6 +858,7 @@ class Sam2SceneTrackerEngine:
             extra_diagnostics={
                 "status": "TRACKED_SEMANTIC_MAP_PUBLISHED",
                 "mask_partition": partition.diagnostics,
+                "mask_erosion": mask_erosion,
                 "prompt_depth_constraints": prompt_constraints,
                 "quality_review": self.last_quality_review,
                 "sam2_scores": scores,
@@ -776,10 +910,14 @@ class Sam2SceneTrackerEngine:
         policy: SceneSegmentationPolicy,
         *,
         failure_status: str,
+        attempt_count: int,
         failure_details: dict[str, Any],
     ) -> dict[str, Any]:
         """Invalidate the current policy revision without reusing old geometry."""
 
+        self.latest_angular_assertions = []
+        self.latest_angular_projection = None
+        self.latest_visible_surface_aabbs = []
         self.sequence += 1
         now_us = time.time_ns() // 1000
         freshness_ms = int(self.config.get("assertion_freshness_ms", 3000))
@@ -813,9 +951,10 @@ class Sam2SceneTrackerEngine:
                     "missing_blocking_objects": missing,
                     "required_blocking_objects": missing,
                     "failure_status": failure_status,
-                    "attempt_count": 3,
+                    "attempt_count": int(attempt_count),
                 },
                 "assertions": [],
+                "visible_surface_aabbs": [],
                 "mapping_failure": {
                     "status": failure_status,
                     **failure_details,
@@ -832,6 +971,9 @@ class Sam2SceneTrackerEngine:
             "source_frame_number": frame.frame_number,
             "source_observed_at_us": frame.observed_at_us,
         }
+        blocking_prerequisite = failure_details.get("blocking_prerequisite")
+        if isinstance(blocking_prerequisite, dict):
+            self.last_diagnostics["blocking_prerequisite"] = blocking_prerequisite
         return observation
 
     def _publish_retained_map(
@@ -859,16 +1001,16 @@ class Sam2SceneTrackerEngine:
         *,
         extra_diagnostics: dict[str, Any],
     ) -> dict[str, Any]:
-        gripper = self._gripper_center(frame)
-        assertions = self.semantic_map.assertions(
-            gripper_center_m=gripper,
-            include_pushable=bool(self.config.get("publish_pushable_geometry", False)),
-            maximum_assertions=int(self.config.get("maximum_assertions", 20_000)),
-        )
+        assertions = list(self.latest_angular_assertions)
         coverage = self._coverage(policy)
         self.sequence += 1
         now_us = time.time_ns() // 1000
         freshness_ms = int(self.config.get("assertion_freshness_ms", 3000))
+        visible_surface_aabbs = [
+            value
+            for value in self.latest_visible_surface_aabbs
+            if now_us <= int(value.get("expires_at_us") or 0)
+        ]
         observation = {
             "schema": "physical_agent.arm_semantic_assertions",
             "schema_version": 1,
@@ -893,6 +1035,8 @@ class Sam2SceneTrackerEngine:
                 "map_identity": self.semantic_map.identity,
                 "coverage": coverage,
                 "assertions": assertions,
+                "angular_projection": self.latest_angular_projection,
+                "visible_surface_aabbs": visible_surface_aabbs,
             },
         }
         result = self.fabric.publish(observation)
@@ -903,20 +1047,19 @@ class Sam2SceneTrackerEngine:
             "policy": policy.as_dict(),
             "semantic_map": self.semantic_map.snapshot(),
             "assertion_count": len(assertions),
+            "angular_profile": ANGULAR_PROFILE_ID,
+            "angular_direction_count": int(
+                self.config.get("angular_direction_count", 4096)
+            ),
+            "visible_surface_aabb_count": len(visible_surface_aabbs),
             "source_frame_number": frame.frame_number,
             "source_observed_at_us": frame.observed_at_us,
             "publish_result": result,
             "tick_elapsed_ms": (time.monotonic() - started) * 1000.0,
             "vlm_refresh_interval_s": self._vlm_refresh_interval(),
             "tracking_rate_policy_hz": {
-                "stationary": 1.0
-                / float(self.config.get("tracking_stationary_interval_s", 4.0)),
-                "baseline": 1.0
-                / float(
-                    self.config.get("tracking_baseline_interval_s", 4.0 / 3.0)
-                ),
-                "motion": 1.0
-                / float(self.config.get("tracking_motion_interval_s", 0.8)),
+                "mode": "FIXED_CONFIGURED",
+                "configured": float(self.config.get("tracking_rate_hz", 1.0)),
             },
             "unclaimed_visible_policy": "PUSHABLE_IGNORED",
         }

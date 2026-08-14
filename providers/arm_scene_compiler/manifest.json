@@ -31,6 +31,7 @@
     "camera.point_cloud.xyz.frame_ref",
     "robot_arm.assembly_state",
     "robot_arm.scene.point_cloud",
+    "robot_arm.scene.tracked_semantic_assertions",
     "robot_arm.scene.semantic_assertions",
     "transform.robot_arm.local"
   ],
@@ -40,7 +41,19 @@
     "frame_id": "rebot_arm_base",
     "roi_layers": {
       "GRIPPER_0P5M": {"radius_m": 0.5, "minimum_sphere_radius_m": 0.02},
-      "ARM_BASE_1P2M": {"radius_m": 1.2, "minimum_sphere_radius_m": 0.06}
+      "ARM_BASE_1P2M": {"radius_m": 1.2, "minimum_sphere_radius_m": 0.06},
+      "HAND_ANGULAR_4PI": {
+        "radius_m": 1.5,
+        "minimum_sphere_radius_m": 0.005,
+        "center": "UPSTREAM_TIMESTAMPED_PROJECTION_ORIGIN"
+      }
+    },
+    "semantic_bounds": {
+      "kind": "VISIBLE_SURFACE_AABB",
+      "object_type": "WORK_OBJECT",
+      "frame_id": "rebot_arm_base",
+      "corner_convention": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+      "controller_collision_primitive": false
     },
     "default_unclassified_type": "PUSHABLE",
     "keep_out_requires_user_or_upstream_description": true,

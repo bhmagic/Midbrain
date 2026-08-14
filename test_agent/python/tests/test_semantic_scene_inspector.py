@@ -78,6 +78,43 @@ class SemanticSceneInspectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "SCENE_MAPPING_FAILED")
         self.assertIn("three", result["message"])
 
+    async def test_missing_camera_to_arm_transform_returns_required_action(self):
+        class MissingTransformFabric:
+            async def latest_optional(self, stream: str):
+                if stream == "robot_arm.scene.segmentation_policy":
+                    return {
+                        "schema": "physical_agent.arm_scene_segmentation_policy",
+                        "data": {"revision": "policy-new"},
+                    }
+                if stream == "robot_arm.scene.tracked_semantic_assertions":
+                    return {
+                        "valid": False,
+                        "data": {
+                            "policy": {"revision": "policy-new"},
+                            "mapping_failure": {
+                                "status": (
+                                    "CAMERA_TO_ARM_TRANSFORM_UNAVAILABLE_"
+                                    "2D_TRACKING_ACTIVE"
+                                ),
+                                "from_frame": "camera",
+                                "to_frame": "rebot_arm_base",
+                            },
+                        },
+                    }
+                return None
+
+        result = await SemanticSceneInspector(
+            MissingTransformFabric(),
+            mapping_wait_s=24.0,
+        ).run()
+
+        self.assertEqual(result["status"], "ARM_BASE_TRANSFORM_REQUIRED")
+        self.assertEqual(
+            result["required_transform"],
+            {"from_frame": "camera", "to_frame": "rebot_arm_base"},
+        )
+        self.assertIn("arm-base calibration", result["message"])
+
     async def test_ready_map_registers_switchable_visual_channels(self) -> None:
         store = _VisualStore()
         inspector = SemanticSceneInspector(
@@ -110,6 +147,23 @@ class SemanticSceneInspectorTests(unittest.IsolatedAsyncioTestCase):
             result["required_provider_id"],
             "perception.sam2_scene_tracker",
         )
+        self.assertEqual(
+            result["required_capability"],
+            "perception.scene.semantic_obstacles",
+        )
+        self.assertEqual(
+            result["required_next_tool"],
+            {
+                "name": "set_provider_residency",
+                "arguments": {
+                    "provider_id": "perception.sam2_scene_tracker",
+                    "action": "hot",
+                    "required_capability": (
+                        "perception.scene.semantic_obstacles"
+                    ),
+                },
+            },
+        )
         self.assertFalse(result["physical_motion_authorized"])
 
     async def test_ready_tracker_requests_compiler_when_scene_is_missing(
@@ -130,6 +184,18 @@ class SemanticSceneInspectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["required_provider_id"],
             "world_model.arm_scene_compiler",
+        )
+        self.assertEqual(
+            result["required_capability"],
+            "world_model.arm.semantic_scene",
+        )
+        self.assertEqual(
+            result["required_next_tool"]["arguments"],
+            {
+                "provider_id": "world_model.arm_scene_compiler",
+                "action": "hot",
+                "required_capability": "world_model.arm.semantic_scene",
+            },
         )
 
     async def test_inspector_summarizes_fresh_scene_and_bounds_raw_spheres(
@@ -155,6 +221,27 @@ class SemanticSceneInspectorTests(unittest.IsolatedAsyncioTestCase):
                     {"type": "KEEP_OUT", "roi_scope": "ARM_BASE_1P2M"},
                     {"type": "WORK_OBJECT", "roi_scope": "GRIPPER_0P5M"},
                 ],
+                "visible_surface_aabbs": [
+                    {
+                        "extent_kind": "VISIBLE_SURFACE_AABB",
+                        "object_id": "workpiece",
+                        "type": "WORK_OBJECT",
+                        "observed_at_us": now_us,
+                        "freshness_ms": 5000,
+                        "expires_at_us": now_us + 5_000_000,
+                        "corners_m": {
+                            "right_forward_up": [0.5, -0.1, 0.2]
+                        },
+                    },
+                    {
+                        "extent_kind": "VISIBLE_SURFACE_AABB",
+                        "object_id": "old-workpiece",
+                        "type": "WORK_OBJECT",
+                        "observed_at_us": now_us - 6_000_000,
+                        "freshness_ms": 5000,
+                        "expires_at_us": now_us - 1_000_000,
+                    },
+                ],
                 "production": {"depth_mode": "POINT_CLOUD_AND_SEMANTICS"},
             },
         }
@@ -168,5 +255,13 @@ class SemanticSceneInspectorTests(unittest.IsolatedAsyncioTestCase):
             {"KEEP_OUT": 1, "WORK_OBJECT": 1},
         )
         self.assertEqual(result["sphere_object_counts"], {"UNKNOWN": 2})
+        self.assertEqual(result["visible_surface_aabb_count"], 1)
+        self.assertEqual(result["expired_visible_surface_aabb_count"], 1)
+        self.assertEqual(
+            result["visible_surface_aabbs"][0]["corners_m"][
+                "right_forward_up"
+            ],
+            [0.5, -0.1, 0.2],
+        )
         self.assertTrue(result["truncated"])
         self.assertEqual(len(result["spheres"]), 1)
