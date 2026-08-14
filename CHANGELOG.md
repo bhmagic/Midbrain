@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep Linux source validation aligned with the Contact Work package: expose
+  the Basic, Integrated, Contact, Contact runtime, and Slicing package roots to
+  test discovery and execute their test suites in GitHub Actions. This prevents
+  Test Agent adapter discovery from failing on an unavailable
+  `contact_work_runtime` import.
 - Tune the Basic-owned operational joint velocity limits to 4.0 rad/s for all
   six arm joints while retaining the gripper at 2.1 rad/s. Publish the same
   mode-specific limits for Integrated and Contact, and halve the ordinary
