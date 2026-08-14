@@ -8,7 +8,8 @@
   calibration baselines plus its machine-local assembly selection, and execute
   the relevant test suites in GitHub Actions. This prevents Test Agent adapter
   discovery from failing on an unavailable `contact_work_runtime` import or
-  absent installed configuration.
+  absent installed configuration, while keeping Windows-only detached-shutdown
+  tests outside Linux execution.
 - Tune the Basic-owned operational joint velocity limits to 4.0 rad/s for all
   six arm joints while retaining the gripper at 2.1 rad/s. Publish the same
   mode-specific limits for Integrated and Contact, and halve the ordinary

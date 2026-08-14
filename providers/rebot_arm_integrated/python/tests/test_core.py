@@ -408,6 +408,7 @@ class ConfigTests(unittest.TestCase):
 
 
 class SafeTerminationTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows detached shutdown test")
     def test_windows_detached_shutdown_requires_launch_id_acknowledgement(self):
         with tempfile.TemporaryDirectory() as temp:
             provider_root = Path(temp) / "providers" / "rebot_arm_integrated"
