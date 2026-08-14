@@ -21,7 +21,8 @@ This rule has different consequences for each Damiao motor mode:
 - POS_VEL sends only a target position and velocity limit. The motor has no application-visible trajectory queue or waypoint sequence. A new POS_VEL frame replaces the motor-side destination.
 - `POSITION_EFFORT_LIMITED` (`FORCE_POS` at the motor adapter and commonly
   `POS_TOR` in Integrated) likewise sends a target position, velocity limit,
-  and effort-ratio limit without a trajectory queue.
+  and torque ceiling in N·m without a trajectory queue. Basic converts the SI
+  ceiling to MotorBridge's ratio only at the hardware adapter boundary.
 
 Therefore Integrated must not apply its high-rate MIT intermediate-waypoint
 stream to either endpoint mode. These modes use a latched endpoint command that
@@ -37,7 +38,7 @@ defeating Integrated's endpoint-latch semantics.
 
 The Damiao mode-switch operation clears the motor's command values. During an explicit endpoint-to-MIT transition, Basic refreshes the old-mode hold immediately before switching one joint. It writes CTRL_MODE, places a load-supporting MIT frame directly after that ordered write, reads the register back, and then sends the normal confirmed MIT frame. MotorBridge-compatible fallbacks without public register access instead duplicate the first post-confirmation frame. This cannot make the register transition atomic, so TRANSIT_SPEED remains a physical experiment rather than the preferred working backend.
 
-Physical TRANSIT_SPEED uses a separate POS_VEL cap vector from the conservative MIT and attended-test rate caps. The current caps are 5.0 rad/s for J1-J3 and 10.0 rad/s for J4-J6 and the gripper; every value remains bounded by that motor's configured VMAX. These values are selected inside the published motor characteristic-speed envelope, not qualified continuous-duty whole-arm speeds. Requested intent above 10 rad/s on any arm joint requires explicit authentication and intent at or above 20 rad/s is rejected before execution. These policy thresholds do not raise the effective motor cap or alter MIT target-rate validation.
+Basic publishes mode-specific operational velocity boundaries under `command_limits`. The current IMPEDANCE, POS_VEL, and POS_TOR working caps are 4.0 rad/s for all six arm joints and 2.1 rad/s for the gripper. The J1-J3 value is 80% of the official reBot application limit of 5.0 rad/s. The developmental J4-J6 value exceeds the official application `vlim` of 3.0 rad/s but remains below the configured 10.0 rad/s motor envelope. Every working cap remains bounded by the motor's configured VMAX. The separate 5.0/10.0 rad/s motor envelope is not a qualified continuous-duty whole-arm speed and is not the higher-provider command limit. Requested intent above 10 rad/s on any arm joint requires explicit authentication and intent at or above 20 rad/s is rejected before execution. These policy thresholds do not raise the effective Basic command cap.
 
 Basic changes at most one joint's motor mode per control tick. It refreshes all other joint holds before attempting the register confirmation, captures a fixed transition reference, and withholds endpoint motion until every requested mode is confirmed. A failed confirmation invalidates the hardware mode cache so float recovery cannot send under a stale mode assumption.
 

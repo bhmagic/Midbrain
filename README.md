@@ -124,13 +124,17 @@ The repository currently contains:
 - Orbbec Femto Bolt RGB-D/IMU Provider and native CameraHost.
 - Local visual-inertial odometry with convention-versioned world frames.
 - Semantic scene tracking and an arm-scene compiler.
-- Basic reBot/Damiao motor Provider and an Integrated Cartesian controller.
+- Basic reBot/Damiao motor Provider, an Integrated free-space Cartesian
+  controller, and an independent signed-plan Contact Work Provider.
 - Finite Skills for initialization, visual localization, spatial
   registration, stationary alignment, profile-driven non-moving VLM
-  arm-root translation refinement, no-contact approach, and guarded motion.
+  arm-root translation refinement, relative and absolute-world free-space
+  positioning, no-contact approach, guarded motion, and the development
+  non-clamping slicing sequence.
 - One backend-owned autonomous Agent runtime with regular and developer views,
   normalized events, visual evidence, chat projection, and a local diagnostic
-  journal.
+  journal, plus an explicitly staged numeric Slicing test surface that does not
+  require a language-Agent turn.
 - An explicit-only FoundationPose initialization and compatibility route.
 
 Capability maturity is intentionally component-specific. Consult each
@@ -195,6 +199,7 @@ Key references:
 - [Current Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md)
 - [Gripper-Motion Arm-Root Alignment](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
 - [Refine Arm-Root Translation Skill](skills/refine-arm-root-translation/SKILL.md)
+- [Move Effector to World Point Skill](skills/move-effector-to-world-point/SKILL.md)
 - [Physical AI Contracts](contracts/README.md)
 
 Release history belongs in [CHANGELOG.md](CHANGELOG.md). Component-specific

@@ -44,6 +44,7 @@ schema versions it supports.
 | [Agent Chat History](18_agent_chat_history.md) | Manager-boot conversation projection and safe execution summary | v0.2 robot-local draft |
 | [Agent Run Journal](19_agent_run_journal.md) | Durable normalized diagnostic events and read-only viewer | v0.2 local-diagnostics draft |
 | [Robot Assembly and Free-Space Motion](20_robot_assembly_and_free_space_motion.md) | Assembly profiles, controller separation, and signed free-space goals | v0.1 working draft |
+| [Contact Work Control](21_contact_work_control.md) | Independent contact Provider, finite Skill plans, wrench-to-joint effort limits, replacement, and relaxation | v0.1 working draft |
 
 ## How to use the set
 

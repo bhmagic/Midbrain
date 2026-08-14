@@ -12,6 +12,42 @@ Provider residency is:
 
 Readiness remains capability-specific. A Provider can be HOT while an optional stream is unavailable or degraded.
 
+## Arm controller roles
+
+Basic is the sole hardware transport and final limit, fencing, deadline, and
+gravity-float authority. The Integrated Provider owns collision-aware
+free-space motion and prohibits deliberate sustained contact. The independent
+Contact Work Provider owns deliberate contact, has its own Python environment
+and Basic arm-group lease, and never calls or imports Integrated.
+
+A finite task-specific Contact Work Skill signs one complete Cartesian
+pose/wrench/timing plan. Each move explicitly selects a one-shot endpoint or a
+Contact-owned Cartesian segment. Contact advances a segment through sequential
+full-pose IK knots at Basic's advertised internal control rate (currently
+50 Hz), maps the full six-component acting-point wrench through the geometric
+Jacobian transpose, and holds the final Basic `POSITION_EFFORT_LIMITED`
+endpoint until the next move or relax. The solver minimizes a weighted
+full-pose residual and keeps declared joint locks as hard constraints. The
+first development Skill is non-clamping slicing and
+always sets rotational wrench components to zero. Its mounted-effector
+blade-use profile may own locks needed for a particular use orientation. It
+delegates only its initial free-space blade alignment to Integrated, waits for
+Integrated to finish in gravity float, and then submits engage, slice, and
+retract directly to Contact. Provider support for rotational wrench components
+remains available for separately qualified future Skills.
+
+The Contact Provider does not plan collisions or decide task success. It
+publishes measured joints and command disposition, immediately replaces the
+current endpoint or segment when a new signed-plan step arrives, and returns to verified
+gravity float after explicit cleanup, inactivity timeout, authorization
+expiry, fault, lease loss, motion inhibit, or shutdown.
+
+Contact target position mode is explicit. Absolute moves bind a root-frame
+endpoint. Measured-start-relative moves bind a root-axis displacement and
+resolve it from fresh controlled-effector FK at acceptance. Slicing uses the
+relative form for extraction so preceding unreachable-target residual does not
+rotate or lengthen the requested outward displacement.
+
 ## State plane: World State Fabric
 
 Providers publish timestamped observations containing schema, source identity, boot and instance IDs, monotonic sequence, timestamps, validity, coordinate frame, calibration revision, and optional freshness. The Fabric supplies stream discovery, timestamp-nearest multi-stream queries, and a native transform graph.
@@ -207,6 +243,31 @@ questions, failed previews, and every continuation other than the allowlisted
 physical commit return to normal Agent orchestration without being chained.
 The lower-level preview and execution tools remain available for explicit
 nonphysical preview and compatibility diagnostics.
+
+Each signed Integrated path also binds its Basic execution backend. Omission
+selects the 50 Hz `IMPEDANCE` stream. A caller may explicitly select
+`POS_SPEED`, which uses the same 50 Hz controller pacing but emits Basic
+`POSITION_VELOCITY_LIMITED` targets and derives timing from that mode's
+advertised joint limits. The backend is part of the immutable preview digest,
+so it cannot be changed between preview and commit.
+
+Spatial direction resolution similarly prioritizes Manager's active reviewed
+world-from-arm transform. Under
+`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2`, a temporary Local VIO
+`DEGRADED` state does not invalidate the stationary-camera calibration and
+does not trigger the upright-mount fallback. The host binds the activation and
+transform revision into the preview and verifies the same identity again at
+commit.
+
+When an absolute world XYZ point is already known, the reference Agent instead
+uses one `move_effector_to_world_point` call. The host verifies any supplied
+world-frame and VIO-epoch identity, resolves the point through the current
+reviewed rigid world-to-arm transform, freezes the measured controlled-frame
+orientation as a `POSE_6DOF` goal, and uses the same call-scoped signed
+Integrated preview/commit boundary. This prevents the model from inspecting
+runtime state and manually subtracting coordinates. In a multi-Skill workflow,
+a following contact operation may begin only after this free-space operation
+reports `physical_motion_completed=true`.
 
 The general reference invariant is one Agent decision per task-facing finite
 operation. Such an operation may own several sequential internal API calls

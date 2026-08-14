@@ -229,29 +229,36 @@ class ArmKinematics:
             orientation_error = rotation_vector(target[:3, :3] @ current[:3, :3].T)
             position_residual = float(np.linalg.norm(position_error))
             orientation_residual = float(np.linalg.norm(orientation_error))
+            if orientation_required:
+                effective_jacobian = jacobian.copy()
+                effective_jacobian[3:, :] *= weight
+            else:
+                effective_jacobian = jacobian[:3, :]
+            singular_values = np.linalg.svd(
+                effective_jacobian,
+                compute_uv=False,
+            )
+            sigma_min = (
+                float(singular_values[-1])
+                if singular_values.size
+                else 0.0
+            )
             orientation_ok = orientation_residual <= float(orientation_tolerance_rad)
             if position_residual <= float(position_tolerance_m) and (orientation_ok or not orientation_required):
                 return PoseIkResult(q.copy(), current.copy(), position_residual, orientation_residual, iteration, sigma_min)
 
             if orientation_required:
-                weighted_jacobian = jacobian.copy()
-                weighted_jacobian[3:, :] *= weight
                 error = np.concatenate([position_error, orientation_error * weight])
-                singular_values = np.linalg.svd(weighted_jacobian, compute_uv=False)
-                sigma_min = float(singular_values[-1]) if singular_values.size else 0.0
                 adaptive = float(damping) + max(0.0, 0.02 - sigma_min) * 2.0
-                gram = weighted_jacobian @ weighted_jacobian.T + (adaptive**2) * np.eye(6, dtype=float)
-                delta = weighted_jacobian.T @ np.linalg.solve(gram, error)
+                gram = effective_jacobian @ effective_jacobian.T + (adaptive**2) * np.eye(6, dtype=float)
+                delta = effective_jacobian.T @ np.linalg.solve(gram, error)
             else:
                 # Translation-only input gets a true 3x6 redundant IK solve.
                 # This deliberately avoids spending all six DoF on matching a
                 # possibly imperfect model orientation during physical bring-up.
-                position_jacobian = jacobian[:3, :]
-                singular_values = np.linalg.svd(position_jacobian, compute_uv=False)
-                sigma_min = float(singular_values[-1]) if singular_values.size else 0.0
                 adaptive = float(damping) + max(0.0, 0.02 - sigma_min) * 2.0
-                gram = position_jacobian @ position_jacobian.T + (adaptive**2) * np.eye(3, dtype=float)
-                delta = position_jacobian.T @ np.linalg.solve(gram, position_error)
+                gram = effective_jacobian @ effective_jacobian.T + (adaptive**2) * np.eye(3, dtype=float)
+                delta = effective_jacobian.T @ np.linalg.solve(gram, position_error)
             largest = float(np.max(np.abs(delta)))
             if largest > float(maximum_step_rad):
                 delta *= float(maximum_step_rad) / largest

@@ -24,6 +24,15 @@ The only free-space motion transaction is:
    start.
 4. `POST /v1/motion/path-release` releases an explicitly retained final state.
 
+The plan request may select `execution_backend: IMPEDANCE` or
+`execution_backend: POS_SPEED`. Omission means `IMPEDANCE`. The normalized
+selection is included in `request_sha256`, so it cannot be changed after
+preview. Both backends receive the same controller-paced 50 Hz joint-target
+timeline; timing is recomputed against the Basic limits for the selected
+command mode. The ordinary no-speed-request duration defaults to 1.5 seconds;
+if that duration is shorter than the selected Basic limits permit, preview
+stretches it to a feasible duration rather than exceeding a joint limit.
+
 The Agent can invoke `perform_relative_effector_motion`, but it cannot select
 or replay a plan identifier. Task-required Provider start, HOT, and WARM
 transitions are autonomous. Normal signed free-space motion does not request a
@@ -70,8 +79,9 @@ surfaces. Active configuration and runtime audit logs are not committed.
 | `rebot_arm_base` | Canonical planning and semantic-scene frame |
 | controlled frame | Assembly-profile frame whose pose Integrated controls |
 | action point | Task semantic point; not a substitute controller API frame |
-| `IMPEDANCE` | Basic cyclic impedance backend used by a signed path commit |
-| `POSITION_VELOCITY_LIMITED` | Basic bounded endpoint backend used by a signed path commit |
+| `IMPEDANCE` | Default signed-path backend; Basic receives 50 Hz position and velocity targets plus a bounded target rate |
+| `POS_SPEED` | Selectable signed-path backend name; Basic receives 50 Hz `POSITION_VELOCITY_LIMITED` position targets with per-command velocity limits |
+| `POSITION_VELOCITY_LIMITED` | Basic command mode emitted when the signed plan selects `POS_SPEED` |
 
 Current capability names are authoritative in `manifest.json` and the live
 `GET /v1/capabilities` response.

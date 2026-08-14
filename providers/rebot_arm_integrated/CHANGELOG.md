@@ -7,6 +7,29 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Calculate weighted Jacobian quality before the IK solver's already-satisfied
+  early return. Replanning an orientation already within tolerance no longer
+  reports a synthetic zero singular value and rejects the no-op alignment.
+- Consume Basic's public mode-specific command limits instead of calibration
+  and attended developer-test fields. The ordinary no-speed-request duration
+  is now 1.5 seconds, and shorter requested durations continue to be stretched
+  to a Basic-limit-feasible plan. Piecewise-linear authorized stages now use
+  their actual linear velocity when computing that lower bound, allowing a
+  too-fast request to execute close to the Basic cap instead of retaining an
+  inapplicable 1.5x smoothstep margin.
+- Replace the signed free-space executor's 10 Hz latched-waypoint handoffs with
+  a controller-paced 50 Hz interpolation stream. Stage durations now honor the
+  requested Cartesian speed, complete command ticks, and the selected Basic
+  mode's advertised limits. The stream consumes Integrated's existing 50 Hz
+  Basic feedback cache instead of serializing a second state HTTP request
+  before every command; late command cycles still preserve samples and slow
+  without burst catch-up. Final stability counts only new Basic observations.
+- Make `IMPEDANCE` the explicit default signed-path backend and add a signed
+  `POS_SPEED` option that emits 50 Hz Basic `POSITION_VELOCITY_LIMITED`
+  position targets with backend-specific velocity-limit timing.
+- Migrate dormant arm-contact and gripper POSITION_EFFORT_LIMITED command
+  construction to Basic's N·m torque contract while retaining existing
+  Integrated-internal ratio policy and telemetry.
 - Record the operator-reported successful execution of several development
   6-DoF free-space motions with the `5 inch blade` assembly. The final
   checked-in profile uses 0.33 kg and COM `[-0.165, 0.0, -0.03]` m; this result

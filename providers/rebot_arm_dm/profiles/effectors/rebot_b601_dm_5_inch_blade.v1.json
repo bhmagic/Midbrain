@@ -15,8 +15,16 @@
     "parent_frame": "link6",
     "child_frame": "end_link",
     "transform": {
-      "translation_m": [0.0, 0.0, 0.15539],
-      "rpy_rad": [0.0, -1.5708, 3.1415]
+      "translation_m": [
+        0.0,
+        0.0,
+        0.15539
+      ],
+      "rpy_rad": [
+        0.0,
+        -1.5708,
+        3.1415
+      ]
     },
     "qualification": "PROVISIONAL_COPIED_FROM_PREVIOUS_MOUNT",
     "source_reference": "config/arm_model.json#/fixed_tool"
@@ -25,8 +33,16 @@
     "frame_id": "rebot_arm_tool",
     "parent_frame": "end_link",
     "transform": {
-      "translation_m": [0.0, 0.0, 0.0],
-      "rpy_rad": [0.0, 0.0, 0.0]
+      "translation_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rpy_rad": [
+        0.0,
+        0.0,
+        0.0
+      ]
     },
     "semantic_role": "FREE_SPACE_CONTROLLED_FRAME"
   },
@@ -35,10 +51,22 @@
       "frame_id": "rebot_arm_knife_tip",
       "parent_frame": "rebot_arm_tool",
       "transform": {
-        "translation_m": [0.0, 0.0, 0.0],
-        "rpy_rad": [0.0, 0.0, 0.0]
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy_rad": [
+          0.0,
+          0.0,
+          0.0
+        ]
       },
-      "semantic_roles": ["TOOL_CENTER_POINT", "CONTACT_POINT", "CUTTING_EDGE"],
+      "semantic_roles": [
+        "TOOL_CENTER_POINT",
+        "CONTACT_POINT",
+        "CUTTING_EDGE"
+      ],
       "qualification": "PROVISIONAL_CURRENT_CONTROL_POINT_PENDING_TOOL_REGISTRATION"
     }
   ],
@@ -47,60 +75,226 @@
       "primitive_id": "temporary_gripper_envelope_tip",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.005, 0.0, -0.08],
-        "rpy_rad": [0.0, 0.0, 0.0]
+        "translation_m": [
+          -0.005,
+          0.0,
+          -0.08
+        ],
+        "rpy_rad": [
+          0.0,
+          0.0,
+          0.0
+        ]
       },
-      "shape": {"type": "SPHERE", "radius_m": 0.005},
+      "shape": {
+        "type": "SPHERE",
+        "radius_m": 0.005
+      },
       "qualification": "TEMPORARY_REUSED_BARE_GRIPPER_ENVELOPE"
     },
     {
       "primitive_id": "temporary_gripper_envelope_front",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.03, 0.0, -0.08],
-        "rpy_rad": [0.0, 0.0, 0.0]
+        "translation_m": [
+          -0.03,
+          0.0,
+          -0.08
+        ],
+        "rpy_rad": [
+          0.0,
+          0.0,
+          0.0
+        ]
       },
-      "shape": {"type": "SPHERE", "radius_m": 0.015},
+      "shape": {
+        "type": "SPHERE",
+        "radius_m": 0.015
+      },
       "qualification": "TEMPORARY_REUSED_BARE_GRIPPER_ENVELOPE"
     },
     {
       "primitive_id": "temporary_gripper_envelope_middle",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [ -0.09, 0.0, -0.08],
-        "rpy_rad": [0.0, 0.0, 0.0]
+        "translation_m": [
+          -0.09,
+          0.0,
+          -0.08
+        ],
+        "rpy_rad": [
+          0.0,
+          0.0,
+          0.0
+        ]
       },
-      "shape": {"type": "SPHERE", "radius_m": 0.035},
+      "shape": {
+        "type": "SPHERE",
+        "radius_m": 0.035
+      },
       "qualification": "TEMPORARY_REUSED_BARE_GRIPPER_ENVELOPE"
     },
     {
       "primitive_id": "temporary_gripper_envelope_rear",
       "frame_id": "rebot_arm_tool",
       "transform": {
-        "translation_m": [-0.15, 0.0, -0.08],
-        "rpy_rad": [0.0, 0.0, 0.0]
+        "translation_m": [
+          -0.15,
+          0.0,
+          -0.08
+        ],
+        "rpy_rad": [
+          0.0,
+          0.0,
+          0.0
+        ]
       },
-      "shape": {"type": "SPHERE", "radius_m": 0.035},
+      "shape": {
+        "type": "SPHERE",
+        "radius_m": 0.035
+      },
       "qualification": "TEMPORARY_REUSED_BARE_GRIPPER_ENVELOPE"
     }
   ],
   "inertial": {
     "reference_frame": "end_link",
     "mass_kg": 0.33,
-    "center_of_mass_m": [-0.165, 0.0, -0.03],
+    "center_of_mass_m": [
+      -0.165,
+      0.0,
+      -0.03
+    ],
     "inertia_kg_m2": {
       "ixx": 0.00061,
       "ixy": 0.0,
       "ixz": 0.0,
       "iyy": 0.00061,
       "iyz": 0.0,
-      "izz": 0.00003
+      "izz": 3e-05
     },
     "qualification": "PROVISIONAL_LOWER_BOUND_MASS_AND_GEOMETRIC_BLADE_CENTER_ESTIMATE_TUNE_BEFORE_USE"
   },
-  "inactive_joint_names": ["gripper"],
+  "inactive_joint_names": [
+    "gripper"
+  ],
   "actuator_groups": [],
   "extensions": {
+    "midbrain.skill.slicing_blade_profiles.v1": {
+      "schema": "midbrain.effector_slicing_blade_profiles",
+      "schema_version": 1,
+      "default_profile_number": 7,
+      "profiles": [
+        {
+          "profile_number": 3,
+          "name": "Blade profile #3",
+          "blade_direction_effector": [
+            0.5,
+            -0.1,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 1,
+          "name": "Blade profile #1",
+          "blade_direction_effector": [
+            0.5,
+            -0.1,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": [
+            "joint4"
+          ]
+        },
+        {
+          "profile_number": 2,
+          "name": "Blade profile #2",
+          "blade_direction_effector": [
+            0.5,
+            -0.1,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 4,
+          "name": "Blade profile #4",
+          "blade_direction_effector": [
+            0.5,
+            -0.3,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 5,
+          "name": "Blade profile #5",
+          "blade_direction_effector": [
+            0.5,
+            0.3,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 6,
+          "name": "Blade profile #6",
+          "blade_direction_effector": [
+            0.5,
+            0.6,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 7,
+          "name": "Blade profile #7",
+          "blade_direction_effector": [
+            0.5,
+            0.2,
+            -1.0
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        }
+      ],
+      "qualification": "DEVELOPMENT_USER_EDITABLE_BLADE_USE_DIRECTIONS",
+      "note": "Each profile describes one use orientation of this mounted blade. World surface and slicing directions remain per-task inputs."
+    },
     "midbrain.skill.refine_arm_root_translation.v1": {
       "schema": "midbrain.effector_visual_alignment",
       "schema_version": 1,
@@ -110,7 +304,10 @@
         "maximum_landmark_motion_m": 0.005,
         "additional_camera_timing_margin_us": 20000,
         "arm_transform_timestamp_semantics": "MEASURED_JOINT_BATCH_ACQUISITION_ESTIMATE",
-        "arm_feedback_age_field_path": ["data", "feedback_age_ms"],
+        "arm_feedback_age_field_path": [
+          "data",
+          "feedback_age_ms"
+        ],
         "fallback_arm_feedback_age_ms": 20.0,
         "maximum_arm_feedback_age_ms": 100.0,
         "preferred_arm_feedback_observation_age_ms": 100.0,
@@ -129,7 +326,9 @@
       },
       "default_visual_alignment_landmark": "knife_handle_endpoint_mean",
       "landmark_fallback_policy": {
-        "selection_order": ["knife_handle_endpoint_mean"],
+        "selection_order": [
+          "knife_handle_endpoint_mean"
+        ],
         "automatic_substitution_allowed": false,
         "no_hardware_modification_strategy": "Use the existing military-green knife handle and its two visible longitudinal endpoints without adding a fiducial.",
         "optional_physical_fiducial_policy": "Any future fiducial requires a separately revised mounted-effector profile and must not silently replace the handle landmark."
@@ -152,8 +351,16 @@
           "tool_point_binding": {
             "source": "USER_SUPPLIED_TRIAL_OFFSET",
             "runtime_key": null,
-            "controlled_frame_to_landmark_translation_m": [-0.09, 0.01, -0.07],
-            "landmark_to_controlled_frame_translation_m": [0.09, -0.01, 0.07],
+            "controlled_frame_to_landmark_translation_m": [
+              -0.09,
+              0.01,
+              -0.07
+            ],
+            "landmark_to_controlled_frame_translation_m": [
+              0.09,
+              -0.01,
+              0.07
+            ],
             "qualification": "USER_SUPPLIED_TRIAL_2026_08_11_UNVERIFIED",
             "measurement_note": "Initial trial assumption: the vector from the active controlled/IK frame origin to the arithmetic mean of the blade-junction and rear-handle points is [-90, +10, -70] mm in the controlled frame. Reverse both signs if the supplied measurement direction was handle mean to controlled origin."
           },

@@ -98,16 +98,6 @@ def validate_controller_config(config: dict[str, Any]) -> None:
             "trajectory.one_shot_arrival_settle_kp_multiplier must be "
             "between 1 and runtime_limits.kp_multiplier_max"
         )
-    if int(
-        config["trajectory"].get(
-            "intermediate_arrival_stable_samples",
-            2,
-        )
-    ) < 1:
-        raise ValueError(
-            "trajectory.intermediate_arrival_stable_samples must be "
-            "at least 1"
-        )
     stage_timeout_multiplier = float(
         config["trajectory"].get(
             "authorized_stage_timeout_multiplier",

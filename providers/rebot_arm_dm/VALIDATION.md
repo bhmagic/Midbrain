@@ -15,6 +15,11 @@ preservation, gripper `POSITION_EFFORT_LIMITED` to `FORCE_POS` translation, meas
 hysteretic brake/hold and recovery, MotorBridge, the attended Hardware
 Development UI, and Midbrain integration regressions.
 
+The software suite also verifies that `POSITION_EFFORT_LIMITED` accepts
+`torque_limit_nm`, rejects the former public ratio field, publishes the active
+per-joint command ceilings, and converts N·m to the MotorBridge ratio only at
+the Basic hardware-adapter boundary.
+
 Python compilation, provider JSON parsing, and PowerShell syntax validation
 pass. On 2026-08-11, the operator reported successful gravity balancing and
 several 6-DoF free-space motions during development of the selected `5 inch

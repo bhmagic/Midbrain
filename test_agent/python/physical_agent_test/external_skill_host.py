@@ -27,6 +27,8 @@ class ExternalSkillHostServices:
     spatial: Any
     vlm_router: Any
     visual_evidence_store: Any
+    integrated_motion: Any = None
+    contact_provider_url: str = "http://127.0.0.1:8794"
 
 
 def load_external_skill_host_adapters(

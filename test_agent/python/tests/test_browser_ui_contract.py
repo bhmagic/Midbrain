@@ -8,6 +8,43 @@ from jsonschema import validate
 
 
 class BrowserUiContractTests(unittest.TestCase):
+    def test_slicing_numeric_ui_exposes_two_gated_stages(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        page = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "slicing_developer.html"
+        ).read_text(encoding="utf-8")
+        manifest = json.loads(
+            (root / "skills" / "slicing" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn("RELATIVE_TO_CURRENT_EFFECTOR_WORLD", page)
+        self.assertIn("Execute Stage 1", page)
+        self.assertIn("Execute Stage 2", page)
+        self.assertIn("current controlled-effector origin captured", page)
+        self.assertIn("without collision planning", page)
+        self.assertIn("/api/skills/slicing/development/prepare", page)
+        self.assertIn("/api/skills/slicing/development/blade-profiles", page)
+        self.assertIn("/api/skills/slicing/development/motion-profiles", page)
+        self.assertIn("slice_length_m", page)
+        self.assertIn("slice_wait_speed_m_s", page)
+        self.assertIn("integrated_execution_backend", page)
+        self.assertIn("POS_SPEED (Basic POSITION_VELOCITY_LIMITED)", page)
+        self.assertIn("The next Agent invocation can use it.", page)
+        self.assertNotIn(
+            "Restart the workspace before Agent profile selection uses it.",
+            page,
+        )
+        self.assertEqual(
+            manifest["ui"]["developer"]["url"],
+            "http://127.0.0.1:8000/dev/skills/slicing",
+        )
+
     def _browser_surfaces(self, root: Path) -> list[Path]:
         surfaces = [
             root

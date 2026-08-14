@@ -11,6 +11,7 @@ config/robot_assemblies/*
 !config/robot_assemblies/primary_manipulator.example.json
 providers/rebot_arm_dm/config/
 providers/rebot_arm_integrated/config/
+providers/rebot_arm_contact/config/
 **/api_keys.env
 **/*.env
 !**/*.env.example
@@ -80,6 +81,7 @@ cmake_install.cmake
 !**/run/.gitkeep
 **/runtime_logs/
 skills/vegetable_cutting/config/plans/
+skills/slicing/config/motion_profiles.json
 test_agent/replay_bundles/
 *.log
 *.pid

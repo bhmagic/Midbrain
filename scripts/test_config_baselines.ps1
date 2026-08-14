@@ -93,10 +93,15 @@ $requiredFiles = @(
     "providers/rebot_arm_dm/config_templates/calibration_collision_model.json",
     "providers/rebot_arm_integrated/config_templates/provider_entry.json",
     "providers/rebot_arm_integrated/config_templates/controller.default.json",
+    "providers/rebot_arm_contact/config_templates/provider_entry.json",
+    "providers/rebot_arm_contact/config_templates/controller.default.json",
+    "skills/slicing/config_templates/motion_profiles.default.json",
     "skills/stationary_world_arm_alignment/config_templates/alignment.default.json",
     "config/foundation_pose/models.json",
     "providers/rebot_arm_dm/scripts/setup.ps1",
     "providers/rebot_arm_integrated/scripts/setup.ps1",
+    "providers/rebot_arm_contact/scripts/setup.ps1",
+    "skills/slicing/scripts/setup.ps1",
     "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py",
     "providers/foundation_pose/scripts/seed_default_models.ps1",
     "providers/orbbec_femto_bolt/python/orbbec_femto_provider/device_calibration.py",
@@ -193,7 +198,8 @@ $allProviderTemplates = @(
     "providers/sam2_scene_tracker/config_templates/provider_entry.json",
     "providers/foundation_pose/config_templates/provider_entry.json",
     "providers/rebot_arm_dm/config_templates/provider_entry.json",
-    "providers/rebot_arm_integrated/config_templates/provider_entry.json"
+    "providers/rebot_arm_integrated/config_templates/provider_entry.json",
+    "providers/rebot_arm_contact/config_templates/provider_entry.json"
 )
 $allProviderIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 foreach ($relativePath in $allProviderTemplates) {
@@ -223,7 +229,8 @@ $requiredSystemKeys = @(
     "POINT_CLOUD_SAMPLE_STRIDE",
     "POINT_CLOUD_HZ",
     "POINT_CLOUD_MAX_POINTS",
-    "FOUNDATION_POSE_CONTROL_URL"
+    "FOUNDATION_POSE_CONTROL_URL",
+    "CONTACT_CONTROLLER_URL"
 )
 foreach ($key in $requiredSystemKeys) {
     Assert-True -Condition $systemValues.ContainsKey($key) -Message "system.env.example is missing $key"
@@ -235,6 +242,14 @@ foreach ($key in @("OPENAI_API_KEY", "GEMINI_API_KEY")) {
     if ($apiValues.ContainsKey($key)) {
         Assert-True -Condition ([string]::IsNullOrEmpty($apiValues[$key])) -Message "$key must be blank in api_keys.env.example"
     }
+}
+Assert-True `
+    -Condition $apiValues.ContainsKey("MIDBRAIN_CONTACT_SLICING_SECRET") `
+    -Message "api_keys.env.example is missing MIDBRAIN_CONTACT_SLICING_SECRET"
+if ($apiValues.ContainsKey("MIDBRAIN_CONTACT_SLICING_SECRET")) {
+    Assert-True `
+        -Condition ([string]::IsNullOrEmpty($apiValues["MIDBRAIN_CONTACT_SLICING_SECRET"])) `
+        -Message "MIDBRAIN_CONTACT_SLICING_SECRET must be blank in api_keys.env.example"
 }
 foreach ($key in @("OPENAI_AGENT_MODEL", "GEMINI_ROBOTICS_MODEL", "OPENAI_VISION_MODEL")) {
     Assert-True -Condition $apiValues.ContainsKey($key) -Message "api_keys.env.example is missing optional model selector $key"
@@ -250,6 +265,20 @@ Assert-True `
 
 $integratedConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_integrated/config_templates/controller.default.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($integratedConfig.schema_version -eq 3) -Message "Integrated clean controller template must use schema version 3"
+
+$contactConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_contact/config_templates/controller.default.json") -Raw | ConvertFrom-Json
+$contactSkills = @($contactConfig.authorization.skill_secret_envs.PSObject.Properties.Name)
+Assert-True `
+    -Condition ($contactSkills.Count -eq 1 -and $contactSkills[0] -eq "contact.slicing") `
+    -Message "Contact clean controller template must allowlist only contact.slicing"
+
+$slicingMotionProfiles = Get-Content -LiteralPath (Join-Path $workspace "skills/slicing/config_templates/motion_profiles.default.json") -Raw | ConvertFrom-Json
+Assert-True `
+    -Condition ($slicingMotionProfiles.schema -eq "midbrain.slicing_motion_profiles" -and $slicingMotionProfiles.schema_version -eq 1) `
+    -Message "Slicing motion-profile template has the wrong schema"
+Assert-True `
+    -Condition ($slicingMotionProfiles.default_profile_number -eq 1 -and @($slicingMotionProfiles.profiles).Count -ge 1 -and $slicingMotionProfiles.profiles[0].profile_number -eq 1) `
+    -Message "Slicing motion-profile template must ship protected default profile #1"
 
 $alignmentConfig = Get-Content -LiteralPath (Join-Path $workspace "skills/stationary_world_arm_alignment/config_templates/alignment.default.json") -Raw | ConvertFrom-Json
 Assert-True `
@@ -279,6 +308,12 @@ Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/scripts/setup.ps1" `
     -Tokens @("controller.default.json", "controller.json")
 Assert-FileContains `
+    -RelativePath "providers/rebot_arm_contact/scripts/setup.ps1" `
+    -Tokens @("controller.default.json", "MIDBRAIN_CONTACT_SLICING_SECRET", "RandomNumberGenerator")
+Assert-FileContains `
+    -RelativePath "skills/slicing/scripts/setup.ps1" `
+    -Tokens @("motion_profiles.default.json", "motion_profiles.json")
+Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py" `
     -Tokens @("controller.default.json", "active_path.parent.mkdir", "active_path.write_text")
 Assert-FileContains `
@@ -305,6 +340,8 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             "config/calibration/devices/example/imu-accelerometer.json",
             "providers/rebot_arm_dm/config/arm_calibration.json",
             "providers/rebot_arm_integrated/config/controller.json",
+            "providers/rebot_arm_contact/config/controller.json",
+            "skills/slicing/config/motion_profiles.json",
             "skills/stationary_world_arm_alignment/config/alignment.json"
         )) {
             & git check-ignore -q --no-index -- $activePath

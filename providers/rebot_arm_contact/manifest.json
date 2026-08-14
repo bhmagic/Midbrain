@@ -1,0 +1,77 @@
+{
+  "provider_type": "robot_arm.contact.position_effort_limited",
+  "version": "0.1.0",
+  "display_name": "Independent Arm Contact Work Provider",
+  "manager_ids": ["robot_arm.primary.contact"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Contact Work Development Controls",
+      "url_from_control": "/",
+      "availability": "PROVIDER_RUNNING"
+    }
+  },
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": [
+    "robot_arm.motion.contact.position_effort_limited.v1",
+    "robot_arm.contact.skill_signed_plan.v1",
+    "robot_arm.contact.position_6dof_ik",
+    "robot_arm.contact.cartesian_segment.basic_rate.v1",
+    "robot_arm.contact.measured_start_relative_target.v1",
+    "robot_arm.contact.locked_joint_full_effort_hold",
+    "robot_arm.contact.wrench_6dof_joint_mapping",
+    "robot_arm.contact.latest_setpoint_replacement",
+    "robot_arm.contact.inactivity_float_watchdog",
+    "robot_arm.contact.measured_joint_state",
+    "robot_arm.contact.authority_lineage_shadow.v1"
+  ],
+  "required_capabilities": [
+    "robot_arm.joint_state",
+    "robot_arm.gravity_float",
+    "robot_arm.control.operational_api_v2",
+    "robot_arm.assembly_state",
+    "robot_arm.control.joint_group.v1"
+  ],
+  "provider_dependencies": [
+    {
+      "provider_id": "robot_arm.rebot_dm",
+      "required_residency": "HOT",
+      "activation_order": 1,
+      "reason": "Basic owns the physical arm, feedback, POSITION_EFFORT_LIMITED transport, fencing, limits, and gravity float."
+    }
+  ],
+  "published_streams": ["robot_arm.contact_work.state"],
+  "consumed_streams": [],
+  "package_layout": "providers/rebot_arm_contact",
+  "compatible_basic_controller": ">=0.1.20",
+  "contact_execution": {
+    "provider_boundary": "INDEPENDENT_FROM_INTEGRATED_DIRECT_TO_BASIC",
+    "physical_gate": "INSTALLED_SKILL_SIGNED_EXACT_PLAN_PLUS_BASIC_FENCED_LEASE",
+    "backend": "POSITION_EFFORT_LIMITED",
+    "default_next_command_timeout_s": 6.0,
+    "motion_types": ["ONE_SHOT", "CARTESIAN_SEGMENT"],
+    "cartesian_segment_stream_rate": "MATCH_BASIC_INTERNAL_CONTROL_RATE",
+    "maximum_cartesian_waypoint_spacing_m": 0.002,
+    "endpoint_completion": "NOT_REQUIRED",
+    "replacement": "NEXT_ACCEPTED_SETPOINT_IMMEDIATE",
+    "terminal_release": "EXPLICIT_RELAX_OR_WATCHDOG_TO_VERIFIED_GRAVITY_FLOAT",
+    "collision_planning": false
+  },
+  "wrench": {
+    "input_order": ["fx", "fy", "fz", "tx", "ty", "tz"],
+    "joint_mapping": "GEOMETRIC_JACOBIAN_TRANSPOSE_AT_MEASURED_CONFIGURATION",
+    "initial_skill_qualification": "FORCE_COMPONENTS_ONLY_ROTATIONAL_COMPONENTS_ZERO",
+    "provider_rotational_component_gate": false
+  },
+  "limitations": [
+    "Software-tested development implementation; physical qualification is required",
+    "The initial slicing Skill is non-clamping and uses zero tx, ty, and tz even though the Provider maps all six wrench components",
+    "General collision planning and scene interpretation are intentionally excluded",
+    "Basic POSITION_EFFORT_LIMITED accepts SI torque ceilings in N.m and reserves gravity capacity in the effort ceiling but does not accept a separate gravity feed-forward term",
+    "Physical Basic feedback currently does not expose finite motor temperatures; thermal integration remains future work"
+  ]
+}

@@ -68,9 +68,48 @@ Set up the arm Providers separately:
 ```powershell
 .\providers\rebot_arm_dm\scripts\setup.ps1 -WithMotorBridge
 .\providers\rebot_arm_integrated\scripts\setup.ps1
+.\providers\rebot_arm_contact\scripts\setup.ps1
+.\skills\contact_work_runtime\scripts\setup.ps1
+.\skills\slicing\scripts\setup.ps1
 .\providers\rebot_arm_dm\scripts\register.ps1
 .\providers\rebot_arm_integrated\scripts\register.ps1
+.\providers\rebot_arm_contact\scripts\register.ps1
 ```
+
+Restart Midbrain after registering a Provider or changing the eligible Skill
+list. Manager snapshots Provider configuration and Provider UI manifests at
+startup, and the Agent snapshots its eligible execution adapters at startup.
+Registration does not start the Contact Provider; its entry remains
+`auto_start=false` until a task requests `HOT`.
+
+After restart, open the Slicing card in the Manager portal or navigate to
+`http://127.0.0.1:8000/dev/skills/slicing`. This developer surface accepts one
+absolute active-world or current-effector-relative begin point, world blade and
+slicing directions, and a slice length. It derives the slice endpoint, planned
+outward endpoint, and measured-start-relative retract displacement. The page
+can also append/delete mounted-effector blade-use
+profiles, including hard joint locks, and Skill-owned load/retract/timing
+profiles. Any profile can be deleted, saving fills the lowest missing positive
+number, and any remaining profile can be selected as the store default. The
+next Agent invocation live-loads a changed Slicing blade profile or default
+after verifying the active effector identity; no workspace restart is needed.
+Preparation freezes and
+displays the resolved plan without moving. Stage 1 is the Integrated alignment;
+Stage 2 remains server-disabled until Stage 1 reaches verified `FLOAT`, then
+Manager moves Integrated to `WARM` and the Skill verifies its Basic lease has
+been released before activating Contact. Stage 2 then streams the three
+Contact-owned Cartesian segments at Basic's advertised control cadence and
+sends terminal relax through the Slicing Skill's signed path. The FLOAT
+handoff allows bounded drift from its captured measured pose. The surface
+bypasses language interpretation, not Manager, Integrated, Contact, Basic,
+calibration, or authorization boundaries.
+
+The strict Agent tool carries nullable blade and motion profile selectors. It
+must send null unless the user explicitly names a profile number; null resolves
+the live defaults at invocation time. Engage and slice are absolute targets.
+Retract is the signed negative-blade displacement resolved from measured
+effector position when Contact accepts the third move, so prior endpoint error
+does not redirect extraction.
 
 Set up the retained FoundationPose paths only when required:
 
@@ -236,3 +275,4 @@ reset VIO or change the world frame.
 - [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md)
 - [reBot Basic safety](../providers/rebot_arm_dm/docs/SAFETY.md)
 - [reBot Integrated safety](../providers/rebot_arm_integrated/docs/SAFETY.md)
+- [reBot Contact Work safety](../providers/rebot_arm_contact/docs/SAFETY.md)

@@ -52,6 +52,7 @@ class _Controller:
         target_delta_m,
         target_rpy_rad,
         requested_speed_m_s,
+        execution_backend="IMPEDANCE",
         ik_mode=None,
         allowed_contact_object_ids,
         permit_pushable_contact,
@@ -76,6 +77,7 @@ class _Controller:
                 None if target_rpy_rad is None else list(target_rpy_rad)
             ),
             "requested_speed_m_s": requested_speed_m_s,
+            "execution_backend": execution_backend,
             "ik_mode": ik_mode,
             "allowed_contact_object_ids": sorted(allowed_contact_object_ids),
             "permit_pushable_contact": permit_pushable_contact,
@@ -942,6 +944,56 @@ class ControlAuditTests(unittest.TestCase):
             result["target_delta_m"],
             [0.05, 0.0, 0.0],
         )
+
+    def test_transit_backend_defaults_to_impedance_and_pos_speed_is_signed(
+        self,
+    ) -> None:
+        service = IntegratedService(
+            _Controller(),  # type: ignore[arg-type]
+            {
+                "provider_id": "robot_arm.primary.integrated",
+                "listen_host": "127.0.0.1",
+                "listen_port": 8793,
+            },
+            None,
+            None,
+        )
+        base_request = {
+            "target": {
+                "position_delta_m": [0.01, 0.0, 0.0],
+                "rpy_rad": None,
+            },
+            "requested_speed_m_s": 0.03,
+        }
+
+        default_result = service._direct_plan_transit_path(base_request)
+        selected_result = service._direct_plan_transit_path(
+            {**base_request, "execution_backend": "pos_speed"}
+        )
+
+        self.assertEqual(
+            default_result["preview_contract"]["normalized_request"][
+                "execution_backend"
+            ],
+            "IMPEDANCE",
+        )
+        self.assertEqual(
+            selected_result["preview_contract"]["normalized_request"][
+                "execution_backend"
+            ],
+            "POS_SPEED",
+        )
+        self.assertNotEqual(
+            default_result["preview_contract"]["request_sha256"],
+            selected_result["preview_contract"]["request_sha256"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "execution_backend must be IMPEDANCE or POS_SPEED",
+        ):
+            service._direct_plan_transit_path(
+                {**base_request, "execution_backend": "POS_TOR"}
+            )
 
     def test_v2_mounted_activation_survives_camera_and_vio_process_restart(
         self,

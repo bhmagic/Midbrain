@@ -1159,7 +1159,10 @@ class ArmController:
             if mode == "POSITION_VELOCITY_LIMITED":
                 self.backend.send_position_velocity(index, position, velocity_limit)
             elif mode == "POSITION_EFFORT_LIMITED":
-                ratio=float(self.configuration.model["joints"][index]["default_test"].get("torque_limit_ratio",0.12))
+                ratio=self._motor_force_position_ratio(
+                    index,
+                    self.configuration.joints[index].default_torque_limit_nm,
+                )
                 self.backend.send_force_position(index, position, velocity_limit, ratio)
             elif mode == "VELOCITY":
                 self.backend.send_velocity(index, 0.0)
@@ -1777,9 +1780,30 @@ class ArmController:
                     )
                     output_values["velocity_limit_rad_s"]=native_velocity_limit
                 if self._latched_endpoint_due_locked(index,command.mode,output_values):
-                    self.backend.send_force_position(index,float(output_values["position_rad"]),float(output_values["velocity_limit_rad_s"]),float(output_values["torque_limit_ratio"]))
+                    self.backend.send_force_position(
+                        index,
+                        float(output_values["position_rad"]),
+                        float(output_values["velocity_limit_rad_s"]),
+                        self._motor_force_position_ratio(
+                            index,
+                            float(output_values["torque_limit_nm"]),
+                        ),
+                    )
             self.active_command_modes[index]=command.mode
         self.last_applied_command_id=envelope.command_id
+
+    def _motor_force_position_ratio(
+        self,
+        index: int,
+        torque_limit_nm: float,
+    ) -> float:
+        """Translate the SI Basic contract to the motor adapter's ratio field."""
+        configured_tmax_nm = float(
+            self.configuration.joints[index].configured_tmax_nm
+        )
+        if configured_tmax_nm <= 0.0:
+            raise RuntimeError("configured motor TMAX must be positive")
+        return float(torque_limit_nm) / configured_tmax_nm
 
     def _latched_endpoint_due_locked(
         self,
@@ -1791,7 +1815,7 @@ class ArmController:
             mode,
             float(values["position_rad"]),
             float(values["velocity_limit_rad_s"]),
-            float(values.get("torque_limit_ratio",-1.0)),
+            float(values.get("torque_limit_nm",-1.0)),
         )
         now=time.monotonic()
         due=(
@@ -1824,7 +1848,10 @@ class ArmController:
             self.backend.send_position_velocity(index,reference,velocity_limit)
         elif mode == "POSITION_EFFORT_LIMITED":
             velocity_limit=min(0.12,max(0.02,float(joint.default_vlim)))
-            ratio=float(self.configuration.model["joints"][index]["default_test"].get("torque_limit_ratio",0.12))
+            ratio=self._motor_force_position_ratio(
+                index,
+                joint.default_torque_limit_nm,
+            )
             self.backend.send_force_position(index,reference,velocity_limit,ratio)
         elif mode == "VELOCITY":
             self.backend.send_velocity(index,0.0)

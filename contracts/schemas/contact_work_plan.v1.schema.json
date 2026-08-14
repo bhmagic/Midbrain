@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/contact_work_plan.v1.schema.json",
+  "title": "Midbrain Contact Work Plan v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "plan_id",
+    "skill_id",
+    "execution_id",
+    "provider_id",
+    "assembly_fingerprint",
+    "acting_frame_id",
+    "manager_authority",
+    "steps"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.contact_work_plan"},
+    "schema_version": {"const": 1},
+    "plan_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "skill_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "provider_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "assembly_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "acting_frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "manager_authority": {
+      "type": "object",
+      "required": ["resource_id", "lease_id", "owner_id", "fencing_generation", "permissions"],
+      "properties": {
+        "resource_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "lease_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "owner_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "fencing_generation": {"type": "integer", "minimum": 1},
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 100}
+        }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "#/$defs/step"}
+    }
+  },
+  "$defs": {
+    "finite3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "step": {
+      "type": "object",
+      "required": [
+        "sequence",
+        "motion_type",
+        "target",
+        "wrench",
+        "locked_joint_names",
+        "delay_after_accept_s",
+        "next_command_timeout_s"
+      ],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 0},
+        "motion_type": {
+          "type": "string",
+          "enum": ["ONE_SHOT", "CARTESIAN_SEGMENT"]
+        },
+        "target": {
+          "type": "object",
+          "required": ["frame_id", "position_mode", "position_m", "orientation_xyzw"],
+          "properties": {
+            "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            "position_mode": {
+              "type": "string",
+              "enum": [
+                "ABSOLUTE_ROOT",
+                "RELATIVE_TO_MEASURED_EFFECTOR_ROOT_AXES"
+              ]
+            },
+            "position_m": {
+              "$ref": "#/$defs/finite3",
+              "description": "Absolute root-frame position or root-axis displacement from measured controlled-effector position, selected by position_mode."
+            },
+            "orientation_xyzw": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {"type": "number"}
+            }
+          },
+          "additionalProperties": false
+        },
+        "wrench": {
+          "type": "object",
+          "required": ["frame_id", "force_n", "torque_nm"],
+          "properties": {
+            "frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+            "force_n": {"$ref": "#/$defs/finite3"},
+            "torque_nm": {"$ref": "#/$defs/finite3"}
+          },
+          "additionalProperties": false
+        },
+        "locked_joint_names": {
+          "type": "array",
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        },
+        "delay_after_accept_s": {"type": "number", "minimum": 0, "maximum": 60},
+        "next_command_timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 60,
+          "description": "Safe inactivity interval after the Provider-calculated velocity-limited transition time."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

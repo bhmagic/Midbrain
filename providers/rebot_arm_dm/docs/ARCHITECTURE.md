@@ -35,7 +35,9 @@ velocity damping and is not a substitute for the enforced `kp` floor.
 - `IMPEDANCE`: MIT position, velocity, spring stiffness `kp`, velocity damping `kd`, and feed-forward torque.
 - `POSITION_VELOCITY_LIMITED`: motor-side position with velocity limit.
 - `VELOCITY`: continuous velocity command; excluded from the Hardware Development UI.
-- `POSITION_EFFORT_LIMITED`: motor-side force-limited position using target, velocity limit, and torque ratio.
+- `POSITION_EFFORT_LIMITED`: motor-side force-limited position using target,
+  velocity limit in rad/s, and torque ceiling in N·m. Basic converts N·m to the
+  adapter-private FORCE_POS ratio using that joint's configured TMAX.
 
 ## Hardware Development UI boundary
 

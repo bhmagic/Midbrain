@@ -32,6 +32,7 @@ class _Manager:
 class _IntegratedMotionSkill:
     def __init__(self) -> None:
         self.preview_count = 0
+        self.world_point_preview_arguments: list[dict] = []
         self.executed_preview_ids: list[str] = []
         self.next_preview_result: dict | None = None
 
@@ -54,6 +55,10 @@ class _IntegratedMotionSkill:
                 "arguments": {"preview_id": preview_id},
             },
         }
+
+    async def preview_world_point(self, **arguments):
+        self.world_point_preview_arguments.append(dict(arguments))
+        return await self.preview(direction="WORLD_POINT", **arguments)
 
     async def execute(self, **arguments):
         return arguments
@@ -248,6 +253,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertIn("set_provider_residency", tools)
         self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
         self.assertIn("perform_relative_effector_motion", tools)
+        self.assertIn("move_effector_to_world_point", tools)
         self.assertNotIn("retry_last_integrated_motion_target", tools)
         self.assertNotIn("preview_relative_effector_motion", tools)
         self.assertNotIn("execute_integrated_motion_preview", tools)
@@ -262,6 +268,19 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         )
         self.assertFalse(
             tools["perform_relative_effector_motion"].needs_approval
+        )
+        self.assertFalse(tools["move_effector_to_world_point"].needs_approval)
+        self.assertEqual(
+            tools["move_effector_to_world_point"].params_json_schema[
+                "required"
+            ],
+            [
+                "target_position_world_m",
+                "target_world_frame_id",
+                "target_session_epoch",
+                "requested_speed_m_s",
+                "execution_backend",
+            ],
         )
         self.assertIn(
             "translation_vector_m",
@@ -284,6 +303,10 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         )
         self.assertIn(
             "call perform_relative_effector_motion directly",
+            driver.agent.instructions,
+        )
+        self.assertIn(
+            "call move_effector_to_world_point directly",
             driver.agent.instructions,
         )
         self.assertNotIn(
@@ -494,6 +517,43 @@ class DeveloperAgentLifecycleResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tool.needs_approval)
         self.assertEqual(result["status"], "MOTION_COMPLETED")
         self.assertEqual(skill.executed_preview_ids, ["preview-1"])
+
+    async def test_world_point_motion_is_call_scoped_and_preserves_source_identity(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        skill = _IntegratedMotionSkill()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            integrated_motion_skill=skill,
+        )
+        tool = next(
+            item
+            for item in driver.agent.tools
+            if item.name == "move_effector_to_world_point"
+        )
+        arguments = {
+            "target_position_world_m": [0.5, 0.25, -0.18],
+            "target_world_frame_id": "local_vio/epoch-7",
+            "target_session_epoch": "epoch-7",
+            "requested_speed_m_s": None,
+            "execution_backend": "IMPEDANCE",
+        }
+
+        result = json.loads(
+            await tool.on_invoke_tool(
+                SimpleNamespace(tool_call_id="call-world-point"),
+                json.dumps(arguments),
+            )
+        )
+
+        self.assertFalse(tool.needs_approval)
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertEqual(skill.executed_preview_ids, ["preview-1"])
+        self.assertEqual(skill.world_point_preview_arguments, [arguments])
 
     async def test_prepared_motion_does_not_chain_dependency_continuation(
         self,

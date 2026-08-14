@@ -10,6 +10,9 @@ WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
 CAMERA_OPTICAL_CONVENTION_ID = (
     "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
 )
+CANONICAL_CAMERA_CALIBRATION_POLICY = (
+    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+)
 
 _SEMANTIC_VECTORS = {
     "FRONT": (1.0, 0.0, 0.0),
@@ -89,6 +92,27 @@ class SpatialResolution:
             "reference_frame": self.reference_frame,
             "resolved_frame": self.provenance["arm_base_frame"],
             "resolved_unit_vector": list(self.vector_arm_base),
+            "provenance": self.provenance,
+        }
+
+
+@dataclass(frozen=True)
+class WorldPointResolution:
+    target_position_world_m: tuple[float, float, float]
+    target_position_arm_base_m: tuple[float, float, float]
+    provenance: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "physical_agent.absolute_world_point_resolution",
+            "schema_version": 1,
+            "convention_id": WORLD_CONVENTION_ID,
+            "source_frame": self.provenance["world_frame"],
+            "resolved_frame": self.provenance["arm_base_frame"],
+            "target_position_world_m": list(self.target_position_world_m),
+            "target_position_arm_base_m": list(
+                self.target_position_arm_base_m
+            ),
             "provenance": self.provenance,
         }
 
@@ -176,6 +200,15 @@ class SpatialFrameResolver:
         try:
             vio = await self._current_vio()
         except SpatialResolutionRequired as required:
+            if normalized_frame == "WORLD":
+                activation_resolution = (
+                    await self._resolve_from_canonical_workcell_activation(
+                        direction=normalized_direction,
+                        source_vector=source_vector,
+                    )
+                )
+                if activation_resolution is not None:
+                    return activation_resolution
             if (
                 normalized_frame == "WORLD"
                 and mount_assumption == "CONFIRMED_X_FORWARD_Z_UP"
@@ -292,6 +325,14 @@ class SpatialFrameResolver:
                 session_epoch=session_epoch,
             )
         except Exception as error:
+            activation_resolution = (
+                await self._resolve_from_canonical_workcell_activation(
+                    direction=normalized_direction,
+                    source_vector=source_vector,
+                )
+            )
+            if activation_resolution is not None:
+                return activation_resolution
             if not _is_missing_transform_error(error):
                 raise SpatialResolutionRequired(
                     {
@@ -405,6 +446,412 @@ class SpatialFrameResolver:
         """Return the current motion-usable VIO epoch identity."""
 
         return await self._current_vio()
+
+    async def resolve_world_point(
+        self,
+        *,
+        target_position_world_m: list[float],
+        expected_world_frame: str | None = None,
+        expected_session_epoch: str | None = None,
+    ) -> WorldPointResolution:
+        """Resolve one absolute point from the active world into arm base."""
+
+        try:
+            point_world = tuple(
+                float(value) for value in target_position_world_m
+            )
+        except (TypeError, ValueError):
+            point_world = ()
+        if len(point_world) != 3 or not all(
+            math.isfinite(value) for value in point_world
+        ):
+            raise ValueError(
+                "target_position_world_m must contain three finite values"
+            )
+
+        normalized_expected_frame = str(
+            expected_world_frame or ""
+        ).strip()
+        normalized_expected_epoch = str(
+            expected_session_epoch or ""
+        ).strip()
+        vio: dict[str, Any] | None = None
+        vio_error: SpatialResolutionRequired | None = None
+        try:
+            vio = await self._current_vio()
+        except SpatialResolutionRequired as required:
+            vio_error = required
+        activation_observation = await self.fabric.latest_optional(
+            "manager.workcell_calibration.activation"
+        )
+        activation = self._active_workcell_activation(
+            activation_observation
+        )
+        use_workcell_activation = bool(
+            activation is not None
+            and (
+                not normalized_expected_frame
+                or normalized_expected_frame
+                == str(activation.get("world_frame") or "")
+            )
+            and (
+                vio is not None
+                or activation.get("validity_policy")
+                == CANONICAL_CAMERA_CALIBRATION_POLICY
+            )
+        )
+        if vio is None and not use_workcell_activation:
+            assert vio_error is not None
+            raise vio_error
+        if use_workcell_activation:
+            assert activation is not None
+            world_frame = str(activation["world_frame"])
+            session_epoch = str(
+                activation.get("session_epoch")
+                or (vio or {}).get("session_epoch")
+            )
+            observed_at_us = int(
+                activation_observation.get("observed_at_us")
+                or (vio or {}).get("observed_at_us")
+                or time.time_ns() // 1000
+            )
+        else:
+            assert vio is not None
+            world_frame = vio["world_frame"]
+            session_epoch = vio["session_epoch"]
+            observed_at_us = vio["observed_at_us"]
+        if (
+            normalized_expected_frame
+            and normalized_expected_frame != world_frame
+        ):
+            raise SpatialResolutionRequired(
+                {
+                    "status": "WORLD_POINT_FRAME_MISMATCH",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "expected_world_frame": normalized_expected_frame,
+                    "active_world_frame": world_frame,
+                    "active_workcell_world_frame": (
+                        str(activation.get("world_frame") or "")
+                        if activation is not None
+                        else None
+                    ),
+                    "message": (
+                        "The absolute point belongs to neither the current "
+                        "VIO world nor the active motion-usable workcell "
+                        "world. Re-observe the point or reactivate its exact "
+                        "reviewed calibration."
+                    ),
+                }
+            )
+        if (
+            normalized_expected_epoch
+            and normalized_expected_epoch != session_epoch
+        ):
+            raise SpatialResolutionRequired(
+                {
+                    "status": "WORLD_POINT_EPOCH_MISMATCH",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "expected_session_epoch": normalized_expected_epoch,
+                    "active_session_epoch": session_epoch,
+                    "message": (
+                        "The absolute point belongs to a different VIO "
+                        "session. Re-observe the point in the active epoch."
+                    ),
+                }
+            )
+
+        if use_workcell_activation:
+            assert activation is not None
+            transforms = activation.get("transforms")
+            transform = (
+                transforms.get("world_from_base")
+                if isinstance(transforms, dict)
+                else None
+            )
+            if not isinstance(transform, dict):
+                raise SpatialResolutionRequired(
+                    {
+                        "status": "ARM_ALIGNMENT_INVALID",
+                        "workflow_complete": False,
+                        "physical_motion_authorized": False,
+                        "message": (
+                            "The active workcell calibration has no valid "
+                            "world-from-arm-base transform."
+                        ),
+                    }
+                )
+            transform = {
+                **transform,
+                "at_us": observed_at_us,
+                "path": [
+                    {
+                        "authority": "manager.workcell_calibration",
+                        "activation_id": activation.get("activation_id"),
+                        "calibration_revision": activation.get(
+                            "calibration_revision"
+                        ),
+                    }
+                ],
+            }
+        else:
+            try:
+                transform = await self.fabric.transform(
+                    from_frame=self.arm_base_frame,
+                    to_frame=world_frame,
+                    at_us=observed_at_us,
+                    max_extrapolation_us=(
+                        self.maximum_transform_extrapolation_us
+                    ),
+                    session_epoch=session_epoch,
+                )
+            except Exception as error:
+                status = (
+                    "WORLD_TO_ARM_ALIGNMENT_REQUIRED"
+                    if _is_missing_transform_error(error)
+                    else "ARM_ALIGNMENT_INVALID"
+                )
+                raise SpatialResolutionRequired(
+                    {
+                        "status": status,
+                        "workflow_complete": False,
+                        "physical_motion_authorized": False,
+                        "recommended_action": (
+                            "Review and accept the current stationary "
+                            "world-to-arm calibration candidate, or create a "
+                            "new candidate and review it."
+                        ),
+                        "message": (
+                            "An absolute world point requires a current "
+                            "reviewed transform from "
+                            f"{world_frame} to {self.arm_base_frame}; an "
+                            "arm-mount assumption is not sufficient: "
+                            f"{error}"
+                        ),
+                        "transform_error": str(error),
+                    }
+                ) from error
+
+        translation = transform.get("translation_m")
+        try:
+            world_from_arm_translation = tuple(
+                float(value) for value in translation
+            )
+        except (TypeError, ValueError):
+            world_from_arm_translation = ()
+        if len(world_from_arm_translation) != 3 or not all(
+            math.isfinite(value) for value in world_from_arm_translation
+        ):
+            raise SpatialResolutionRequired(
+                {
+                    "status": "ARM_ALIGNMENT_INVALID",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "message": (
+                        "The reviewed world-to-arm transform has no valid "
+                        "translation."
+                    ),
+                }
+            )
+        try:
+            world_from_arm = rotation_matrix(transform["rotation_xyzw"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SpatialResolutionRequired(
+                {
+                    "status": "ARM_ALIGNMENT_INVALID",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "message": (
+                        "The reviewed world-to-arm transform has no valid "
+                        f"rotation: {error}"
+                    ),
+                }
+            ) from error
+        translated_world = tuple(
+            point_world[index] - world_from_arm_translation[index]
+            for index in range(3)
+        )
+        point_arm = tuple(
+            sum(
+                world_from_arm[row][column] * translated_world[row]
+                for row in range(3)
+            )
+            for column in range(3)
+        )
+        return WorldPointResolution(
+            target_position_world_m=point_world,
+            target_position_arm_base_m=point_arm,
+            provenance={
+                "resolution_source": (
+                    "TIMESTAMPED_WORLD_FROM_ARM_RIGID_TRANSFORM"
+                ),
+                "arm_base_frame": self.arm_base_frame,
+                "source_frame": world_frame,
+                "world_frame": world_frame,
+                "session_epoch": session_epoch,
+                "resolved_at_us": int(
+                    transform.get("at_us") or observed_at_us
+                ),
+                "transform_path": list(transform.get("path") or []),
+                "world_from_arm_translation_m": list(
+                    world_from_arm_translation
+                ),
+                "world_from_arm_rotation_xyzw": [
+                    float(value)
+                    for value in transform["rotation_xyzw"]
+                ],
+                "operator_attestation": None,
+                "workcell_activation": (
+                    {
+                        "activation_id": activation.get("activation_id"),
+                        "calibration_revision": activation.get(
+                            "calibration_revision"
+                        ),
+                        "validity_policy": activation.get(
+                            "validity_policy"
+                        ),
+                    }
+                    if use_workcell_activation and activation is not None
+                    else None
+                ),
+            },
+        )
+
+    def _active_workcell_activation(
+        self,
+        observation: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(observation, dict):
+            return None
+        if (
+            observation.get("valid") is not True
+            or observation.get("stream")
+            != "manager.workcell_calibration.activation"
+            or observation.get("schema")
+            != "physical_agent.workcell_calibration_activation"
+            or observation.get("provider_id")
+            != "manager.workcell_calibration"
+        ):
+            return None
+        data = observation.get("data")
+        if not isinstance(data, dict):
+            return None
+        if (
+            data.get("state") != "ACTIVE"
+            or data.get("motion_usable") is not True
+            or data.get("expires_at") is not None
+            or data.get("expires_at_us") is not None
+            or data.get("convention_id") != WORLD_CONVENTION_ID
+            or str(data.get("arm_base_frame") or "")
+            != self.arm_base_frame
+            or not str(data.get("world_frame") or "").strip()
+            or not str(data.get("activation_id") or "").strip()
+            or not str(data.get("calibration_revision") or "").strip()
+            or str(observation.get("calibration_revision") or "")
+            != str(data.get("calibration_revision") or "")
+        ):
+            return None
+        return data
+
+    async def _resolve_from_canonical_workcell_activation(
+        self,
+        *,
+        direction: str,
+        source_vector: tuple[float, float, float],
+    ) -> SpatialResolution | None:
+        observation = await self.fabric.latest_optional(
+            "manager.workcell_calibration.activation"
+        )
+        activation = self._active_workcell_activation(observation)
+        if activation is None:
+            return None
+        if (
+            activation.get("validity_policy")
+            != CANONICAL_CAMERA_CALIBRATION_POLICY
+        ):
+            return None
+        transforms = activation.get("transforms")
+        transform = (
+            transforms.get("world_from_base")
+            if isinstance(transforms, dict)
+            else None
+        )
+        if not isinstance(transform, dict):
+            raise SpatialResolutionRequired(
+                {
+                    "status": "ARM_ALIGNMENT_INVALID",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "message": (
+                        "The active canonical-camera workcell calibration "
+                        "has no valid world-from-arm-base transform."
+                    ),
+                }
+            )
+        try:
+            world_from_arm = rotation_matrix(transform["rotation_xyzw"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SpatialResolutionRequired(
+                {
+                    "status": "ARM_ALIGNMENT_INVALID",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "message": (
+                        "The active canonical-camera workcell calibration "
+                        f"has no valid rotation: {error}"
+                    ),
+                }
+            ) from error
+        vector_arm = tuple(
+            sum(
+                world_from_arm[row][column] * source_vector[row]
+                for row in range(3)
+            )
+            for column in range(3)
+        )
+        observed_at_us = int(
+            (observation or {}).get("observed_at_us")
+            or time.time_ns() // 1000
+        )
+        return SpatialResolution(
+            direction=direction,
+            reference_frame="WORLD",
+            vector_arm_base=_normalize(vector_arm),
+            provenance={
+                "resolution_source": (
+                    "ACTIVE_CANONICAL_WORKCELL_WORLD_FROM_ARM_TRANSFORM"
+                ),
+                "arm_base_frame": self.arm_base_frame,
+                "source_frame": str(activation["world_frame"]),
+                "world_frame": str(activation["world_frame"]),
+                "session_epoch": str(
+                    activation.get("session_epoch") or ""
+                ),
+                "resolved_at_us": observed_at_us,
+                "transform_path": [
+                    {
+                        "authority": "manager.workcell_calibration",
+                        "activation_id": activation.get("activation_id"),
+                        "calibration_revision": activation.get(
+                            "calibration_revision"
+                        ),
+                    }
+                ],
+                "expected_direction_world": list(source_vector),
+                "operator_attestation": None,
+                "workcell_activation": {
+                    "activation_id": activation.get("activation_id"),
+                    "calibration_revision": activation.get(
+                        "calibration_revision"
+                    ),
+                    "validity_policy": activation.get("validity_policy"),
+                },
+                "vio_dependency": (
+                    "NOT_REQUIRED_BY_CANONICAL_CAMERA_CALIBRATION_POLICY"
+                ),
+            },
+        )
 
     def _attested_arm_mount_resolution(
         self,

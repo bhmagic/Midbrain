@@ -32,7 +32,6 @@
     "arrival_stable_samples": 10,
     "one_shot_arrival_settle_timeout_s": 1.5,
     "one_shot_arrival_settle_kp_multiplier": 2.0,
-    "intermediate_arrival_stable_samples": 2,
     "authorized_stage_timeout_multiplier": 4.0,
     "authorized_stage_timeout_min_s": 3.0,
     "authorized_stage_timeout_max_s": 8.0,
@@ -47,7 +46,7 @@
     "execution_mode": "TRANSIT_SPEED",
     "interaction_mode": "ONE_SHOT",
     "ik_mode": "POSITION_3DOF",
-    "duration_s": 3.0,
+    "duration_s": 1.5,
     "replan_interval_s": 0.1,
     "kp_multiplier": 1.0,
     "controlled_frame_offset_xyz_m": [

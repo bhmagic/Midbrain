@@ -65,6 +65,16 @@ if (Test-Path (Join-Path $itemLocatorSkill "pyproject.toml")) {
     if ($LASTEXITCODE -ne 0) { throw "Item-locator Skill installation failed." }
 }
 
+$contactRuntime = Join-Path $workspace "skills\contact_work_runtime"
+$slicingSkill = Join-Path $workspace "skills\slicing"
+if (
+    (Test-Path (Join-Path $contactRuntime "pyproject.toml")) -and
+    (Test-Path (Join-Path $slicingSkill "pyproject.toml"))
+) {
+    & $python -m pip install -e $contactRuntime -e $slicingSkill
+    if ($LASTEXITCODE -ne 0) { throw "Slicing Skill host support installation failed." }
+}
+
 $skillsRoot = Join-Path $workspace "skills"
 foreach ($skillDirectory in Get-ChildItem -LiteralPath $skillsRoot -Directory) {
     $manifestPath = Join-Path $skillDirectory.FullName "manifest.json"

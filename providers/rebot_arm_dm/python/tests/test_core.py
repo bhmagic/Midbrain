@@ -181,7 +181,7 @@ class AssemblyConfigurationTests(unittest.TestCase):
                             {
                                 'position_rad': 0.0,
                                 'velocity_limit_rad_s': 0.1,
-                                'torque_limit_ratio': 0.1,
+                                'torque_limit_nm': 2.7,
                             },
                         ),
                     },
@@ -607,7 +607,7 @@ class CoreTests(unittest.TestCase):
                 {
                     "position_rad": target,
                     "velocity_limit_rad_s": velocity_limit,
-                    "torque_limit_ratio": 0.1,
+                    "torque_limit_nm": 0.7,
                 },
             ),
         )
@@ -667,7 +667,7 @@ class CoreTests(unittest.TestCase):
                 {
                     "position_rad": target,
                     "velocity_limit_rad_s": velocity_limit,
-                    "torque_limit_ratio": 0.1,
+                    "torque_limit_nm": 0.7,
                 },
             ),
         )
@@ -737,7 +737,7 @@ class CoreTests(unittest.TestCase):
                 {
                     "position_rad": target,
                     "velocity_limit_rad_s": 0.1,
-                    "torque_limit_ratio": 0.1,
+                    "torque_limit_nm": 0.7,
                 },
             ),
         )
@@ -756,6 +756,7 @@ class CoreTests(unittest.TestCase):
             target,
             delta=1e-12,
         )
+        self.assertAlmostEqual(float(backend.commands[3]["ratio"]), 0.1)
 
     def test_snapshot_returns_cached_fault_telemetry_while_motor_io_holds_control_lock(self):
         backend = SimulationBackend(self.config, self.dyn.calibrated_gravity_torque)
@@ -865,7 +866,7 @@ class CoreTests(unittest.TestCase):
                     {
                         "position_rad": float(self.config.home_positions[6]),
                         "velocity_limit_rad_s": 0.1,
-                        "torque_limit_ratio": 0.1,
+                        "torque_limit_nm": 0.7,
                     },
                 )
             },
@@ -1042,8 +1043,8 @@ class CoreTests(unittest.TestCase):
     def test_limit_rejection(self):
         with self.assertRaises(ValueError): self.config.validate_joint_command(0,'POSITION_VELOCITY_LIMITED',{'position_rad':100,'velocity_limit_rad_s':0.1})
 
-    def test_physical_pos_vel_caps_match_configured_motor_vmax(self):
-        expected = [5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0]
+    def test_physical_pos_vel_caps_use_tuned_arm_limits(self):
+        expected = [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1]
         self.assertEqual(
             [float(value) for value in self.config.model["control"]["physical_test_pos_vel_cap_rad_s"]],
             expected,
@@ -1081,10 +1082,50 @@ class CoreTests(unittest.TestCase):
             {
                 "position_rad": 0.0,
                 "velocity_limit_rad_s": 0.1,
-                "torque_limit_ratio": 0.95,
+                "torque_limit_nm": 6.65,
             },
         )
-        self.assertEqual(command["torque_limit_ratio"], 0.95)
+        self.assertEqual(command["torque_limit_nm"], 6.65)
+
+        public_limits = self.config.public_model()["command_limits"][
+            "POSITION_EFFORT_LIMITED"
+        ]
+        self.assertEqual(
+            [float(item["velocity_limit_rad_s"]) for item in public_limits],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+        )
+        public_model = self.config.public_model()
+        self.assertEqual(
+            [
+                float(item["target_rate_limit_rad_s"])
+                for item in public_model["command_limits"]["IMPEDANCE"]
+            ],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+        )
+        self.assertEqual(
+            [
+                float(item["velocity_limit_rad_s"])
+                for item in public_model["command_limits"][
+                    "POSITION_VELOCITY_LIMITED"
+                ]
+            ],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+        )
+        self.assertTrue(np.allclose(
+            [float(item["torque_limit_nm"]) for item in public_limits],
+            [27.0, 27.0, 27.0, 7.0, 7.0, 7.0, 1.4],
+        ))
+
+        with self.assertRaisesRegex(ValueError, "torque_limit_nm"):
+            self.config.validate_joint_command(
+                3,
+                "POSITION_EFFORT_LIMITED",
+                {
+                    "position_rad": 0.0,
+                    "velocity_limit_rad_s": 0.1,
+                    "torque_limit_ratio": 0.95,
+                },
+            )
 
         with self.assertRaisesRegex(ValueError, "MIT target rate"):
             self.config.validate_joint_command(
@@ -1093,7 +1134,7 @@ class CoreTests(unittest.TestCase):
                 {
                     "position_rad": -0.1,
                     "velocity_rad_s": 0.0,
-                    "target_rate_limit_rad_s": 0.36,
+                    "target_rate_limit_rad_s": 4.01,
                     "kp": 120.0,
                     "kd": 1.0,
                     "feedforward_torque_nm": 0.0,
@@ -1729,6 +1770,11 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn('reset-auto-defaults',html)
         self.assertIn('snapRowToMeasured',script)
         self.assertIn('target_rate_limit_rad_s',script)
+        self.assertIn('Torque limit (N-m)',script)
+        self.assertIn('values.torque_limit_nm',script)
+        self.assertIn('Basic limit:',script)
+        self.assertIn('motor TMAX:',script)
+        self.assertNotIn('values.torque_limit_ratio',script)
         self.assertIn('timeout_ms: 150',script)
         self.assertIn('manual-motion-status',html)
 

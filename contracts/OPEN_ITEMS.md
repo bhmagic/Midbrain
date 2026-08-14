@@ -46,6 +46,11 @@
 - Define versioned arm operating profiles that distinguish manufacturer and
   protocol maxima, official arm configuration, Basic provider caps, and
   physically qualified autonomous limits.
+- Physically qualify the independent Contact Work Provider and the initial
+  non-clamping slicing Skill. Complete the six-degree-of-freedom wrench boundary,
+  blade development-v3 acting-point measurements, locked-joint disturbance
+  tests, saturation behavior, command-replacement/watchdog races, and thermal
+  policy before making slicing eligible in the default Agent tool set.
 - Extend the implemented provider-local leased arm-retention contract with
   cross-provider authority lineage and longer physical qualification. `FLOAT`,
   bounded 2x-4x Kp compliant MIT hold, and POS_VEL position lock now capture a

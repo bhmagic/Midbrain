@@ -18,6 +18,7 @@ from .authorization import verify_transit_execution_assertion
 from .authority_state import evaluate_authority_coordination
 from .control_audit import ControlAuditOutbox
 from .controller import IntegratedController
+from .modes import normalize_transit_backend
 from .platform import PlatformPublisher
 
 
@@ -649,6 +650,9 @@ class IntegratedService:
         requested_ik_mode = body.get("ik_mode")
         if requested_ik_mode is not None:
             requested_ik_mode = str(requested_ik_mode).strip().upper()
+        execution_backend = normalize_transit_backend(
+            body.get("execution_backend")
+        )
         final_state = str(body.get("final_state", "FIXED")).strip().upper()
         if final_state not in SUPPORTED_TRANSIT_FINAL_STATES:
             raise ValueError(
@@ -673,6 +677,7 @@ class IntegratedService:
             "permit_pushable_contact": bool(
                 body.get("permit_pushable_contact", False)
             ),
+            "execution_backend": execution_backend,
             "final_state": final_state,
             "request_context": copy.deepcopy(request_context),
         }
@@ -683,6 +688,7 @@ class IntegratedService:
             target_delta_m=delta,
             target_rpy_rad=orientation,
             requested_speed_m_s=normalized_request["requested_speed_m_s"],
+            execution_backend=execution_backend,
             ik_mode=requested_ik_mode,
             allowed_contact_object_ids={str(value) for value in allowed},
             permit_pushable_contact=normalized_request[
@@ -1106,6 +1112,9 @@ class IntegratedService:
                 ),
                 scene_revision=contract.get("scene_revision"),
                 final_state=str(normalized_request["final_state"]),
+                execution_backend=str(
+                    normalized_request["execution_backend"]
+                ),
                 allowed_contact_object_ids={
                     str(value)
                     for value in normalized_request[
@@ -1408,6 +1417,11 @@ class IntegratedService:
                     "planner_owner": "ROBOT_ARM_INTEGRATED_CONTROLLER",
                     "physical_motion_authorized": False,
                     "may_switch_control_mode": False,
+                    "execution_backend": {
+                        "default": "IMPEDANCE",
+                        "supported": ["IMPEDANCE", "POS_SPEED"],
+                        "signed_into_preview": True,
+                    },
                     "supported_final_states": [
                         "FLOAT",
                         "FIXED",

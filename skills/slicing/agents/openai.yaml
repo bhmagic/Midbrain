@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slicing"
+  short_description: "Execute a profiled finite blade slice"
+  default_prompt: "Use $slicing to derive and execute a finite non-clamping slice from a begin point, inward blade direction, slicing direction, and length."

@@ -92,6 +92,7 @@ AgentEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 AgentInput = str | list[dict[str, Any]] | RunState[Any]
 logger = logging.getLogger(__name__)
 PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL = "perform_relative_effector_motion"
+MOVE_EFFECTOR_TO_WORLD_POINT_TOOL = "move_effector_to_world_point"
 
 
 def _current_user_text(input_value: AgentInput) -> str:
@@ -804,6 +805,9 @@ class PrototypeAgentDriver:
         self._prepared_relative_motion: (
             CallScopedPreparedActionCoordinator | None
         ) = None
+        self._prepared_world_point_motion: (
+            CallScopedPreparedActionCoordinator | None
+        ) = None
         self.max_turns = int(max_turns)
         if not 1 <= self.max_turns <= 32:
             raise ValueError("max_turns must be between 1 and 32")
@@ -838,6 +842,15 @@ class PrototypeAgentDriver:
                 for descriptor in descriptors
                 if descriptor.tool_name
                 == PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL
+            ),
+            None,
+        )
+        world_point_motion_descriptor = next(
+            (
+                descriptor
+                for descriptor in descriptors
+                if descriptor.tool_name
+                == MOVE_EFFECTOR_TO_WORLD_POINT_TOOL
             ),
             None,
         )
@@ -1056,6 +1069,9 @@ class PrototypeAgentDriver:
                     requested_speed_m_s=arguments.get(
                         "requested_speed_m_s"
                     ),
+                    execution_backend=arguments.get(
+                        "execution_backend", "IMPEDANCE"
+                    ),
                     reference_frame=arguments.get(
                         "reference_frame", "WORLD"
                     ),
@@ -1082,9 +1098,34 @@ class PrototypeAgentDriver:
                     ),
                 )
 
+            async def prepare_integrated_world_point_motion(
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                return await integrated_motion_skill.preview_world_point(
+                    target_position_world_m=arguments.get(
+                        "target_position_world_m"
+                    ),
+                    target_world_frame_id=arguments.get(
+                        "target_world_frame_id"
+                    ),
+                    target_session_epoch=arguments.get(
+                        "target_session_epoch"
+                    ),
+                    requested_speed_m_s=arguments.get(
+                        "requested_speed_m_s"
+                    ),
+                    execution_backend=arguments.get(
+                        "execution_backend", "IMPEDANCE"
+                    ),
+                )
+
             if integrated_motion_descriptor is None:
                 raise RuntimeError(
                     "integrated relative motion Skill descriptor is unavailable"
+                )
+            if world_point_motion_descriptor is None:
+                raise RuntimeError(
+                    "absolute world-point motion Skill descriptor is unavailable"
                 )
 
         approval_overrides: dict[
@@ -1547,10 +1588,16 @@ class PrototypeAgentDriver:
                     normalized_arguments = dict(arguments)
                     for optional_field in (
                         "controlled_frame_rpy_delta_deg",
+                        "execution_backend",
                         "target_orientation_rpy_rad",
                         "translation_vector_m",
                     ):
-                        normalized_arguments.setdefault(optional_field, None)
+                        normalized_arguments.setdefault(
+                            optional_field,
+                            "IMPEDANCE"
+                            if optional_field == "execution_backend"
+                            else None,
+                        )
                     validate(
                         instance=normalized_arguments,
                         schema=integrated_motion_descriptor.input_schema,
@@ -1682,6 +1729,116 @@ class PrototypeAgentDriver:
                         on_invoke_tool=perform_relative_effector_motion,
                         strict_json_schema=True,
                         needs_approval=False,
+                )
+            )
+
+            async def prepare_world_point_motion_action(
+                arguments: dict[str, Any],
+            ) -> dict[str, Any]:
+                try:
+                    normalized_arguments = dict(arguments)
+                    for optional_field in (
+                        "target_world_frame_id",
+                        "target_session_epoch",
+                        "requested_speed_m_s",
+                        "execution_backend",
+                    ):
+                        normalized_arguments.setdefault(
+                            optional_field,
+                            "IMPEDANCE"
+                            if optional_field == "execution_backend"
+                            else None,
+                        )
+                    validate(
+                        instance=normalized_arguments,
+                        schema=world_point_motion_descriptor.input_schema,
+                    )
+                    extend_current_operation_hard_timeout(
+                        float(adapter_timeout_s),
+                        stage=(
+                            "skill:move_effector_to_world_point:preparing"
+                        ),
+                    )
+                    return await asyncio.wait_for(
+                        prepare_integrated_world_point_motion(
+                            normalized_arguments
+                        ),
+                        timeout=float(adapter_timeout_s),
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "Absolute world-point motion preparation failed"
+                    )
+                    return {
+                        "status": "MOTION_PREPARATION_FAILED",
+                        "workflow_complete": False,
+                        "physical_motion_authorized": False,
+                        "physical_motion_submitted": False,
+                        "message": str(error),
+                    }
+
+            self._prepared_world_point_motion = (
+                CallScopedPreparedActionCoordinator(
+                    prepare_action=prepare_world_point_motion_action,
+                    select_continuation=(
+                        select_relative_motion_continuation
+                    ),
+                    resolve_authorization=(
+                        resolve_relative_motion_authorization
+                    ),
+                    execute_continuation=(
+                        execute_relative_motion_continuation
+                    ),
+                )
+            )
+
+            async def move_effector_to_world_point(
+                context_wrapper: Any,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                assert self._prepared_world_point_motion is not None
+                call_id = getattr(context_wrapper, "tool_call_id", "")
+                await self._prepared_world_point_motion.prepare_for_call(
+                    call_id,
+                    arguments,
+                )
+                result = (
+                    await self._prepared_world_point_motion.execute_for_call(
+                        call_id,
+                        arguments,
+                    )
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            eligible.add(MOVE_EFFECTOR_TO_WORLD_POINT_TOOL)
+            if (
+                world_point_motion_descriptor
+                not in self.offered_skill_descriptors
+            ):
+                self.offered_skill_descriptors.append(
+                    world_point_motion_descriptor
+                )
+            offered_tools.append(
+                FunctionTool(
+                    name=MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+                    description=(
+                        "Prepare, authorize, and execute one exact absolute "
+                        "world-coordinate free-space move of the controlled "
+                        "effector. The host converts the point through the "
+                        "current reviewed world-to-arm transform, preserves "
+                        "the measured effector orientation with POSE_6DOF IK, "
+                        "and binds the signed preview continuation to this "
+                        "call. Frame, epoch, transform, collision, IK, "
+                        "authorization, and dependency failures return "
+                        "without motion."
+                    ),
+                    params_json_schema=(
+                        world_point_motion_descriptor.input_schema
+                    ),
+                    on_invoke_tool=move_effector_to_world_point,
+                    strict_json_schema=True,
+                    needs_approval=False,
                 )
             )
         if basic_safe_home_skill is not None:
@@ -2021,6 +2178,22 @@ class PrototypeAgentDriver:
                 "RGB-only analyze_visual_scene tool. Use CURRENT_WORLD when "
                 "the caller wants the live VIO world frame without an arm-base "
                 "relationship."
+            )
+        if integrated_motion_skill is not None:
+            instructions += (
+                " When an absolute world XYZ target is already known, call "
+                "move_effector_to_world_point directly. Never inspect runtime "
+                "state or calculate a relative displacement to reach that "
+                "point. Copy a source result's world-frame ID and VIO session "
+                "epoch exactly when present; use null only for coordinates the "
+                "operator intentionally states in the current world. This "
+                "Skill always preserves the measured controlled-effector "
+                "orientation with POSE_6DOF IK. In a compound workflow such "
+                "as moving above a slicing start and then cutting, begin the "
+                "contact action only after the world-point tool returns "
+                "physical_motion_completed=true. A frame mismatch, epoch "
+                "mismatch, transform failure, preview rejection, or dependency "
+                "failure is not a completed move."
             )
         if basic_safe_home_skill is not None:
             instructions += (

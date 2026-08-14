@@ -51,12 +51,13 @@ async function initialize() {
 
 function buildJointRows() {
   const host = $('joint-table');
-  host.innerHTML = '<div class="joint-row header"><span>Joint</span><span>Mode</span><span>Target</span><span>Test min °</span><span>Test max °</span><span>Slider</span><span>kp</span><span>kd</span><span>V limit</span><span>Torque ratio</span><span>Limits / state</span></div>';
+  host.innerHTML = '<div class="joint-row header"><span>Joint</span><span>Mode</span><span>Target</span><span>Test min °</span><span>Test max °</span><span>Slider</span><span>kp</span><span>kd</span><span>V limit</span><span>Torque limit (N-m)</span><span>Limits / state</span></div>';
   state.model.joints.forEach((joint, index) => {
     const defaults = joint.default_test;
     const limits = joint.hard_limit_rad;
     const caps = joint.provider_test_caps;
     const motorLimits = joint.motor_limits;
+    const positionEffortLimits = state.model.command_limits.POSITION_EFFORT_LIMITED[index];
     const row = document.createElement('div');
     row.className = 'joint-row';
     row.dataset.index = index;
@@ -70,7 +71,7 @@ function buildJointRows() {
       <input class="kp" type="number" min="${caps.min_kp ?? defaults.kp}" max="${caps.max_kp}" step="0.5" value="${defaults.kp}">
       <input class="kd" type="number" min="0" max="${caps.max_kd}" step="0.1" value="${Math.min(defaults.kd, caps.max_kd)}">
       <input class="vlim" type="number" min="0.01" step="0.01" value="${defaults.velocity_limit_rad_s}">
-      <input class="ratio" type="number" min="0" max="1" step="0.01" value="${defaults.torque_limit_ratio}">
+      <span class="torque-limit-cell"><input class="torque-nm" type="number" min="0" max="${positionEffortLimits.torque_limit_nm}" step="0.01" value="${defaults.torque_limit_nm}"><small>Basic limit: ${positionEffortLimits.torque_limit_nm} N-m; motor TMAX: ${motorLimits.configured_tmax_nm} N-m</small></span>
       <span class="limits">${joint.motor_model} ${joint.motor_revision} · hard ${deg(limits[0]).toFixed(0)}°…${deg(limits[1]).toFixed(0)}°<br>FORCE_POS 1.0 = configured TMAX ${motorLimits.configured_tmax_nm} N·m; rated ${motorLimits.manufacturer_rated_torque_nm} N·m; listed peak ${motorLimits.manufacturer_peak_torque_nm} N·m<br>Official/Unity MIT kp=${defaults.kp}, kd=${defaults.kd}; tracking-effort limit ${caps.mit_tracking_effort_limit_nm} N·m<br>Load-bearing MIT rule kp≥${caps.min_kp ?? defaults.kp}; kd may be low. Reviewed caps kp≤${caps.max_kp}, kd≤${caps.max_kd}<br><span class="live">waiting</span></span>`;
     host.appendChild(row);
 
@@ -223,7 +224,7 @@ function resetManualDefaults() {
     row.querySelector('.kp').value = defaults.kp;
     row.querySelector('.kd').value = defaults.kd;
     row.querySelector('.vlim').value = defaults.velocity_limit_rad_s;
-    row.querySelector('.ratio').value = defaults.torque_limit_ratio;
+    row.querySelector('.torque-nm').value = defaults.torque_limit_nm;
     const slider = row.querySelector('.target');
     slider.min = deg(joint.default_calibration_range_rad[0]);
     slider.max = deg(joint.default_calibration_range_rad[1]);
@@ -260,7 +261,7 @@ async function sendRow(row) {
     values.velocity_limit_rad_s = Number(row.querySelector('.vlim').value);
   } else {
     values.velocity_limit_rad_s = Number(row.querySelector('.vlim').value);
-    values.torque_limit_ratio = Number(row.querySelector('.ratio').value);
+    values.torque_limit_nm = Number(row.querySelector('.torque-nm').value);
   }
   await api('/api/command', 'POST', {
     ...state.lease,

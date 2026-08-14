@@ -22,7 +22,17 @@ from .contact import (
 from .hybrid import MIT_SETTLE, POS_VEL_APPROACH, HybridApproachPolicy
 from .http_client import HttpStatusError
 from .kinematics import ArmKinematics, matrix_rpy, rotation_vector, rpy_matrix, transform
-from .modes import CONTACT_WORK, MODE_SPECS, PRESS_MIT, TRANSIT_SPEED, normalize_execution_mode
+from .modes import (
+    BASIC_POS_VEL,
+    CONTACT_WORK,
+    MODE_SPECS,
+    PRESS_MIT,
+    TRANSIT_BACKEND_IMPEDANCE,
+    TRANSIT_BACKEND_POS_SPEED,
+    TRANSIT_SPEED,
+    normalize_execution_mode,
+    normalize_transit_backend,
+)
 from .planning import (
     PlanPreview,
     build_transit_frame_candidates,
@@ -34,6 +44,7 @@ from .planning import (
     solve_cartesian_continuity_adaptive,
 )
 from .scene import SceneSnapshot
+from .trajectory import TimedJointPath
 
 
 MODE_MIT = "IMPEDANCE"
@@ -131,6 +142,7 @@ class AuthorizedTransitExecution:
     preview_scene_revision: str | None
     scene_revision: str | None
     final_state: str
+    execution_backend: str
     q_waypoints: tuple[np.ndarray, ...]
     stage_durations_s: tuple[float, ...]
     started_monotonic: float
@@ -152,6 +164,14 @@ class AuthorizedTransitExecution:
     stage_best_position_error_rad: float | None = None
     stage_last_progress_monotonic: float = 0.0
     stage_completion_criterion: str = "INTERMEDIATE_POSITION_PASSAGE"
+    stream_rate_hz: float = 0.0
+    stream_sample_index: int = 0
+    stream_sample_count: int = 0
+    stream_progress: float = 0.0
+    stream_started_monotonic: float | None = None
+    target_timeline_completed_monotonic: float | None = None
+    schedule_overrun_count: int = 0
+    maximum_tracking_error_rad: float = 0.0
 
 
 class IntegratedController:
@@ -1303,6 +1323,7 @@ class IntegratedController:
         target_delta_m: list[float] | None = None,
         target_rpy_rad: list[float] | None,
         requested_speed_m_s: float,
+        execution_backend: str = TRANSIT_BACKEND_IMPEDANCE,
         ik_mode: str | None = None,
         allowed_contact_object_ids: set[str] | None = None,
         permit_pushable_contact: bool = False,
@@ -1324,6 +1345,7 @@ class IntegratedController:
             else None
         )
         with self.lock:
+            normalized_backend = normalize_transit_backend(execution_backend)
             self.basic_state = state
             self.last_state_success = time.monotonic()
             if self.kinematics is None and preview_model is not None:
@@ -1513,7 +1535,7 @@ class IntegratedController:
                         final_iterations = continuity.final_iterations
 
                     transit_joint_caps = np.minimum(
-                        self._provider_pos_vel_caps_locked(),
+                        self._transit_backend_caps_locked(normalized_backend),
                         float(
                             planning_config[
                                 "maximum_transit_joint_velocity_rad_s"
@@ -1543,6 +1565,9 @@ class IntegratedController:
                         hard_limit_rad_s=float(
                             planning_config["joint_speed_hard_limit_rad_s"]
                         ),
+                        command_rate_hz=float(
+                            self.config["trajectory"]["send_rate_hz"]
+                        ),
                     )
                     duration = controller_owned_duration(
                         q_waypoints,
@@ -1553,6 +1578,25 @@ class IntegratedController:
                             self.config["runtime_limits"]["duration_min_s"]
                         ),
                     )
+                    unpaced_duration_s = float(duration["duration_s"])
+                    paced_duration_s = float(
+                        sum(speed_policy["effective_stage_durations_s"])
+                    )
+                    duration["unpaced_duration_s"] = unpaced_duration_s
+                    duration["duration_s"] = paced_duration_s
+                    duration["command_stream_rate_hz"] = float(
+                        self.config["trajectory"]["send_rate_hz"]
+                    )
+                    duration["execution_backend"] = normalized_backend
+                    duration["basic_command_mode"] = (
+                        MODE_MIT
+                        if normalized_backend == TRANSIT_BACKEND_IMPEDANCE
+                        else BASIC_POS_VEL
+                    )
+                    if paced_duration_s > unpaced_duration_s + 1e-12:
+                        duration["limiting_factor"] = (
+                            "COMMAND_PACED_STAGE_SCHEDULE"
+                        )
                     preview = build_waypoint_preview(
                         self.kinematics,
                         q_waypoints,
@@ -1750,6 +1794,9 @@ class IntegratedController:
                                         "joint_speed_hard_limit_rad_s"
                                     ]
                                 ),
+                                command_rate_hz=float(
+                                    self.config["trajectory"]["send_rate_hz"]
+                                ),
                             )
                             safe_duration = controller_owned_duration(
                                 safe_waypoints,
@@ -1762,6 +1809,32 @@ class IntegratedController:
                                     ]
                                 ),
                             )
+                            safe_unpaced_duration_s = float(
+                                safe_duration["duration_s"]
+                            )
+                            safe_paced_duration_s = float(
+                                sum(
+                                    safe_speed_policy[
+                                        "effective_stage_durations_s"
+                                    ]
+                                )
+                            )
+                            safe_duration["unpaced_duration_s"] = (
+                                safe_unpaced_duration_s
+                            )
+                            safe_duration["duration_s"] = (
+                                safe_paced_duration_s
+                            )
+                            safe_duration["command_stream_rate_hz"] = float(
+                                self.config["trajectory"]["send_rate_hz"]
+                            )
+                            if (
+                                safe_paced_duration_s
+                                > safe_unpaced_duration_s + 1e-12
+                            ):
+                                safe_duration["limiting_factor"] = (
+                                    "COMMAND_PACED_STAGE_SCHEDULE"
+                                )
                             safe_preview = build_waypoint_preview(
                                 self.kinematics,
                                 safe_waypoints,
@@ -2027,6 +2100,7 @@ class IntegratedController:
         requested_speed_m_s: float,
         scene_revision: str | None,
         final_state: str = FINAL_STATE_FIXED,
+        execution_backend: str = TRANSIT_BACKEND_IMPEDANCE,
         allowed_contact_object_ids: set[str] | None,
         permit_pushable_contact: bool,
         authorization_claims: dict[str, Any],
@@ -2044,6 +2118,7 @@ class IntegratedController:
             raise ValueError(
                 "final_state must be FLOAT, FIXED, or WAIT_FOR_NEXT"
             )
+        normalized_backend = normalize_transit_backend(execution_backend)
 
         with self.lock:
             chained_from = (
@@ -2173,7 +2248,7 @@ class IntegratedController:
                     )
 
                 joint_caps = np.minimum(
-                    self._provider_pos_vel_caps_locked(),
+                    self._transit_backend_caps_locked(normalized_backend),
                     float(
                         self.config["planning"][
                             "maximum_transit_joint_velocity_rad_s"
@@ -2211,6 +2286,9 @@ class IntegratedController:
                         self.config["planning"][
                             "joint_speed_hard_limit_rad_s"
                         ]
+                    ),
+                    command_rate_hz=float(
+                        self.config["trajectory"]["send_rate_hz"]
                     ),
                 )
                 if speed_policy["hard_limit_exceeded"]:
@@ -2294,6 +2372,7 @@ class IntegratedController:
                     preview_scene_revision=scene_revision,
                     scene_revision=commit_scene_revision,
                     final_state=normalized_final_state,
+                    execution_backend=normalized_backend,
                     q_waypoints=tuple(
                         waypoint.copy() for waypoint in q_waypoints
                     ),
@@ -2333,6 +2412,26 @@ class IntegratedController:
                 "resolved_by": authorization_claims["resolved_by"],
                 "stage_count": len(q_waypoints) - 1,
                 "planned_duration_s": sum(stage_durations),
+                "command_stream": {
+                    "strategy": "TIMED_PIECEWISE_JOINT_INTERPOLATION",
+                    "execution_backend": normalized_backend,
+                    "basic_command_mode": (
+                        MODE_MIT
+                        if normalized_backend == TRANSIT_BACKEND_IMPEDANCE
+                        else BASIC_POS_VEL
+                    ),
+                    "rate_hz": float(
+                        self.config["trajectory"]["send_rate_hz"]
+                    ),
+                    "sample_count": int(
+                        sum(
+                            speed_policy["effective_stage_command_ticks"]
+                        )
+                        + 1
+                    ),
+                    "late_cycle_policy": "PRESERVE_SAMPLES_AND_SLOW_ON_COMMAND_OVERRUN",
+                    "feedback_source": "SHARED_50_HZ_BASIC_STATE_POLLER",
+                },
                 "maximum_joint_velocity_rad_s": float(
                     np.max(joint_caps)
                 ),
@@ -3351,6 +3450,17 @@ class IntegratedController:
                         state,
                         q_goal,
                     )
+                    torque_limits_nm = torque_ratios * np.asarray(
+                        [
+                            float(
+                                self.basic_model["joints"][index]["motor_limits"][
+                                    "configured_tmax_nm"
+                                ]
+                            )
+                            for index in range(6)
+                        ],
+                        dtype=float,
+                    )
                     keepalive_hz = float(self.config["trajectory"]["latched_keepalive_hz"])
                     self.latched_endpoint = LatchedEndpointCommand.create(
                         "POSITION_EFFORT_LIMITED",
@@ -3358,7 +3468,7 @@ class IntegratedController:
                         q_goal,
                         velocity_limits,
                         keepalive_period_s=1.0 / keepalive_hz,
-                        torque_limit_ratios=torque_ratios,
+                        torque_limits_nm=torque_limits_nm,
                     )
                     self.contact_torque_limit_ratios = torque_ratios.copy()
                     self.contact_residual_nm = np.zeros(6, dtype=float)
@@ -3436,6 +3546,7 @@ class IntegratedController:
                 duration = self._continuous_horizon_locked(q_start, result.q_goal)
                 new_endpoint = None
                 new_contact_ratios = None
+                new_contact_torque_limits_nm = None
                 if plan.execution_mode == TRANSIT_SPEED:
                     velocity_limits = synchronized_velocity_limits(
                         measured_q,
@@ -3469,6 +3580,17 @@ class IntegratedController:
                         state,
                         result.q_goal,
                     )
+                    new_contact_torque_limits_nm = new_contact_ratios * np.asarray(
+                        [
+                            float(
+                                self.basic_model["joints"][index]["motor_limits"][
+                                    "configured_tmax_nm"
+                                ]
+                            )
+                            for index in range(6)
+                        ],
+                        dtype=float,
+                    )
                     new_endpoint = LatchedEndpointCommand.create(
                         "POSITION_EFFORT_LIMITED",
                         measured_q,
@@ -3477,7 +3599,7 @@ class IntegratedController:
                         keepalive_period_s=1.0 / float(
                             self.config["trajectory"]["latched_keepalive_hz"]
                         ),
-                        torque_limit_ratios=new_contact_ratios,
+                        torque_limits_nm=new_contact_torque_limits_nm,
                     )
                 plan.q_start = q_start
                 plan.qd_start = qd_start
@@ -3574,6 +3696,12 @@ class IntegratedController:
             "preview_scene_revision": execution.preview_scene_revision,
             "scene_revision": execution.scene_revision,
             "final_state": execution.final_state,
+            "execution_backend": execution.execution_backend,
+            "basic_command_mode": (
+                MODE_MIT
+                if execution.execution_backend == TRANSIT_BACKEND_IMPEDANCE
+                else BASIC_POS_VEL
+            ),
             "status": execution.status,
             "stage_count": len(execution.stage_durations_s),
             "current_stage_index": execution.current_stage_index,
@@ -3585,6 +3713,17 @@ class IntegratedController:
             ),
             "frames_attempted": execution.frames_attempted,
             "frames_sent": execution.frames_sent,
+            "stream_rate_hz": execution.stream_rate_hz,
+            "stream_sample_index": execution.stream_sample_index,
+            "stream_sample_count": execution.stream_sample_count,
+            "stream_progress": execution.stream_progress,
+            "target_timeline_complete": (
+                execution.target_timeline_completed_monotonic is not None
+            ),
+            "schedule_overrun_count": execution.schedule_overrun_count,
+            "maximum_tracking_error_rad": (
+                execution.maximum_tracking_error_rad
+            ),
             "last_command_latency_ms": execution.last_command_latency_ms,
             "maximum_command_latency_ms": (
                 execution.maximum_command_latency_ms
@@ -3651,27 +3790,25 @@ class IntegratedController:
         }
 
     def _authorized_transit_loop(self) -> None:
-        """Advance exact POS_SPEED waypoints and retain the endpoint."""
+        """Stream one authorized waypoint timeline and retain its endpoint."""
 
-        poll_period = 1.0 / max(
-            float(self.config["basic_state_rate_hz"]),
+        stream_rate_hz = max(
+            float(self.config["trajectory"]["send_rate_hz"]),
             1.0,
         )
-        next_tick = time.monotonic()
-        endpoint: LatchedEndpointCommand | None = None
-        endpoint_execution: AuthorizedTransitExecution | None = None
-        endpoint_stage_index = -1
-        stable_samples = 0
+        period = 1.0 / stream_rate_hz
+        maximum_command_gap_s = (
+            float(self.config["trajectory"]["maximum_command_gap_ms"])
+            / 1000.0
+        )
+        hold_period_s = 1.0 / max(
+            float(self.config["trajectory"]["latched_keepalive_hz"]),
+            1.0,
+        )
         required_stable_samples = int(
             self.config["trajectory"].get(
                 "arrival_stable_samples",
                 10,
-            )
-        )
-        intermediate_stable_samples = int(
-            self.config["trajectory"].get(
-                "intermediate_arrival_stable_samples",
-                2,
             )
         )
         stage_timeout_multiplier = float(
@@ -3710,282 +3847,357 @@ class IntegratedController:
         velocity_tolerance = self.config["trajectory"][
             "arrival_velocity_tolerance_rad_s"
         ]
+        stationary_rate = float(
+            self.config["trajectory"]["stationary_joint_velocity_limit_rad_s"]
+        )
+        next_tick = time.monotonic()
+        active_execution: AuthorizedTransitExecution | None = None
+        path: TimedJointPath | None = None
+        sample_index = 0
+        stable_samples = 0
+        last_arrival_observed_at_us: int | None = None
+        final_settle_timeout_s = 0.0
+        last_command_sent_monotonic = 0.0
+        next_hold_send_monotonic = 0.0
         try:
             while not self.stop_event.is_set():
                 now = time.monotonic()
                 if now < next_tick:
                     self.stop_event.wait(next_tick - now)
                     continue
-                next_tick = now + poll_period
-                state = self.basic.state()
+                tick_started = time.monotonic()
+                state = None
+                if (
+                    self.control_thread is None
+                    or not self.control_thread.is_alive()
+                ):
+                    # Unit-level and embedded callers may run the authorized
+                    # worker without starting Integrated's shared state poller.
+                    state = self.basic.state()
                 commands = None
                 auto_float_reason: str | None = None
                 execution: AuthorizedTransitExecution | None = None
+                advance_stream_sample = False
+                enforce_stream_gap = False
                 with self.lock:
                     execution = self.authorized_transit
                     if execution is None:
                         return
-                    self.basic_state = state
-                    self.last_state_success = now
-                    execution.last_feedback_monotonic = now
+                    now = time.monotonic()
+                    if state is not None:
+                        self.basic_state = state
+                        self.last_state_success = now
+                    execution.last_feedback_monotonic = (
+                        self.last_state_success
+                    )
                     self._assert_motion_prerequisites_locked(now)
+                    observed_at_value = self.basic_state.get(
+                        "observed_at_us"
+                    )
+                    try:
+                        feedback_observed_at_us = int(observed_at_value)
+                    except (TypeError, ValueError):
+                        feedback_observed_at_us = None
 
-                    stage_index = execution.current_stage_index
+                    if execution is not active_execution:
+                        path = TimedJointPath.create(
+                            execution.q_waypoints,
+                            execution.stage_durations_s,
+                        )
+                        total_ticks_float = path.duration_s * stream_rate_hz
+                        total_ticks = int(round(total_ticks_float))
+                        if not math.isclose(
+                            total_ticks_float,
+                            total_ticks,
+                            rel_tol=0.0,
+                            abs_tol=1e-8,
+                        ):
+                            raise RuntimeError(
+                                "authorized transit timing is not aligned to "
+                                "the configured command rate"
+                            )
+                        active_execution = execution
+                        sample_index = 0
+                        stable_samples = 0
+                        last_arrival_observed_at_us = None
+                        next_hold_send_monotonic = 0.0
+                        execution.stream_rate_hz = stream_rate_hz
+                        execution.stream_sample_index = 0
+                        execution.stream_sample_count = total_ticks + 1
+                        execution.stream_progress = 0.0
+                        execution.stream_started_monotonic = now
+                        execution.target_timeline_completed_monotonic = None
+                        execution.schedule_overrun_count = 0
+                        execution.maximum_tracking_error_rad = 0.0
+                        execution.current_stage_index = 1
+                        execution.completed_stage_count = 0
+                        execution.stage_started_monotonic = now
+                        final_duration = float(path.stage_durations_s[-1])
+                        settle_window_s = required_stable_samples / max(
+                            float(self.config["basic_state_rate_hz"]),
+                            1.0,
+                        )
+                        final_settle_timeout_s = min(
+                            stage_timeout_max_s,
+                            max(
+                                stage_timeout_min_s,
+                                final_duration * stage_timeout_multiplier
+                                + settle_window_s,
+                            ),
+                        )
+                        next_tick = tick_started
+
+                    if path is None:
+                        raise AssertionError(
+                            "authorized transit path was not initialized"
+                        )
                     measured_q = self._measured_positions_locked()[
                         :6
                     ].copy()
                     measured_qd = self._measured_velocities_locked()[
                         :6
                     ].copy()
-                    if (
-                        endpoint is None
-                        or execution is not endpoint_execution
-                        or stage_index != endpoint_stage_index
-                    ):
-                        q_start = measured_q.copy()
-                        q_goal = execution.q_waypoints[stage_index]
-                        duration = execution.stage_durations_s[
-                            stage_index - 1
-                        ]
-                        joint_caps = np.minimum(
-                            self._provider_pos_vel_caps_locked(),
-                            float(
-                                self.config["planning"][
-                                    "maximum_transit_joint_velocity_rad_s"
-                                ]
-                            ),
-                        )
-                        velocity_limits = synchronized_velocity_limits(
-                            q_start,
-                            q_goal,
-                            duration,
-                            joint_caps,
-                            stationary_joint_limit_rad_s=min(
-                                float(
-                                    self.config["trajectory"][
-                                        "stationary_joint_velocity_limit_rad_s"
-                                    ]
-                                ),
-                                float(np.min(joint_caps)),
-                            ),
-                        )
-                        endpoint = LatchedEndpointCommand.create(
-                            "POSITION_VELOCITY_LIMITED",
-                            q_start,
-                            q_goal,
-                            velocity_limits,
-                            keepalive_period_s=1.0
-                            / float(
-                                self.config["trajectory"][
-                                    "latched_keepalive_hz"
-                                ]
-                            ),
-                        )
-                        endpoint_execution = execution
-                        endpoint_stage_index = stage_index
-                        stable_samples = 0
-                        execution.stage_started_monotonic = now
-                        execution.stage_expected_duration_s = duration
-                        settle_window_s = (
-                            required_stable_samples / max(
-                                float(
-                                    self.config["basic_state_rate_hz"]
-                                ),
-                                1.0,
-                            )
-                        )
-                        execution.stage_timeout_s = min(
-                            stage_timeout_max_s,
-                            max(
-                                stage_timeout_min_s,
-                                duration * stage_timeout_multiplier
-                                + settle_window_s,
-                            ),
-                        )
-                        initial_error = float(
-                            np.max(np.abs(measured_q - q_goal))
-                        )
-                        execution.stage_position_error_rad = initial_error
-                        execution.stage_max_velocity_rad_s = float(
-                            np.max(np.abs(measured_qd))
-                        )
-                        execution.stage_best_position_error_rad = (
-                            initial_error
-                        )
-                        execution.stage_last_progress_monotonic = now
-                        execution.stage_completion_criterion = (
-                            "FINAL_POSITION_AND_SETTLED_VELOCITY"
-                            if stage_index
-                            == len(execution.q_waypoints) - 1
-                            else "INTERMEDIATE_POSITION_PASSAGE"
-                        )
-
-                    position_error = np.abs(
-                        measured_q - endpoint.q_goal
+                    joint_caps = np.minimum(
+                        self._transit_backend_caps_locked(
+                            execution.execution_backend
+                        ),
+                        float(
+                            self.config["planning"][
+                                "maximum_transit_joint_velocity_rad_s"
+                            ]
+                        ),
                     )
-                    max_position_error = float(
-                        np.max(position_error)
-                    )
-                    max_velocity = float(
-                        np.max(np.abs(measured_qd))
-                    )
-                    position_arrived = bool(
-                        np.all(
-                            position_error
-                            <= np.asarray(
-                                position_tolerance,
-                                dtype=float,
-                            )
-                        )
-                    )
-                    velocity_arrived = bool(
-                        np.all(
-                            np.abs(measured_qd)
-                            <= np.asarray(
-                                velocity_tolerance,
-                                dtype=float,
-                            )
-                        )
-                    )
-                    final_stage = (
-                        stage_index
-                        == len(execution.q_waypoints) - 1
-                    )
-                    arrived = (
-                        position_arrived
-                        and (velocity_arrived if final_stage else True)
-                    )
-                    execution.stage_position_error_rad = (
-                        max_position_error
-                    )
-                    execution.stage_max_velocity_rad_s = max_velocity
-                    best_error = (
-                        execution.stage_best_position_error_rad
-                    )
-                    if (
-                        best_error is None
-                        or max_position_error
-                        <= best_error - stage_progress_epsilon_rad
-                    ):
-                        execution.stage_best_position_error_rad = (
-                            max_position_error
-                        )
-                        execution.stage_last_progress_monotonic = now
-                    duration = execution.stage_durations_s[
-                        stage_index - 1
-                    ]
-                    duration_elapsed = (
-                        now - execution.stage_started_monotonic
-                        >= duration
-                    )
-                    stable_samples = (
-                        stable_samples + 1
-                        if arrived and duration_elapsed
-                        else 0
-                    )
-                    stable_sample_target = (
-                        required_stable_samples
-                        if final_stage
-                        else intermediate_stable_samples
-                    )
-                    if (
-                        execution.status == "EXECUTING"
-                        and stable_samples >= stable_sample_target
-                    ):
-                        execution.completed_stage_count += 1
-                        if stage_index < len(execution.q_waypoints) - 1:
-                            execution.current_stage_index += 1
-                            endpoint = None
-                            stable_samples = 0
-                            self.commanded_q = measured_q.copy()
-                            self.commanded_qd = np.zeros(6, dtype=float)
-                            self.control_state = (
-                                "EXECUTING_AUTHORIZED_TRANSIT"
-                            )
-                            continue
-                        execution.final_hold_started_monotonic = now
-                        self.commanded_q = endpoint.q_goal.copy()
-                        self.commanded_qd = np.zeros(6, dtype=float)
-                        if execution.final_state == FINAL_STATE_FLOAT:
-                            execution.status = "COMPLETING_FLOAT"
-                            self.control_state = (
-                                "COMPLETING_AUTHORIZED_TRANSIT_FLOAT"
-                            )
-                            auto_float_reason = (
-                                "authorized transit completed with FLOAT"
-                            )
-                        elif execution.final_state == FINAL_STATE_FIXED:
-                            execution.status = "HOLDING_FINAL"
-                            self.control_state = (
-                                "HOLDING_AUTHORIZED_TRANSIT_ENDPOINT"
-                            )
-                        else:
-                            execution.status = "WAITING_NEXT"
-                            self.control_state = (
-                                "WAITING_FOR_NEXT_AUTHORIZED_TRANSIT"
-                            )
-                        self.health = "HEALTHY"
-                        self.last_error = None
-
-                    if (
-                        execution.status == "WAITING_NEXT"
-                        and execution.final_hold_started_monotonic is not None
-                        and now - execution.final_hold_started_monotonic
-                        >= float(
-                            self.config["planning"].get(
-                                "wait_for_next_timeout_s",
-                                30.0,
-                            )
-                        )
-                    ):
-                        execution.status = "COMPLETING_FLOAT"
-                        self.control_state = (
-                            "COMPLETING_CHAIN_WAIT_TIMEOUT_FLOAT"
-                        )
-                        auto_float_reason = (
-                            "authorized transit WAIT_FOR_NEXT expired"
-                        )
 
                     if execution.status == "EXECUTING":
-                        timeout = execution.stage_timeout_s
-                        stalled_for_s = (
-                            now
-                            - execution.stage_last_progress_monotonic
-                        )
-                        if (
-                            not position_arrived
-                            and stalled_for_s > stage_stall_timeout_s
-                        ):
-                            raise RuntimeError(
-                                "authorized transit stage "
-                                f"{stage_index} made no joint progress for "
-                                f"{stalled_for_s:.2f} s "
-                                f"(position error "
-                                f"{max_position_error:.5f} rad)"
+                        if execution.target_timeline_completed_monotonic is None:
+                            elapsed = min(sample_index * period, path.duration_s)
+                            (
+                                q_target,
+                                qd_target,
+                                stage_index,
+                                progress,
+                            ) = path.sample(elapsed)
+                            stage_zero_index = stage_index - 1
+                            stage_duration = float(
+                                path.stage_durations_s[stage_zero_index]
                             )
-                        if (
-                            now - execution.stage_started_monotonic
-                            > timeout
-                        ):
-                            raise RuntimeError(
-                                "authorized transit stage "
-                                f"{stage_index} did not arrive within "
-                                f"{timeout:.2f} s "
-                                f"(position error "
-                                f"{max_position_error:.5f} rad, "
-                                f"maximum velocity "
-                                f"{max_velocity:.5f} rad/s)"
+                            planned_stage_rate = np.abs(
+                                path.q_waypoints[stage_index]
+                                - path.q_waypoints[stage_zero_index]
+                            ) / stage_duration
+                            target_rate_limits = np.minimum(
+                                np.maximum(
+                                    1.5 * planned_stage_rate,
+                                    min(stationary_rate, float(np.min(joint_caps))),
+                                ),
+                                joint_caps,
                             )
-                    if auto_float_reason is None and endpoint.should_send(now):
-                        commands = self._build_commands_locked(
-                            endpoint.q_goal,
-                            np.zeros(6, dtype=float),
-                            kp_multiplier=max(1.0, self.kp_multiplier),
-                            target_rate_limits_rad_s=(
-                                endpoint.velocity_limits_rad_s
-                            ),
+                            if stage_index != execution.current_stage_index:
+                                execution.current_stage_index = stage_index
+                                execution.stage_started_monotonic = now
+                                execution.stage_best_position_error_rad = None
+                                execution.stage_last_progress_monotonic = now
+                            execution.completed_stage_count = max(
+                                0,
+                                stage_index - 1,
+                            )
+                            execution.stage_expected_duration_s = stage_duration
+                            execution.stage_timeout_s = stage_duration
+                            execution.stage_completion_criterion = (
+                                "TIMED_50_HZ_INTERPOLATION"
+                            )
+                            execution.stream_sample_index = sample_index
+                            execution.stream_progress = progress
+                            advance_stream_sample = True
+                            enforce_stream_gap = True
+                        else:
+                            q_target = path.q_waypoints[-1].copy()
+                            qd_target = np.zeros(6, dtype=float)
+                            final_delta = np.abs(
+                                path.q_waypoints[-1]
+                                - path.q_waypoints[-2]
+                            )
+                            final_rate = final_delta / float(
+                                path.stage_durations_s[-1]
+                            )
+                            target_rate_limits = np.minimum(
+                                np.maximum(
+                                    1.5 * final_rate,
+                                    min(stationary_rate, float(np.min(joint_caps))),
+                                ),
+                                joint_caps,
+                            )
+                            execution.current_stage_index = len(
+                                execution.stage_durations_s
+                            )
+                            execution.stage_expected_duration_s = float(
+                                path.stage_durations_s[-1]
+                            )
+                            execution.stage_timeout_s = final_settle_timeout_s
+                            execution.stage_completion_criterion = (
+                                "FINAL_POSITION_AND_SETTLED_VELOCITY"
+                            )
+                            execution.stream_progress = 1.0
+                            enforce_stream_gap = True
+
+                        position_error = np.abs(measured_q - q_target)
+                        max_position_error = float(np.max(position_error))
+                        max_velocity = float(np.max(np.abs(measured_qd)))
+                        execution.stage_position_error_rad = max_position_error
+                        execution.stage_max_velocity_rad_s = max_velocity
+                        execution.maximum_tracking_error_rad = max(
+                            execution.maximum_tracking_error_rad,
+                            max_position_error,
                         )
-                        execution.frames_attempted += 1
+                        self.commanded_q = q_target.copy()
+                        self.commanded_qd = qd_target.copy()
+                        self.control_state = "EXECUTING_AUTHORIZED_TRANSIT"
+
+                        if execution.target_timeline_completed_monotonic is not None:
+                            position_arrived = bool(
+                                np.all(
+                                    position_error
+                                    <= np.asarray(position_tolerance, dtype=float)
+                                )
+                            )
+                            velocity_arrived = bool(
+                                np.all(
+                                    np.abs(measured_qd)
+                                    <= np.asarray(velocity_tolerance, dtype=float)
+                                )
+                            )
+                            arrived = position_arrived and velocity_arrived
+                            feedback_is_new = (
+                                feedback_observed_at_us is None
+                                or feedback_observed_at_us
+                                != last_arrival_observed_at_us
+                            )
+                            if feedback_is_new:
+                                stable_samples = (
+                                    stable_samples + 1 if arrived else 0
+                                )
+                                best_error = (
+                                    execution.stage_best_position_error_rad
+                                )
+                                if (
+                                    best_error is None
+                                    or max_position_error
+                                    <= best_error
+                                    - stage_progress_epsilon_rad
+                                ):
+                                    execution.stage_best_position_error_rad = (
+                                        max_position_error
+                                    )
+                                    execution.stage_last_progress_monotonic = now
+                                last_arrival_observed_at_us = (
+                                    feedback_observed_at_us
+                                )
+
+                            if stable_samples >= required_stable_samples:
+                                execution.completed_stage_count = len(
+                                    execution.stage_durations_s
+                                )
+                                execution.final_hold_started_monotonic = now
+                                self.commanded_q = path.q_waypoints[-1].copy()
+                                self.commanded_qd = np.zeros(6, dtype=float)
+                                if execution.final_state == FINAL_STATE_FLOAT:
+                                    execution.status = "COMPLETING_FLOAT"
+                                    self.control_state = (
+                                        "COMPLETING_AUTHORIZED_TRANSIT_FLOAT"
+                                    )
+                                    auto_float_reason = (
+                                        "authorized transit completed with FLOAT"
+                                    )
+                                elif execution.final_state == FINAL_STATE_FIXED:
+                                    execution.status = "HOLDING_FINAL"
+                                    self.control_state = (
+                                        "HOLDING_AUTHORIZED_TRANSIT_ENDPOINT"
+                                    )
+                                else:
+                                    execution.status = "WAITING_NEXT"
+                                    self.control_state = (
+                                        "WAITING_FOR_NEXT_AUTHORIZED_TRANSIT"
+                                    )
+                                self.health = "HEALTHY"
+                                self.last_error = None
+                            else:
+                                settle_elapsed = (
+                                    now
+                                    - execution.target_timeline_completed_monotonic
+                                )
+                                stalled_for_s = (
+                                    now - execution.stage_last_progress_monotonic
+                                )
+                                if (
+                                    not position_arrived
+                                    and stalled_for_s > stage_stall_timeout_s
+                                ):
+                                    raise RuntimeError(
+                                        "authorized transit final endpoint made no "
+                                        "joint progress for "
+                                        f"{stalled_for_s:.2f} s "
+                                        f"(position error {max_position_error:.5f} rad)"
+                                    )
+                                if settle_elapsed > final_settle_timeout_s:
+                                    raise RuntimeError(
+                                        "authorized transit final endpoint did not "
+                                        f"settle within {final_settle_timeout_s:.2f} s "
+                                        f"(position error {max_position_error:.5f} rad, "
+                                        f"maximum velocity {max_velocity:.5f} rad/s)"
+                                    )
+
+                        if auto_float_reason is None:
+                            commands = self._build_authorized_transit_commands_locked(
+                                q_target,
+                                qd_target,
+                                execution_backend=execution.execution_backend,
+                                kp_multiplier=max(1.0, self.kp_multiplier),
+                                target_rate_limits_rad_s=target_rate_limits,
+                            )
+                            execution.frames_attempted += 1
+
+                    elif execution.status in {"HOLDING_FINAL", "WAITING_NEXT"}:
+                        if (
+                            execution.status == "WAITING_NEXT"
+                            and execution.final_hold_started_monotonic is not None
+                            and now - execution.final_hold_started_monotonic
+                            >= float(
+                                self.config["planning"].get(
+                                    "wait_for_next_timeout_s",
+                                    30.0,
+                                )
+                            )
+                        ):
+                            execution.status = "COMPLETING_FLOAT"
+                            self.control_state = (
+                                "COMPLETING_CHAIN_WAIT_TIMEOUT_FLOAT"
+                            )
+                            auto_float_reason = (
+                                "authorized transit WAIT_FOR_NEXT expired"
+                            )
+                        elif now >= next_hold_send_monotonic:
+                            final_rate = np.abs(
+                                path.q_waypoints[-1]
+                                - path.q_waypoints[-2]
+                            ) / float(path.stage_durations_s[-1])
+                            commands = self._build_authorized_transit_commands_locked(
+                                path.q_waypoints[-1],
+                                np.zeros(6, dtype=float),
+                                execution_backend=execution.execution_backend,
+                                kp_multiplier=max(1.0, self.kp_multiplier),
+                                target_rate_limits_rad_s=np.minimum(
+                                    np.maximum(
+                                        1.5 * final_rate,
+                                        min(
+                                            stationary_rate,
+                                            float(np.min(joint_caps)),
+                                        ),
+                                    ),
+                                    joint_caps,
+                                ),
+                            )
+                            execution.frames_attempted += 1
+                            next_hold_send_monotonic = now + hold_period_s
 
                 if auto_float_reason is not None and execution is not None:
                     float_ok = self._request_float_once(auto_float_reason)
@@ -4018,7 +4230,24 @@ class IntegratedController:
                                 self.last_error = execution.error
                     return
                 if commands is None or execution is None:
+                    next_tick += period
+                    finished = time.monotonic()
+                    if finished > next_tick:
+                        next_tick = finished + period
                     continue
+                gap_check_monotonic = time.monotonic()
+                if (
+                    enforce_stream_gap
+                    and last_command_sent_monotonic > 0.0
+                    and gap_check_monotonic - last_command_sent_monotonic
+                    > maximum_command_gap_s
+                ):
+                    raise RuntimeError(
+                        "authorized transit command gap "
+                        f"{(gap_check_monotonic - last_command_sent_monotonic) * 1000.0:.1f} ms "
+                        "exceeds "
+                        f"{maximum_command_gap_s * 1000.0:.1f} ms"
+                    )
                 send_started = time.monotonic()
                 with self.command_gate_lock:
                     with self.lock:
@@ -4035,8 +4264,16 @@ class IntegratedController:
                 with self.lock:
                     if self.authorized_transit is not execution:
                         continue
-                    endpoint.mark_sent(sent_at)
                     execution.frames_sent += 1
+                    if advance_stream_sample:
+                        final_sample_index = execution.stream_sample_count - 1
+                        if sample_index >= final_sample_index:
+                            execution.target_timeline_completed_monotonic = sent_at
+                            execution.stream_progress = 1.0
+                            execution.stage_best_position_error_rad = None
+                            execution.stage_last_progress_monotonic = sent_at
+                        else:
+                            sample_index += 1
                     latency_ms = (sent_at - send_started) * 1000.0
                     execution.last_command_latency_ms = latency_ms
                     execution.maximum_command_latency_ms = max(
@@ -4050,6 +4287,14 @@ class IntegratedController:
                         self.max_command_latency_ms,
                         latency_ms,
                     )
+                last_command_sent_monotonic = sent_at
+                next_tick += period
+                finished = time.monotonic()
+                if finished > next_tick:
+                    with self.lock:
+                        if self.authorized_transit is execution:
+                            execution.schedule_overrun_count += 1
+                    next_tick = finished + period
         except LeaseLostError as exc:
             self._handle_lease_loss(
                 f"{exc.error_code}: {exc.reason}"
@@ -4891,44 +5136,93 @@ class IntegratedController:
             })
         return self._append_latched_gripper_locked(commands)
 
+    def _build_authorized_transit_commands_locked(
+        self,
+        q_target: np.ndarray,
+        qd_target: np.ndarray,
+        *,
+        execution_backend: str,
+        kp_multiplier: float | None = None,
+        target_rate_limits_rad_s: np.ndarray,
+    ) -> list[dict[str, Any]]:
+        backend = normalize_transit_backend(execution_backend)
+        if backend == TRANSIT_BACKEND_IMPEDANCE:
+            return self._build_commands_locked(
+                q_target,
+                qd_target,
+                kp_multiplier=kp_multiplier,
+                target_rate_limits_rad_s=target_rate_limits_rad_s,
+            )
+        target = np.asarray(q_target, dtype=float)
+        rates = np.asarray(target_rate_limits_rad_s, dtype=float)
+        if (
+            target.shape != (6,)
+            or rates.shape != (6,)
+            or not np.all(np.isfinite(target))
+            or not np.all(np.isfinite(rates))
+            or np.any(rates <= 0.0)
+        ):
+            raise ValueError(
+                "POS_SPEED transit targets and velocity limits must contain "
+                "six finite values with positive limits"
+            )
+        rates = np.minimum(rates, self._provider_pos_vel_caps_locked())
+        commands = [
+            {
+                "joint_index": index,
+                "mode": BASIC_POS_VEL,
+                "values": {
+                    "position_rad": float(target[index]),
+                    "velocity_limit_rad_s": float(rates[index]),
+                },
+            }
+            for index in range(6)
+        ]
+        return self._append_latched_gripper_locked(commands)
+
+    def _transit_backend_caps_locked(self, execution_backend: str) -> np.ndarray:
+        backend = normalize_transit_backend(execution_backend)
+        if backend == TRANSIT_BACKEND_POS_SPEED:
+            return self._provider_pos_vel_caps_locked()
+        return self._provider_rate_caps_locked()
+
     def _provider_rate_caps_locked(self) -> np.ndarray:
-        result = []
-        for index in range(6):
-            joint = self.basic_model["joints"][index]
-            calibrated = dict(joint.get("calibrated", {}))
-            caps = dict(joint.get("provider_test_caps", {}))
-            candidates = [
-                float(calibrated.get("provider_velocity_cap_rad_s", float("inf"))),
-                float(caps.get("max_velocity_rad_s", float("inf"))),
-            ]
-            value = min(candidates)
-            if not np.isfinite(value) or value <= 0.0:
-                raise RuntimeError(f"joint {index + 1} has no valid provider rate cap")
-            # Stay strictly below Basic's inclusive decimal cap so a JSON
-            # round-trip cannot turn an exact boundary into a rejection.
-            result.append(float(np.nextafter(value, 0.0)))
-        return np.asarray(result, dtype=float)
+        return self._basic_mode_velocity_caps_locked(
+            "IMPEDANCE",
+            "target_rate_limit_rad_s",
+        )
 
     def _provider_pos_vel_caps_locked(self) -> np.ndarray:
-        control = dict(self.basic_model.get("control", {}))
-        configured = np.asarray(
-            control.get("physical_test_pos_vel_cap_rad_s", []),
-            dtype=float,
+        return self._basic_mode_velocity_caps_locked(
+            "POSITION_VELOCITY_LIMITED",
+            "velocity_limit_rad_s",
         )
-        if configured.shape != (7,) or not np.all(np.isfinite(configured)):
-            raise RuntimeError("Basic model does not expose seven physical-test POS_VEL caps")
+
+    def _basic_mode_velocity_caps_locked(
+        self,
+        mode: str,
+        field: str,
+    ) -> np.ndarray:
+        command_limits = dict(self.basic_model.get("command_limits", {}))
+        entries = command_limits.get(mode)
+        if not isinstance(entries, list) or len(entries) < 6:
+            raise RuntimeError(
+                f"Basic model does not expose six {mode} command limits"
+            )
         result = []
         for index in range(6):
-            joint = self.basic_model["joints"][index]
-            motor_limits = dict(joint.get("motor_limits", {}))
-            motor_vmax = float(
-                motor_limits.get("configured_vmax_rad_s", float("inf"))
-            )
-            value = min(float(configured[index]), motor_vmax)
+            entry = entries[index]
+            if not isinstance(entry, dict) or int(entry.get("joint_index", -1)) != index:
+                raise RuntimeError(
+                    f"Basic {mode} command limits are not ordered by joint index"
+                )
+            value = float(entry.get(field, float("nan")))
             if not np.isfinite(value) or value <= 0.0:
                 raise RuntimeError(
-                    f"joint {index + 1} has no valid physical-test POS_VEL cap"
+                    f"joint {index + 1} has no valid Basic {mode} velocity cap"
                 )
+            # Stay strictly below Basic's inclusive decimal cap so a JSON
+            # round-trip cannot turn an exact boundary into a rejection.
             result.append(float(np.nextafter(value, 0.0)))
         return np.asarray(result, dtype=float)
 
@@ -5088,15 +5382,28 @@ class IntegratedController:
             if ratio_caps.shape != (6,) or not np.all(np.isfinite(ratio_caps)):
                 raise RuntimeError("Basic model does not expose six physical-test POS_TOR caps")
             endpoint = self.latched_endpoint
-            if endpoint is not None and endpoint.torque_limit_ratios is not None:
+            if endpoint is not None and endpoint.torque_limits_nm is not None:
                 newly_saturated = [
                     index
                     for index in violations
                     if index not in self.contact_saturated_joint_indices
                 ]
-                endpoint.torque_limit_ratios[violations] = ratio_caps[violations]
+                tmax = np.asarray(
+                    [
+                        float(
+                            self.basic_model["joints"][index]["motor_limits"][
+                                "configured_tmax_nm"
+                            ]
+                        )
+                        for index in range(6)
+                    ],
+                    dtype=float,
+                )
+                endpoint.torque_limits_nm[violations] = (
+                    ratio_caps[violations] * tmax[violations]
+                )
                 endpoint.last_sent_monotonic = 0.0
-                self.contact_torque_limit_ratios = endpoint.torque_limit_ratios.copy()
+                self.contact_torque_limit_ratios = endpoint.torque_limits_nm / tmax
                 self.contact_saturated_joint_indices = sorted(
                     set(self.contact_saturated_joint_indices) | set(violations)
                 )
@@ -5149,7 +5456,14 @@ class IntegratedController:
             values = {
                 "position_rad": target,
                 "velocity_limit_rad_s": self.gripper_velocity_limit_rad_s,
-                "torque_limit_ratio": self.gripper_torque_limit_ratio,
+                "torque_limit_nm": (
+                    self.gripper_torque_limit_ratio
+                    * float(
+                        self.basic_model["joints"][6]["motor_limits"][
+                            "configured_tmax_nm"
+                        ]
+                    )
+                ),
             }
             mode = "POSITION_EFFORT_LIMITED"
         self.gripper_target_rad = target

@@ -99,6 +99,8 @@ is folded into the owning contract and component documentation, then retired.
 - [Arm Scene Compiler](../providers/arm_scene_compiler/README.md)
 - [reBot Arm Basic Provider](../providers/rebot_arm_dm/README.md)
 - [reBot Arm Integrated Provider](../providers/rebot_arm_integrated/README.md)
+- [reBot Arm Contact Work Provider](../providers/rebot_arm_contact/README.md)
+- [Contact Work Skill Authoring](../providers/rebot_arm_contact/docs/CONTACT_SKILL_AUTHORING.md)
 - [FoundationPose Compatibility Provider](../providers/foundation_pose/README.md)
 - [Stationary World-Space Arm Alignment Skill](../skills/stationary_world_arm_alignment/README.md)
 - [Refine Arm-Root Translation Skill](../skills/refine-arm-root-translation/SKILL.md)

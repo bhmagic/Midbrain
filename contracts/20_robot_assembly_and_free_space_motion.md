@@ -114,6 +114,16 @@ Supported goal classes may include:
 - Controlled-axis alignment with a declared remaining-twist policy
 - Combined translation and orientation
 
+The reference `move_effector_to_world_point` finite Skill accepts one absolute
+controlled-effector-origin point in the active V2 world convention. It may
+bind the exact source world-frame ID and VIO session epoch; either mismatch
+invalidates the request before preview. Resolution requires the current
+reviewed rigid world-from-arm-base transform because an upright-mount rotation
+attestation cannot resolve an absolute translation. The host converts the
+point once, preserves the measured controlled-effector orientation with
+`POSE_6DOF`, and submits one complete Integrated goal. The Agent must not read
+the current pose or synthesize a relative displacement for this operation.
+
 Every Agent-initiated physical move requires an immutable preview followed by
 a signed, short-lived, policy-specific, one-time commit. Autonomous free-space
 policy may issue that assertion without a human dialog. A preview binds the

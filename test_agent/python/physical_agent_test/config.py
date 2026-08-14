@@ -51,6 +51,10 @@ class Settings:
         "INTEGRATED_CONTROLLER_URL",
         "http://127.0.0.1:8793",
     )
+    contact_controller_url: str = os.getenv(
+        "CONTACT_CONTROLLER_URL",
+        "http://127.0.0.1:8794",
+    )
     sam2_scene_tracker_url: str = os.getenv(
         "SAM2_SCENE_TRACKER_URL",
         "http://127.0.0.1:7105",
@@ -161,7 +165,8 @@ class Settings:
                 "plan_no_contact_item_approach,"
                 "verify_rgbd_image_alignment,"
                 "reinitialize_space_cognition,"
-                "refine_arm_root_translation"
+                "refine_arm_root_translation,"
+                "slice_with_blade"
             ),
         ).split(",")
         if item.strip()

@@ -12,6 +12,13 @@ BASIC_POS_VEL = "POSITION_VELOCITY_LIMITED"
 BASIC_POS_TOR = "POSITION_EFFORT_LIMITED"
 BASIC_MIT = "IMPEDANCE"
 
+TRANSIT_BACKEND_IMPEDANCE = "IMPEDANCE"
+TRANSIT_BACKEND_POS_SPEED = "POS_SPEED"
+SUPPORTED_TRANSIT_BACKENDS = {
+    TRANSIT_BACKEND_IMPEDANCE,
+    TRANSIT_BACKEND_POS_SPEED,
+}
+
 
 @dataclass(frozen=True)
 class ExecutionModeSpec:
@@ -56,3 +63,12 @@ def normalize_execution_mode(value: str) -> str:
     if mode not in SUPPORTED_EXECUTION_MODES:
         raise ValueError(f"unsupported execution mode {mode}")
     return mode
+
+
+def normalize_transit_backend(value: str | None) -> str:
+    backend = str(value or TRANSIT_BACKEND_IMPEDANCE).strip().upper()
+    if backend not in SUPPORTED_TRANSIT_BACKENDS:
+        raise ValueError(
+            "execution_backend must be IMPEDANCE or POS_SPEED"
+        )
+    return backend

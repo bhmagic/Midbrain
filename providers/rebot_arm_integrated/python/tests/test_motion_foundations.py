@@ -28,7 +28,7 @@ from rebot_arm_integrated.planning import (
     solve_cartesian_continuity_adaptive,
 )
 from rebot_arm_integrated.scene import SceneSnapshot, configuration_clearance
-from rebot_arm_integrated.trajectory import QuinticJointSegment
+from rebot_arm_integrated.trajectory import QuinticJointSegment, TimedJointPath
 
 
 INTEGRATED_ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +39,7 @@ class TrajectoryTests(unittest.TestCase):
     def test_joint_speed_policy_authenticates_above_ten_and_rejects_twenty(self):
         positions = [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]]
         schedule = joint_speed_policy_schedule(
-            [[0.0] * 6, [0.5, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            [[0.0] * 6, [0.75, 0.0, 0.0, 0.0, 0.0, 0.0]],
             positions,
             5.0,
             [5.0, 5.0, 5.0, 10.0, 10.0, 10.0],
@@ -52,6 +52,69 @@ class TrajectoryTests(unittest.TestCase):
         self.assertTrue(schedule["authentication_required"])
         self.assertFalse(schedule["hard_limit_exceeded"])
         self.assertLessEqual(schedule["effective_peak_joint_speed_rad_s"], 5.0)
+
+    def test_linear_path_stretches_too_fast_request_to_provider_cap(self):
+        schedule = joint_speed_policy_schedule(
+            [[0.0] * 6, [0.35, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]],
+            10.0,
+            [0.35, 0.35, 0.35, 0.5, 0.5, 0.5],
+            minimum_stage_duration_s=0.01,
+            authentication_threshold_rad_s=10.0,
+            hard_limit_rad_s=20.0,
+            command_rate_hz=50.0,
+        )
+
+        self.assertAlmostEqual(
+            schedule["hardware_bounded_stage_durations_s"][0],
+            1.0,
+        )
+        self.assertAlmostEqual(schedule["effective_stage_durations_s"][0], 1.0)
+        self.assertAlmostEqual(
+            schedule["effective_peak_joint_speed_rad_s"],
+            0.35,
+        )
+        self.assertTrue(schedule["provider_or_motor_limited"])
+
+    def test_joint_speed_policy_quantizes_each_stage_to_command_ticks(self):
+        schedule = joint_speed_policy_schedule(
+            [[0.0] * 6, [0.01, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]],
+            0.05,
+            [0.35, 0.35, 0.35, 0.5, 0.5, 0.5],
+            minimum_stage_duration_s=0.05,
+            authentication_threshold_rad_s=10.0,
+            hard_limit_rad_s=20.0,
+            command_rate_hz=50.0,
+        )
+
+        self.assertEqual(schedule["effective_stage_command_ticks"], [3])
+        self.assertEqual(schedule["effective_stage_durations_s"], [0.06])
+        self.assertEqual(schedule["command_rate_hz"], 50.0)
+        self.assertTrue(schedule["command_rate_quantized"])
+
+    def test_timed_joint_path_interpolates_by_stage_duration(self):
+        path = TimedJointPath.create(
+            [[0.0, 0.0], [0.2, 0.1], [0.3, -0.1]],
+            [0.4, 0.2],
+        )
+
+        first_q, first_qd, first_stage, first_progress = path.sample(0.2)
+        self.assertTrue(np.allclose(first_q, [0.1, 0.05]))
+        self.assertTrue(np.allclose(first_qd, [0.5, 0.25]))
+        self.assertEqual(first_stage, 1)
+        self.assertAlmostEqual(first_progress, 1.0 / 3.0)
+
+        boundary_q, boundary_qd, boundary_stage, _ = path.sample(0.4)
+        self.assertTrue(np.allclose(boundary_q, [0.2, 0.1]))
+        self.assertTrue(np.allclose(boundary_qd, [0.5, -1.0]))
+        self.assertEqual(boundary_stage, 2)
+
+        final_q, final_qd, final_stage, final_progress = path.sample(1.0)
+        self.assertTrue(np.allclose(final_q, [0.3, -0.1]))
+        self.assertTrue(np.allclose(final_qd, [0.0, 0.0]))
+        self.assertEqual(final_stage, 2)
+        self.assertEqual(final_progress, 1.0)
 
     def test_quintic_segment_preserves_position_velocity_and_acceleration_boundaries(self):
         segment = QuinticJointSegment.create(

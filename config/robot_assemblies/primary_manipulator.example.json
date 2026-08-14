@@ -43,7 +43,10 @@
       "required_capability": "robot_arm.motion.free_space.preview_commit.v1",
       "qualification": "SOFTWARE_TESTED"
     },
-    "contact": null,
+    "contact": {
+      "required_capability": "robot_arm.motion.contact.position_effort_limited.v1",
+      "qualification": "DEVELOPMENT"
+    },
     "grip": null
   }
 }

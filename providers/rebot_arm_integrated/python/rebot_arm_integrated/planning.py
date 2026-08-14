@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
+import math
 import uuid
 
 import numpy as np
@@ -149,8 +150,9 @@ def joint_speed_policy_schedule(
     minimum_stage_duration_s: float,
     authentication_threshold_rad_s: float,
     hard_limit_rad_s: float,
+    command_rate_hz: float | None = None,
 ) -> dict[str, Any]:
-    """Build requested and hardware-bounded per-joint stage speeds."""
+    """Build requested, hardware-bounded, command-paced stage timing."""
 
     waypoints = tuple(np.asarray(list(item), dtype=float) for item in q_waypoints)
     positions = tuple(
@@ -161,6 +163,9 @@ def joint_speed_policy_schedule(
     minimum_duration = float(minimum_stage_duration_s)
     authentication_threshold = float(authentication_threshold_rad_s)
     hard_limit = float(hard_limit_rad_s)
+    command_rate = (
+        None if command_rate_hz is None else float(command_rate_hz)
+    )
     if len(waypoints) < 2 or len(positions) != len(waypoints):
         raise ValueError("joint-speed scheduling requires matching waypoints and positions")
     if any(item.shape != caps.shape for item in waypoints):
@@ -175,11 +180,17 @@ def joint_speed_policy_schedule(
         or not np.isfinite(minimum_duration)
         or minimum_duration <= 0.0
         or not 0.0 < authentication_threshold < hard_limit
+        or (
+            command_rate is not None
+            and (not np.isfinite(command_rate) or command_rate <= 0.0)
+        )
     ):
         raise ValueError("joint-speed scheduling inputs are invalid")
 
     requested_durations: list[float] = []
+    bounded_durations: list[float] = []
     effective_durations: list[float] = []
+    effective_stage_command_ticks: list[int] = []
     requested_stage_speeds: list[np.ndarray] = []
     effective_stage_speeds: list[np.ndarray] = []
     for q_start, q_goal, p_start, p_goal in zip(
@@ -193,15 +204,29 @@ def joint_speed_policy_schedule(
             minimum_duration,
             float(np.linalg.norm(p_goal - p_start)) / speed,
         )
-        requested_joint_speeds = 1.5 * delta / requested_duration
-        effective_duration = max(
+        # TimedJointPath executes each stage linearly, so its joint velocity is
+        # exactly delta / duration. Do not apply the 1.5 smoothstep peak factor
+        # used by the separate quintic endpoint trajectory.
+        requested_joint_speeds = delta / requested_duration
+        bounded_duration = max(
             requested_duration,
-            float(np.max(1.5 * delta / np.maximum(caps, 1e-9))),
+            float(np.max(delta / np.maximum(caps, 1e-9))),
         )
+        if command_rate is None:
+            effective_duration = bounded_duration
+            command_ticks = 0
+        else:
+            command_ticks = max(
+                1,
+                int(math.ceil(bounded_duration * command_rate - 1e-12)),
+            )
+            effective_duration = command_ticks / command_rate
         requested_durations.append(requested_duration)
+        bounded_durations.append(bounded_duration)
         effective_durations.append(effective_duration)
+        effective_stage_command_ticks.append(command_ticks)
         requested_stage_speeds.append(requested_joint_speeds)
-        effective_stage_speeds.append(1.5 * delta / effective_duration)
+        effective_stage_speeds.append(delta / effective_duration)
 
     requested_by_joint = np.max(np.vstack(requested_stage_speeds), axis=0)
     effective_by_joint = np.max(np.vstack(effective_stage_speeds), axis=0)
@@ -209,7 +234,22 @@ def joint_speed_policy_schedule(
     effective_peak = float(np.max(effective_by_joint))
     return {
         "requested_stage_durations_s": requested_durations,
+        "hardware_bounded_stage_durations_s": bounded_durations,
         "effective_stage_durations_s": effective_durations,
+        "command_rate_hz": command_rate,
+        "effective_stage_command_ticks": (
+            effective_stage_command_ticks if command_rate is not None else None
+        ),
+        "command_rate_quantized": bool(
+            command_rate is not None
+            and any(
+                effective > bounded + 1e-12
+                for effective, bounded in zip(
+                    effective_durations,
+                    bounded_durations,
+                )
+            )
+        ),
         "requested_peak_by_joint_rad_s": requested_by_joint.tolist(),
         "effective_peak_by_joint_rad_s": effective_by_joint.tolist(),
         "requested_peak_joint_speed_rad_s": requested_peak,
@@ -220,9 +260,10 @@ def joint_speed_policy_schedule(
         "authentication_required": requested_peak > authentication_threshold,
         "hard_limit_exceeded": requested_peak >= hard_limit,
         "provider_or_motor_limited": any(
-            effective + 1e-9 < requested
-            for effective, requested in zip(
-                effective_by_joint.tolist(), requested_by_joint.tolist()
+            bounded > requested + 1e-12
+            for bounded, requested in zip(
+                bounded_durations,
+                requested_durations,
             )
         ),
     }

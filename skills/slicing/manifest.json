@@ -1,0 +1,168 @@
+{
+  "skill_type": "slicing",
+  "version": "0.2.0",
+  "display_name": "Slicing",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Slicing Two-Stage Test",
+      "url": "http://127.0.0.1:8000/dev/skills/slicing",
+      "availability": "AGENT_RUNTIME"
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "slice_with_blade",
+    "description": "Perform one non-clamping blade slice from a begin point, world inward blade direction, projected world slicing direction, and slice length. Send null for both profile selectors unless the user explicitly requests profile numbers; never infer or reuse a number from conversation because null resolves the live defaults. The mounted-effector blade-use profile owns optional hard joint locks. The Skill derives the inspection endpoints and measured-start slice and outward-retract displacements, aligns through Integrated, submits exactly three Contact-owned Cartesian segments, and requests relax.",
+    "when_to_use": [
+      "A non-clamping blade cut has a known begin point, inward blade direction, slicing direction, and finite slice length.",
+      "The active mounted effector exposes a qualified numbered Slicing blade-use profile.",
+      "The selected numbered Slicing motion profile supplies load, retract distance, and timing."
+    ],
+    "when_not_to_use": [
+      "Clamping, gripping, sawing with an unbounded repeated cycle, or a generic contact path is required.",
+      "The begin point or either world direction is uncertain.",
+      "A motion-usable reviewed world-to-arm calibration is unavailable.",
+      "The task requires collision planning during engage, slicing, or extraction."
+    ],
+    "side_effects": [
+      "Performs one collision-checked Integrated rotation-only physical alignment and returns Integrated to gravity float.",
+      "Performs exactly three deliberate Contact Work Cartesian segments at Basic's advertised control rate without arrival gating.",
+      "Requests Contact relaxation after the outward-retract delay or after a Contact-phase failure."
+    ],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "world.transforms.read",
+      "robot.motion.preview",
+      "robot.motion.contact.plan",
+      "robot.motion.contact.execute",
+      "robot.motion.relax"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "point_mode": {
+          "type": "string",
+          "enum": [
+            "ABSOLUTE_WORLD",
+            "RELATIVE_TO_CURRENT_EFFECTOR_WORLD"
+          ],
+          "default": "ABSOLUTE_WORLD",
+          "description": "Interpret slice_begin_point_m as an absolute active-world point or a world-axis offset from the current controlled effector."
+        },
+        "slice_begin_point_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "First cutting point, interpreted according to point_mode."
+        },
+        "blade_direction_world": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "Inward blade direction in active-world axes, such as into a tabletop."
+        },
+        "slicing_direction_world": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "Preferred slicing direction in active-world axes; the Skill projects it into the plane perpendicular to blade_direction_world."
+        },
+        "slice_length_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Distance from the begin point along the projected slicing direction."
+        },
+        "blade_profile_number": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "default": null,
+          "description": "Use null unless the user explicitly requested a numbered blade-use profile. Null resolves the live mounted-effector Slicing default when execution begins."
+        },
+        "motion_profile_number": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "default": null,
+          "description": "Use null unless the user explicitly requested a numbered motion profile. Null resolves the live Slicing motion-profile default when execution begins."
+        },
+        "integrated_execution_backend": {
+          "type": "string",
+          "enum": [
+            "IMPEDANCE",
+            "POS_SPEED"
+          ],
+          "default": "IMPEDANCE",
+          "description": "Backend for the signed Integrated Stage 1 alignment only. IMPEDANCE is the default; POS_SPEED maps to Basic POSITION_VELOCITY_LIMITED. Contact Stage 2 remains POS_TOR."
+        }
+      },
+      "required": [
+        "slice_begin_point_m",
+        "blade_direction_world",
+        "slicing_direction_world",
+        "slice_length_m"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.slicing.host.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/slicing_skill/skill.py",
+      "host_adapter": {
+        "entrypoint": "python/slicing_skill/host_adapter.py",
+        "factory": "build_host_adapter"
+      },
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "robot_arm.motion.free_space.preview_commit.v1",
+    "robot_arm.motion.contact.position_effort_limited.v1",
+    "robot_arm.assembly_state",
+    "world.transforms.timestamped"
+  ],
+  "route_policy": {
+    "provider_activation_sequence": [
+      {
+        "provider_id": "robot_arm.primary.integrated",
+        "required_residency": "HOT",
+        "phase": "ALIGNMENT_ONLY"
+      },
+      {
+        "provider_id": "robot_arm.primary.contact",
+        "required_residency": "HOT",
+        "phase": "ENGAGE_SLICE_OUTWARD_RETRACT"
+      }
+    ],
+    "integrated_final_state": "FLOAT",
+    "integrated_default_execution_backend": "IMPEDANCE",
+    "integrated_supported_execution_backends": ["IMPEDANCE", "POS_SPEED"],
+    "integrated_contact_handoff_maximum_orientation_drift_rad": 0.35,
+    "integrated_contact_residency_transition": "INTEGRATED_WARM_THEN_VERIFY_FLOAT_IDLE_AND_BASIC_LEASE_RELEASED_THEN_CONTACT_HOT",
+    "contact_collision_planning": false,
+    "contact_step_count": 3,
+    "contact_motion_type": "CARTESIAN_SEGMENT",
+    "contact_engage_position_mode": "ABSOLUTE_ROOT",
+    "contact_slice_position_mode": "RELATIVE_TO_MEASURED_EFFECTOR_ROOT_AXES",
+    "contact_retract_position_mode": "RELATIVE_TO_MEASURED_EFFECTOR_ROOT_AXES",
+    "contact_terminal_action": "RELAX",
+    "authorization": "INTEGRATED_HOST_SIGNED_PREVIEW_COMMIT_THEN_SLICING_SKILL_SIGNED_CONTACT_PLAN"
+  },
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_NON_CLAMPING",
+  "installation": {
+    "setup_entrypoint": "scripts/setup.ps1",
+    "motion_profile_template": "config_templates/motion_profiles.default.json",
+    "motion_profile_config": "config/motion_profiles.json",
+    "assembly_selection": "../../config/robot_assemblies/primary_manipulator.json"
+  },
+  "published_streams": []
+}

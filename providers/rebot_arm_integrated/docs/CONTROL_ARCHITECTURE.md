@@ -68,16 +68,25 @@ multi-axis translation is one vector goal; it is not decomposed into
 single-axis moves. Controlled-frame RPY deltas compose onto the measured
 controlled orientation; absolute RPY goals are expressed in `rebot_arm_base`.
 
-Signed paths may execute through Basic `IMPEDANCE` or
-`POSITION_VELOCITY_LIMITED`, selected by controller policy. Basic motor limits,
-configured POS_SPEED ceilings, and the requested path duration jointly bound
-effective joint rates. Requested Cartesian speed is a nominal average endpoint
-speed, not constant instantaneous Cartesian velocity.
+Signed free-space paths default to Basic `IMPEDANCE`. A caller may instead
+select `execution_backend: POS_SPEED`, which maps to Basic
+`POSITION_VELOCITY_LIMITED`. The normalized backend is part of the immutable
+request digest and cannot change between preview and commit. Integrated
+converts requested Cartesian speed and planned Cartesian waypoint distances
+into a duration for every joint-space leg, lengthens any leg that would exceed
+the selected Basic mode's advertised joint limits, and quantizes those
+durations to its configured 50 Hz command cadence. `IMPEDANCE` streams
+interpolated position and velocity targets plus bounded target rates;
+`POS_SPEED` streams interpolated position targets plus bounded velocity limits.
+Requested Cartesian speed is a nominal average path speed, not a guarantee of
+constant instantaneous Cartesian velocity.
 
-Endpoint modes receive one synchronized goal rather than a high-rate series of
-moving endpoints. Impedance mode receives the sampled trajectory stream. Basic
-stages motor-mode changes and preserves gravity-supported control for other
-joints during transition.
+Every planned IK waypoint remains on the streamed path. Integrated does not
+wait for measured arrival at intermediate waypoints; it confirms stable
+measured position and velocity only at the final endpoint. A late command
+cycle slows the timeline rather than bursting commands to catch up. Basic
+stages motor-mode changes, enforces its final rate ceilings, and preserves
+gravity-supported control for other joints during transition.
 
 ## Semantic collision policy
 

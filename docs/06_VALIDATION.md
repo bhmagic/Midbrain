@@ -31,6 +31,8 @@ retain their own entry points, including:
 .\providers\foundation_pose\scripts\validate_publication.ps1
 .\providers\rebot_arm_dm\scripts\verify.ps1
 .\providers\rebot_arm_integrated\scripts\verify.ps1
+.\providers\rebot_arm_contact\scripts\verify.ps1
+.\skills\contact_work_runtime\scripts\verify.ps1
 .\skills\refine-arm-root-translation\scripts\check.ps1
 ```
 
@@ -114,6 +116,29 @@ limitations.
   boundary.
 - Integrated previews without moving and commits only an exact authorized
   preview.
+- Contact Work remains a separate Provider: it accepts only an exact
+  Skill-signed plan, commands Basic directly in `POSITION_EFFORT_LIMITED`,
+  streams Contact-owned Cartesian segments at Basic's advertised 50 Hz control
+  cadence, immediately replaces endpoints or segments, and relaxes on explicit
+  cleanup or timeout.
+- Sequential segment IK knots stay within the configured 2 mm translation
+  spacing, retain requested orientation and hard locks, and produce changing
+  joint targets rather than repeated submission of one final endpoint.
+- Null Agent profile selectors resolve the live persisted defaults, while an
+  explicitly requested profile number remains exact. Slicing retract resolves
+  its signed negative-blade displacement from measured effector position at
+  move acceptance rather than correcting toward a stale planned endpoint.
+- Contact tests do not use low-torque or low-stiffness load-bearing states.
+- Contact Provider disposition and joint telemetry do not claim that an
+  intentionally unreachable Cartesian endpoint succeeded.
+- The Slicing numeric developer surface freezes a resolved plan before motion,
+  resolves one relative begin point from a captured effector origin, derives
+  the slice endpoint and measured-start-relative outward displacement, and
+  rejects Contact until Integrated
+  completes in verified `FLOAT` with the same workcell calibration binding and
+  no more than the documented actual-pose handoff drift. It then requires an
+  observed Integrated `WARM` state with no active trajectory or Basic lease
+  before Contact activation.
 - Scene, authority, lease, transform, and controller identities remain valid
   through execution.
 - Arrival is measured rather than inferred from command submission.

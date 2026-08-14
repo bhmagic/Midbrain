@@ -88,7 +88,8 @@
     "terminal_release": "GRAVITY_FLOAT_OR_EXPLICIT_LEASED_IDLE_PROFILE",
     "trajectory": "INTEGRATED_OWNED_ARM_GROUP_STREAM_WITH_BASIC_SAFETY_CEILINGS",
     "maximum_translation_per_commit_m": 1.2,
-    "default_execution_mode": "POSITION_VELOCITY_LIMITED"
+    "default_execution_backend": "IMPEDANCE",
+    "supported_execution_backends": ["IMPEDANCE", "POS_SPEED"]
   },
   "ik": {
     "position": "SELECTABLE_3DOF_POSITION_IK",
@@ -101,7 +102,7 @@
     "Controller-owned path-plan remains nonphysical; physical path-commit requires an exact unexpired preview, a signed short-lived one-time authorization assertion, its declared observation or autonomous kinematic context, and a fresh fenced Basic lease",
     "Generic relative-motion Agent execution uses only the signed autonomous path-plan/path-commit boundary; retired engage, teleop, runtime-settings, gripper, contact-baseline, and Fabric target-staging routes are not exposed",
     "General obstacle rerouting is not implemented; free-space planning evaluates the direct Cartesian path and may stop at its closest collision-free prefix",
-    "Free-space TRANSIT_SPEED uses the lower of controller policy, Basic POS_SPEED caps, and each motor's configured VMAX",
+    "Each signed free-space plan binds either the default IMPEDANCE backend or the selectable POS_SPEED backend; timing uses the selected Basic mode's advertised limits",
     "Contact work and gripper control are intentionally excluded; they belong to separately qualified controllers",
     "Runtime held-object geometry ingestion is not implemented; free-space motion while holding an object is prohibited until an attachment revision, payload, and collision geometry are bound into the preview",
     "Additional collision frame primitives are schema-supported but rejected fail-closed by this release; the current consumer evaluates only the ordered capsule polyline",
@@ -120,14 +121,18 @@
   "execution_backends": {
     "IMPEDANCE": {
       "required_capability": "robot_arm.control.impedance",
-      "default": false,
-      "signed_path_commit_maturity": "USABLE",
-      "discoverable": true
-    },
-    "POSITION_VELOCITY_LIMITED": {
-      "required_capability": "robot_arm.control.position_velocity_limited",
+      "basic_command_mode": "IMPEDANCE",
       "default": true,
       "signed_path_commit_maturity": "USABLE",
+      "command_rate_hz": 50.0,
+      "discoverable": true
+    },
+    "POS_SPEED": {
+      "required_capability": "robot_arm.control.position_velocity_limited",
+      "basic_command_mode": "POSITION_VELOCITY_LIMITED",
+      "default": false,
+      "signed_path_commit_maturity": "USABLE",
+      "command_rate_hz": 50.0,
       "signed_path_commit_constraints": {
         "maximum_path_length_m": 1.2,
         "load": "NO_PAYLOAD_OR_HIGH_EXTERNAL_LOAD"

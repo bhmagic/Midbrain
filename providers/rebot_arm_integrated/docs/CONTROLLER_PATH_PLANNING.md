@@ -15,7 +15,16 @@ individual Skills and into the Integrated controller. It evaluates:
 
 The requested Skill speed is an input, not an authority. The controller clamps
 it to its configured range and lengthens the duration when Basic provider rate
-caps require a slower path.
+caps require a slower path. Authorized path legs use piecewise-linear joint
+interpolation, so the lower-bound calculation uses `abs(delta_q) / rate_cap`;
+after 50 Hz tick quantization, an infeasibly short request therefore runs as
+close to the applicable Basic limit as the complete-tick duration permits.
+
+`execution_backend` is optional and defaults to `IMPEDANCE`. The only other
+accepted value is `POS_SPEED`, which maps to Basic
+`POSITION_VELOCITY_LIMITED`. The normalized value is included in the immutable
+request and its digest. Preview, authorization, and commit therefore describe
+one backend; commit cannot substitute the other backend.
 
 The target may contain either an absolute arm-base `position_m` or a bounded
 `position_delta_m`, never both. Relative deltas are resolved from Integrated's
@@ -135,15 +144,33 @@ Immediately before physical execution, Integrated:
   accepted exact scene. A safe revision advance is recorded, while a newly
   colliding path is rejected before the first endpoint;
 - derives requested per-joint speed, requires explicit authentication above
-  10 rad/s on any joint, rejects at or above 20 rad/s, and executes at the
-  smaller of controller, Basic, and motor POS_SPEED caps; and
-- advances only after stable measured arrival at the prior exact waypoint.
+  10 rad/s on any joint, rejects at or above 20 rad/s, and lengthens the
+  timeline to remain within Basic's advertised limits for the signed backend;
+  and
+- quantizes every leg to complete 50 Hz command ticks before physical
+  execution.
 
-The controller sends one latched POS_VEL endpoint per stage. A healthy
-completion follows the preview-bound `final_state`: `FLOAT` returns directly
+The controller streams a time-paced piecewise interpolation of the exact
+authorized joint waypoints at 50 Hz. Intermediate waypoints are timing knots,
+not measured-arrival gates, so the controller does not introduce a stop and a
+10 Hz endpoint handoff at every knot. With the default `IMPEDANCE` backend,
+each command includes the interpolated joint velocity target and a
+Basic-bounded target-rate ceiling with tracking headroom. With `POS_SPEED`,
+each command uses Basic `POSITION_VELOCITY_LIMITED` and includes the
+interpolated position plus a Basic-bounded velocity limit; it does not carry an
+impedance velocity target or gains. The command worker consumes the shared
+50 Hz Basic feedback cache populated by Integrated's independent state poller;
+it does not serialize another state HTTP request ahead of every command. If a
+command cycle itself is late, the controller lengthens the physical timeline
+instead of sending a burst or skipping a planned waypoint. Final-arrival
+stability counts only distinct Basic observation timestamps.
+
+A healthy completion still requires stable measured final position and
+velocity and follows the preview-bound `final_state`: `FLOAT` returns directly
 to verified gravity float, `FIXED` holds until explicit release, and
-`WAIT_FOR_NEXT` maintains the endpoint for a bounded chaining interval. A
-compatible next signed commit reuses the fenced lease and impedance/gravity
+`WAIT_FOR_NEXT` maintains the endpoint for a bounded chaining interval. Final
+holds use the configured 10 Hz keepalive because their target is stationary. A
+compatible next signed commit reuses the fenced lease and Basic gravity
 support, but still begins from fresh measured joints and revalidates the whole
 new path against the newest scene. Chain-wait expiry requests verified float.
 Lease loss,

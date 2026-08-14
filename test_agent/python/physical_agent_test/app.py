@@ -197,17 +197,6 @@ agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
     include_disabled=True,
 )
-external_skill_adapters = load_external_skill_host_adapters(
-    agent_skill_catalog,
-    eligible_tool_names=set(settings.phase4_eligible_tools),
-    services=ExternalSkillHostServices(
-        manager=manager,
-        fabric=fabric,
-        spatial=spatial_registration_skill,
-        vlm_router=agent_vlm_router,
-        visual_evidence_store=visual_evidence_store,
-    ),
-)
 semantic_assertion_publisher = SemanticAssertionPublisher(fabric)
 scene_segmentation_policy_publisher = SceneSegmentationPolicyPublisher(
     fabric,
@@ -345,6 +334,20 @@ integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
         stationary_calibration_agent_adapter.latest_activation_continuation
     ),
     authorization_store=authorization_store,
+)
+
+external_skill_adapters = load_external_skill_host_adapters(
+    agent_skill_catalog,
+    eligible_tool_names=set(settings.phase4_eligible_tools),
+    services=ExternalSkillHostServices(
+        manager=manager,
+        fabric=fabric,
+        spatial=spatial_registration_skill,
+        vlm_router=agent_vlm_router,
+        visual_evidence_store=visual_evidence_store,
+        integrated_motion=integrated_motion_agent_adapter,
+        contact_provider_url=settings.contact_controller_url,
+    ),
 )
 
 
@@ -641,6 +644,59 @@ class RgbdAlignmentRequest(BaseModel):
         min_length=1,
         max_length=2000,
     )
+
+
+class SlicingDevelopmentPrepareRequest(BaseModel):
+    point_mode: str = Field(
+        default="ABSOLUTE_WORLD",
+        pattern=(
+            r"^(ABSOLUTE_WORLD|"
+            r"RELATIVE_TO_CURRENT_EFFECTOR_WORLD)$"
+        ),
+    )
+    blade_profile_number: int | None = Field(default=None, ge=1)
+    motion_profile_number: int | None = Field(default=None, ge=1)
+    integrated_execution_backend: str = Field(
+        default="IMPEDANCE",
+        pattern=r"^(IMPEDANCE|POS_SPEED)$",
+    )
+    blade_direction_effector: list[float] = Field(
+        min_length=3,
+        max_length=3,
+    )
+    slicing_direction_effector: list[float] = Field(
+        min_length=3,
+        max_length=3,
+    )
+    locked_joint_names: list[str] = Field(default_factory=list, max_length=6)
+    slice_begin_point_m: list[float] = Field(min_length=3, max_length=3)
+    blade_direction_world: list[float] = Field(
+        min_length=3,
+        max_length=3,
+    )
+    slicing_direction_world: list[float] = Field(min_length=3, max_length=3)
+    slice_length_m: float = Field(gt=0.0)
+    blade_load_kgf: float = Field(gt=0.0)
+    retract_distance_m: float = Field(gt=0.0)
+    delay_after_engage_s: float = Field(default=0.25, ge=0.0, le=55.0)
+    slice_wait_speed_m_s: float = Field(gt=0.0)
+    delay_after_retract_s: float = Field(default=0.25, ge=0.0, le=55.0)
+
+
+class SlicingBladeProfileRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    blade_direction_effector: list[float] = Field(min_length=3, max_length=3)
+    slicing_direction_effector: list[float] = Field(min_length=3, max_length=3)
+    locked_joint_names: list[str] = Field(default_factory=list, max_length=6)
+
+
+class SlicingMotionProfileRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    blade_load_kgf: float = Field(gt=0.0)
+    retract_distance_m: float = Field(gt=0.0)
+    delay_after_engage_s: float = Field(ge=0.0, le=55.0)
+    slice_wait_speed_m_s: float = Field(gt=0.0)
+    delay_after_retract_s: float = Field(ge=0.0, le=55.0)
 
 
 class Phase5ReplayCaptureRequest(BaseModel):
@@ -995,6 +1051,13 @@ INTEGRATED_RELATIVE_MOTION_PAGE = (
     / "web"
     / "integrated_relative_motion.html"
 ).read_text(encoding="utf-8")
+SLICING_DEVELOPER_PAGE = (
+    Path(__file__).resolve().parent
+    / "web"
+    / "slicing_developer.html"
+).read_text(encoding="utf-8")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     return REGULAR_PAGE
@@ -1059,6 +1122,14 @@ async def rgbd_alignment_developer_index() -> str:
 )
 async def integrated_relative_motion_developer_index() -> str:
     return INTEGRATED_RELATIVE_MOTION_PAGE
+
+
+@app.get(
+    "/dev/skills/slicing",
+    response_class=HTMLResponse,
+)
+async def slicing_developer_index() -> str:
+    return SLICING_DEVELOPER_PAGE
 
 
 @app.get("/dev/spatial-axes", response_class=HTMLResponse)
@@ -1368,6 +1439,216 @@ async def status() -> dict[str, Any]:
 @app.get("/api/skills/integrated-relative-effector-motion/status")
 async def integrated_relative_motion_status() -> dict[str, Any]:
     return await integrated_motion_agent_adapter.observation()
+
+
+def _slicing_development_adapter() -> Any:
+    adapter = external_skill_adapters.get("skill.slicing.host.v1")
+    if adapter is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The slicing host adapter is not loaded. Restart the Agent "
+                "runtime with slice_with_blade in the eligible Skill list."
+            ),
+        )
+    required = (
+        "development_observation",
+        "prepare_development",
+        "execute_development_alignment",
+        "execute_development_contact",
+        "cancel_development",
+        "save_development_blade_profile",
+        "delete_development_blade_profile",
+        "set_development_blade_profile_default",
+        "save_development_motion_profile",
+        "delete_development_motion_profile",
+        "set_development_motion_profile_default",
+    )
+    if any(not callable(getattr(adapter, name, None)) for name in required):
+        raise HTTPException(
+            status_code=503,
+            detail="The loaded slicing adapter has no developer staging surface.",
+        )
+    return adapter
+
+
+def _raise_slicing_development_error(error: Exception) -> None:
+    if isinstance(error, KeyError):
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if isinstance(error, ValueError):
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if isinstance(error, RuntimeError):
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/skills/slicing/development")
+async def slicing_development_status() -> dict[str, Any]:
+    try:
+        return await _slicing_development_adapter().development_observation()
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/prepare")
+async def slicing_development_prepare(
+    request: SlicingDevelopmentPrepareRequest,
+) -> dict[str, Any]:
+    payload = request.model_dump()
+    point_mode = str(payload.pop("point_mode"))
+    try:
+        return await _slicing_development_adapter().prepare_development(
+            payload,
+            point_mode=point_mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/blade-profiles")
+async def slicing_development_save_blade_profile(
+    request: SlicingBladeProfileRequest,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().save_development_blade_profile(
+                **request.model_dump()
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.delete(
+    "/api/skills/slicing/development/blade-profiles/{profile_number}"
+)
+async def slicing_development_delete_blade_profile(
+    profile_number: int,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().delete_development_blade_profile(
+                profile_number
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post(
+    "/api/skills/slicing/development/blade-profiles/{profile_number}/default"
+)
+async def slicing_development_default_blade_profile(
+    profile_number: int,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().set_development_blade_profile_default(
+                profile_number
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/motion-profiles")
+async def slicing_development_save_motion_profile(
+    request: SlicingMotionProfileRequest,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().save_development_motion_profile(
+                **request.model_dump()
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.delete(
+    "/api/skills/slicing/development/motion-profiles/{profile_number}"
+)
+async def slicing_development_delete_motion_profile(
+    profile_number: int,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().delete_development_motion_profile(
+                profile_number
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post(
+    "/api/skills/slicing/development/motion-profiles/{profile_number}/default"
+)
+async def slicing_development_default_motion_profile(
+    profile_number: int,
+) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().set_development_motion_profile_default(
+                profile_number
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/{session_id}/alignment")
+async def slicing_development_alignment(session_id: str) -> dict[str, Any]:
+    try:
+        return await (
+            _slicing_development_adapter().execute_development_alignment(
+                session_id
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/{session_id}/contact")
+async def slicing_development_contact(session_id: str) -> dict[str, Any]:
+    try:
+        return await _slicing_development_adapter().execute_development_contact(
+            session_id
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
+
+
+@app.post("/api/skills/slicing/development/{session_id}/cancel")
+async def slicing_development_cancel(session_id: str) -> dict[str, Any]:
+    try:
+        return await _slicing_development_adapter().cancel_development(
+            session_id
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        _raise_slicing_development_error(error)
 
 
 @app.get("/api/spatial/axes")

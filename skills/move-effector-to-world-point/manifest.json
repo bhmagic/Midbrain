@@ -1,0 +1,155 @@
+{
+  "skill_type": "move_effector_to_world_point",
+  "version": "0.1.0",
+  "display_name": "Move Effector to World Point",
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "move_effector_to_world_point",
+    "description": "Move the controlled-effector origin to one absolute XYZ point in the active world frame through the Integrated Controller's signed, collision-checked preview/commit boundary. The host resolves world coordinates into arm-base coordinates and preserves the currently measured effector orientation with POSE_6DOF IK. Optional frame and epoch IDs prevent stale coordinates from being reused after spatial-session changes.",
+    "when_to_use": [
+      "A tool result or operator supplies a known absolute world XYZ point for free-space positioning.",
+      "The arm must stage at a collision-checked point before a separate contact-work Skill begins.",
+      "The currently measured controlled-effector orientation should remain unchanged."
+    ],
+    "when_not_to_use": [
+      "The request is a relative displacement or an orientation change.",
+      "The requested move intentionally makes or maintains contact, applies force, cuts, pushes, scrapes, or grips.",
+      "The point belongs to a different or unknown spatial session and cannot be re-observed.",
+      "The request is safe-home, gravity float, emergency stop, or raw joint control."
+    ],
+    "side_effects": [
+      "May autonomously request task-facing Integrated Provider activation through Manager.",
+      "Creates one exact nonphysical Integrated Controller path preview.",
+      "Autonomously authorizes and executes only that call-scoped signed free-space preview.",
+      "Moves the controlled effector while preserving its measured orientation, then returns Integrated to FLOAT."
+    ],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "robot.arm.state.read",
+      "robot.motion.preview"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target_position_world_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number"
+          },
+          "description": "Absolute controlled-effector-origin target [x, y, z] in meters in the active Midbrain world convention."
+        },
+        "target_world_frame_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact world-frame ID from the point source. Null binds an operator-entered coordinate to the currently active world frame."
+        },
+        "target_session_epoch": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact VIO session epoch from the point source. Null binds an operator-entered coordinate to the currently active epoch."
+        },
+        "requested_speed_m_s": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0.0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional nominal average endpoint speed. The Provider may lengthen the trajectory for joint-rate safety; this is not constant instantaneous Cartesian velocity."
+        },
+        "execution_backend": {
+          "type": "string",
+          "enum": [
+            "IMPEDANCE",
+            "POS_SPEED"
+          ],
+          "default": "IMPEDANCE",
+          "description": "Integrated Basic command backend for this signed path. IMPEDANCE is the default 50 Hz position-and-velocity-target stream. POS_SPEED selects 50 Hz POSITION_VELOCITY_LIMITED position targets; its timing is recomputed from Basic's POS_SPEED limits."
+        }
+      },
+      "required": [
+        "target_position_world_m",
+        "target_world_frame_id",
+        "target_session_epoch",
+        "requested_speed_m_s",
+        "execution_backend"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.move_effector_to_world_point.perform.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "robot_arm.joint_state",
+    "robot_arm.gravity_float",
+    "robot_arm.control.operational_api_v2",
+    "robot_arm.motion.free_space.preview_commit.v1",
+    "robot_arm.integrated.pose_6dof_ik",
+    "localization.vio.local_pose",
+    "world.transforms.timestamped"
+  ],
+  "route_policy": {
+    "spatial_convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+    "target_semantics": "ABSOLUTE_CONTROLLED_EFFECTOR_ORIGIN_IN_ACTIVE_WORLD",
+    "world_to_arm_transform_required": true,
+    "arm_mount_fallback_allowed": false,
+    "orientation_policy": "PRESERVE_MEASURED_CONTROLLED_FRAME",
+    "ik_mode": "POSE_6DOF",
+    "maximum_single_move_distance_m": 1.2,
+    "provider_activation_sequence": [
+      {
+        "provider_id": "robot_arm.rebot_dm",
+        "required_residency": "HOT",
+        "reason": "Owns hardware, joint feedback, gravity float, and fenced operational control."
+      },
+      {
+        "provider_id": "robot_arm.primary.integrated",
+        "required_residency": "HOT",
+        "reason": "Owns collision-aware Cartesian IK preview and one-shot free-space execution."
+      }
+    ],
+    "required_resources_by_capability": {
+      "robot_arm.motion.free_space.preview_commit.v1": "robot_arm.primary/arm"
+    },
+    "preview_then_autonomous_policy_authorization": true,
+    "final_state": "FLOAT",
+    "physical_execution_tool": "move_effector_to_world_point",
+    "physical_execution_arguments": "CALL_SCOPED_HOST_OWNED_CONTINUATION"
+  },
+  "published_streams": []
+}
