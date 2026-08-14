@@ -22,10 +22,33 @@ safe-home movement, verifies tolerance, then disables motors and releases the
 device. If homing fails, powered support is retained when possible instead of
 deliberately removing support.
 
+A later explicit stop request is also the recovery path for a failed first
+attempt. It does not require the arm to be near the configured home position.
+Before issuing another protective trajectory, Basic observes every installed
+joint over the configured stationary-shutdown window. The observation requires
+fresh, advancing, generation-verified feedback and bounds both measured
+position span and measured velocity. If every joint remains stationary, Basic
+permits termination with `MEASURED_STATIONARY_RETRY`, disables the motors,
+releases the device, and exits. Absolute joint position is diagnostic only for
+this retry result.
+
+If the controller is already `FAULTED` or `EMERGENCY_DISABLED` and a repeated
+stop cannot confirm stationary feedback, Basic permits process release with
+`CONTROL_UNAVAILABLE_RETRY`. That result explicitly sets
+`physical_outcome_known=false`: it does not claim that the arm is safe, only
+that retaining the failed process cannot provide active support. This path is
+never available on the first stop attempt and never restores motion authority.
+
+If fresh feedback shows movement and the controller remains available, the
+retry continues through the bounded safe-home path. A second failure remains
+visible and may be retried again; shutdown no longer creates an unresolvable
+position-only gate.
+
 The supplied Manager registration disables automatic force termination after a
-graceful-stop timeout. The Manager reports the timeout and leaves the Basic
-process running so powered support is not silently removed. An operator can
-still request the explicit force-kill endpoint when the physical situation
+first graceful-stop timeout. The Manager reports the timeout and leaves the
+Basic process running so powered support is not silently removed. A later
+explicit shutdown retries the Provider-owned termination decision. An operator
+can still request the explicit force-kill endpoint when the physical situation
 requires it.
 
 ## Non-graceful failure

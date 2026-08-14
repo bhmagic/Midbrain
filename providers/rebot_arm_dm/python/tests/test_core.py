@@ -1402,6 +1402,136 @@ class CoreTests(unittest.TestCase):
         controller.submit(CommandEnvelope('move',lease.lease_id,lease.fencing_generation,{3:JointCommand('POSITION_VELOCITY_LIMITED',{'position_rad':0.2,'velocity_limit_rad_s':0.3})},time.monotonic()+1.5))
         time.sleep(0.8); self.assertTrue(controller.safe_home(8.0)); self.assertLess(abs(controller.snapshot()['positions_rad'][3]),0.08); controller.close(force=True)
 
+    def test_repeated_shutdown_accepts_measured_stationary_arm_without_home_position(self):
+        class StationaryBackend(SimulationBackend):
+            def _step(self):
+                self.last_time=time.monotonic()
+                self.velocity.fill(0.0)
+
+        self.config.model['control']['stationary_shutdown_observation_s']=0.12
+        self.config.model['control']['stationary_shutdown_max_position_span_rad']=0.003
+        self.config.model['control']['stationary_shutdown_max_velocity_rad_s']=0.01
+        backend=StationaryBackend(self.config,self.dyn.calibrated_gravity_torque)
+        backend.position[3]=0.2
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        try:
+            self.assertTrue(
+                wait_for(
+                    lambda: abs(controller.snapshot()['positions_rad'][3]-0.2)<0.02,
+                    1.0,
+                )
+            )
+            with controller.lock:
+                controller.safe_home_attempt_sequence=1
+                controller.last_safe_home_result={
+                    'attempt_sequence':1,
+                    'active':False,
+                    'success':False,
+                    'reason':'safe-home did not reach stable position and velocity before timeout',
+                }
+
+            self.assertTrue(controller.safe_home(0.05))
+            result=controller.safe_home_result()
+            self.assertTrue(result['termination_allowed'])
+            self.assertEqual(
+                result['termination_confirmation_method'],
+                'MEASURED_STATIONARY_RETRY',
+            )
+            self.assertTrue(result['stationary_observation']['confirmed'])
+            self.assertIn(3,result['failing_position_joint_indices'])
+            self.assertGreater(result['maximum_position_error_rad'],0.15)
+            self.assertTrue(controller.graceful_stop())
+            self.assertEqual(controller.state,ProviderState.DISCONNECTED)
+            self.assertGreater(abs(float(backend.position[3])),0.15)
+        finally:
+            if controller.state != ProviderState.DISCONNECTED:
+                controller.close(force=True)
+
+    def test_repeated_shutdown_rejects_motion_and_retries_safe_home(self):
+        class DriftingBackend(SimulationBackend):
+            def _step(self):
+                super()._step()
+                self.position[3]+=0.002
+                self.velocity[3]=0.05
+
+        self.config.model['control']['stationary_shutdown_observation_s']=0.12
+        self.config.model['control']['stationary_shutdown_max_position_span_rad']=0.003
+        self.config.model['control']['stationary_shutdown_max_velocity_rad_s']=0.01
+        backend=DriftingBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        try:
+            with backend.lock:
+                backend.position[3]=0.2
+            with controller.lock:
+                controller.safe_home_attempt_sequence=1
+                controller.last_safe_home_result={
+                    'attempt_sequence':1,
+                    'active':False,
+                    'success':False,
+                    'reason':'safe-home did not reach stable position and velocity before timeout',
+                }
+
+            self.assertFalse(controller.safe_home(0.05))
+            result=controller.safe_home_result()
+            self.assertFalse(result['termination_allowed'])
+            self.assertFalse(result['stationary_observation']['confirmed'])
+            self.assertGreater(
+                result['stationary_observation']['observed_max_velocity_rad_s'],
+                result['stationary_observation']['allowed_max_velocity_rad_s'],
+            )
+        finally:
+            controller.close(force=True)
+
+    def test_repeated_shutdown_releases_faulted_controller_without_feedback(self):
+        class FailedFeedbackBackend(SimulationBackend):
+            def __init__(self,configuration,gravity_function):
+                super().__init__(configuration,gravity_function)
+                self.fail=False
+            def read(self):
+                if self.fail:
+                    raise RuntimeError('motor feedback is unavailable')
+                return super().read()
+
+        self.config.model['control']['stationary_shutdown_observation_s']=0.1
+        backend=FailedFeedbackBackend(self.config,self.dyn.calibrated_gravity_torque)
+        controller=ArmController(self.config,backend,self.dyn)
+        controller.start(); controller.enable()
+        backend.fail=True
+        try:
+            self.assertTrue(
+                wait_for(
+                    lambda: (
+                        controller.state == ProviderState.FAULTED
+                        and controller.feedback is None
+                    ),
+                    1.0,
+                )
+            )
+            with controller.lock:
+                controller.safe_home_attempt_sequence=1
+                controller.last_safe_home_result={
+                    'attempt_sequence':1,
+                    'active':False,
+                    'success':False,
+                    'reason':'joint feedback is unavailable',
+                }
+
+            self.assertTrue(controller.safe_home(0.05))
+            result=controller.safe_home_result()
+            self.assertEqual(
+                result['termination_confirmation_method'],
+                'CONTROL_UNAVAILABLE_RETRY',
+            )
+            self.assertFalse(result['physical_outcome_known'])
+            self.assertTrue(result['termination_allowed'])
+            self.assertTrue(controller.graceful_stop())
+            self.assertEqual(controller.state,ProviderState.DISCONNECTED)
+        finally:
+            if controller.state != ProviderState.DISCONNECTED:
+                controller.close(force=True)
+
     def test_safe_home_caller_can_only_reduce_configured_velocity_limit(self):
         backend=SimulationBackend(self.config,self.dyn.calibrated_gravity_torque)
         controller=ArmController(self.config,backend,self.dyn)

@@ -385,10 +385,17 @@ class ArmProviderService:
                     else float(max_velocity_rad_s)
                 )
             )
+            details = self.controller.safe_home_result()
             result = {
                 "status": "safe_home",
                 "success": success,
-                "details": self.controller.snapshot().get("last_safe_home_result"),
+                "termination_allowed": bool(
+                    details.get("termination_allowed", success)
+                ),
+                "safe_state_confirmed": bool(
+                    details.get("physical_outcome_known", success)
+                ),
+                "details": details,
             }
         elif action == "revoke_lease":
             reason = str(
@@ -676,9 +683,16 @@ class ArmProviderService:
                                 else float(max_velocity_rad_s)
                             )
                         )
+                        details=service.controller.safe_home_result()
                         return self._json(200,{
                             "success":success,
-                            "details":service.controller.snapshot().get("last_safe_home_result"),
+                            "termination_allowed":bool(
+                                details.get("termination_allowed",success)
+                            ),
+                            "safe_state_confirmed":bool(
+                                details.get("physical_outcome_known",success)
+                            ),
+                            "details":details,
                         })
                     return self._json(404,{"error":"not found"})
                 except LeasePermissionError as error:

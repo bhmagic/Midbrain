@@ -139,6 +139,30 @@ class ArmConfiguration:
                 100.0,
             )
         )
+        stationary_shutdown_observation_s = float(
+            self.model.get("control", {}).get(
+                "stationary_shutdown_observation_s",
+                1.0,
+            )
+        )
+        stationary_shutdown_max_position_span_rad = float(
+            self.model.get("control", {}).get(
+                "stationary_shutdown_max_position_span_rad",
+                0.005,
+            )
+        )
+        stationary_shutdown_max_velocity_rad_s = float(
+            self.model.get("control", {}).get(
+                "stationary_shutdown_max_velocity_rad_s",
+                0.01,
+            )
+        )
+        stationary_shutdown_feedback_max_age_ms = float(
+            self.model.get("control", {}).get(
+                "stationary_shutdown_feedback_max_age_ms",
+                100.0,
+            )
+        )
         mit_mode_confirmation_timeout_ms = int(
             self.model.get("control", {}).get("mit_mode_confirmation_timeout_ms", 0)
         )
@@ -175,6 +199,23 @@ class ArmConfiguration:
         if not feedback_cycle_timeout_ms <= fault_recovery_feedback_max_age_ms <= 1000.0:
             raise ConfigurationError(
                 "fault_recovery_feedback_max_age_ms must be in "
+                "[feedback_cycle_timeout_ms, 1000]"
+            )
+        if not 0.1 <= stationary_shutdown_observation_s <= 10.0:
+            raise ConfigurationError(
+                "stationary_shutdown_observation_s must be in [0.1, 10]"
+            )
+        if not 0.0001 <= stationary_shutdown_max_position_span_rad <= 0.1:
+            raise ConfigurationError(
+                "stationary_shutdown_max_position_span_rad must be in [0.0001, 0.1]"
+            )
+        if not 0.0001 <= stationary_shutdown_max_velocity_rad_s <= 0.1:
+            raise ConfigurationError(
+                "stationary_shutdown_max_velocity_rad_s must be in [0.0001, 0.1]"
+            )
+        if not feedback_cycle_timeout_ms <= stationary_shutdown_feedback_max_age_ms <= 1000.0:
+            raise ConfigurationError(
+                "stationary_shutdown_feedback_max_age_ms must be in "
                 "[feedback_cycle_timeout_ms, 1000]"
             )
         if not 20 <= mit_mode_confirmation_timeout_ms <= 1000:

@@ -157,12 +157,16 @@ class ArmController:
             "active": False,
             "success": None,
             "reason": "not attempted",
+            "termination_allowed": False,
+            "termination_confirmation_method": None,
+            "physical_outcome_known": False,
             "failing_position_joint_indices": [],
             "failing_velocity_joint_indices": [],
             "maximum_position_error_rad": None,
             "maximum_velocity_rad_s": None,
             "gripper_policy": "PRESERVE_MEASURED_ANGLE",
             "gripper_target_rad": None,
+            "stationary_observation": None,
         }
         self.loop_count = 0
         # missed_deadlines is retained for API compatibility and now means the
@@ -1208,6 +1212,136 @@ class ArmController:
             self.active_command_modes[index]="IMPEDANCE"
             self.mit_moving_target[index]=float(target[index])
 
+    def safe_home_result(self) -> dict[str, Any]:
+        """Return the authoritative result of the latest termination attempt."""
+        with self.lock:
+            return copy.deepcopy(self.last_safe_home_result)
+
+    def _stationary_shutdown_retry_eligible(
+        self,
+        previous_result: dict[str, Any],
+    ) -> bool:
+        method = previous_result.get("termination_confirmation_method")
+        if previous_result.get("success") is True and method in {
+            "MEASURED_STATIONARY_RETRY",
+            "CONTROL_UNAVAILABLE_RETRY",
+        }:
+            return True
+        if previous_result.get("success") is not False:
+            return False
+        if int(previous_result.get("attempt_sequence", 0)) <= 0:
+            return False
+        return str(previous_result.get("reason", "")) in {
+            "joint feedback is unavailable",
+            "safe-home did not reach stable position and velocity before timeout",
+            "stationary shutdown retry did not confirm rest",
+        }
+
+    def _observe_stationary_shutdown(self) -> dict[str, Any]:
+        """Measure whether every installed joint remains stationary over time."""
+        control = self.configuration.model["control"]
+        observation_s = float(
+            control.get("stationary_shutdown_observation_s", 1.0)
+        )
+        max_position_span_rad = float(
+            control.get("stationary_shutdown_max_position_span_rad", 0.005)
+        )
+        max_velocity_rad_s = float(
+            control.get("stationary_shutdown_max_velocity_rad_s", 0.01)
+        )
+        feedback_max_age_ms = float(
+            control.get("stationary_shutdown_feedback_max_age_ms", 100.0)
+        )
+        deadline = time.monotonic() + observation_s
+        positions: list[np.ndarray] = []
+        velocities: list[np.ndarray] = []
+        observed_monotonic_values: list[float] = []
+        generation_values: list[tuple[int, ...]] = []
+        last_observed_monotonic: float | None = None
+        failure_reason: str | None = None
+
+        while time.monotonic() < deadline:
+            with self.lock:
+                feedback = self.feedback
+                if feedback is None:
+                    failure_reason = "joint feedback is unavailable"
+                    break
+                feedback_age_ms = max(
+                    0.0,
+                    (time.monotonic() - feedback.observed_monotonic) * 1000.0,
+                )
+                if not feedback.freshness_verified:
+                    failure_reason = "joint feedback freshness is unverified"
+                    break
+                if feedback_age_ms > feedback_max_age_ms:
+                    failure_reason = (
+                        "joint feedback exceeded the stationary shutdown age limit"
+                    )
+                    break
+                if (
+                    last_observed_monotonic is None
+                    or feedback.observed_monotonic > last_observed_monotonic
+                ):
+                    indices = self.active_joint_indices
+                    positions.append(feedback.positions_rad[list(indices)].copy())
+                    velocities.append(feedback.velocities_rad_s[list(indices)].copy())
+                    observed_monotonic_values.append(feedback.observed_monotonic)
+                    generation_values.append(
+                        tuple(feedback.feedback_generations[index] for index in indices)
+                    )
+                    last_observed_monotonic = feedback.observed_monotonic
+            time.sleep(min(self.period, max(0.0, deadline - time.monotonic())))
+
+        sample_count = len(positions)
+        if sample_count:
+            position_stack = np.vstack(positions)
+            velocity_stack = np.vstack(velocities)
+            observed_position_span_rad = float(
+                np.max(np.ptp(position_stack, axis=0))
+            )
+            observed_max_velocity_rad_s = float(np.max(np.abs(velocity_stack)))
+        else:
+            observed_position_span_rad = None
+            observed_max_velocity_rad_s = None
+        observed_duration_s = (
+            0.0
+            if len(observed_monotonic_values) < 2
+            else observed_monotonic_values[-1] - observed_monotonic_values[0]
+        )
+        generations_advanced = bool(
+            len(generation_values) >= 2
+            and all(
+                generation_values[-1][index] > generation_values[0][index]
+                for index in range(len(generation_values[0]))
+            )
+        )
+        minimum_observed_duration_s = max(0.0, observation_s - (2.0 * self.period))
+        confirmed = bool(
+            failure_reason is None
+            and sample_count >= 3
+            and generations_advanced
+            and observed_duration_s >= minimum_observed_duration_s
+            and observed_position_span_rad is not None
+            and observed_position_span_rad <= max_position_span_rad
+            and observed_max_velocity_rad_s is not None
+            and observed_max_velocity_rad_s <= max_velocity_rad_s
+        )
+        if failure_reason is None and not confirmed:
+            failure_reason = "measured joint motion exceeded the stationary shutdown policy"
+        return {
+            "confirmed": confirmed,
+            "reason": "all installed joints remained stationary" if confirmed else failure_reason,
+            "observation_s": observation_s,
+            "sample_count": sample_count,
+            "observed_duration_s": observed_duration_s,
+            "feedback_generations_advanced": generations_advanced,
+            "observed_max_position_span_rad": observed_position_span_rad,
+            "allowed_max_position_span_rad": max_position_span_rad,
+            "observed_max_velocity_rad_s": observed_max_velocity_rad_s,
+            "allowed_max_velocity_rad_s": max_velocity_rad_s,
+            "feedback_max_age_ms": feedback_max_age_ms,
+        }
+
     def safe_home(
         self,
         timeout_s: float | None = None,
@@ -1240,6 +1374,9 @@ class ArmController:
                     "active": False,
                     "success": False,
                     "reason": "another safe-home operation is already active",
+                    "termination_allowed": False,
+                    "termination_confirmation_method": None,
+                    "physical_outcome_known": False,
                     "failing_position_joint_indices": [],
                     "failing_velocity_joint_indices": [],
                     "maximum_position_error_rad": None,
@@ -1247,6 +1384,7 @@ class ArmController:
                     "configured_max_velocity_rad_s": configured_max_velocity,
                     "requested_max_velocity_rad_s": requested_max_velocity,
                     "effective_max_velocity_rad_s": max_velocity,
+                    "stationary_observation": None,
                 }
             return False
         timeout=float(timeout_s or self.configuration.model["control"]["safe_home_timeout_s"])
@@ -1256,8 +1394,42 @@ class ArmController:
         transition_hold_cycles=max(1,int(self.configuration.model["control"].get("safe_home_transition_hold_cycles",5)))
         home=self.configuration.home_positions.copy()
         block_reason="safe-home owns exclusive hardware control"
+        stationary_observation: dict[str, Any] | None = None
+        with self.lock:
+            previous_result = copy.deepcopy(self.last_safe_home_result)
+            retry_stationary = self._stationary_shutdown_retry_eligible(
+                previous_result
+            )
+            self.safe_home_attempt_sequence += 1
+            self.last_safe_home_result = {
+                "attempt_sequence": self.safe_home_attempt_sequence,
+                "active": True,
+                "success": None,
+                "reason": (
+                    "stationary shutdown retry active"
+                    if retry_stationary
+                    else "safe-home active"
+                ),
+                "termination_allowed": False,
+                "termination_confirmation_method": None,
+                "physical_outcome_known": False,
+                "failing_position_joint_indices": [],
+                "failing_velocity_joint_indices": [],
+                "maximum_position_error_rad": None,
+                "maximum_velocity_rad_s": None,
+                "configured_max_velocity_rad_s": configured_max_velocity,
+                "requested_max_velocity_rad_s": requested_max_velocity,
+                "effective_max_velocity_rad_s": max_velocity,
+                "stationary_observation": None,
+            }
 
-        def record_result(success: bool, reason: str) -> None:
+        def record_result(
+            success: bool,
+            reason: str,
+            *,
+            termination_confirmation_method: str | None = None,
+            physical_outcome_known: bool | None = None,
+        ) -> None:
             with self.lock:
                 feedback=self.feedback
                 position_error = (
@@ -1275,6 +1447,21 @@ class ArmController:
                     "active": False,
                     "success": success,
                     "reason": reason,
+                    "termination_allowed": success,
+                    "termination_confirmation_method": (
+                        termination_confirmation_method
+                        if termination_confirmation_method is not None
+                        else (
+                            "SAFE_HOME_POSITION_AND_VELOCITY"
+                            if success
+                            else None
+                        )
+                    ),
+                    "physical_outcome_known": (
+                        success
+                        if physical_outcome_known is None
+                        else physical_outcome_known
+                    ),
                     "failing_position_joint_indices": [
                         int(index) for index in np.flatnonzero(position_error>tolerance)
                     ],
@@ -1293,6 +1480,9 @@ class ArmController:
                     "gripper_policy": "PRESERVE_MEASURED_ANGLE",
                     "gripper_target_rad": (
                         None if feedback is None else float(home[6])
+                    ),
+                    "stationary_observation": copy.deepcopy(
+                        stationary_observation
                     ),
                 }
 
@@ -1322,21 +1512,30 @@ class ArmController:
                         "safe-home preempted actuator-group control",
                         lease=group_lease,
                     )
+            if retry_stationary:
+                stationary_observation = self._observe_stationary_shutdown()
+                with self.lock:
+                    control_unavailable = self.state in {
+                        ProviderState.FAULTED,
+                        ProviderState.EMERGENCY_DISABLED,
+                    }
+                if stationary_observation["confirmed"]:
+                    record_result(
+                        True,
+                        "stationary shutdown retry confirmed measured rest",
+                        termination_confirmation_method="MEASURED_STATIONARY_RETRY",
+                        physical_outcome_known=True,
+                    )
+                    return True
+                if control_unavailable:
+                    record_result(
+                        True,
+                        "controller is unavailable and retaining the process cannot provide active support",
+                        termination_confirmation_method="CONTROL_UNAVAILABLE_RETRY",
+                        physical_outcome_known=False,
+                    )
+                    return True
             with self.lock:
-                self.safe_home_attempt_sequence += 1
-                self.last_safe_home_result = {
-                    "attempt_sequence": self.safe_home_attempt_sequence,
-                    "active": True,
-                    "success": None,
-                    "reason": "safe-home active",
-                    "failing_position_joint_indices": [],
-                    "failing_velocity_joint_indices": [],
-                    "maximum_position_error_rad": None,
-                    "maximum_velocity_rad_s": None,
-                    "configured_max_velocity_rad_s": configured_max_velocity,
-                    "requested_max_velocity_rad_s": requested_max_velocity,
-                    "effective_max_velocity_rad_s": max_velocity,
-                }
                 if self.feedback is None:
                     record_result(False, "joint feedback is unavailable")
                     return False
@@ -1447,16 +1646,25 @@ class ArmController:
                 self.health="DEGRADED"
                 self.last_error="warm transition could not complete safe-home; gravity-float retained"
             return False
-        # Keep the powered high-kp gravity-supported home state alive briefly
-        # before stopping the control thread.  File/network shutdown work must not
-        # create an unsupported gap between safe-home and motor disable.
-        powered_settle_s=max(0.0,float(self.configuration.model["control"].get("safe_home_powered_settle_s",0.25)))
-        settle_deadline=time.monotonic()+powered_settle_s
-        while time.monotonic()<settle_deadline and not self.stop_event.is_set():
-            time.sleep(min(self.period,max(0.0,settle_deadline-time.monotonic())))
         with self.lock:
-            if self.feedback is not None:
-                self._apply_gravity_float_locked(time.monotonic())
+            confirmation_method = self.last_safe_home_result.get(
+                "termination_confirmation_method"
+            )
+        release_without_powered_settle = confirmation_method in {
+            "MEASURED_STATIONARY_RETRY",
+            "CONTROL_UNAVAILABLE_RETRY",
+        }
+        if not release_without_powered_settle:
+            # Keep the powered high-kp gravity-supported home state alive briefly
+            # before stopping the control thread. File/network shutdown work must
+            # not create an unsupported gap between safe-home and motor disable.
+            powered_settle_s=max(0.0,float(self.configuration.model["control"].get("safe_home_powered_settle_s",0.25)))
+            settle_deadline=time.monotonic()+powered_settle_s
+            while time.monotonic()<settle_deadline and not self.stop_event.is_set():
+                time.sleep(min(self.period,max(0.0,settle_deadline-time.monotonic())))
+            with self.lock:
+                if self.feedback is not None:
+                    self._apply_gravity_float_locked(time.monotonic())
         self.stop_event.set()
         if self.thread and self.thread.is_alive() and self.thread is not threading.current_thread():
             self.thread.join(timeout=2.0)

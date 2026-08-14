@@ -265,12 +265,21 @@ acquisitions, and runs the provider sequence asynchronously. Poll
 `GET /v1/shutdown/executions/{execution_id}` with a caller-owned deadline.
 
 The Manager first relinquishes motion providers, then calls the configured
-Basic safe-state route, and only after an explicit acknowledgement stops
-ordinary providers and Basic. Fabric and Manager remain supervisor-owned.
+Basic safe-state route, and only after an explicit termination acknowledgement
+stops ordinary providers and Basic. A Provider response may distinguish
+`safe_state_confirmed` from `termination_allowed`. The reference Basic Provider
+uses safe-home on the first attempt. A later shutdown execution may permit
+termination after a fresh movement-based stationary observation, regardless of
+absolute joint position, or after Basic reports that control is already
+unavailable and retaining its process cannot provide support. The latter keeps
+`safe_state_confirmed=false` and reports the physical outcome as unknown.
+Fabric and Manager remain supervisor-owned.
 `AWAITING_SUPERVISOR` means the provider sequence completed;
 `PARTIAL_FAILURE_AWAITING_SUPERVISOR` requires inspection before core stop;
 `BLOCKED_SAFETY_SUPPORT_RETAINED` means Basic, Fabric, and Manager must remain
-running and the local authoritative safety fallback must be used.
+running for that execution. The state is terminal for that execution, but a
+new explicit shutdown plan and execution may retry the Provider-owned
+termination check while the authority fence remains in effect.
 
 The supplied template remains disabled for new installations. This validated
 development workspace enables it locally and makes Manager execution the

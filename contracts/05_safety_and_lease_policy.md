@@ -145,6 +145,15 @@ Process termination is not automatically a safe state. If a Provider process is 
 
 For such a Provider, a missed graceful-stop deadline must produce a visible timeout or recovery-required state while the process remains alive. An authorized explicit force-stop remains available for emergency or operator-directed recovery.
 
+A Provider may define a repeated explicit shutdown request as an
+operator-directed recovery action. Its declared policy may permit process
+release after fresh measured evidence confirms a stable non-moving state
+without requiring one absolute position. If the Provider has already lost the
+ability to control the resource, it may also permit process release while
+marking the physical outcome unknown. Neither result restores operational
+authority, and stale or missing evidence must not be represented as measured
+stationarity.
+
 Before an internal safe-home, controlled stop, or hold transition begins, the Provider must fence the outgoing operational authority, discard uncommitted commands from that owner, and reject late operational frames. The protective sequence must not compete with a still-valid task lease.
 
 ### 6.2 Global shutdown ownership

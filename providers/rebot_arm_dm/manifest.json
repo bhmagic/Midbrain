@@ -85,10 +85,12 @@
   },
   "safety": {
     "safe_hold_behavior": "GRAVITY_FLOAT_WITH_HIGH_KP_MEASURED_TARGET_TRACKING",
-    "graceful_termination": "SAFE_HOME_THEN_DISABLE",
+    "graceful_termination": "SAFE_HOME_FIRST; REPEATED_STOP_ACCEPTS_MEASURED_STATIONARY_OR_CONTROL_UNAVAILABLE_RELEASE; THEN_DISABLE",
     "velocity_mode_exposed_to_calibration_gui": false,
     "low_kp_load_bearing_mit_prohibited": true,
     "safe_home_transition": "MEASURED_POSE_HIGH_KP_CAPTURE_THEN_RATE_LIMITED_HOME",
+    "stationary_shutdown_retry": "FRESH_ADVANCING_ALL_JOINT_FEEDBACK; POSITION_SPAN_AND_VELOCITY_BOUNDED; ABSOLUTE_POSITION_NOT_USED",
+    "control_unavailable_shutdown_retry": "FAULTED_OR_EMERGENCY_DISABLED_CONTROLLER_MAY_RELEASE_PROCESS_WITH_PHYSICAL_OUTCOME_UNKNOWN",
     "powered_settle_before_disable_s": 0.25,
     "mit_kp_rule": "IMPEDANCE commands below provider_test_caps.min_kp are rejected",
     "no_lease_default": "SAFE_HOLD_GRAVITY_FLOAT",
