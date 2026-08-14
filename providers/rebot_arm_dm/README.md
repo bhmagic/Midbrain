@@ -80,7 +80,10 @@ Basic owns:
   and revocation;
 - calibrated arm and declared-payload gravity feed-forward;
 - gravity-float, explicit Manager `HOT` fault requalification, and safe-home
-  sequencing; and
+  sequencing;
+- repeated-stop termination confirmation based on fresh measured non-movement,
+  independent of absolute joint position, plus explicit process release when
+  the controller has already lost control; and
 - bounded attended manual-test primitives. Basic consumes a reviewed
   calibration profile but does not generate or modify it.
 

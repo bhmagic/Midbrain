@@ -11,7 +11,9 @@ confirmation, dedicated physical-test `POS_VEL` and Integrated `POS_TOR` caps, p
 contribution, fenced payload updates, TMAX clipping, staged motor-mode
 transitions, serial-I/O telemetry, responsive cached state delivery during a
 blocked control lock, lease, timeout, gravity-float, safe-home gripper-state
-preservation, gripper `POSITION_EFFORT_LIMITED` to `FORCE_POS` translation, measured-speed
+preservation, repeated-stop stationary confirmation independent of home
+position, moving-arm rejection, faulted-controller process release, gripper
+`POSITION_EFFORT_LIMITED` to `FORCE_POS` translation, measured-speed
 hysteretic brake/hold and recovery, MotorBridge, the attended Hardware
 Development UI, and Midbrain integration regressions.
 

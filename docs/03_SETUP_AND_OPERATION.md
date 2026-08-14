@@ -237,6 +237,16 @@ states, and requires acknowledgements. Do not close terminal windows or kill
 processes as a substitute for safe arm shutdown. Independent emergency stop
 remains outside this software path.
 
+If Basic cannot reach its configured home position, the first shutdown leaves
+the core available and reports the measured failure. Run the same shutdown
+command again after inspecting the arm. On a repeated request, Basic may permit
+termination when fresh advancing feedback proves all installed joints remained
+stationary during the configured observation window; absolute joint position
+is not a pass criterion. If Basic has already lost control, the repeated request
+may release the failed process while explicitly reporting that the physical
+outcome is unknown. Moving arms remain gated and continue through the bounded
+safe-home attempt.
+
 ## Status and recovery
 
 ```powershell

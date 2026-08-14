@@ -77,6 +77,12 @@ request.
 ## Graceful-stop continuity
 
 Normal termination is one continuous powered sequence from gravity support to
-safe-home and then motor disable. The exact operator-visible invariant and the
-limits of non-graceful failure handling are owned by
+safe-home and then motor disable. If that bounded position-based transition
+fails, a repeated explicit stop becomes a separate termination-recovery
+attempt. Basic owns the fresh-feedback movement observation and may release a
+stationary arm without requiring the home position. It may also release a
+`FAULTED` or `EMERGENCY_DISABLED` controller while marking the physical outcome
+unknown, because no active support remains to preserve. Manager consumes only
+the typed termination acknowledgement and does not interpret motor state.
+The exact operator-visible invariant and the limits of non-graceful failure handling are owned by
 [Safety behavior](SAFETY.md).

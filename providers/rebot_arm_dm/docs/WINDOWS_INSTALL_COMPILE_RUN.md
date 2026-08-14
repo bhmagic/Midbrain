@@ -129,8 +129,12 @@ Use the Midbrain portal or:
 The safety-ordered path stops Integrated before Basic and requires the Basic
 safe-state acknowledgement. If Manager is unavailable while the Basic endpoint
 still provides powered support, the workspace script refuses an automatic
-force-kill. Follow the documented safety recovery path; do not terminate the
-process merely to free the port.
+force-kill. If an ordinary shutdown remains blocked after a safe-home timeout,
+inspect the reported motion evidence and run the same shutdown command again.
+The repeated request can release a measured-stationary arm independently of
+absolute position, or release a controller that has already lost control while
+marking the physical outcome unknown. Follow the documented safety recovery
+path rather than terminating only one process to free the port.
 
 ## Common failures
 

@@ -3302,6 +3302,15 @@ async fn stop_tracked_provider_for_shutdown(state: &AppState, provider_id: &str)
     }
 }
 
+fn provider_response_allows_termination(status_success: bool, body: &Value) -> bool {
+    if !status_success {
+        return false;
+    }
+    body.get("termination_allowed")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| body.get("success").and_then(Value::as_bool) == Some(true))
+}
+
 async fn confirm_provider_safe_state(state: &AppState, provider_id: &str) -> Result<Value> {
     match manager_tracked_process_state(state, provider_id).await {
         Some(process_state) if process_state == "running" || process_state == "starting" => {}
@@ -3355,14 +3364,19 @@ async fn confirm_provider_safe_state(state: &AppState, provider_id: &str) -> Res
         .json()
         .await
         .unwrap_or_else(|_| json!({"status": status.as_u16()}));
-    if !status.is_success() || body.get("success").and_then(Value::as_bool) != Some(true) {
+    if !provider_response_allows_termination(status.is_success(), &body) {
         return Err(anyhow!(
-            "provider {provider_id} did not confirm safe state: HTTP {status}: {body}"
+            "provider {provider_id} did not permit termination: HTTP {status}: {body}"
         ));
     }
+    let safe_state_confirmed = body
+        .get("safe_state_confirmed")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| body.get("success").and_then(Value::as_bool) == Some(true));
     Ok(json!({
         "provider_id": provider_id,
-        "safe_state_confirmed": true,
+        "safe_state_confirmed": safe_state_confirmed,
+        "termination_allowed": true,
         "response": body
     }))
 }
@@ -3462,7 +3476,7 @@ fn build_shutdown_plan(
             action: "CONFIRM_BASIC_SAFE_STATE".to_string(),
             provider_ids: basic_providers.clone(),
             required_confirmation:
-                "Basic arm providers confirm their declared safe state before process stop"
+                "Basic arm providers confirm safe state or explicitly permit process release after measured stationary retry or loss of control"
                     .to_string(),
         },
         ShutdownPlanStep {
@@ -5621,6 +5635,49 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_accepts_explicit_stationary_or_control_unavailable_release() {
+        assert!(provider_response_allows_termination(
+            true,
+            &json!({
+                "success": true,
+                "termination_allowed": true,
+                "safe_state_confirmed": true,
+                "details": {
+                    "termination_confirmation_method": "MEASURED_STATIONARY_RETRY"
+                }
+            }),
+        ));
+        assert!(provider_response_allows_termination(
+            true,
+            &json!({
+                "success": true,
+                "termination_allowed": true,
+                "safe_state_confirmed": false,
+                "details": {
+                    "termination_confirmation_method": "CONTROL_UNAVAILABLE_RETRY",
+                    "physical_outcome_known": false
+                }
+            }),
+        ));
+    }
+
+    #[test]
+    fn shutdown_rejects_explicit_termination_denial_and_transport_failure() {
+        assert!(!provider_response_allows_termination(
+            true,
+            &json!({"success": true, "termination_allowed": false}),
+        ));
+        assert!(!provider_response_allows_termination(
+            false,
+            &json!({"success": true, "termination_allowed": true}),
+        ));
+        assert!(provider_response_allows_termination(
+            true,
+            &json!({"success": true}),
+        ));
+    }
+
+    #[test]
     fn shutdown_shadow_plan_blocks_on_unobserved_motion_provider() {
         let configs = HashMap::from([(
             "robot_arm.integrated".to_string(),
@@ -5755,5 +5812,38 @@ mod tests {
         assert_eq!(completed.state, "AWAITING_SUPERVISOR");
         assert_eq!(completed.step_results.len(), 7);
         assert!(completed.failures.is_empty());
+
+        {
+            let mut execution = state.shutdown_execution.lock().await;
+            execution
+                .as_mut()
+                .expect("completed execution remains inspectable")
+                .state = "BLOCKED_SAFETY_SUPPORT_RETAINED".to_string();
+        }
+        let retry_plan = build_shutdown_plan(
+            &state.configs,
+            &HashMap::new(),
+            &HashSet::new(),
+            "retry-plan-request".to_string(),
+            "test-agent".to_string(),
+            "retry after stationary confirmation".to_string(),
+        );
+        *state.shutdown_plan.lock().await = Some(retry_plan.clone());
+        let (retry_status, Json(retry)) = execute_shutdown_plan(
+            State(state.clone()),
+            Path(retry_plan.shutdown_id.clone()),
+            Json(ShutdownExecuteRequest {
+                request_id: "retry-execute-request".to_string(),
+                confirmation: "EXECUTE_MANAGER_PROVIDER_SHUTDOWN".to_string(),
+            }),
+        )
+        .await
+        .expect("a completed blocked shutdown must allow a new execution");
+        assert_eq!(retry_status, StatusCode::ACCEPTED);
+        assert_eq!(retry.shutdown_id, retry_plan.shutdown_id);
+        assert_eq!(
+            state.shutdown_fence.lock().await.as_deref(),
+            Some(retry_plan.shutdown_id.as_str())
+        );
     }
 }
