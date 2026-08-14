@@ -43,7 +43,7 @@ class LatchedEndpointCommand:
     q_goal: np.ndarray
     velocity_limits_rad_s: np.ndarray
     keepalive_period_s: float
-    torque_limit_ratios: np.ndarray | None = None
+    torque_limits_nm: np.ndarray | None = None
     last_sent_monotonic: float = 0.0
     send_count: int = 0
 
@@ -56,7 +56,7 @@ class LatchedEndpointCommand:
         velocity_limits_rad_s: Iterable[float],
         *,
         keepalive_period_s: float,
-        torque_limit_ratios: Iterable[float] | None = None,
+        torque_limits_nm: Iterable[float] | None = None,
     ) -> "LatchedEndpointCommand":
         if basic_mode not in {BASIC_POS_VEL, BASIC_POS_TOR}:
             raise ValueError("latched endpoint commands are only valid for POS_VEL or POS_TOR")
@@ -68,13 +68,13 @@ class LatchedEndpointCommand:
         keepalive = float(keepalive_period_s)
         if keepalive <= 0.0 or not np.isfinite(keepalive):
             raise ValueError("keepalive_period_s must be positive and finite")
-        ratios = None if torque_limit_ratios is None else _six(torque_limit_ratios, "torque_limit_ratios")
+        torque_limits = None if torque_limits_nm is None else _six(torque_limits_nm, "torque_limits_nm")
         if basic_mode == BASIC_POS_TOR:
-            if ratios is None or np.any(ratios <= 0.0) or np.any(ratios > 1.0):
-                raise ValueError("POS_TOR requires six explicit torque ratios in (0, 1]")
-        elif ratios is not None:
-            raise ValueError("POS_VEL must not carry torque ratios")
-        return cls(basic_mode, start, goal, limits, keepalive, ratios)
+            if torque_limits is None or np.any(torque_limits <= 0.0):
+                raise ValueError("POS_TOR requires six explicit positive torque limits in N.m")
+        elif torque_limits is not None:
+            raise ValueError("POS_VEL must not carry torque limits")
+        return cls(basic_mode, start, goal, limits, keepalive, torque_limits)
 
     def should_send(self, now_monotonic: float) -> bool:
         now = float(now_monotonic)
@@ -92,7 +92,7 @@ class LatchedEndpointCommand:
                 "velocity_limit_rad_s": float(self.velocity_limits_rad_s[index]),
             }
             if self.basic_mode == BASIC_POS_TOR:
-                values["torque_limit_ratio"] = float(self.torque_limit_ratios[index])
+                values["torque_limit_nm"] = float(self.torque_limits_nm[index])
             result.append({"joint_index": index, "mode": self.basic_mode, "values": values})
         return result
 
@@ -119,7 +119,7 @@ class LatchedEndpointCommand:
             "q_start": self.q_start.tolist(),
             "q_goal": self.q_goal.tolist(),
             "velocity_limits_rad_s": self.velocity_limits_rad_s.tolist(),
-            "torque_limit_ratios": None if self.torque_limit_ratios is None else self.torque_limit_ratios.tolist(),
+            "torque_limits_nm": None if self.torque_limits_nm is None else self.torque_limits_nm.tolist(),
             "keepalive_period_s": self.keepalive_period_s,
             "send_count": self.send_count,
         }

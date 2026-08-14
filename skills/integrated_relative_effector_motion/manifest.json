@@ -228,6 +228,15 @@
           ],
           "default": null,
           "description": "Optional nominal average endpoint speed. The adapter requests distance_m / requested_speed_m_s seconds; the Provider may lengthen the trajectory for joint-rate safety. This is not constant instantaneous Cartesian velocity."
+        },
+        "execution_backend": {
+          "type": "string",
+          "enum": [
+            "IMPEDANCE",
+            "POS_SPEED"
+          ],
+          "default": "IMPEDANCE",
+          "description": "Integrated Basic command backend for this signed path. IMPEDANCE is the default 50 Hz position-and-velocity-target stream. POS_SPEED selects 50 Hz POSITION_VELOCITY_LIMITED position targets; its timing is recomputed from Basic's POS_SPEED limits."
         }
       },
       "required": [],

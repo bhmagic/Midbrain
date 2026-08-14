@@ -12,10 +12,19 @@ definition of a Midbrain Agent.
   Provider, Skill, point-cloud, replay, and event diagnostics.
 - `http://127.0.0.1:8000/dev/run-journal` provides a read-only view of retained
   normalized run events.
+- `http://127.0.0.1:8000/dev/skills/slicing` provides a numeric, non-language
+  two-stage Slicing test surface. It freezes an Integrated alignment preview
+  and a begin/vector/length-derived three-point path before exposing separate
+  physical Stage 1 and Contact Stage 2 controls. It also manages numbered
+  blade-use and load/retract/timing profiles without invoking a language Agent.
 
 Both Agent pages use one backend-owned run path, tool policy, model session,
-chat projection, approval store, and event stream. The developer view does not
-add tools, authority, or an approval bypass.
+chat projection, approval store, and event stream. The developer Agent view
+does not add tools, authority, or an approval bypass. The separately labeled
+Slicing test surface does not invoke a language Agent; it calls only the
+Skill-owned staged adapter, which retains Manager lifecycle, exact Integrated
+signed-preview execution, workcell binding, explicit Integrated `WARM` lease
+relinquishment, Contact signing, and terminal relax boundaries.
 
 ## Agent boundary
 
@@ -51,6 +60,21 @@ state logic remains inside the Skill package. The numerical entrypoint runs in
 the Skill's private environment. Manifest latency class selects a bounded
 adapter deadline, allowing multi-sample visual work without putting a
 Skill-specific timeout in the Agent.
+
+The built-in `move_effector_to_world_point` adapter is a narrow absolute-world
+free-space operation. It copies point coordinates and optional spatial-session
+identity from the Agent call, resolves them through current Fabric transforms,
+preserves measured controlled-effector orientation, and keeps the preview ID
+and canonical signed commit envelope out of model-visible arguments. It does
+not calculate a relative move in the language model and does not authorize
+contact work.
+
+World-direction and absolute workcell-world resolution give priority to the
+active reviewed transform. A
+`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` activation remains usable when
+Local VIO is temporarily `DEGRADED`, consistent with Manager's invalidation
+policy; it is re-read before commit. The upright arm-mount question is only a
+bounded development fallback when no reviewed motion-usable transform exists.
 
 Provider dependencies are made `HOT` through Manager. The host waits for a
 fresh Manager report showing the required capability ready; process creation

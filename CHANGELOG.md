@@ -2,6 +2,86 @@
 
 ## Unreleased
 
+- Tune the Basic-owned operational joint velocity limits to 4.0 rad/s for all
+  six arm joints while retaining the gripper at 2.1 rad/s. Publish the same
+  mode-specific limits for Integrated and Contact, and halve the ordinary
+  Integrated no-speed-request duration from 3.0 to 1.5 seconds.
+- Decouple Basic feedback polling from the Integrated and Contact command
+  streams. Each controller now consumes its own freshness-checked 50 Hz
+  feedback cache instead of serializing a state HTTP request before every
+  command; Integrated final stability still requires distinct Basic samples.
+- Correct Agent spatial resolution after reviewed FoundationPose activation.
+  A temporary Local VIO `DEGRADED` state now uses the active
+  `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` world-from-arm transform for
+  semantic directions and absolute workcell-world points instead of wrongly
+  asking for an upright arm-mount attestation.
+- Upgrade signed Integrated free-space execution from 10 Hz waypoint handoffs
+  to controller-paced 50 Hz interpolation. `IMPEDANCE` remains the explicit
+  default backend; callers may select signed-plan `POS_SPEED`, which emits
+  Basic `POSITION_VELOCITY_LIMITED` targets and recomputes timing from that
+  mode's advertised joint limits. Expose the same choice to the relative and
+  absolute-world Agent Skills and to Slicing's Integrated-only Stage 1; Contact
+  Stage 2 remains `POS_TOR`.
+- Add the discoverable `move_effector_to_world_point` finite Skill for exact
+  absolute-world free-space positioning. The host binds optional world-frame
+  and VIO-epoch identity, requires the reviewed rigid world-to-arm transform,
+  preserves measured controlled-effector orientation with `POSE_6DOF`, and
+  executes only the call-scoped signed Integrated preview. Stale frames,
+  unavailable transforms, collision/IK rejection, and incomplete motion fail
+  without advancing a later contact action.
+- Preserve Slicing stroke geometry across best-effort Contact moves: the slice
+  is now the requested measured-start projected displacement, just as retract
+  is a measured-start outward displacement, so an engage residual cannot add a
+  correction curve or change slice length. Start Contact's safe inactivity
+  timeout after its calculated transition interval and record commanded versus
+  measured FK cross-track, orientation, and joint-following diagnostics for
+  each segment.
+- Correct Slicing Agent profile selection under strict tool schemas. Profile
+  selectors are now nullable and the Agent must send null unless the user
+  explicitly requests a number; null resolves both live persisted defaults at
+  invocation time instead of forcing the model to invent stale numbers.
+- Make Slicing extraction a signed negative-blade displacement resolved from
+  fresh measured effector position when Contact accepts move 3. This prevents
+  an unreachable slice residual from turning retract into motion toward a
+  stale absolute endpoint.
+- Add Contact-owned `CARTESIAN_SEGMENT` execution for Slicing. Contact now
+  reads Basic's advertised internal control rate, prepares sequential full-pose
+  IK knots at no more than 2 mm translation spacing, time-parameterizes them
+  with Basic's joint speed limits, and submits changing
+  POSITION_EFFORT_LIMITED targets at the current 50 Hz cadence. One-shot
+  endpoint behavior remains available, and a new signed move still replaces
+  an in-progress segment immediately. Integrated's execution is unchanged
+  pending physical qualification of the Contact path.
+- Make Slicing blade-profile saves, deletes, and default changes visible to the
+  next Agent invocation without a workspace restart. The Slicing adapter still
+  verifies Basic's active mounted-effector identity and uses its geometry, but
+  live-loads only the Skill-owned blade-profile extension from the matching
+  source profile; already prepared plans remain frozen.
+- Make Basic the sole owner of POSITION_EFFORT_LIMITED speed and motor-unit
+  translation. Contact plans no longer contain joint speed; Contact consumes
+  Basic's current mode-specific arm limits for command timing and submits
+  torque ceilings in N·m. Basic converts N·m to FORCE_POS ratio internally,
+  and its development UI now edits N·m beside read-only Basic/motor limits.
+- Add the independent `rebot_arm_contact` Provider and versioned Contact Work
+  contract. A finite installed Skill signs one exact Cartesian pose/wrench and
+  timing plan; the Provider talks directly to Basic, performs independent
+  locked-joint IK, maps the full six-component acting-point wrench through
+  measured-pose `J^T w`, reserves additive gravity effort, holds locked joints
+  at the full Basic-authorized torque ceiling, replaces active endpoints immediately,
+  and returns to verified gravity float on explicit relax or a default
+  six-second inactivity watchdog. Add the development non-clamping `slicing`
+  Skill: it derives a priority-preserving blade orientation, uses Integrated
+  for one free-space alignment, then signs exactly three Contact Cartesian
+  segments for engage, slice, and retract before relaxation. Its rotational wrench
+  components remain zero until separately physically qualified. Add a numeric
+  two-stage developer surface that freezes and displays one plan, executes the
+  Integrated alignment separately from Contact, and supports either absolute
+  world points or world-axis offsets from one captured current-effector origin.
+  Correct Contact pose solving to retain the best weighted 6-DoF result, add
+  mounted-effector-profile joint locks and editable profile defaults, and make
+  Contact-derived velocity-limited joint transition time a minimum Skill hold
+  so short profile delays do not predictably truncate slicing strokes.
+
 - Add the discoverable `refine_arm_root_translation` finite Skill for
   non-moving XYZ refinement of an existing world-to-arm-base alignment. It
   captures synchronized RGB and registered depth with timestamp-bracketed arm

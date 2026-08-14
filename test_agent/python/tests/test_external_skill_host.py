@@ -109,3 +109,29 @@ def test_ineligible_external_skill_host_adapter_is_not_loaded(
     )
 
     assert adapters == {}
+
+
+def test_repository_slicing_host_adapter_loads_when_eligible() -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    descriptors = discover_agent_skills(workspace)
+    manager = SimpleNamespace(base_url="http://127.0.0.1:7001")
+    integrated_motion = SimpleNamespace()
+
+    adapters = load_external_skill_host_adapters(
+        descriptors,
+        eligible_tool_names={"slice_with_blade"},
+        services=ExternalSkillHostServices(
+            manager=manager,
+            fabric=SimpleNamespace(),
+            spatial=SimpleNamespace(),
+            vlm_router=SimpleNamespace(),
+            visual_evidence_store=SimpleNamespace(),
+            integrated_motion=integrated_motion,
+            contact_provider_url="http://127.0.0.1:8794",
+        ),
+    )
+
+    adapter = adapters["skill.slicing.host.v1"]
+    assert adapter.manager is manager
+    assert adapter.integrated_motion is integrated_motion
+    assert adapter.contact_provider_url == "http://127.0.0.1:8794"

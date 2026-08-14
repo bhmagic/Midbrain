@@ -1,0 +1,4 @@
+interface:
+  display_name: "Move Effector to World Point"
+  short_description: "Move safely to an absolute world point"
+  default_prompt: "Use $move-effector-to-world-point to move the controlled effector to an absolute point in the active world frame."

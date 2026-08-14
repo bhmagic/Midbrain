@@ -20,7 +20,8 @@ The UI exposes the Provider's reviewed attended-test modes:
 - `POSITION_VELOCITY_LIMITED` with Provider-enforced position and velocity
   limits; and
 - `POSITION_EFFORT_LIMITED` with Provider-enforced position, velocity, and
-  effort limits.
+  torque limits. Its editable torque field is in N·m; adjacent read-only text
+  shows both the effective Basic ceiling and configured motor TMAX.
 
 Raw `VELOCITY` is intentionally unavailable. Enabling attended control obtains
 a short root lease. A slider produces commands only while its pointer deadman

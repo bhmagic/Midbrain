@@ -18,8 +18,9 @@ choose a value from the changelog or a README title to silence the conflict.
 The regression suite covers capability publication, exclusion of
 GUI-only experiments from Agent discovery, Basic lease transitions, IK and
 residual gates, contact-budget mapping, gripper latching, payload forwarding,
-Fabric freshness and duplicate handling, endpoint speed limiting,
-controller-owned preview, one-time signed commit, final-state handling,
+Fabric freshness and duplicate handling, 50 Hz command pacing, interpolation
+timing, Basic-calibrated rate limiting, already-satisfied-pose Jacobian
+measurement, controller-owned preview, one-time signed commit, final-state handling,
 semantic-scene revalidation, provider-local audit behavior, authorization
 redaction, and Manager-versus-Basic authority shadow telemetry.
 
@@ -41,7 +42,7 @@ general deployment qualification.
 Before broad autonomous use, qualify at least:
 
 - `TRANSIT_SPEED` across the intended reachable workspace, loads, speeds, and
-  stopping conditions;
+  stopping conditions, including measured 50 Hz command cadence and tracking;
 - Basic hardware I/O and USB fault behavior at the configured loop rates;
 - payload mass/COM handling and gravity-model error;
 - semantic-scene production and collision checking against measured geometry;

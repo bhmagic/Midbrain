@@ -54,7 +54,7 @@
     "load_bearing_mit_kp_rule": "kp_must_be_at_least_provided_default; kd_may_be_low",
     "safe_home_transition_hold_cycles": 5,
     "safe_home_powered_settle_s": 0.25,
-    "physical_test_pos_vel_cap_rad_s": [5.0, 5.0, 5.0, 10.0, 10.0, 10.0, 10.0],
+    "physical_test_pos_vel_cap_rad_s": [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
     "physical_test_pos_tor_ratio_cap": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2],
     "motor_endpoint_keepalive_hz": 10.0,
     "transient_serial_retry_count": 2,
@@ -122,7 +122,7 @@
         "kp": 120,
         "kd": 8,
         "velocity_limit_rad_s": 0.25,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 4.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -204,7 +204,7 @@
         "kp": 120,
         "kd": 8,
         "velocity_limit_rad_s": 0.25,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 4.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -286,7 +286,7 @@
         "kp": 120,
         "kd": 8,
         "velocity_limit_rad_s": 0.25,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 4.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -368,7 +368,7 @@
         "kp": 18,
         "kd": 2,
         "velocity_limit_rad_s": 0.35,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 1.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -450,7 +450,7 @@
         "kp": 18,
         "kd": 2,
         "velocity_limit_rad_s": 0.35,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 1.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -532,7 +532,7 @@
         "kp": 18,
         "kd": 2,
         "velocity_limit_rad_s": 0.35,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 1.05
       },
       "dynamics": {
         "gravity_scale": 1.0,
@@ -614,7 +614,7 @@
         "kp": 8,
         "kd": 1,
         "velocity_limit_rad_s": 0.35,
-        "torque_limit_ratio": 0.15
+        "torque_limit_nm": 1.05
       },
       "dynamics": {
         "gravity_scale": 1.0,

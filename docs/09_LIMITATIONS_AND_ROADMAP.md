@@ -174,30 +174,46 @@ than generic failure text.
 
 ## P3: physical qualification
 
-### Qualify or retire Integrated CONTACT_WORK
+### Qualify the independent Contact Work path
 
-Integrated currently implements `CONTACT_WORK` as an attended, GUI-only,
-one-shot `POSITION_EFFORT_LIMITED` endpoint with a separately captured torque
-baseline and explicit joint or wrench budgets. It is experimental, is absent
-from Agent capability discovery, and is not a general Cartesian-force
-controller.
+The development `rebot_arm_contact` Provider now defines the separation
+boundary for deliberate contact. It runs independently from Integrated,
+communicates directly with Basic, accepts finite Skill-signed plans, maps
+six-component acting-point wrenches to joint effort ceilings, executes
+one-shot endpoints or sequential-IK Cartesian segments at Basic's advertised
+internal control rate, holds its latest `POSITION_EFFORT_LIMITED` endpoint,
+and relaxes on explicit cleanup or its default six-second post-transition
+inactivity watchdog. The initial `slicing` Skill is
+non-clamping, derives blade orientation from numbered mounted-effector use
+profiles, uses Integrated only for the initial free-space rotation, and then
+submits exactly three Contact Cartesian segments. It fixes rotational wrench
+components to zero until the task is physically qualified.
 
-Before promoting it beyond hardware characterization:
+Remaining qualification includes:
 
-- measure torque signs, bias, friction, gravity/payload-model error, and
-  transport-loss behavior across representative postures;
-- validate baseline rejection, effort-budget mapping, physical-ceiling
-  saturation, stopping, and gravity-float recovery on the installed arm;
-- establish uncertainty bounds before interpreting joint residuals as
-  end-effector contact or Cartesian force;
-- qualify gripper and arm behavior with representative tools and workpieces;
-  and
-- either define a stable, discoverable contact capability with deterministic
-  authority and result semantics or retire the experiment.
+- define and measure the complete six-degree-of-freedom force and torque
+  boundary across representative postures;
+- validate gravity-model error, mapped effort saturation, locked-joint
+  disturbance response, 50 Hz segment smoothness and straightness, command
+  replacement, watchdog races, and float recovery on the installed arm;
+- refine the blade development-v3 dimensions and acting point during physical
+  contact trials;
+- obtain finite physical motor temperatures or calibrate the deferred thermal
+  estimator; and
+- qualify slicing and each later task Skill separately rather than exposing a
+  generic arbitrary-wrench Agent tool.
 
-Until those gates pass, current implementation details and attended checks
-belong only in the Integrated Provider's architecture, safety, and physical
-test documents.
+### Retain and later rename Integrated CONTACT_WORK
+
+Integrated still implements `CONTACT_WORK` as an attended, GUI-only, one-shot
+`POSITION_EFFORT_LIMITED` endpoint with a separately captured torque baseline
+and explicit joint or wrench budgets. It remains experimental and absent from
+Agent capability discovery. It is not the new Contact Work Provider and should
+later be renamed to describe its lighter path-navigation push-away role.
+
+Until that rename and its own characterization are complete, its implementation
+details and attended checks remain only in the Integrated Provider's
+architecture, safety, and physical-test documents.
 
 The installed arm profiles still require broader measurement of:
 
@@ -207,7 +223,8 @@ The installed arm profiles still require broader measurement of:
 - collision and newly occupied clearance behavior;
 - compliant hold and position-lock disturbance response;
 - cross-axis behavior for representative camera and arm mounts; and
-- contact-capable control before any workpiece-contact autonomy.
+- physical qualification of the independent Contact Work path before enabling
+  any of its Skills in Agent discovery.
 
 Raw motor or SDK maxima are not whole-arm autonomous operating limits. Current
 ordinary motion and experimental contact/continuous profiles must remain

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Halve the default Integrated relative-motion duration used when no speed was
+  requested from 3.0 to 1.5 seconds.
+- Prefer an active reviewed
+  `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` world-from-arm transform when
+  Local VIO is temporarily degraded. Semantic world directions and absolute
+  workcell-world points no longer fall through to the development arm-mount
+  confirmation after FoundationPose calibration has already established the
+  exact frame; preview and commit still revalidate the activation identity.
 - Remove the retired target-edit/one-shot Agent route and expose only the
   signed path-plan/path-commit workflow. Free-space execution authorization is
   autonomous, and the model cannot select or replay a preview from an older

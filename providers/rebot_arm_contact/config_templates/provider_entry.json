@@ -1,0 +1,23 @@
+{
+  "id": "robot_arm.primary.contact",
+  "display_name": "Independent Arm Contact Work Provider",
+  "dependencies": ["robot_arm.rebot_dm"],
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_contact/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_contact/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_contact/config/controller.json",
+    "--basic-url",
+    "http://127.0.0.1:8791",
+    "--manager-url",
+    "${MANAGER_URL}",
+    "--fabric-url",
+    "${FABRIC_URL}"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:8794",
+  "auto_start": false,
+  "graceful_stop_timeout_ms": 10000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {}
+}

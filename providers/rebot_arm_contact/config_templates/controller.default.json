@@ -1,0 +1,38 @@
+{
+  "provider_id": "robot_arm.primary.contact",
+  "provider_type": "robot_arm.contact.position_effort_limited",
+  "listen_host": "127.0.0.1",
+  "listen_port": 8794,
+  "basic": {
+    "url": "http://127.0.0.1:8791",
+    "lease_duration_ms": 3000,
+    "lease_renewal_interval_ms": 1000,
+    "command_timeout_ms": 500,
+    "maximum_feedback_age_ms": 150.0,
+    "float_verify_timeout_s": 2.0
+  },
+  "authorization": {
+    "skill_secret_envs": {
+      "contact.slicing": "MIDBRAIN_CONTACT_SLICING_SECRET"
+    }
+  },
+  "limits": {
+    "default_wait_timeout_s": 6.0,
+    "maximum_wait_timeout_s": 60.0,
+    "maximum_plan_steps": 10000
+  },
+  "ik": {
+    "maximum_iterations": 180,
+    "damping": 0.01,
+    "maximum_iteration_step_rad": 0.10,
+    "joint_margin_rad": 0.001,
+    "orientation_weight_m_per_rad": 0.5
+  },
+  "trajectory": {
+    "maximum_cartesian_waypoint_spacing_m": 0.002,
+    "maximum_waypoints_per_segment": 1000
+  },
+  "wrench": {
+    "minimum_additional_ratio": 0.20
+  }
+}

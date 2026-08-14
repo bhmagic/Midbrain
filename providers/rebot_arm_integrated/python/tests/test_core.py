@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -31,7 +32,12 @@ from rebot_arm_integrated.controller import (
     PlanningRejected,
     IntegratedController,
 )
-from rebot_arm_integrated.kinematics import ArmKinematics, rpy_matrix, transform
+from rebot_arm_integrated.kinematics import (
+    ArmKinematics,
+    matrix_rpy,
+    rpy_matrix,
+    transform,
+)
 from rebot_arm_integrated.http_client import HttpStatusError
 from rebot_arm_integrated.modes import CONTACT_WORK, PRESS_MIT, TRANSIT_SPEED
 from rebot_arm_integrated.service import IntegratedService
@@ -75,6 +81,37 @@ def load_public_model() -> dict:
     by_name = {item["name"]: item for item in calibration["joints"]}
     for joint in model["joints"]:
         joint["calibrated"] = copy.deepcopy(by_name[joint["name"]])
+    pos_vel_caps = model["control"]["physical_test_pos_vel_cap_rad_s"]
+    impedance_limits = []
+    position_velocity_limits = []
+    for index, joint in enumerate(model["joints"]):
+        configured_vmax = float(
+            joint["motor_limits"]["configured_vmax_rad_s"]
+        )
+        impedance_limits.append(
+            {
+                "joint_index": index,
+                "joint_name": joint["name"],
+                "target_rate_limit_rad_s": min(
+                    configured_vmax,
+                    float(by_name[joint["name"]]["provider_velocity_cap_rad_s"]),
+                ),
+            }
+        )
+        position_velocity_limits.append(
+            {
+                "joint_index": index,
+                "joint_name": joint["name"],
+                "velocity_limit_rad_s": min(
+                    configured_vmax,
+                    float(pos_vel_caps[index]),
+                ),
+            }
+        )
+    model["command_limits"] = {
+        "IMPEDANCE": impedance_limits,
+        "POSITION_VELOCITY_LIMITED": position_velocity_limits,
+    }
     return model
 
 
@@ -107,11 +144,14 @@ class FakeBasic:
         self.safe_home_stop_count = 0
         self.payload_updates: list[tuple[float, list[float]]] = []
         self.reject_next_command = False
+        self.state_call_threads: list[str] = []
 
     def model(self):
         return copy.deepcopy(self._model)
 
     def state(self):
+        self.state_call_threads.append(threading.current_thread().name)
+        self._state["observed_at_us"] = time.time_ns() // 1000
         return copy.deepcopy(self._state)
 
     def health(self):
@@ -251,10 +291,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             config["trajectory"]["arrival_cartesian_orientation_tolerance_rad"],
             0.05,
-        )
-        self.assertEqual(
-            config["trajectory"]["intermediate_arrival_stable_samples"],
-            2,
         )
         self.assertEqual(
             config["trajectory"]["one_shot_arrival_settle_timeout_s"],
@@ -759,7 +795,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(command["joint_index"], 6)
         self.assertEqual(command["mode"], "POSITION_EFFORT_LIMITED")
         self.assertAlmostEqual(command["values"]["position_rad"], controller.gripper_closed_position_rad)
-        self.assertAlmostEqual(command["values"]["torque_limit_ratio"], 0.15)
+        self.assertAlmostEqual(command["values"]["torque_limit_nm"], 1.05)
 
     def test_gripper_requires_engage_and_does_not_send(self):
         controller, basic = prepared_controller(embedded_gripper=True)
@@ -1234,6 +1270,34 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(basic.lease_snapshot())
         self.assertEqual(basic.commands, [])
 
+    def test_transit_preview_accepts_orientation_already_within_ik_tolerance(self):
+        config = load_config()
+        basic = FakeBasic()
+        controller = IntegratedController(config, basic)
+        model = ArmKinematics(basic.model())
+        q = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        current = model.controlled_frame(
+            q,
+            controller._tool_to_control_locked(),
+        )
+        target_rotation = rpy_matrix([0.02, 0.0, 0.0]) @ current[:3, :3]
+
+        result = controller.preview_transit_path(
+            target_position_m=current[:3, 3].tolist(),
+            target_rpy_rad=matrix_rpy(target_rotation).tolist(),
+            requested_speed_m_s=0.05,
+        )
+
+        self.assertEqual(result["status"], "PLANNED")
+        self.assertGreater(
+            result["selected_plan"]["minimum_jacobian_sigma"],
+            0.0,
+        )
+        self.assertNotIn(
+            "singularity",
+            " ".join(result["selected_plan"]["planning_reasons"]),
+        )
+
     def test_authorized_transit_executes_bounded_stages_and_holds_final(
         self,
     ):
@@ -1325,7 +1389,7 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(
             np.allclose(
                 result["joint_speed_policy"]["joint_rate_caps_rad_s"],
-                [5.0, 5.0, 5.0, 10.0, 10.0, 10.0],
+                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
                 rtol=0.0,
                 atol=1e-12,
             )
@@ -1347,7 +1411,7 @@ class ControllerTests(unittest.TestCase):
                     self.assertEqual(command["mode"], "IMPEDANCE")
                     self.assertLessEqual(
                         command["values"]["target_rate_limit_rad_s"],
-                        0.25,
+                        0.25 + 1e-12,
                     )
                     self.assertGreater(command["values"]["kp"], 0.0)
                     self.assertIn(
@@ -1628,6 +1692,173 @@ class ControllerTests(unittest.TestCase):
         )
         controller.release_authorized_transit()
 
+    def test_authorized_transit_streams_timed_interpolation_at_fifty_hz(self):
+        controller, basic = prepared_controller()
+        controller.start()
+        self.addCleanup(controller.stop)
+        original_command = basic.command
+
+        def follow_stream(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6 and "position_rad" in command["values"]:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = 0.0
+            return result
+
+        basic.command = follow_stream  # type: ignore[method-assign]
+        q_start = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        q_goal = q_start.copy()
+        q_goal[0] += 0.07
+
+        result = controller.execute_authorized_transit(
+            plan_id="plan-stream-50hz",
+            preview_sha256="preview-stream-50hz",
+            request_sha256="request-stream-50hz",
+            q_waypoints_rad=[q_start.tolist(), q_goal.tolist()],
+            requested_speed_m_s=0.05,
+            scene_revision=None,
+            final_state="FIXED",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-stream-50hz",
+                "decision_id": "decision-stream-50hz",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertAlmostEqual(
+            result["planned_duration_s"] * 50.0,
+            round(result["planned_duration_s"] * 50.0),
+        )
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status == "HOLDING_FINAL"
+                ),
+                timeout=2.0,
+            )
+        )
+        arm_targets = [
+            float(envelope[0]["values"]["position_rad"])
+            for envelope in basic.commands
+            if envelope
+            and int(envelope[0]["joint_index"]) == 0
+            and envelope[0]["mode"] == "IMPEDANCE"
+        ]
+        first_final = next(
+            index
+            for index, value in enumerate(arm_targets)
+            if math.isclose(value, float(q_goal[0]), abs_tol=1e-10)
+        )
+        streamed_targets = arm_targets[: first_final + 1]
+        self.assertGreater(len(streamed_targets), 5)
+        self.assertTrue(
+            all(
+                later >= earlier - 1e-12
+                for earlier, later in zip(
+                    streamed_targets[:-1],
+                    streamed_targets[1:],
+                )
+            )
+        )
+        summary = controller.snapshot()["planning"]["authorized_transit"]
+        self.assertEqual(summary["stream_rate_hz"], 50.0)
+        self.assertEqual(summary["stream_progress"], 1.0)
+        self.assertTrue(summary["target_timeline_complete"])
+        self.assertGreater(summary["stream_sample_count"], 5)
+        self.assertNotIn("arm-authorized-transit", basic.state_call_threads)
+        controller.release_authorized_transit()
+
+    def test_authorized_transit_can_stream_pos_speed_at_fifty_hz(self):
+        controller, basic = prepared_controller()
+        original_command = basic.command
+
+        def follow_stream(commands, timeout_ms=250):
+            result = original_command(commands, timeout_ms)
+            for command in commands:
+                index = int(command["joint_index"])
+                if index < 6:
+                    basic._state["positions_rad"][index] = float(
+                        command["values"]["position_rad"]
+                    )
+                    basic._state["velocities_rad_s"][index] = 0.0
+            return result
+
+        basic.command = follow_stream  # type: ignore[method-assign]
+        q_start = np.asarray(basic._state["positions_rad"][:6], dtype=float)
+        q_goal = q_start.copy()
+        q_goal[0] += 0.07
+
+        result = controller.execute_authorized_transit(
+            plan_id="plan-stream-pos-speed",
+            preview_sha256="preview-stream-pos-speed",
+            request_sha256="request-stream-pos-speed",
+            q_waypoints_rad=[q_start.tolist(), q_goal.tolist()],
+            requested_speed_m_s=0.05,
+            scene_revision=None,
+            final_state="FIXED",
+            execution_backend="POS_SPEED",
+            allowed_contact_object_ids=set(),
+            permit_pushable_contact=False,
+            authorization_claims={
+                "assertion_id": "assertion-stream-pos-speed",
+                "decision_id": "decision-stream-pos-speed",
+                "resolved_by": "operator",
+            },
+        )
+
+        self.assertEqual(
+            result["command_stream"]["execution_backend"],
+            "POS_SPEED",
+        )
+        self.assertEqual(
+            result["command_stream"]["basic_command_mode"],
+            "POSITION_VELOCITY_LIMITED",
+        )
+        self.assertTrue(
+            wait_until(
+                lambda: (
+                    controller.authorized_transit is not None
+                    and controller.authorized_transit.status == "HOLDING_FINAL"
+                ),
+                timeout=2.0,
+            )
+        )
+        pos_speed_commands = [
+            command
+            for envelope in basic.commands
+            for command in envelope
+            if int(command["joint_index"]) < 6
+        ]
+        self.assertGreater(len(pos_speed_commands), 5)
+        self.assertTrue(
+            all(
+                command["mode"] == "POSITION_VELOCITY_LIMITED"
+                for command in pos_speed_commands
+            )
+        )
+        self.assertTrue(
+            all(
+                "velocity_limit_rad_s" in command["values"]
+                and "velocity_rad_s" not in command["values"]
+                and "kp" not in command["values"]
+                for command in pos_speed_commands
+            )
+        )
+        summary = controller.snapshot()["planning"]["authorized_transit"]
+        self.assertEqual(summary["execution_backend"], "POS_SPEED")
+        self.assertEqual(
+            summary["basic_command_mode"],
+            "POSITION_VELOCITY_LIMITED",
+        )
+        controller.release_authorized_transit()
+
     def test_gripper_remains_blocked_during_authorized_transit(self):
         controller, basic = prepared_controller(embedded_gripper=True)
         controller.stage_scene(
@@ -1827,7 +2058,15 @@ class ControllerTests(unittest.TestCase):
         )
         self.assertEqual(len(command), 6)
         self.assertTrue(
-            all(0.0 < item["values"]["torque_limit_ratio"] <= 0.25 for item in command)
+            all(
+                0.0 < item["values"]["torque_limit_nm"]
+                <= float(
+                    controller.basic_model["joints"][item["joint_index"]][
+                        "motor_limits"
+                    ]["configured_tmax_nm"]
+                )
+                for item in command
+            )
         )
         self.assertIsNotNone(controller.contact_torque_limit_ratios)
         self.assertEqual(basic.float_count, floats_before_commit)
@@ -2007,14 +2246,15 @@ class ControllerTests(unittest.TestCase):
             [0.0] * 6,
             [0.1] * 6,
             keepalive_period_s=0.1,
-            torque_limit_ratios=[0.05] * 6,
+            torque_limits_nm=[1.35, 1.35, 1.35, 0.35, 0.35, 0.35],
         )
         controller._update_contact_monitor_locked(changed)
         self.assertEqual(controller.contact_limit_violations, [2])
         self.assertEqual(controller.contact_saturated_joint_indices, [2])
         self.assertEqual(
-            controller.latched_endpoint.torque_limit_ratios[2],
-            controller.basic_model["control"]["physical_test_pos_tor_ratio_cap"][2],
+            controller.latched_endpoint.torque_limits_nm[2],
+            controller.basic_model["control"]["physical_test_pos_tor_ratio_cap"][2]
+            * controller.basic_model["joints"][2]["motor_limits"]["configured_tmax_nm"],
         )
 
     def test_target_editing_is_nonphysical(self):
@@ -2495,6 +2735,27 @@ class KinematicsTests(unittest.TestCase):
         )
         self.assertLess(result.position_residual_m, 0.005)
         self.assertLess(result.orientation_residual_rad, 0.10)
+
+    def test_already_satisfied_pose_reports_measured_jacobian_quality(self):
+        kin = ArmKinematics(load_public_model())
+        seed = np.array([-0.04, -1.91, -1.54, 0.08, 0.02, -0.14])
+        target = kin.controlled_frame(seed)
+
+        result = kin.solve_weighted_pose(
+            seed,
+            target,
+            position_tolerance_m=0.0015,
+            orientation_tolerance_rad=0.035,
+            maximum_iterations=220,
+            damping=0.025,
+            maximum_step_rad=0.035,
+            joint_margin_rad=0.001,
+            orientation_weight_m_per_rad=0.5,
+            orientation_required=True,
+        )
+
+        self.assertEqual(result.iterations, 1)
+        self.assertGreater(result.sigma_min, 0.0)
 
 
 if __name__ == "__main__":

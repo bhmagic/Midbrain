@@ -35,7 +35,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 120.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.35,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.25,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -68,7 +68,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 120.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.35,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.25,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -101,7 +101,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 120.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.35,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.25,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -134,7 +134,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 18.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.5,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.2,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -167,7 +167,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 18.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.5,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.2,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -200,7 +200,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 18.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.5,
+      "provider_velocity_cap_rad_s": 4.0,
       "provider_torque_ratio_cap": 0.2,
       "quality": {
         "gravity": "NOMINAL_RETAINED",
@@ -233,7 +233,7 @@
       "torque_bias_nm": 0.0,
       "safe_float_kp": 8.0,
       "safe_float_kd": 1.0,
-      "provider_velocity_cap_rad_s": 0.5,
+      "provider_velocity_cap_rad_s": 2.1,
       "provider_torque_ratio_cap": 0.2,
       "quality": {
         "gravity": "NOMINAL_RETAINED",

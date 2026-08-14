@@ -49,7 +49,7 @@ _POSE_ORIENTATION_POLICIES = {
     _SET_ARM_BASE_RPY,
 }
 MAX_CONTROLLED_FRAME_YAW_DELTA_DEG = 45.0
-DEFAULT_RELATIVE_DURATION_S = 3.0
+DEFAULT_RELATIVE_DURATION_S = 1.5
 MIN_RELATIVE_DURATION_S = 0.05
 MAX_RELATIVE_DURATION_S = 60.0
 MAX_RELATIVE_TRANSLATION_M = 1.2
@@ -71,6 +71,12 @@ _BASIC_MOTION_CAPABILITY = "robot.motion.arm.basic"
 _INTEGRATED_FREE_SPACE_CAPABILITY = (
     "robot_arm.motion.free_space.preview_commit.v1"
 )
+_TRANSIT_BACKEND_IMPEDANCE = "IMPEDANCE"
+_TRANSIT_BACKEND_POS_SPEED = "POS_SPEED"
+_TRANSIT_BACKENDS = {
+    _TRANSIT_BACKEND_IMPEDANCE,
+    _TRANSIT_BACKEND_POS_SPEED,
+}
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -119,7 +125,7 @@ class IntegratedMotionClientProtocol(Protocol):
         """Release a retained signed transit path."""
 
 class IntegratedRelativeMotionAdapter:
-    """Resolve, preview, and approve one relative Cartesian motion."""
+    """Resolve, preview, and approve one finite Cartesian motion."""
 
     def __init__(
         self,
@@ -184,6 +190,7 @@ class IntegratedRelativeMotionAdapter:
                     ],
                     "distance_m": value["distance_m"],
                     "requested_speed_m_s": value["requested_speed_m_s"],
+                    "execution_backend": value["execution_backend"],
                     "requested_duration_s": value["requested_duration_s"],
                     "planned_duration_s": value["planned_duration_s"],
                     "planned_nominal_speed_m_s": value[
@@ -210,6 +217,9 @@ class IntegratedRelativeMotionAdapter:
                     "target_orientation_rpy_rad": value[
                         "target_orientation_rpy_rad"
                     ],
+                    "absolute_world_point": copy.deepcopy(
+                        value.get("absolute_world_point")
+                    ),
                     "expires_in_s": max(
                         0.0,
                         self.approval_ttl_s
@@ -232,6 +242,124 @@ class IntegratedRelativeMotionAdapter:
             "read_only": True,
         }
 
+    async def preview_world_point(
+        self,
+        *,
+        target_position_world_m: list[float],
+        target_world_frame_id: str | None = None,
+        target_session_epoch: str | None = None,
+        requested_speed_m_s: float | None = None,
+        execution_backend: str = _TRANSIT_BACKEND_IMPEDANCE,
+    ) -> dict[str, Any]:
+        """Preview an exact absolute world point while preserving attitude."""
+
+        try:
+            world_point = await self.spatial_resolver.resolve_world_point(
+                target_position_world_m=target_position_world_m,
+                expected_world_frame=target_world_frame_id,
+                expected_session_epoch=target_session_epoch,
+            )
+        except SpatialResolutionRequired as required:
+            return {
+                **required.payload,
+                "target_position_world_m": target_position_world_m,
+                "target_world_frame_id": target_world_frame_id,
+                "target_session_epoch": target_session_epoch,
+            }
+        try:
+            state = await self.client.state()
+        except httpx.RequestError as exc:
+            return self._dependency_unavailable(str(exc))
+        if (
+            state.get("residency") != "HOT"
+            or state.get("ready") is not True
+        ):
+            return self._dependency_unavailable(
+                "Integrated Controller is not HOT and ready",
+                state=state,
+            )
+        model_view = state.get("model_view")
+        model_view = model_view if isinstance(model_view, dict) else {}
+        measured = model_view.get("measured_controlled_frame")
+        measured = measured if isinstance(measured, dict) else {}
+        current = measured.get("position_m")
+        if not _is_finite_vector(current):
+            raise RuntimeError(
+                "Integrated Controller has no measured controlled-frame pose"
+            )
+        target_arm = list(world_point.target_position_arm_base_m)
+        displacement_arm = [
+            target_arm[index] - float(current[index])
+            for index in range(3)
+        ]
+        distance = float(np.linalg.norm(displacement_arm))
+        absolute_context = {
+            "target_position_world_m": list(
+                world_point.target_position_world_m
+            ),
+            "target_world_frame_id": world_point.provenance["world_frame"],
+            "target_session_epoch": world_point.provenance[
+                "session_epoch"
+            ],
+            "world_point_resolution": world_point.as_dict(),
+        }
+        if distance < 0.001:
+            return self._already_at_world_point(
+                current_position_arm_base_m=current,
+                target_position_arm_base_m=target_arm,
+                absolute_context=absolute_context,
+            )
+        if distance > MAX_RELATIVE_TRANSLATION_M:
+            return {
+                "status": "ABSOLUTE_WORLD_POINT_OUT_OF_RANGE",
+                "workflow_complete": False,
+                "physical_motion_authorized": False,
+                "physical_motion_submitted": False,
+                "distance_m": distance,
+                "maximum_distance_m": MAX_RELATIVE_TRANSLATION_M,
+                "target_position_arm_base_m": target_arm,
+                **absolute_context,
+                "message": (
+                    "The absolute target is farther than the finite "
+                    "free-space motion limit from the measured effector "
+                    "position. No preview or motion was created."
+                ),
+            }
+        unit_arm = tuple(value / distance for value in displacement_arm)
+        rotation = rotation_matrix(
+            world_point.provenance["world_from_arm_rotation_xyzw"]
+        )
+        unit_world = tuple(
+            sum(
+                rotation[row][column] * unit_arm[column]
+                for column in range(3)
+            )
+            for row in range(3)
+        )
+        spatial_resolution = SpatialResolution(
+            direction="WORLD_POINT",
+            reference_frame="WORLD",
+            vector_arm_base=unit_arm,
+            provenance={
+                **world_point.provenance,
+                "resolution_source": "ABSOLUTE_WORLD_POINT_TO_ARM_BASE",
+                "expected_direction_world": list(unit_world),
+                "absolute_world_point_resolution": world_point.as_dict(),
+            },
+        )
+        return await self.preview(
+            direction="ARM_BASE_POSITIVE_X",
+            distance_m=distance,
+            requested_speed_m_s=requested_speed_m_s,
+            execution_backend=execution_backend,
+            reference_frame="ARM_BASE",
+            orientation_policy=_PRESERVE_MEASURED_ORIENTATION,
+            _spatial_resolution_override=spatial_resolution,
+            _absolute_target_arm_base_m=target_arm,
+            _absolute_world_point=absolute_context,
+            _motion_intent_override="NEW_ABSOLUTE_WORLD_POSE_MOVE",
+        )
+
     async def preview(
         self,
         *,
@@ -239,6 +367,7 @@ class IntegratedRelativeMotionAdapter:
         distance_m: float | None = None,
         translation_vector_m: list[float] | None = None,
         requested_speed_m_s: float | None = None,
+        execution_backend: str = _TRANSIT_BACKEND_IMPEDANCE,
         reference_frame: str = "WORLD",
         arm_mount_assumption: str = "UNKNOWN",
         camera_level_assumption: str = "UNKNOWN",
@@ -247,7 +376,18 @@ class IntegratedRelativeMotionAdapter:
         controlled_frame_yaw_delta_deg: float | None = None,
         controlled_frame_rpy_delta_deg: list[float] | None = None,
         target_orientation_rpy_rad: list[float] | None = None,
+        _spatial_resolution_override: SpatialResolution | None = None,
+        _absolute_target_arm_base_m: list[float] | None = None,
+        _absolute_world_point: dict[str, Any] | None = None,
+        _motion_intent_override: str | None = None,
     ) -> dict[str, Any]:
+        normalized_execution_backend = str(
+            execution_backend or _TRANSIT_BACKEND_IMPEDANCE
+        ).strip().upper()
+        if normalized_execution_backend not in _TRANSIT_BACKENDS:
+            raise ValueError(
+                "execution_backend must be IMPEDANCE or POS_SPEED"
+            )
         normalized_translation_vector: list[float] | None = None
         if translation_vector_m is not None:
             if direction not in {None, "", "VECTOR"} or distance_m is not None:
@@ -432,9 +572,13 @@ class IntegratedRelativeMotionAdapter:
             }
             else "NEW_RELATIVE_MOVE"
         )
+        if _motion_intent_override is not None:
+            motion_intent = str(_motion_intent_override).strip().upper()
         readiness: dict[str, Any] | None = None
         try:
-            if normalized_translation_vector is not None:
+            if _spatial_resolution_override is not None:
+                resolution = _spatial_resolution_override
+            elif normalized_translation_vector is not None:
                 resolution = await self._resolve_translation_vector(
                     normalized_translation_vector,
                     reference_frame=reference_frame,
@@ -868,10 +1012,58 @@ class IntegratedRelativeMotionAdapter:
                 "Integrated Controller has no measured controlled-frame pose"
             )
         vector = resolution.vector_arm_base
-        target = [
-            float(current[index]) + vector[index] * distance
-            for index in range(3)
-        ]
+        if _absolute_target_arm_base_m is None:
+            target = [
+                float(current[index]) + vector[index] * distance
+                for index in range(3)
+            ]
+        else:
+            target = [float(value) for value in _absolute_target_arm_base_m]
+            if not _is_finite_vector(target):
+                raise ValueError(
+                    "_absolute_target_arm_base_m must contain three finite values"
+                )
+            displacement = [
+                target[index] - float(current[index])
+                for index in range(3)
+            ]
+            distance = float(np.linalg.norm(displacement))
+            if distance < 0.001:
+                return self._already_at_world_point(
+                    current_position_arm_base_m=current,
+                    target_position_arm_base_m=target,
+                    absolute_context=_absolute_world_point or {},
+                )
+            if distance > MAX_RELATIVE_TRANSLATION_M:
+                return {
+                    "status": "ABSOLUTE_WORLD_POINT_OUT_OF_RANGE",
+                    "workflow_complete": False,
+                    "physical_motion_authorized": False,
+                    "physical_motion_submitted": False,
+                    "distance_m": distance,
+                    "maximum_distance_m": MAX_RELATIVE_TRANSLATION_M,
+                    "target_position_arm_base_m": target,
+                    **copy.deepcopy(_absolute_world_point or {}),
+                }
+            vector = tuple(value / distance for value in displacement)
+            resolution = SpatialResolution(
+                direction=resolution.direction,
+                reference_frame=resolution.reference_frame,
+                vector_arm_base=vector,
+                provenance=copy.deepcopy(resolution.provenance),
+            )
+            if requested_speed is not None:
+                requested_duration_s = distance / requested_speed
+                if requested_duration_s > MAX_RELATIVE_DURATION_S:
+                    return self._unsupported_timing_request(
+                        distance_m=distance,
+                        requested_speed_m_s=requested_speed,
+                        requested_duration_s=requested_duration_s,
+                        reason=(
+                            "distance divided by requested speed exceeds the "
+                            f"{MAX_RELATIVE_DURATION_S:g}-second controller window"
+                        ),
+                    )
         target_orientation_rpy_rad: list[float] | None = None
         if (
             normalized_orientation_policy in _POSE_ORIENTATION_POLICIES
@@ -930,6 +1122,7 @@ class IntegratedRelativeMotionAdapter:
                 orientation_policy=normalized_orientation_policy,
                 duration_s=controller_requested_duration_s,
                 requested_speed_m_s=controller_requested_speed_m_s,
+                execution_backend=normalized_execution_backend,
                 spatial_resolution=resolution.as_dict(),
             )
         except IntegratedPreviewRejected as error:
@@ -951,6 +1144,7 @@ class IntegratedRelativeMotionAdapter:
                 "spatial_resolution": resolution.as_dict(),
                 "distance_m": distance,
                 "requested_speed_m_s": requested_speed,
+                "execution_backend": normalized_execution_backend,
                 "requested_duration_s": requested_duration_s,
                 "start_position_m": [float(value) for value in current],
                 "target_position_m": target,
@@ -985,6 +1179,8 @@ class IntegratedRelativeMotionAdapter:
                 "controller_preview": error.plan,
                 "controller_response_status": error.response.get("status"),
             }
+            if _absolute_world_point is not None:
+                result.update(copy.deepcopy(_absolute_world_point))
             if policy_limited:
                 result.update(
                     {
@@ -1081,6 +1277,7 @@ class IntegratedRelativeMotionAdapter:
             "distance_m": distance,
             "original_request_distance_m": distance,
             "requested_speed_m_s": requested_speed,
+            "execution_backend": normalized_execution_backend,
             "requested_duration_s": requested_duration_s,
             "planned_duration_s": planned_duration_s,
             "planned_nominal_speed_m_s": planned_nominal_speed_m_s,
@@ -1144,6 +1341,9 @@ class IntegratedRelativeMotionAdapter:
                     preview.get("preview_contract") or {}
                 ).get("scene_revision"),
             },
+            "absolute_world_point": copy.deepcopy(
+                _absolute_world_point
+            ),
         }
         async with self._lock:
             self._pending = {
@@ -1153,7 +1353,7 @@ class IntegratedRelativeMotionAdapter:
                 <= self.approval_ttl_s
             }
             self._pending[preview_id] = pending
-        return {
+        result = {
             "status": "PREVIEW_READY",
             "workflow_complete": False,
             "physical_motion_authorized": False,
@@ -1164,6 +1364,7 @@ class IntegratedRelativeMotionAdapter:
             "spatial_resolution": resolution.as_dict(),
             "distance_m": distance,
             "requested_speed_m_s": requested_speed,
+            "execution_backend": normalized_execution_backend,
             "requested_duration_s": requested_duration_s,
             "planned_duration_s": planned_duration_s,
             "planned_nominal_speed_m_s": planned_nominal_speed_m_s,
@@ -1223,6 +1424,40 @@ class IntegratedRelativeMotionAdapter:
                 }
             ),
         }
+        if _absolute_world_point is not None:
+            result.update(copy.deepcopy(_absolute_world_point))
+        return result
+
+    @staticmethod
+    def _already_at_world_point(
+        *,
+        current_position_arm_base_m: list[float],
+        target_position_arm_base_m: list[float],
+        absolute_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = {
+            "status": "ALREADY_AT_WORLD_POINT",
+            "workflow_complete": True,
+            "physical_motion_authorized": False,
+            "physical_motion_requested": False,
+            "physical_motion_submitted": False,
+            "physical_motion_completed": True,
+            "goal_reached": True,
+            "orientation_policy": _PRESERVE_MEASURED_ORIENTATION,
+            "current_position_arm_base_m": [
+                float(value) for value in current_position_arm_base_m
+            ],
+            "target_position_arm_base_m": [
+                float(value) for value in target_position_arm_base_m
+            ],
+            **copy.deepcopy(absolute_context),
+            "message": (
+                "The measured controlled-frame origin is already within "
+                "1 mm of the requested absolute world point. No motion was "
+                "necessary."
+            ),
+        }
+        return result
 
     async def _resolve_translation_vector(
         self,
@@ -1562,6 +1797,7 @@ class IntegratedRelativeMotionAdapter:
         orientation_policy: str,
         duration_s: float,
         requested_speed_m_s: float | None = None,
+        execution_backend: str = _TRANSIT_BACKEND_IMPEDANCE,
         spatial_resolution: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         target_payload: dict[str, Any] = {"position_m": target}
@@ -1594,6 +1830,7 @@ class IntegratedRelativeMotionAdapter:
             {
                 "target": target_payload,
                 "requested_speed_m_s": float(requested_speed_m_s or 0.05),
+                "execution_backend": execution_backend,
                 "ik_mode": ik_mode,
                 "allowed_contact_object_ids": [],
                 "permit_pushable_contact": False,
@@ -1648,6 +1885,7 @@ class IntegratedRelativeMotionAdapter:
                 "original_request_distance_m"
             ],
             "requested_speed_m_s": pending["requested_speed_m_s"],
+            "execution_backend": pending["execution_backend"],
             "requested_duration_s": pending["requested_duration_s"],
             "planned_duration_s": pending["planned_duration_s"],
             "planned_nominal_speed_m_s": pending[
@@ -1730,6 +1968,7 @@ class IntegratedRelativeMotionAdapter:
         distance_m: float,
         original_request_distance_m: float,
         requested_speed_m_s: float | None,
+        execution_backend: str = _TRANSIT_BACKEND_IMPEDANCE,
         requested_duration_s: float,
         planned_duration_s: float,
         planned_nominal_speed_m_s: float,
@@ -1777,6 +2016,13 @@ class IntegratedRelativeMotionAdapter:
             if requested_speed_m_s is None
             else float(requested_speed_m_s)
         )
+        normalized_execution_backend = str(
+            execution_backend or _TRANSIT_BACKEND_IMPEDANCE
+        ).strip().upper()
+        if normalized_execution_backend not in _TRANSIT_BACKENDS:
+            raise ValueError(
+                "execution_backend must be IMPEDANCE or POS_SPEED"
+            )
         normalized_requested_duration = float(requested_duration_s)
         normalized_planned_duration = float(planned_duration_s)
         normalized_planned_speed = float(planned_nominal_speed_m_s)
@@ -1953,6 +2199,7 @@ class IntegratedRelativeMotionAdapter:
                 pending["requested_speed_m_s"],
                 tolerance=1e-9,
             )
+            or normalized_execution_backend != pending["execution_backend"]
             or not math.isclose(
                 normalized_requested_duration,
                 pending["requested_duration_s"],
@@ -2028,6 +2275,55 @@ class IntegratedRelativeMotionAdapter:
         )
         if normalized_direction == "NONE":
             current_vector = (0.0, 0.0, 0.0)
+        elif normalized_direction == "WORLD_POINT":
+            absolute_world_point = pending.get("absolute_world_point")
+            if not isinstance(absolute_world_point, dict):
+                raise RuntimeError(
+                    "absolute world-point provenance is missing from preview"
+                )
+            try:
+                current_world_point = (
+                    await self.spatial_resolver.resolve_world_point(
+                        target_position_world_m=absolute_world_point.get(
+                            "target_position_world_m"
+                        ),
+                        expected_world_frame=absolute_world_point.get(
+                            "target_world_frame_id"
+                        ),
+                        expected_session_epoch=absolute_world_point.get(
+                            "target_session_epoch"
+                        ),
+                    )
+                )
+            except SpatialResolutionRequired as required:
+                raise RuntimeError(
+                    "absolute world-point evidence became invalid before "
+                    "commit: "
+                    + str(required.payload.get("message") or required)
+                ) from required
+            current_provenance = current_world_point.provenance
+            if (
+                str(stored_provenance.get("session_epoch") or "")
+                != str(current_provenance.get("session_epoch") or "")
+                or _path_identity(stored_provenance.get("transform_path"))
+                != _path_identity(current_provenance.get("transform_path"))
+                or any(
+                    not math.isclose(
+                        current_world_point.target_position_arm_base_m[index],
+                        pending["target_position_m"][index],
+                        rel_tol=0.0,
+                        abs_tol=1e-7,
+                    )
+                    for index in range(3)
+                )
+            ):
+                raise RuntimeError(
+                    "absolute world-point resolution changed before commit; "
+                    "request a fresh preview"
+                )
+            current_vector = tuple(
+                pending["resolved_direction_arm_base"]
+            )
         elif normalized_direction == "VECTOR":
             try:
                 current_resolution = await self._resolve_translation_vector(
@@ -2335,7 +2631,7 @@ class IntegratedRelativeMotionAdapter:
             commit.get("planned_duration_s")
             or pending["planned_duration_s"]
         )
-        return {
+        result = {
             "status": result_status,
             "workflow_complete": True,
             "physical_motion_requested": True,
@@ -2353,6 +2649,7 @@ class IntegratedRelativeMotionAdapter:
                 "original_request_distance_m"
             ],
             "requested_speed_m_s": pending["requested_speed_m_s"],
+            "execution_backend": pending["execution_backend"],
             "requested_duration_s": pending["requested_duration_s"],
             "planned_duration_s": pending["planned_duration_s"],
             "planned_nominal_speed_m_s": pending[
@@ -2464,6 +2761,10 @@ class IntegratedRelativeMotionAdapter:
                 else "The controller confirmed autonomous free-space arrival."
             ),
         }
+        absolute_world_point = pending.get("absolute_world_point")
+        if isinstance(absolute_world_point, dict):
+            result.update(copy.deepcopy(absolute_world_point))
+        return result
 
     async def _wait_signed_transit_terminal(
         self,
@@ -3049,6 +3350,7 @@ def _path_identity(path: Any) -> tuple[tuple[Any, ...], ...]:
         "provider_id",
         "provider_instance_id",
         "session_epoch",
+        "activation_id",
         "calibration_revision",
     )
     if not isinstance(path, list):

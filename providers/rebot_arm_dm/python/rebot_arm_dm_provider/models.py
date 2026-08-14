@@ -51,7 +51,7 @@ class JointDefinition:
     default_kp: float
     default_kd: float
     default_vlim: float
-    default_torque_ratio: float
+    default_torque_limit_nm: float
 
 
 class ArmConfiguration:
@@ -222,7 +222,8 @@ class ArmConfiguration:
             kp_min=float(limits["mit_kp_protocol_range"][0]), kp_max=float(limits["mit_kp_protocol_range"][1]),
             kd_min=float(limits["mit_kd_protocol_range"][0]), kd_max=float(limits["mit_kd_protocol_range"][1]),
             default_kp=float(controls["kp"]), default_kd=float(controls["kd"]),
-            default_vlim=float(controls["velocity_limit_rad_s"]), default_torque_ratio=float(controls["torque_limit_ratio"]),
+            default_vlim=float(controls["velocity_limit_rad_s"]),
+            default_torque_limit_nm=float(controls["torque_limit_nm"]),
         )
 
     @property
@@ -316,13 +317,22 @@ class ArmConfiguration:
         elif mode == "POSITION_EFFORT_LIMITED":
             vcap = min(joint.configured_vmax_rad_s, float(calibrated["provider_velocity_cap_rad_s"]))
             physical_caps = self.model["control"]["physical_test_pos_tor_ratio_cap"]
-            tcap = min(1.0, float(physical_caps[index]))
+            tcap_nm = joint.configured_tmax_nm * min(1.0, float(physical_caps[index]))
+            if "torque_limit_ratio" in payload:
+                raise ValueError(
+                    "POSITION_EFFORT_LIMITED uses torque_limit_nm; "
+                    "motor torque ratios are private to the Basic adapter"
+                )
             output["velocity_limit_rad_s"] = float(payload.get("velocity_limit_rad_s", joint.default_vlim))
-            output["torque_limit_ratio"] = float(payload.get("torque_limit_ratio", joint.default_torque_ratio))
+            output["torque_limit_nm"] = float(
+                payload.get("torque_limit_nm", joint.default_torque_limit_nm)
+            )
             if not 0.0 < output["velocity_limit_rad_s"] <= vcap:
                 raise ValueError(f"{joint.name} velocity limit must be in (0, {vcap}]")
-            if not 0.0 <= output["torque_limit_ratio"] <= tcap:
-                raise ValueError(f"{joint.name} torque ratio must be in [0, {tcap}]")
+            if not 0.0 <= output["torque_limit_nm"] <= tcap_nm:
+                raise ValueError(
+                    f"{joint.name} torque limit must be in [0, {tcap_nm}] N.m"
+                )
         if not all(math.isfinite(value) for value in output.values()):
             raise ValueError("command values must be finite")
         return output
@@ -334,6 +344,55 @@ class ArmConfiguration:
         for joint in result["joints"]:
             calibrated = self.calibration_by_name[joint["name"]]
             joint["calibrated"] = copy.deepcopy(calibrated)
+        pos_vel_caps = self.model["control"]["physical_test_pos_vel_cap_rad_s"]
+        physical_caps = self.model["control"]["physical_test_pos_tor_ratio_cap"]
+        result["command_limits"] = {
+            "IMPEDANCE": [
+                {
+                    "joint_index": joint.index,
+                    "joint_name": joint.name,
+                    "target_rate_limit_rad_s": min(
+                        joint.configured_vmax_rad_s,
+                        float(
+                            self.calibration_by_name[joint.name][
+                                "provider_velocity_cap_rad_s"
+                            ]
+                        ),
+                    ),
+                }
+                for joint in self.joints
+            ],
+            "POSITION_VELOCITY_LIMITED": [
+                {
+                    "joint_index": joint.index,
+                    "joint_name": joint.name,
+                    "velocity_limit_rad_s": min(
+                        joint.configured_vmax_rad_s,
+                        float(pos_vel_caps[joint.index]),
+                    ),
+                }
+                for joint in self.joints
+            ],
+            "POSITION_EFFORT_LIMITED": [
+                {
+                    "joint_index": joint.index,
+                    "joint_name": joint.name,
+                    "velocity_limit_rad_s": min(
+                        joint.configured_vmax_rad_s,
+                        float(
+                            self.calibration_by_name[joint.name][
+                                "provider_velocity_cap_rad_s"
+                            ]
+                        ),
+                    ),
+                    "torque_limit_nm": (
+                        joint.configured_tmax_nm
+                        * min(1.0, float(physical_caps[joint.index]))
+                    ),
+                }
+                for joint in self.joints
+            ]
+        }
         return result
 
     def fingerprint(self) -> str:

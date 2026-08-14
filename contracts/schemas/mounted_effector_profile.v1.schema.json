@@ -124,6 +124,9 @@
         "pattern": "^[a-z0-9][a-z0-9_.-]{2,199}$"
       },
       "properties": {
+        "midbrain.skill.slicing_blade_profiles.v1": {
+          "$ref": "#/$defs/slicingBladeProfiles"
+        },
         "midbrain.skill.refine_arm_root_translation.v1": {
           "$ref": "#/$defs/armRootTranslationVisualAlignment"
         }
@@ -132,6 +135,51 @@
     }
   },
   "$defs": {
+    "slicingBladeProfiles": {
+      "type": "object",
+      "required": [
+        "schema",
+        "schema_version",
+        "default_profile_number",
+        "profiles"
+      ],
+      "properties": {
+        "schema": {"const": "midbrain.effector_slicing_blade_profiles"},
+        "schema_version": {"const": 1},
+        "default_profile_number": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "profile_number",
+              "name",
+              "blade_direction_effector",
+              "slicing_direction_effector"
+            ],
+            "properties": {
+              "profile_number": {"type": "integer", "minimum": 1},
+              "name": {"type": "string", "minLength": 1, "maxLength": 120},
+              "blade_direction_effector": {"$ref": "#/$defs/vector3"},
+              "slicing_direction_effector": {"$ref": "#/$defs/vector3"},
+              "locked_joint_names": {
+                "type": "array",
+                "maxItems": 6,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1, "maxLength": 120}
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "qualification": {"type": "string", "minLength": 1, "maxLength": 200},
+        "note": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "additionalProperties": false
+    },
     "vector3": {
       "type": "array",
       "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],

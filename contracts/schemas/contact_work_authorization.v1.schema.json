@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/contact_work_authorization.v1.schema.json",
+  "title": "Midbrain Contact Work Authorization v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "assertion_id",
+    "nonce",
+    "issuer_skill_id",
+    "execution_id",
+    "audience_provider_id",
+    "provider_instance_id",
+    "provider_boot_id",
+    "assembly_fingerprint",
+    "mounted_effector_revision",
+    "plan_sha256",
+    "issued_at_us",
+    "expires_at_us"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.contact_work_authorization"},
+    "schema_version": {"const": 1},
+    "assertion_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "nonce": {"type": "string", "minLength": 16, "maxLength": 300},
+    "issuer_skill_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "audience_provider_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "provider_instance_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "provider_boot_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "assembly_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "mounted_effector_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "issued_at_us": {"type": "integer", "minimum": 1},
+    "expires_at_us": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

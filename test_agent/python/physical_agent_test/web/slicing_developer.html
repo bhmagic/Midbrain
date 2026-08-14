@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slicing Two-Stage Test</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; --bg:#080b0c; --surface:#111719; --surface2:#172023; --border:#344247; --text:#eef4f5; --muted:#a1b0b4; --accent:#61c7bb; --ok:#79d78f; --warning:#efb84f; --danger:#f17474; }
+    * { box-sizing: border-box; } [hidden] { display:none!important; }
+    body { margin:0; background:var(--bg); color:var(--text); }
+    main { width:min(1320px,calc(100% - 30px)); margin:auto; padding:22px 0 52px; }
+    nav,.profile-row,.dependency { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    nav { margin-bottom:22px; } a { color:var(--muted); text-decoration:none; }
+    h1 { margin:5px 0 8px; font-size:clamp(28px,4vw,42px); } h2 { margin:0 0 12px; font-size:18px; } h3 { margin:0; font-size:15px; }
+    p { line-height:1.55; } .eyebrow { margin:0; color:var(--accent); font-size:11px; font-weight:800; letter-spacing:.15em; text-transform:uppercase; }
+    .muted { color:var(--muted); } .warning { color:var(--warning); } .danger { color:var(--danger); }
+    .layout { display:grid; grid-template-columns:minmax(0,1.12fr) minmax(350px,.88fr); gap:16px; align-items:start; margin-top:22px; }
+    .stack { display:grid; gap:16px; } .panel,.subpanel { padding:18px; border:1px solid var(--border); border-radius:14px; background:var(--surface); }
+    .subpanel { padding:14px; background:var(--surface2); } .field-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+    .field { display:grid; gap:6px; } .wide { grid-column:1/-1; } label { font-size:13px; font-weight:700; }
+    input,select,button { font:inherit; } input,select { width:100%; border:1px solid var(--border); border-radius:8px; padding:9px 10px; background:#0b1012; color:var(--text); }
+    input:focus,select:focus { border-color:var(--accent); outline:2px solid rgba(97,199,187,.18); }
+    fieldset { min-width:0; margin:0; padding:0; border:0; } fieldset:disabled { opacity:.58; }
+    .vector { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; } .vector label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
+    .joint-locks { display:flex; flex-wrap:wrap; gap:8px 14px; padding:10px; border:1px solid var(--border); border-radius:8px; background:#0b1012; } .joint-locks label { display:flex; gap:6px; align-items:center; } .joint-locks input { width:auto; }
+    .profile-row select { flex:1; } .profile-row button { flex:0 0 auto; min-height:38px; }
+    .flow { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+    .step { min-height:82px; padding:11px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); } .step strong { display:block; margin-bottom:5px; }
+    .step.active { border-color:var(--warning); } .step.complete { border-color:var(--ok); }
+    .actions { display:grid; gap:9px; margin-top:14px; } button { min-height:42px; padding:9px 12px; border:1px solid var(--border); border-radius:9px; background:#202c30; color:var(--text); cursor:pointer; font-weight:800; }
+    button.primary { border-color:#4da59b; background:#17413d; } button.contact { border-color:#bd7f2c; background:#513413; } button.delete { color:var(--danger); background:transparent; } button:disabled { opacity:.42; cursor:not-allowed; }
+    .state { margin:5px 0 0; font-size:22px; font-weight:850; color:var(--warning); overflow-wrap:anywhere; } .state.ready { color:var(--ok); } .state.failed { color:var(--danger); }
+    .notice { padding:12px; border-left:3px solid var(--warning); background:#211b10; } .ack { display:flex; gap:8px; align-items:flex-start; } .ack input { width:auto; margin-top:3px; }
+    pre { margin:8px 0 0; max-height:390px; overflow:auto; padding:12px; border-radius:9px; background:#090d0f; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+    details { margin-top:12px; } summary { cursor:pointer; color:var(--muted); } .dependency { padding:8px 0; border-top:1px solid var(--border); } .dependency:first-child { border-top:0; }
+    @media(max-width:900px){.layout{grid-template-columns:1fr}} @media(max-width:620px){.field-grid,.flow{grid-template-columns:1fr}.wide{grid-column:auto}.profile-row{align-items:stretch;flex-direction:column}}
+  </style>
+</head>
+<body>
+<main>
+  <nav><a href="http://127.0.0.1:7001/">&larr; Midbrain</a><a href="/dev/skills/integrated-relative-effector-motion">Integrated observation</a></nav>
+  <p class="eyebrow">Developer numeric surface · no language Agent</p>
+  <h1>Slicing two-stage test</h1>
+  <p class="muted">Enter a begin point, two world directions, and a slice length. The UI derives the slice endpoint plus a measured-start outward-retract displacement, freezes the plan, performs Integrated alignment in Stage 1, then streams three Contact-owned Cartesian segments at Basic's control rate and relaxes in Stage 2.</p>
+
+  <div class="layout">
+    <section class="stack">
+      <form id="slicingForm" class="panel">
+        <fieldset id="inputFields">
+          <div class="field-grid">
+            <div class="field wide">
+              <label for="pointMode">Slice-begin point entry mode</label>
+              <select id="pointMode"><option value="RELATIVE_TO_CURRENT_EFFECTOR_WORLD">Relative to current effector, along world axes</option><option value="ABSOLUTE_WORLD">Absolute active-world point</option></select>
+              <span id="pointModeHelp" class="muted"></span>
+            </div>
+            <div class="field wide">
+              <label for="integratedBackend">Stage 1 Integrated backend</label>
+              <select id="integratedBackend"><option value="IMPEDANCE">IMPEDANCE (default)</option><option value="POS_SPEED">POS_SPEED (Basic POSITION_VELOCITY_LIMITED)</option></select>
+              <span class="muted">Both use the signed 50 Hz paced path. This selection affects only Integrated alignment; Contact Stage 2 remains POS_TOR.</span>
+            </div>
+
+            <section class="subpanel wide">
+              <h3>Mounted-effector blade-use profile</h3>
+              <p class="muted">Selecting a profile fills the editable vectors and joint locks. Save uses the lowest available positive profile number.</p>
+              <div class="profile-row"><select id="bladeProfile"></select><button id="defaultBladeProfile" type="button">Set selected default</button><button id="deleteBladeProfile" class="delete" type="button">Delete selected profile</button></div>
+              <p id="bladeRestart" class="warning" hidden>Basic's published assembly snapshot still contains the startup copy. Slicing Agent calls already use the edited profiles and default; a prepared plan remains frozen.</p>
+              <div class="field-grid">
+                <div class="field"><label>Blade direction in effector axes</label><div class="vector"><label>X<input id="blade-x" type="number" step="any" required></label><label>Y<input id="blade-y" type="number" step="any" required></label><label>Z<input id="blade-z" type="number" step="any" required></label></div></div>
+                <div class="field"><label>Slicing direction in effector axes</label><div class="vector"><label>X<input id="slice-axis-x" type="number" step="any" required></label><label>Y<input id="slice-axis-y" type="number" step="any" required></label><label>Z<input id="slice-axis-z" type="number" step="any" required></label></div></div>
+                <div class="field wide"><label>Joints held at their measured Stage 2 starting positions</label><div id="bladeJointLocks" class="joint-locks"></div><span class="muted">Locks are hard IK constraints and receive full authorized holding effort.</span></div>
+                <div class="field"><label for="bladeProfileName">New profile label (optional)</label><input id="bladeProfileName" maxlength="120" placeholder="Automatic numbered label"></div>
+                <div class="field"><label>&nbsp;</label><button id="saveBladeProfile" type="button">Save typed vectors as new blade profile</button></div>
+              </div>
+            </section>
+
+            <section class="subpanel wide">
+              <h3>Slicing motion profile</h3>
+              <p class="muted">This Skill-owned profile supplies load, outward retract distance, and command-spacing timing. Retract is resolved outward from the measured position where move 3 begins. The slice rate computes wait time; it does not command Cartesian speed.</p>
+              <div class="profile-row"><select id="motionProfile"></select><button id="defaultMotionProfile" type="button">Set selected default</button><button id="deleteMotionProfile" class="delete" type="button">Delete selected profile</button></div>
+              <div class="field-grid">
+                <div class="field"><label for="bladeLoad">Blade-direction load (kgf)</label><input id="bladeLoad" type="number" min="0" step="any" required></div>
+                <div class="field"><label for="retractDistance">Outward retract distance (m)</label><input id="retractDistance" type="number" min="0" step="any" required></div>
+                <div class="field"><label for="engageDelay">Delay after engage command (s)</label><input id="engageDelay" type="number" min="0" max="55" step="any" required></div>
+                <div class="field"><label for="sliceWaitSpeed">Planned slice wait rate (m/s)</label><input id="sliceWaitSpeed" type="number" min="0" step="any" required></div>
+                <div class="field"><label for="retractDelay">Delay after retract before relax (s)</label><input id="retractDelay" type="number" min="0" max="55" step="any" required></div>
+                <div class="field"><label for="motionProfileName">New profile label (optional)</label><input id="motionProfileName" maxlength="120" placeholder="Automatic numbered label"></div>
+                <div class="field wide"><button id="saveMotionProfile" type="button">Save typed motion values as new motion profile</button></div>
+              </div>
+            </section>
+
+            <div class="field"><label id="beginLabel">Slice-begin offset, world axes (m)</label><div class="vector"><label>X<input id="begin-x" type="number" step="any" value="0" required></label><label>Y<input id="begin-y" type="number" step="any" value="0" required></label><label>Z<input id="begin-z" type="number" step="any" value="-0.02" required></label></div></div>
+            <div class="field"><label>Blade direction in world axes (inward)</label><div class="vector"><label>X<input id="surface-x" type="number" step="any" value="0" required></label><label>Y<input id="surface-y" type="number" step="any" value="0" required></label><label>Z<input id="surface-z" type="number" step="any" value="-1" required></label></div></div>
+            <div class="field"><label>Slicing direction in world axes</label><div class="vector"><label>X<input id="slice-world-x" type="number" step="any" value="0" required></label><label>Y<input id="slice-world-y" type="number" step="any" value="-1" required></label><label>Z<input id="slice-world-z" type="number" step="any" value="0" required></label></div></div>
+            <div class="field"><label for="sliceLength">Slice length (m)</label><input id="sliceLength" type="number" min="0" step="any" value="0.1" required><span id="computedSliceWait" class="muted"></span></div>
+          </div>
+        </fieldset>
+      </form>
+
+      <section class="panel">
+        <p class="eyebrow">Frozen computed plan</p><p id="planHint" class="muted">Prepare a plan to see the captured origin, derived endpoints, orientation, force, timing, and Contact sequence.</p>
+        <details open><summary>Point and path resolution</summary><pre id="pointResolution">No plan prepared.</pre></details>
+        <details open><summary>Alignment, load, and timing</summary><pre id="alignmentPlan">No plan prepared.</pre></details>
+        <details><summary>Three Contact Cartesian segments</summary><pre id="contactPlan">No plan prepared.</pre></details>
+      </section>
+    </section>
+
+    <aside class="stack">
+      <section class="panel">
+        <p class="eyebrow">Staged execution</p><div id="sessionState" class="state">NO PLAN</div><p id="sessionDetail" class="muted">No physical motion is pending.</p>
+        <div class="flow"><div id="prepareStep" class="step"><strong>Prepare</strong><span class="muted">Compute + Integrated preview. No movement.</span></div><div id="alignmentStep" class="step"><strong>Stage 1</strong><span class="muted">Integrated alignment, final FLOAT.</span></div><div id="contactStep" class="step"><strong>Stage 2</strong><span class="muted">Integrated WARM lease release, Contact 50 Hz segments, then relax.</span></div></div>
+        <div class="notice"><strong>Physical robot boundary</strong><p class="warning">Stage 1 and Stage 2 can move the robot. Contact segments execute without collision planning and report command handling—not exact path tracking or whether the cut or point was reached.</p></div>
+        <label class="ack"><input id="physicalAck" type="checkbox">I have supported/cleared the arm and intend to enable physical stage buttons.</label>
+        <div class="actions"><button id="prepareButton" class="primary" type="button">Prepare and freeze plan</button><button id="alignmentButton" class="primary" type="button" disabled>Execute Stage 1 · Integrated alignment</button><button id="contactButton" class="contact" type="button" disabled>Execute Stage 2 · Contact segments + relax</button><button id="cancelButton" type="button" disabled>Cancel staged session without Contact</button></div>
+        <p id="operationMessage" class="muted" role="status"></p>
+      </section>
+      <section class="panel"><p class="eyebrow">Runtime dependencies</p><div id="dependencies">Loading…</div></section>
+      <section class="panel"><p class="eyebrow">Raw session record</p><pre id="rawSession">No plan prepared.</pre></section>
+    </aside>
+  </div>
+</main>
+<script>
+  const $ = (selector) => document.querySelector(selector);
+  const form = $("#slicingForm"), fields = $("#inputFields"), pointMode = $("#pointMode"), bladeProfile = $("#bladeProfile"), motionProfile = $("#motionProfile"), physicalAck = $("#physicalAck");
+  const prepareButton = $("#prepareButton"), alignmentButton = $("#alignmentButton"), contactButton = $("#contactButton"), cancelButton = $("#cancelButton");
+  let currentSession = null, busy = false, bladeProfiles = [], motionProfiles = [], armJointNames = [], defaultBladeProfile = null, defaultMotionProfile = null, profilesInitialized = false;
+
+  function numberValue(id) { const value = Number($(`#${id}`).value); if (!Number.isFinite(value)) throw new Error(`${id} must be a finite number`); return value; }
+  function vectorValue(prefix) { return ["x","y","z"].map((axis) => numberValue(`${prefix}-${axis}`)); }
+  function setVector(prefix, values) { ["x","y","z"].forEach((axis,index) => { $(`#${prefix}-${axis}`).value = values[index]; }); }
+  function selectedNumber(select) { const value = Number(select.value); return Number.isInteger(value) && value > 0 ? value : null; }
+  function selectedLockedJoints() { return [...document.querySelectorAll('#bladeJointLocks input:checked')].map((input)=>input.value); }
+  function renderJointLocks(selected=[]) { const chosen=new Set(selected||[]); $("#bladeJointLocks").replaceChildren(...armJointNames.map((name)=>{const label=document.createElement("label"),input=document.createElement("input"),text=document.createTextNode(name); input.type="checkbox"; input.value=name; input.checked=chosen.has(name); label.append(input,text); return label;})); }
+  function requestPayload() {
+    if (!form.reportValidity()) throw new Error("Complete every required numeric field.");
+    return { point_mode:pointMode.value, integrated_execution_backend:$("#integratedBackend").value, blade_profile_number:selectedNumber(bladeProfile), motion_profile_number:selectedNumber(motionProfile), blade_direction_effector:vectorValue("blade"), slicing_direction_effector:vectorValue("slice-axis"), locked_joint_names:selectedLockedJoints(), slice_begin_point_m:vectorValue("begin"), blade_direction_world:vectorValue("surface"), slicing_direction_world:vectorValue("slice-world"), slice_length_m:numberValue("sliceLength"), blade_load_kgf:numberValue("bladeLoad"), retract_distance_m:numberValue("retractDistance"), delay_after_engage_s:numberValue("engageDelay"), slice_wait_speed_m_s:numberValue("sliceWaitSpeed"), delay_after_retract_s:numberValue("retractDelay") };
+  }
+  async function api(url, options={}) { const response = await fetch(url,{cache:"no-store",...options,headers:{"Content-Type":"application/json",...(options.headers||{})}}); const body=await response.text(); let payload={}; try{payload=body?JSON.parse(body):{};}catch(_error){payload={detail:body};} if(!response.ok) throw new Error(payload.detail||`Request failed (${response.status})`); return payload; }
+  function sessionIsActive(state) { return ["PREVIEW_READY","ALIGNMENT_IN_PROGRESS","CONTACT_READY","CONTACT_IN_PROGRESS"].includes(state); }
+  function setBusy(value,message="") { busy=value; $("#operationMessage").textContent=message; updateButtons(); }
+  function updateButtons() { const state=currentSession?.state||"NO PLAN", ack=physicalAck.checked, staged=sessionIsActive(state), bladeNumber=selectedNumber(bladeProfile), motionNumber=selectedNumber(motionProfile); prepareButton.disabled=busy||staged; alignmentButton.disabled=busy||!ack||state!=="PREVIEW_READY"; contactButton.disabled=busy||!ack||state!=="CONTACT_READY"; cancelButton.disabled=busy||!["PREVIEW_READY","CONTACT_READY"].includes(state); $("#saveBladeProfile").disabled=busy||staged; $("#saveMotionProfile").disabled=busy||staged; $("#deleteBladeProfile").disabled=busy||staged||!bladeNumber; $("#deleteMotionProfile").disabled=busy||staged||!motionNumber; $("#defaultBladeProfile").disabled=busy||staged||!bladeNumber||bladeNumber===defaultBladeProfile; $("#defaultMotionProfile").disabled=busy||staged||!motionNumber||motionNumber===defaultMotionProfile; }
+  function updatePointMode() { const relative=pointMode.value==="RELATIVE_TO_CURRENT_EFFECTOR_WORLD"; $("#pointModeHelp").textContent=relative?"The begin triple is a world-axis offset from one current controlled-effector origin captured during preparation.":"The begin triple is an absolute point in the active workcell world frame."; $("#beginLabel").textContent=`Slice-begin ${relative?"offset, world axes":"point, active world"} (m)`; }
+  function updateComputedWait() { const length=Number($("#sliceLength").value), speed=Number($("#sliceWaitSpeed").value); $("#computedSliceWait").textContent=length>0&&speed>0?`Profile-derived minimum wait: ${(length/speed).toFixed(3)} s. Runtime extends this when joint velocity limits require more time.`:"Enter positive length and rate."; }
+  function fillBladeProfile() { const profile=bladeProfiles.find((item)=>item.profile_number===selectedNumber(bladeProfile)); if(!profile){renderJointLocks([]); updateButtons(); return;} setVector("blade",profile.blade_direction_effector); setVector("slice-axis",profile.slicing_direction_effector); renderJointLocks(profile.locked_joint_names||[]); updateButtons(); }
+  function fillMotionProfile() { const profile=motionProfiles.find((item)=>item.profile_number===selectedNumber(motionProfile)); if(!profile)return; $("#bladeLoad").value=profile.blade_load_kgf; $("#retractDistance").value=profile.retract_distance_m; $("#engageDelay").value=profile.delay_after_engage_s; $("#sliceWaitSpeed").value=profile.slice_wait_speed_m_s; $("#retractDelay").value=profile.delay_after_retract_s; updateComputedWait(); updateButtons(); }
+  function renderProfileSelect(select,profiles,preferred,defaultNumber) { const wanted=preferred??defaultNumber??profiles[0]?.profile_number??null; select.replaceChildren(...profiles.map((profile)=>{const option=document.createElement("option"); option.value=profile.profile_number; option.textContent=`#${profile.profile_number}${profile.profile_number===defaultNumber?" (default)":""} · ${profile.name}`; return option;})); if([...select.options].some((option)=>Number(option.value)===wanted)) select.value=String(wanted); else if(select.options.length) select.selectedIndex=0; }
+  function renderProfiles(development) { const previousBlade=selectedNumber(bladeProfile), previousMotion=selectedNumber(motionProfile); bladeProfiles=development.blade_profiles||[]; motionProfiles=development.motion_profiles||[]; armJointNames=development.arm_joint_names||[]; defaultBladeProfile=development.default_blade_profile_number??null; defaultMotionProfile=development.default_motion_profile_number??null; renderProfileSelect(bladeProfile,bladeProfiles,previousBlade,defaultBladeProfile); renderProfileSelect(motionProfile,motionProfiles,previousMotion,defaultMotionProfile); $("#bladeRestart").hidden=!development.blade_profiles_pending_workspace_restart; if(!profilesInitialized){fillBladeProfile(); fillMotionProfile(); profilesInitialized=true;} updateButtons(); }
+  function renderSession(session) { currentSession=session||null; const state=session?.state||"NO PLAN", active=sessionIsActive(state); fields.disabled=active; $("#sessionState").textContent=state.replaceAll("_"," "); $("#sessionState").className=state.includes("FAILED")||state.includes("REJECTED")||state.includes("EXPIRED")?"state failed":state.includes("COMPLETE")||state==="CONTACT_READY"?"state ready":"state"; $("#sessionDetail").textContent=session?`${session.session_id} · ${session.expires_in_s==null?"terminal":`${session.expires_in_s.toFixed(1)} s remaining`}`:"No physical motion is pending."; $("#pointResolution").textContent=session?JSON.stringify({point_resolution:session.point_resolution,path:session.plan?.path},null,2):"No plan prepared."; $("#alignmentPlan").textContent=session?JSON.stringify({alignment:session.plan?.alignment,load:session.plan?.load,timing:session.plan?.timing,integrated_preview:session.integrated_preview},null,2):"No plan prepared."; $("#contactPlan").textContent=session?JSON.stringify(session.plan?.contact_steps||[],null,2):"No plan prepared."; $("#rawSession").textContent=session?JSON.stringify(session,null,2):"No plan prepared."; $("#planHint").textContent=session?"These values are frozen for this session; editing the form cannot change either stage.":"Prepare a plan to see the captured origin, derived endpoints, orientation, force, timing, and Contact sequence."; $("#prepareStep").className=state==="NO PLAN"?"step":"step complete"; $("#alignmentStep").className=state==="ALIGNMENT_IN_PROGRESS"?"step active":["CONTACT_READY","CONTACT_IN_PROGRESS","COMPLETE_RELAX_REQUESTED"].includes(state)?"step complete":"step"; $("#contactStep").className=state==="CONTACT_IN_PROGRESS"?"step active":state==="COMPLETE_RELAX_REQUESTED"?"step complete":"step"; updateButtons(); }
+  function renderDependencies(status) { const providers=status.system_catalog?.providers||[], definitions=[["robot_arm.rebot_dm","Basic Controller"],["robot_arm.primary.integrated","Integrated Controller"],["robot_arm.primary.contact","Contact Work Provider"]]; $("#dependencies").replaceChildren(...definitions.map(([id,label])=>{const provider=providers.find((item)=>item.id===id)||{},row=document.createElement("div"),name=document.createElement("span"),value=document.createElement("strong"); row.className="dependency"; name.textContent=label; value.textContent=provider.residency||provider.process_state||"UNAVAILABLE"; row.append(name,value); return row;})); }
+  async function refresh() { try { const [development,status]=await Promise.all([api("/api/skills/slicing/development"),api("/api/status")]); renderProfiles(development); renderDependencies(status); const sessionId=currentSession?.session_id||development.active_development_session_id, session=(development.sessions||[]).find((item)=>item.session_id===sessionId); if(session)renderSession(session); } catch(error){ $("#operationMessage").textContent=error.message; $("#operationMessage").className="danger"; } }
+  async function saveBladeProfile() { const payload={name:$("#bladeProfileName").value||null,blade_direction_effector:vectorValue("blade"),slicing_direction_effector:vectorValue("slice-axis"),locked_joint_names:selectedLockedJoints()}; setBusy(true,"Saving blade-use profile…"); const result=await api("/api/skills/slicing/development/blade-profiles",{method:"POST",body:JSON.stringify(payload)}); await refresh(); bladeProfile.value=String(result.saved.profile_number); $("#bladeProfileName").value=""; setBusy(false,`Saved blade profile #${result.saved.profile_number}. The next Agent invocation can use it.`); }
+  async function saveMotionProfile() { const payload={name:$("#motionProfileName").value||null,blade_load_kgf:numberValue("bladeLoad"),retract_distance_m:numberValue("retractDistance"),delay_after_engage_s:numberValue("engageDelay"),slice_wait_speed_m_s:numberValue("sliceWaitSpeed"),delay_after_retract_s:numberValue("retractDelay")}; setBusy(true,"Saving motion profile…"); const result=await api("/api/skills/slicing/development/motion-profiles",{method:"POST",body:JSON.stringify(payload)}); await refresh(); motionProfile.value=String(result.saved.profile_number); $("#motionProfileName").value=""; setBusy(false,`Saved motion profile #${result.saved.profile_number}.`); }
+  $("#saveBladeProfile").addEventListener("click",()=>saveBladeProfile().catch((error)=>setBusy(false,error.message))); $("#saveMotionProfile").addEventListener("click",()=>saveMotionProfile().catch((error)=>setBusy(false,error.message)));
+  $("#deleteBladeProfile").addEventListener("click",async()=>{const number=selectedNumber(bladeProfile); if(!number||!confirm(`Delete blade profile #${number}?${number===defaultBladeProfile?" The lowest remaining profile will become default.":""}`))return; try{setBusy(true,"Deleting blade profile…"); await api(`/api/skills/slicing/development/blade-profiles/${number}`,{method:"DELETE"}); profilesInitialized=false; await refresh(); setBusy(false,`Deleted blade profile #${number}.`);}catch(error){setBusy(false,error.message);}});
+  $("#deleteMotionProfile").addEventListener("click",async()=>{const number=selectedNumber(motionProfile); if(!number||!confirm(`Delete motion profile #${number}?${number===defaultMotionProfile?" The lowest remaining profile will become default.":""}`))return; try{setBusy(true,"Deleting motion profile…"); await api(`/api/skills/slicing/development/motion-profiles/${number}`,{method:"DELETE"}); profilesInitialized=false; await refresh(); setBusy(false,`Deleted motion profile #${number}.`);}catch(error){setBusy(false,error.message);}});
+  $("#defaultBladeProfile").addEventListener("click",async()=>{const number=selectedNumber(bladeProfile); if(!number)return; try{setBusy(true,"Changing default blade profile…"); await api(`/api/skills/slicing/development/blade-profiles/${number}/default`,{method:"POST",body:"{}"}); await refresh(); setBusy(false,`Blade profile #${number} is now the default for the next Agent invocation.`);}catch(error){setBusy(false,error.message);}});
+  $("#defaultMotionProfile").addEventListener("click",async()=>{const number=selectedNumber(motionProfile); if(!number)return; try{setBusy(true,"Changing default motion profile…"); await api(`/api/skills/slicing/development/motion-profiles/${number}/default`,{method:"POST",body:"{}"}); await refresh(); setBusy(false,`Motion profile #${number} is now the default.`);}catch(error){setBusy(false,error.message);}});
+  prepareButton.addEventListener("click",async()=>{try{const payload=requestPayload(); setBusy(true,"Preparing derived path and Integrated preview…"); const session=await api("/api/skills/slicing/development/prepare",{method:"POST",body:JSON.stringify(payload)}); renderSession(session); setBusy(false,"Plan prepared. Inspect the frozen values before Stage 1.");}catch(error){setBusy(false,error.message);}});
+  alignmentButton.addEventListener("click",async()=>{if(!currentSession||!confirm("Execute Stage 1 now? Integrated will physically rotate to the frozen orientation and finish in FLOAT."))return; try{setBusy(true,"Stage 1 is executing through Integrated…"); const session=await api(`/api/skills/slicing/development/${currentSession.session_id}/alignment`,{method:"POST",body:"{}"}); renderSession(session); setBusy(false,"Stage 1 completed in FLOAT. Stage 2 is available within the relaxed handoff drift gate.");}catch(error){setBusy(false,error.message); await refresh();}});
+  contactButton.addEventListener("click",async()=>{if(!currentSession||!confirm("Execute Stage 2 now? Integrated will enter WARM and release its Basic lease; Contact will then stream engage, slice, and outward-retract Cartesian segments at Basic's control rate without collision planning, followed by relax."))return; try{setBusy(true,"Stage 2 is releasing Integrated's lease before activating Contact…"); const session=await api(`/api/skills/slicing/development/${currentSession.session_id}/contact`,{method:"POST",body:"{}"}); renderSession(session); setBusy(false,"Stage 2 segment sequence finished and relaxation was requested. Exact path/reach/cut success was not assessed.");}catch(error){setBusy(false,error.message); await refresh();}});
+  cancelButton.addEventListener("click",async()=>{if(!currentSession)return; try{setBusy(true,"Canceling staged session…"); const session=await api(`/api/skills/slicing/development/${currentSession.session_id}/cancel`,{method:"POST",body:"{}"}); renderSession(session); setBusy(false,"Session canceled. Contact was not started.");}catch(error){setBusy(false,error.message);}});
+  pointMode.addEventListener("change",updatePointMode); bladeProfile.addEventListener("change",fillBladeProfile); motionProfile.addEventListener("change",fillMotionProfile); physicalAck.addEventListener("change",updateButtons); $("#sliceLength").addEventListener("input",updateComputedWait); $("#sliceWaitSpeed").addEventListener("input",updateComputedWait);
+  updatePointMode(); updateComputedWait(); renderSession(null); refresh(); setInterval(refresh,2500);
+</script>
+</body>
+</html>

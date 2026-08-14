@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/contact_work_state.v1.schema.json",
+  "title": "Midbrain Contact Work State v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "provider_id",
+    "control_state",
+    "health",
+    "ready",
+    "joint_state_valid",
+    "positions_rad",
+    "velocities_rad_s",
+    "torques_nm",
+    "assembly_fingerprint",
+    "last_disposition"
+  ],
+  "properties": {
+    "schema": {"const": "midbrain.contact_work_state"},
+    "schema_version": {"const": 1},
+    "provider_id": {"type": "string", "minLength": 1},
+    "control_state": {"type": "string", "minLength": 1},
+    "health": {"type": "string", "minLength": 1},
+    "ready": {"type": "boolean"},
+    "joint_state_valid": {"type": "boolean"},
+    "positions_rad": {"$ref": "#/$defs/sixNumbers"},
+    "velocities_rad_s": {"$ref": "#/$defs/sixNumbers"},
+    "torques_nm": {"$ref": "#/$defs/sixNumbers"},
+    "joint_observed_at_us": {"type": ["integer", "null"], "minimum": 0},
+    "joint_timestamp_uncertainty_us": {"type": ["integer", "null"], "minimum": 0},
+    "assembly_fingerprint": {"type": ["string", "null"]},
+    "session_id": {"type": ["string", "null"]},
+    "active_sequence": {"type": ["integer", "null"], "minimum": 0},
+    "motion_type": {
+      "type": ["string", "null"],
+      "enum": ["ONE_SHOT", "CARTESIAN_SEGMENT", null]
+    },
+    "signed_position_mode": {
+      "type": ["string", "null"],
+      "enum": [
+        "ABSOLUTE_ROOT",
+        "RELATIVE_TO_MEASURED_EFFECTOR_ROOT_AXES",
+        null
+      ]
+    },
+    "signed_position_m": {
+      "anyOf": [{"$ref": "#/$defs/threeNumbers"}, {"type": "null"}]
+    },
+    "resolved_target_position_m": {
+      "anyOf": [{"$ref": "#/$defs/threeNumbers"}, {"type": "null"}]
+    },
+    "locked_joint_names": {"type": "array", "items": {"type": "string"}},
+    "target_joint_positions_rad": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "commanded_joint_positions_rad": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "basic_control_rate_hz": {"type": ["number", "null"], "minimum": 1},
+    "cartesian_segment": {"type": ["object", "null"]},
+    "velocity_limited_transition_time_s": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "joint_velocity_limits_rad_s": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "torque_limits_nm": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "gravity_budget_nm": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "wrench_budget_nm": {"anyOf": [{"$ref": "#/$defs/sixNumbers"}, {"type": "null"}]},
+    "saturated_joint_indices": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 5}},
+    "deadline_at_us": {"type": ["integer", "null"], "minimum": 0},
+    "last_disposition": {"type": "string", "minLength": 1},
+    "last_error": {"type": ["string", "null"]},
+    "last_control_fault": {"type": ["string", "null"]},
+    "last_relax_reason": {"type": ["string", "null"]},
+    "authority_coordination": {"type": ["object", "null"]}
+  },
+  "$defs": {
+    "threeNumbers": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "sixNumbers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"type": "number"}
+    }
+  },
+  "additionalProperties": true
+}

@@ -23,6 +23,16 @@ work.
 
 ## Unreleased
 
+- Set the operational IMPEDANCE, POS_VEL, and POS_TOR velocity boundaries to
+  4.0 rad/s for all six arm joints while retaining the gripper at 2.1 rad/s.
+  Publish all three mode-specific vectors under `command_limits`; retain the
+  wider configured motor envelope as a separate hardware boundary. The J4-J6
+  developmental cap exceeds the official reBot application `vlim` of 3.0
+  rad/s but remains below Basic's configured 10.0 rad/s motor envelope.
+- Change the public `POSITION_EFFORT_LIMITED` torque ceiling from a motor ratio
+  to `torque_limit_nm`, publish effective per-joint velocity and torque limits,
+  and keep FORCE_POS ratio conversion private to the hardware adapter. The
+  development UI now edits N·m and shows read-only Basic and motor ceilings.
 - Treat an omitted control `resource_id` and the canonical root resource ID as
   the same root authority across acquire, renew, command, payload,
   gravity-float, and release requests. Declared child resources retain

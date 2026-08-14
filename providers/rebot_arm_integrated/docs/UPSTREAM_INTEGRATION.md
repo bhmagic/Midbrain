@@ -22,16 +22,22 @@ Callable operations are limited to:
 - `POST /v1/safe-terminate`.
 
 There is no upstream mutable Cartesian-target API. Runtime callers cannot
-change the selected controlled frame, payload profile, execution backend,
-contact policy, or gripper settings. Static identity and geometry come from
-the Basic-published assembly state; controller timing and safety limits come
-from configuration.
+change the selected controlled frame, payload profile, contact policy, or
+gripper settings. A path-plan caller may select the immutable per-plan
+`execution_backend` as `IMPEDANCE` or `POS_SPEED`; omission defaults to
+`IMPEDANCE`, and the choice is bound into the request digest. Static identity
+and geometry come from the Basic-published assembly state; controller timing
+and safety limits come from configuration and the selected Basic command
+mode's advertised limits.
 
 ## Signed free-space transaction
 
 1. Resolve Integrated for `robot_arm.motion.free_space.preview_commit.v1` and
    request HOT. Manager activates the declared Basic dependency transitively.
-2. Submit one complete position or 6-DoF goal to `/v1/motion/path-plan`.
+2. Submit one complete position or 6-DoF goal to `/v1/motion/path-plan`. Set
+   `execution_backend` to `POS_SPEED` only when its
+   `POSITION_VELOCITY_LIMITED` semantics are wanted; otherwise omit it or use
+   `IMPEDANCE`.
 3. Verify the returned plan is nonphysical and retain its exact plan ID,
    request digest, preview digest, provider identity, configuration digest,
    assembly fingerprint, measured start, and expiry.

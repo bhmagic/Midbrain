@@ -1,0 +1,16 @@
+{
+  "schema": "midbrain.slicing_motion_profiles",
+  "schema_version": 1,
+  "default_profile_number": 1,
+  "profiles": [
+    {
+      "profile_number": 1,
+      "name": "Development default",
+      "blade_load_kgf": 2.0,
+      "retract_distance_m": 0.02,
+      "delay_after_engage_s": 0.25,
+      "slice_wait_speed_m_s": 0.4,
+      "delay_after_retract_s": 0.25
+    }
+  ]
+}

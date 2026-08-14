@@ -13,7 +13,9 @@ from physical_agent_test.integrated_motion_adapter import (
 )
 from physical_agent_test.authorization import AuthorizationStore
 from physical_agent_test.spatial_frames import (
+    CANONICAL_CAMERA_CALIBRATION_POLICY,
     SpatialFrameResolver,
+    SpatialResolutionRequired,
     WORLD_CONVENTION_ID,
 )
 
@@ -21,14 +23,18 @@ from physical_agent_test.spatial_frames import (
 class _SpatialFabric:
     def __init__(self):
         self.transform_error: Exception | None = None
+        self.translation_m = [0.0, 0.0, 0.0]
         self.rotation_xyzw = [0.0, 0.0, 0.0, 1.0]
         self.tracking_state = "TRACKING"
+        self.workcell_activation = None
         self.latest_calls = 0
         self.transform_calls = 0
 
     async def latest_optional(self, stream):
-        assert stream == "localization.vio.status"
         self.latest_calls += 1
+        if stream == "manager.workcell_calibration.activation":
+            return copy.deepcopy(self.workcell_activation)
+        assert stream == "localization.vio.status"
         return {
             "observed_at_us": 1_000_000,
             "data": {
@@ -48,10 +54,52 @@ class _SpatialFabric:
             "from_frame": arguments["from_frame"],
             "to_frame": arguments["to_frame"],
             "at_us": arguments["at_us"],
-            "translation_m": [0.0, 0.0, 0.0],
+            "translation_m": list(self.translation_m),
             "rotation_xyzw": list(self.rotation_xyzw),
             "path": [{"authority": "test"}],
         }
+
+
+def _canonical_workcell_activation(
+    *,
+    translation_m: list[float] | None = None,
+    rotation_xyzw: list[float] | None = None,
+) -> dict:
+    return {
+        "valid": True,
+        "stream": "manager.workcell_calibration.activation",
+        "schema": "physical_agent.workcell_calibration_activation",
+        "provider_id": "manager.workcell_calibration",
+        "observed_at_us": 1_500_000,
+        "calibration_revision": "calibration-4",
+        "data": {
+            "state": "ACTIVE",
+            "motion_usable": True,
+            "expires_at": None,
+            "expires_at_us": None,
+            "convention_id": WORLD_CONVENTION_ID,
+            "activation_id": "activation-1",
+            "calibration_revision": "calibration-4",
+            "validity_policy": CANONICAL_CAMERA_CALIBRATION_POLICY,
+            "world_frame": "world/stationary_camera/alignment-4",
+            "arm_base_frame": "rebot_arm_base",
+            "session_epoch": "epoch-1",
+            "transforms": {
+                "world_from_base": {
+                    "translation_m": list(
+                        translation_m
+                        if translation_m is not None
+                        else [0.4, -0.2, 0.1]
+                    ),
+                    "rotation_xyzw": list(
+                        rotation_xyzw
+                        if rotation_xyzw is not None
+                        else [0.0, 0.0, 0.0, 1.0]
+                    ),
+                }
+            },
+        },
+    }
 
 
 def _adapter(
@@ -529,6 +577,178 @@ class _SignedIntegratedClient(_IntegratedClient):
 class IntegratedRelativeMotionAdapterTests(
     unittest.IsolatedAsyncioTestCase
 ):
+    async def test_absolute_world_point_resolves_full_rigid_transform(self):
+        fabric = _SpatialFabric()
+        fabric.translation_m = [1.0, 2.0, 3.0]
+        half_sqrt = math.sqrt(0.5)
+        fabric.rotation_xyzw = [0.0, 0.0, half_sqrt, half_sqrt]
+        resolver = SpatialFrameResolver(
+            fabric,
+            arm_base_frame="rebot_arm_base",
+        )
+
+        resolution = await resolver.resolve_world_point(
+            target_position_world_m=[1.0, 3.0, 3.0],
+            expected_world_frame="local_vio/epoch-1",
+            expected_session_epoch="epoch-1",
+        )
+
+        np.testing.assert_allclose(
+            resolution.target_position_arm_base_m,
+            [1.0, 0.0, 0.0],
+            atol=1e-9,
+        )
+        self.assertEqual(
+            resolution.as_dict()["source_frame"],
+            "local_vio/epoch-1",
+        )
+
+    async def test_absolute_world_point_rejects_stale_epoch_before_transform(self):
+        fabric = _SpatialFabric()
+        resolver = SpatialFrameResolver(
+            fabric,
+            arm_base_frame="rebot_arm_base",
+        )
+
+        with self.assertRaisesRegex(
+            SpatialResolutionRequired,
+            "different VIO session",
+        ):
+            await resolver.resolve_world_point(
+                target_position_world_m=[0.1, 0.2, 0.3],
+                expected_world_frame="local_vio/epoch-1",
+                expected_session_epoch="epoch-old",
+            )
+
+        self.assertEqual(fabric.transform_calls, 0)
+
+    async def test_absolute_slicing_point_uses_active_workcell_frame(self):
+        fabric = _SpatialFabric()
+        fabric.workcell_activation = {
+            "valid": True,
+            "stream": "manager.workcell_calibration.activation",
+            "schema": "physical_agent.workcell_calibration_activation",
+            "provider_id": "manager.workcell_calibration",
+            "observed_at_us": 1_500_000,
+            "calibration_revision": "calibration-4",
+            "data": {
+                "state": "ACTIVE",
+                "motion_usable": True,
+                "expires_at_us": None,
+                "convention_id": WORLD_CONVENTION_ID,
+                "activation_id": "activation-1",
+                "calibration_revision": "calibration-4",
+                "validity_policy": "MOUNTED_IDENTITY_TRACKING_GATED_V2",
+                "world_frame": "world/stationary_camera/alignment-4",
+                "arm_base_frame": "rebot_arm_base",
+                "session_epoch": "epoch-1",
+                "transforms": {
+                    "world_from_base": {
+                        "translation_m": [0.4, -0.2, 0.1],
+                        "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    }
+                },
+            },
+        }
+        resolver = SpatialFrameResolver(
+            fabric,
+            arm_base_frame="rebot_arm_base",
+        )
+
+        resolution = await resolver.resolve_world_point(
+            target_position_world_m=[0.7, 0.0, 0.4],
+            expected_world_frame="world/stationary_camera/alignment-4",
+            expected_session_epoch=None,
+        )
+
+        np.testing.assert_allclose(
+            resolution.target_position_arm_base_m,
+            [0.3, 0.2, 0.3],
+            atol=1e-9,
+        )
+        self.assertEqual(fabric.transform_calls, 0)
+        self.assertEqual(
+            resolution.provenance["workcell_activation"]["activation_id"],
+            "activation-1",
+        )
+
+    async def test_absolute_world_point_uses_canonical_activation_when_vio_degraded(
+        self,
+    ):
+        fabric = _SpatialFabric()
+        fabric.tracking_state = "DEGRADED"
+        fabric.workcell_activation = _canonical_workcell_activation()
+        resolver = SpatialFrameResolver(
+            fabric,
+            arm_base_frame="rebot_arm_base",
+        )
+
+        resolution = await resolver.resolve_world_point(
+            target_position_world_m=[0.7, 0.0, 0.4],
+            expected_world_frame="world/stationary_camera/alignment-4",
+            expected_session_epoch="epoch-1",
+        )
+
+        np.testing.assert_allclose(
+            resolution.target_position_arm_base_m,
+            [0.3, 0.2, 0.3],
+            atol=1e-9,
+        )
+        self.assertEqual(fabric.transform_calls, 0)
+        self.assertEqual(
+            resolution.provenance["workcell_activation"]["validity_policy"],
+            CANONICAL_CAMERA_CALIBRATION_POLICY,
+        )
+
+    async def test_absolute_world_point_preserves_orientation_and_executes(self):
+        client = _IntegratedClient()
+        fabric = _SpatialFabric()
+        fabric.translation_m = [0.4, -0.2, 0.1]
+        adapter = _adapter(client, fabric)
+
+        preview = await adapter.preview_world_point(
+            target_position_world_m=[0.7, 0.0, 0.4],
+            target_world_frame_id="local_vio/epoch-1",
+            target_session_epoch="epoch-1",
+            requested_speed_m_s=0.1,
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertEqual(
+            preview["motion_intent"],
+            "NEW_ABSOLUTE_WORLD_POSE_MOVE",
+        )
+        np.testing.assert_allclose(
+            preview["target_position_m"],
+            [0.3, 0.2, 0.3],
+            atol=1e-9,
+        )
+        self.assertEqual(
+            preview["target_orientation_rpy_rad"],
+            [0.2, -0.1, 0.4],
+        )
+        self.assertEqual(client.path_request["ik_mode"], "POSE_6DOF")
+        self.assertEqual(client.path_request["execution_backend"], "IMPEDANCE")
+        self.assertEqual(
+            client.path_request["target"]["rpy_rad"],
+            [0.2, -0.1, 0.4],
+        )
+        self.assertEqual(
+            preview["world_point_resolution"]["schema"],
+            "physical_agent.absolute_world_point_resolution",
+        )
+
+        result = await adapter.execute_preview(
+            preview_id=preview["preview_id"]
+        )
+
+        self.assertTrue(result["physical_motion_completed"])
+        self.assertEqual(
+            result["target_position_world_m"],
+            [0.7, 0.0, 0.4],
+        )
+        self.assertEqual(result["final_state"], "FLOAT")
+
     async def test_signed_autonomous_path_executes_combined_six_dof_goal(self):
         client = _SignedIntegratedClient()
         adapter = _adapter(
@@ -541,6 +761,7 @@ class IntegratedRelativeMotionAdapterTests(
             reference_frame="ARM_BASE",
             distance_m=0.1,
             requested_speed_m_s=0.2,
+            execution_backend="POS_SPEED",
             orientation_policy="SET_ARM_BASE_RPY",
             target_orientation_rpy_rad=[0.17, -0.09, 0.52],
         )
@@ -551,12 +772,14 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(preview["status"], "PREVIEW_READY")
         self.assertFalse(preview["approval_required"])
         self.assertEqual(client.path_request["ik_mode"], "POSE_6DOF")
+        self.assertEqual(client.path_request["execution_backend"], "POS_SPEED")
         self.assertEqual(client.path_request["final_state"], "FLOAT")
         self.assertEqual(
             client.path_request["request_context"]["context_kind"],
             "AUTONOMOUS_FREE_SPACE_KINEMATIC",
         )
         self.assertEqual(result["status"], "MOTION_COMPLETED")
+        self.assertEqual(result["execution_backend"], "POS_SPEED")
         self.assertTrue(result["physical_motion_completed"])
         self.assertEqual(
             result["authorization"]["issuer"],
@@ -763,6 +986,21 @@ class IntegratedRelativeMotionAdapterTests(
 
         self.assertEqual(result["controller_duration_s"], 0.5)
         self.assertFalse(result["timing"]["constant_cartesian_speed"])
+
+    async def test_no_speed_request_uses_half_length_default_window(self) -> None:
+        client = _IntegratedClient()
+        adapter = _adapter(client)
+
+        preview = await adapter.preview(
+            direction="UP",
+            distance_m=0.1,
+        )
+
+        self.assertEqual(preview["requested_duration_s"], 1.5)
+        self.assertAlmostEqual(
+            client.last_preview_request["command"]["settings"]["duration_s"],
+            1.5,
+        )
 
     async def test_provider_may_lengthen_requested_speed_for_safety(
         self,
@@ -1827,7 +2065,7 @@ class IntegratedRelativeMotionAdapterTests(
         )
         self.assertFalse(result["physical_motion_authorized"])
         self.assertIn("cannot fall back", result["message"])
-        self.assertEqual(fabric.latest_calls, 1)
+        self.assertEqual(fabric.latest_calls, 2)
         self.assertEqual(fabric.transform_calls, 1)
 
     async def test_runtime_mount_policy_does_not_intercept_world_axis(
@@ -1998,7 +2236,7 @@ class IntegratedRelativeMotionAdapterTests(
         )
         self.assertEqual(readiness.calls, 0)
         self.assertEqual(evidence.calls, [])
-        self.assertEqual(fabric.latest_calls, 2)
+        self.assertEqual(fabric.latest_calls, 4)
         self.assertEqual(fabric.transform_calls, 0)
 
     async def test_missing_exact_depth_does_not_block_optional_preview(
@@ -2071,6 +2309,48 @@ class IntegratedRelativeMotionAdapterTests(
             arm_mount_assumption="CONFIRMED_X_FORWARD_Z_UP",
         )
         self.assertEqual(confirmed["status"], "PREVIEW_READY")
+
+    async def test_degraded_vio_uses_reviewed_canonical_transform_without_prompt(
+        self,
+    ) -> None:
+        fabric = _SpatialFabric()
+        fabric.tracking_state = "DEGRADED"
+        half_sqrt = math.sqrt(0.5)
+        fabric.workcell_activation = _canonical_workcell_activation(
+            rotation_xyzw=[0.0, 0.0, half_sqrt, half_sqrt]
+        )
+        adapter = _adapter(
+            _IntegratedClient(),
+            fabric,
+            require_upright_mount_confirmation=True,
+        )
+
+        preview = await adapter.preview(
+            direction="UP",
+            distance_m=0.2,
+            orientation_policy="PRESERVE_MEASURED_CONTROLLED_FRAME",
+        )
+
+        self.assertEqual(preview["status"], "PREVIEW_READY")
+        self.assertNotEqual(
+            preview["status"],
+            "ARM_MOUNT_CONFIRMATION_REQUIRED",
+        )
+        self.assertEqual(
+            preview["spatial_resolution"]["provenance"]["resolution_source"],
+            "ACTIVE_CANONICAL_WORKCELL_WORLD_FROM_ARM_TRANSFORM",
+        )
+        self.assertEqual(
+            preview["spatial_resolution"]["provenance"]["vio_dependency"],
+            "NOT_REQUIRED_BY_CANONICAL_CAMERA_CALIBRATION_POLICY",
+        )
+        self.assertEqual(fabric.transform_calls, 0)
+
+        result = await adapter.execute_preview(
+            **preview["required_next_tool"]["arguments"]
+        )
+
+        self.assertEqual(result["status"], "MOTION_COMPLETED")
 
     async def test_visual_workflow_orders_confirmations_and_uses_two_pictures(
         self,

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-contact-work-runtime"
+version = "0.1.0"
+description = "Finite runtime for signed Midbrain Contact Work Skills"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["contact_work_runtime*"]

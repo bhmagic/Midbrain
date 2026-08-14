@@ -32,13 +32,21 @@ when discussing the named device or Integrated profile.
 | `IMPEDANCE` | MIT | `PRESS_MIT` | Cyclic position, velocity, stiffness, damping, and feed-forward torque setpoint |
 | `POSITION_VELOCITY_LIMITED` | `POS_VEL` | `TRANSIT_SPEED` | Latched position endpoint with a velocity limit |
 | `VELOCITY` | `VEL` | No reviewed Integrated profile | Continuous velocity command; excluded from the Hardware Development UI |
-| `POSITION_EFFORT_LIMITED` | `FORCE_POS` | `CONTACT_WORK` / `POS_TOR` | Latched position endpoint with velocity and effort-ratio limits |
+| `POSITION_EFFORT_LIMITED` | `FORCE_POS` | `CONTACT_WORK` / `POS_TOR` | Latched position endpoint with rad/s velocity and N·m torque limits |
 
 `POS_TOR` is not an additional Basic command mode: it is Integrated terminology
 that maps to Basic `POSITION_EFFORT_LIMITED`, whose MotorBridge mode name is
 `FORCE_POS`. `POS_SPEED` names a speed-cap policy in the current Integrated
 controller; it is not a motor mode and must not be substituted for `POS_VEL`
 in Basic requests.
+
+The public `POSITION_EFFORT_LIMITED` command field is `torque_limit_nm`.
+`/v1/arm/model` publishes effective per-joint boundaries under
+`command_limits.IMPEDANCE`, `command_limits.POSITION_VELOCITY_LIMITED`, and
+`command_limits.POSITION_EFFORT_LIMITED`. Higher providers consume these
+mode-specific Basic-owned limits rather than calibration or developer-test
+fields. MotorBridge's FORCE_POS ratio is an adapter-private representation
+produced only inside Basic.
 
 See [Motor command semantics](docs/MOTOR_COMMAND_OVERWRITE_SEMANTICS.md) for
 endpoint replacement, keepalive, and mode-transition behavior.

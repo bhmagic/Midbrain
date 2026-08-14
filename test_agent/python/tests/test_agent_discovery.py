@@ -276,12 +276,14 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "inspect_arm_semantic_scene",
                 "locate_effector_front",
                 "locate_item",
+                "move_effector_to_world_point",
                 "perform_relative_effector_motion",
                 "plan_no_contact_item_approach",
                 "refine_arm_root_translation",
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
                 "reinitialize_space_cognition",
+                "slice_with_blade",
                 "verify_rgbd_image_alignment",
             ],
         )
@@ -340,6 +342,30 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "camera.rgbd.route.generic_shared_memory",
                 "camera.rgbd.route.direct_shared_memory",
             ],
+        )
+
+    def test_slicing_strict_tool_uses_null_for_live_profile_defaults(self) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"slice_with_blade"},
+            external_skill_adapters={
+                "skill.slicing.host.v1": _ExternalSkillAdapter()
+            },
+        )
+
+        tool = driver.agent.tools[0]
+        self.assertEqual(tool.name, "slice_with_blade")
+        self.assertIn("blade_profile_number", tool.params_json_schema["required"])
+        self.assertIn("motion_profile_number", tool.params_json_schema["required"])
+        self.assertEqual(
+            tool.params_json_schema["properties"]["blade_profile_number"]["type"],
+            ["integer", "null"],
+        )
+        self.assertEqual(
+            tool.params_json_schema["properties"]["motion_profile_number"]["type"],
+            ["integer", "null"],
         )
 
     def test_catalog_excludes_archived_vegetable_cutting_skill(self) -> None:
