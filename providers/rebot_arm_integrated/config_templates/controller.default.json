@@ -132,7 +132,7 @@
     "maximum_transit_duration_s": 60.0,
     "transit_preview_ttl_ms": 30000,
     "wait_for_next_timeout_s": 30.0,
-    "shadow_planning_time_budget_s": 1.5,
+    "shadow_planning_time_budget_s": 3.0,
     "transit_shadow_enabled": true
   },
   "max_basic_state_age_ms": 300,

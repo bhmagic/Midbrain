@@ -9,10 +9,12 @@ from unittest.mock import patch
 import pytest
 
 pytest.importorskip("agents")
+from agents.tool import validate_responses_tool_search_configuration
 
 from physical_agent_test.agent_driver import (
     PrototypeAgentDriver,
     _resolve_workspace_root,
+    _select_routed_tools,
     deterministic_intent_tool_route,
 )
 from physical_agent_test.gemini_pointing_skill import PointingIdentificationSkill
@@ -175,6 +177,27 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_search", route["allowed_tools"])
         self.assertNotIn("set_provider_residency", route["allowed_tools"])
 
+    def test_routed_deferred_tools_retain_required_search_infrastructure(
+        self,
+    ) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            eligible_tool_names={"identify_pointed_object"},
+            defer_loading=True,
+        )
+
+        selected = _select_routed_tools(
+            driver.agent.tools,
+            {"identify_pointed_object"},
+        )
+
+        self.assertEqual(
+            [getattr(tool, "name", "") for tool in selected],
+            ["identify_pointed_object", "tool_search"],
+        )
+        validate_responses_tool_search_configuration(selected)
+
     def test_explicit_3d_item_route_excludes_rgb_only_analysis(self) -> None:
         route = deterministic_intent_tool_route(
             "identify the white object on the table center and 3d locate it"
@@ -197,6 +220,118 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("right is -Y", route["instruction"])
         self.assertIn("currently visible surface", route["instruction"])
         self.assertIn("never authorizes movement", route["instruction"])
+
+    def test_workpiece_corner_motion_uses_world_point_tandem_route(self) -> None:
+        route = deterministic_intent_tool_route(
+            "move the hand to the work piece right-forward-up corner plus "
+            "(0, -2, 15) cm in the arm base axes"
+        )
+
+        self.assertEqual(
+            route["route"],
+            "SEMANTIC_WORK_OBJECT_WORLD_POINT_MOTION",
+        )
+        self.assertIn(
+            "derive_fabric_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "move_effector_to_world_point",
+            route["allowed_tools"],
+        )
+        self.assertNotIn(
+            "inspect_arm_semantic_scene",
+            route["allowed_tools"],
+        )
+        self.assertNotIn("tool_search", route["allowed_tools"])
+        self.assertNotIn(
+            "perform_relative_effector_motion",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "Never perform coordinate addition",
+            route["instruction"],
+        )
+        self.assertIn(
+            "copying target_position_world_m",
+            route["instruction"],
+        )
+        self.assertIn(
+            "single authoritative scene read",
+            route["instruction"],
+        )
+        self.assertIn(
+            "Do not call inspect_arm_semantic_scene",
+            route["instruction"],
+        )
+
+    def test_scene_mapping_and_corner_motion_use_composed_tandem_route(
+        self,
+    ) -> None:
+        route = deterministic_intent_tool_route(
+            "map out the working piece: toilet paper roll; map out the "
+            "obstacle: table surface; move the hand to (0, -2, 15) cm in "
+            "arm base axes from the work piece right-forward-up corner"
+        )
+
+        self.assertEqual(
+            route["route"],
+            "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
+        )
+        self.assertIn(
+            "configure_scene_segmentation_policy",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "derive_fabric_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "move_effector_to_world_point",
+            route["allowed_tools"],
+        )
+        self.assertNotIn(
+            "inspect_arm_semantic_scene",
+            route["allowed_tools"],
+        )
+        self.assertNotIn("tool_search", route["allowed_tools"])
+        self.assertNotIn(
+            "execute_no_contact_approach_step",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "null expected_scene_revision",
+            route["instruction"],
+        )
+        self.assertIn(
+            "Do not use no-contact approach tools",
+            route["instruction"],
+        )
+
+    def test_mixed_frame_slicing_uses_direction_translation_tandem(self) -> None:
+        route = deterministic_intent_tool_route(
+            "use current IK +(0,0,-10)cm as beginning, world -z blade, "
+            "arm base -x slicing, 10cm default"
+        )
+
+        self.assertEqual(route["route"], "MIXED_FRAME_SLICING")
+        self.assertIn(
+            "translate_fabric_direction_to_world",
+            route["allowed_tools"],
+        )
+        self.assertIn("slice_with_blade", route["allowed_tools"])
+        self.assertNotIn(
+            "translate_fabric_pose_to_world",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "copy direction_world unchanged",
+            route["instruction"],
+        )
+        self.assertIn(
+            "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD",
+            route["instruction"],
+        )
 
     def test_move_close_route_uses_composed_no_contact_planner(self) -> None:
         route = deterministic_intent_tool_route(
@@ -299,6 +434,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             [
                 "analyze_visual_scene",
                 "calibrate_stationary_workcell",
+                "derive_fabric_world_point",
                 "establish_world_axis",
                 "execute_reviewed_observation_motion",
                 "identify_pointed_object",
@@ -313,6 +449,8 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "register_tool_to_control_frame",
                 "reinitialize_space_cognition",
                 "slice_with_blade",
+                "translate_fabric_direction_to_world",
+                "translate_fabric_pose_to_world",
                 "verify_rgbd_image_alignment",
             ],
         )

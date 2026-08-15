@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Raise the temporary Basic-feedback freshness ceiling from 150 ms to 200 ms
+  for physical stability testing while preserving stale-feedback fault and
+  verified-float cleanup behavior.
 - Keep a newly signed session alive while it is waiting for its first
   setpoint. That pre-command state owns a lease but has no active motor
   endpoint; the first move performs the required fresh-feedback check. Reset

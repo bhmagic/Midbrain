@@ -269,6 +269,46 @@ runtime state and manually subtracting coordinates. In a multi-Skill workflow,
 a following contact operation may begin only after this free-space operation
 reports `physical_motion_completed=true`.
 
+When the point originates from a semantic work-object bound, coordinate
+derivation remains a separate read-only finite operation. The Agent first
+inspects the Fabric-hosted scene, then calls `derive_fabric_world_point` with
+one exact object ID, named visible-surface AABB corner, typed offset vector,
+unit, reference axes, and optional inspected scene revision. The Skill reads
+one coherent current Fabric snapshot itself, rejects stale evidence, performs
+unit conversion and point/vector transform math, and returns
+`target_position_world_m`, `target_world_frame_id`, and
+`target_session_epoch`. Those three fields cross unchanged into
+`move_effector_to_world_point`; the Agent does not add coordinates, subtract
+the current effector position, or reinterpret arm-base coordinates as world
+coordinates. A later monotonic scene publication does not retroactively
+invalidate the fresh snapshot selected at derivation; the optional inspected
+revision is provenance rather than an optimistic concurrency lock. Source
+expiry and a change of active world-frame authority still fail closed. A
+controlled-effector-frame offset uses the latest timestamped
+controlled-frame rotation, while the AABB point remains bound to its own
+observation timestamp. Both transform paths are retained in derivation
+provenance. Coordinate derivation grants no physical or contact authority.
+
+Directions and complete poses use the same separation without overloading the
+work-object point operation. `translate_fabric_direction_to_world` accepts one
+explicit active-world, arm-base, or controlled-effector direction, applies
+rotation only, and returns a normalized `direction_world` with frame, epoch,
+calibration, timestamp, and transform-path provenance.
+`translate_fabric_pose_to_world` applies the complete rigid transform to one
+metric position and XYZW orientation and returns
+`target_position_world_m` plus `target_orientation_world_xyzw` under the same
+provenance contract. Both are finite read-only operations and grant no motion
+authority.
+
+For a mixed-frame contact request, the Agent calls the direction translator
+once for each non-world direction and copies `direction_world` unchanged into
+the downstream field with the same semantic role. For example, an arm-base
+slicing direction crosses into `slicing_direction_world`; it never becomes a
+blade direction merely because both are three-element vectors. A world
+direction already bound to the active world does not require model-side
+transform math. Task-specific motion and contact Skills retain their canonical
+world-coordinate contracts and their independent physical authority.
+
 The general reference invariant is one Agent decision per task-facing finite
 operation. Such an operation may own several sequential internal API calls
 only when their order and continuation are mechanically determined within one

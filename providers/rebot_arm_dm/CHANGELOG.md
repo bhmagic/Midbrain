@@ -23,6 +23,10 @@ work.
 
 ## Unreleased
 
+- Make repeated-shutdown stationary confirmation wait for fresh feedback that
+  spans the full configured observation duration. A bounded feedback-acquisition
+  allowance replaces scheduler-sensitive cycle subtraction, so a stationary
+  arm is accepted reliably without weakening the measured-rest requirement.
 - Set the operational IMPEDANCE, POS_VEL, and POS_TOR velocity boundaries to
   4.0 rad/s for all six arm joints while retaining the gripper at 2.1 rad/s.
   Publish all three mode-specific vectors under `command_limits`; retain the

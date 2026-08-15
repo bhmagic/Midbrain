@@ -69,6 +69,35 @@ and canonical signed commit envelope out of model-visible arguments. It does
 not calculate a relative move in the language model and does not authorize
 contact work.
 
+`derive_fabric_world_point` is the read-only coordinate boundary used before
+that motion Skill when a target comes from a semantic work-object AABB. It
+selects the named corner from the current Fabric observation, converts the
+declared offset unit, resolves source/world/controlled-effector axes with
+timestamped transforms, and emits the exact three world-target fields consumed
+by `move_effector_to_world_point`. The language model selects semantics and
+forwards the result; it does not perform vector arithmetic or coordinate-frame
+conversion. Derivation freezes one fresh coherent scene snapshot at Skill
+invocation. A newer monotonic scene publication does not retroactively
+invalidate that decision snapshot, while source expiry and a change of active
+world-frame authority still fail closed.
+
+`translate_fabric_direction_to_world` and
+`translate_fabric_pose_to_world` are the general read-only coordinate
+translators. Direction translation rotates and normalizes a vector without
+applying translation. Pose translation applies the complete rigid transform
+to a metric position and XYZW quaternion. Both accept active-world, configured
+arm-base, or current controlled-effector source coordinates and return the
+active world-frame, epoch, calibration, timestamp, and transform path. Their
+outputs are evidence for a tandem call; neither tool moves the robot or grants
+physical authority.
+
+Mixed-frame slicing uses the direction translator before the unchanged
+`slice_with_blade` contract. The Agent copies `direction_world` into the field
+with the same semantic role, so an arm-base slicing direction becomes
+`slicing_direction_world` while a world blade direction remains
+`blade_direction_world`. The pose translator is available for coordinate
+composition, but no physical world-pose consumer is implied by its presence.
+
 The developer 3D view draws fresh `WORK_OBJECT` visible-surface AABBs as
 wireframe boxes. A work-object label is attached once to its box; individual
 dense semantic spheres remain visible but unlabeled. Obstacles receive neither

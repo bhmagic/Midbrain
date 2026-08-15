@@ -263,6 +263,7 @@ class SemanticSceneInspector:
         *,
         include_spheres: bool = False,
         maximum_spheres: int = 100,
+        include_visual_evidence: bool = True,
     ) -> dict[str, Any]:
         limit = int(maximum_spheres)
         if not 1 <= limit <= 500:
@@ -433,7 +434,7 @@ class SemanticSceneInspector:
         }
         if include_spheres:
             result["spheres"] = spheres[:limit]
-        if status == "SCENE_READY":
+        if status == "SCENE_READY" and include_visual_evidence:
             result["visual_evidence"] = await self._visual_evidence(
                 scene_revision=str(data.get("scene_revision") or "unknown"),
                 sphere_count=len(spheres),

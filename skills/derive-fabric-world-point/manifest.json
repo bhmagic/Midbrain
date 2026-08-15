@@ -1,0 +1,113 @@
+{
+  "skill_type": "derive_fabric_world_point",
+  "version": "0.1.1",
+  "display_name": "Derive Fabric World Point",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "derive_fabric_world_point",
+    "description": "Select one fresh named corner from a Fabric-hosted WORK_OBJECT visible-surface AABB, add one typed offset vector in the AABB, active-world, or current controlled-effector frame, and deterministically return the resulting point in the active world frame. The output fields target_position_world_m, target_world_frame_id, and target_session_epoch can be forwarded unchanged to move_effector_to_world_point. This read-only Skill performs no motion and grants no motion authority.",
+    "when_to_use": [
+      "A named work-object AABB corner must be converted into an active-world point.",
+      "A metric offset must be added in the AABB, world, or controlled-effector axes without language-model arithmetic.",
+      "A tandem workflow needs an authoritative world-point result before calling a separate motion Skill."
+    ],
+    "when_not_to_use": [
+      "The source is not a fresh Fabric-hosted WORK_OBJECT visible-surface AABB.",
+      "The request is only to inspect or report the unmodified semantic scene.",
+      "The requested operation intentionally makes contact or applies force."
+    ],
+    "side_effects": [],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "LOW",
+    "required_permissions": [
+      "world_state.read"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "object_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact object_id copied from the selected fresh Fabric visible-surface AABB."
+        },
+        "corner_name": {
+          "type": "string",
+          "enum": [
+            "right_forward_up",
+            "left_forward_up",
+            "right_backward_up",
+            "left_backward_up",
+            "right_forward_down",
+            "left_forward_down",
+            "right_backward_down",
+            "left_backward_down"
+          ],
+          "description": "Canonical named AABB corner in the Midbrain +X forward, +Y left, +Z up convention."
+        },
+        "offset_vector": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "number"
+          },
+          "description": "One additive [x, y, z] translation vector in the declared offset_unit and offset_reference axes. Use [0, 0, 0] for no offset."
+        },
+        "offset_unit": {
+          "type": "string",
+          "enum": [
+            "METRES",
+            "CENTIMETRES",
+            "MILLIMETRES"
+          ],
+          "description": "Unit of offset_vector. The Skill performs the deterministic conversion to metres."
+        },
+        "offset_reference": {
+          "type": "string",
+          "enum": [
+            "SOURCE_FRAME",
+            "ACTIVE_WORLD",
+            "CONTROLLED_EFFECTOR_FRAME"
+          ],
+          "description": "Axes in which offset_vector is expressed. SOURCE_FRAME is the AABB arm-base frame; CONTROLLED_EFFECTOR_FRAME uses the current configured controlled-effector orientation."
+        },
+        "expected_scene_revision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional scene_revision from prior inspection for audit. The Skill binds one coherent fresh Fabric snapshot at invocation; a newer monotonic scene revision does not by itself invalidate the Agent's semantic object/corner decision. Use null for the normal latest-snapshot path."
+        }
+      },
+      "required": [
+        "object_id",
+        "corner_name",
+        "offset_vector",
+        "offset_unit",
+        "offset_reference",
+        "expected_scene_revision"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.derive_fabric_world_point.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "world_model.arm.semantic_scene",
+    "world.transforms.timestamped"
+  ],
+  "optional_capabilities": [
+    "robot_arm.transforms.local"
+  ],
+  "published_streams": []
+}
