@@ -182,7 +182,7 @@
     "midbrain.skill.slicing_blade_profiles.v1": {
       "schema": "midbrain.effector_slicing_blade_profiles",
       "schema_version": 1,
-      "default_profile_number": 7,
+      "default_profile_number": 24,
       "profiles": [
         {
           "profile_number": 3,
@@ -288,6 +288,263 @@
             -1.0,
             0.0,
             -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 8,
+          "name": "Blade profile #8",
+          "blade_direction_effector": [
+            0.5,
+            0.2,
+            -0.6
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 9,
+          "name": "Blade profile #9",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.6
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 10,
+          "name": "Blade profile #10",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.6
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": [
+            "joint4"
+          ]
+        },
+        {
+          "profile_number": 11,
+          "name": "Blade profile #11",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.8
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 12,
+          "name": "Blade profile #12",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.7
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 13,
+          "name": "Blade profile #13",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 14,
+          "name": "Blade profile #14",
+          "blade_direction_effector": [
+            0.5,
+            0.2,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            -0.5
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 15,
+          "name": "Blade profile #15",
+          "blade_direction_effector": [
+            0.5,
+            0.2,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 16,
+          "name": "Blade profile #16",
+          "blade_direction_effector": [
+            0.5,
+            0.25,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 17,
+          "name": "Blade profile #17",
+          "blade_direction_effector": [
+            0.5,
+            0.22,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 18,
+          "name": "Blade profile #18",
+          "blade_direction_effector": [
+            0.5,
+            0.18,
+            -0.65
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 19,
+          "name": "Blade profile #19",
+          "blade_direction_effector": [
+            0.5,
+            0.18,
+            -0.5
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 20,
+          "name": "Blade profile #20",
+          "blade_direction_effector": [
+            0.5,
+            0.15,
+            -0.5
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 21,
+          "name": "Blade profile #21",
+          "blade_direction_effector": [
+            0.5,
+            0.145,
+            -0.5
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 22,
+          "name": "Blade profile #22",
+          "blade_direction_effector": [
+            0.5,
+            0.14,
+            -0.5
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 23,
+          "name": "Blade profile #23",
+          "blade_direction_effector": [
+            0.5,
+            0.1,
+            -0.4
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
+          ],
+          "locked_joint_names": []
+        },
+        {
+          "profile_number": 24,
+          "name": "Blade profile #24",
+          "blade_direction_effector": [
+            0.5,
+            0.08,
+            -0.4
+          ],
+          "slicing_direction_effector": [
+            -1.0,
+            0.0,
+            0.0
           ],
           "locked_joint_names": []
         }

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Keep `gpt-5.6-terra` as the default Agent model and restore its default
+  reasoning effort to `medium` after physical tests showed that `low` was less
+  reliable when coordinating compound perception and motion requests.
+- Add the read-only `derive_fabric_world_point` finite Skill. It binds one
+  fresh Fabric-hosted work-object visible-surface AABB and named corner,
+  performs deterministic offset-unit and frame math, and returns the exact
+  active-world target fields consumed by `move_effector_to_world_point`.
+  Work-object corner-motion prompts now call the coordinate Skill directly so
+  its one Fabric read is authoritative instead of requiring a redundant prior
+  scene inspection. Combined scene-policy-and-motion prompts retain policy,
+  coordinate, and world-motion tools instead of being shadowed by the obstacle
+  route. Deterministic tool narrowing now preserves the SDK ToolSearch
+  infrastructure whenever its selected capability tools use deferred loading;
+  that infrastructure does not re-admit excluded scene-inspection tools.
+  Coordinate derivation freezes one fresh Fabric snapshot instead of rejecting
+  merely because the HOT scene compiler publishes newer monotonic revisions;
+  source expiry and world-frame authority changes still fail closed.
+- Add official read-only `translate_fabric_direction_to_world` and
+  `translate_fabric_pose_to_world` finite Skills backed by the active Fabric
+  transform authority. Direction translation applies rotation only and emits
+  canonical `direction_world`; pose translation applies a complete rigid
+  transform and emits canonical world position plus XYZW orientation. Both
+  retain frame, epoch, calibration, timestamp, and transform-path provenance,
+  and neither grants physical authority. Mixed-frame slicing now has a
+  deterministic tandem route that translates each non-world direction and
+  copies it into the unchanged downstream semantic field.
+
 - Resolve the external Skill catalog from the explicit workspace root or the
   bounded launcher's `PHYSICAL_AGENT_ROOT` when the Agent runs from an
   installed wheel. Wheel installs no longer mistake `.venv` for the workspace

@@ -7,6 +7,9 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Relax the bounded shadow transit-planning time budget from 1.5 to 3.0
+  seconds for long exact-pose moves. Collision validation, IK residual limits,
+  and physical authorization gates remain unchanged.
 - Accept the canonical `HAND_ANGULAR_4PI` scene layer and its 5 mm minimum
   sphere radius. The existing capsule/sphere collision evaluator consumes the
   projected hits without adding another collision primitive or planner.

@@ -90,6 +90,39 @@ class _BasicSafeHomeSkill:
         return {"status": "SAFE_HOME_COMPLETED"}
 
 
+class _FabricWorldPointComposer:
+    def __init__(self) -> None:
+        self.arguments: list[dict] = []
+
+    async def run(self, **arguments):
+        self.arguments.append(dict(arguments))
+        return {
+            "status": "WORLD_POINT_READY",
+            "target_position_world_m": [0.4, -0.2, 0.3],
+            "target_world_frame_id": "local_vio/epoch-1",
+            "target_session_epoch": "epoch-1",
+            "physical_motion_authorized": False,
+            "physical_motion_submitted": False,
+        }
+
+
+class _FabricSpatialTranslator:
+    async def translate_direction(self, **arguments):
+        return {
+            "status": "WORLD_DIRECTION_READY",
+            "direction_world": arguments["direction"],
+        }
+
+    async def translate_pose(self, **arguments):
+        return {
+            "status": "WORLD_POSE_READY",
+            "target_position_world_m": arguments["position_m"],
+            "target_orientation_world_xyzw": arguments[
+                "orientation_xyzw"
+            ],
+        }
+
+
 async def _reinitialize_space(reason: str):
     return {"status": "initialized", "reason": reason}
 
@@ -311,6 +344,88 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         )
         self.assertNotIn(
             "activate robot_arm.rebot_dm to HOT first",
+            driver.agent.instructions,
+        )
+
+    def test_fabric_world_point_composer_is_a_separate_read_only_tool(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        composer = _FabricWorldPointComposer()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            fabric_world_point_composer=composer,
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+
+        self.assertIn("derive_fabric_world_point", tools)
+        tool = tools["derive_fabric_world_point"]
+        self.assertFalse(tool.needs_approval)
+        self.assertEqual(
+            tool.params_json_schema["required"],
+            [
+                "object_id",
+                "corner_name",
+                "offset_vector",
+                "offset_unit",
+                "offset_reference",
+                "expected_scene_revision",
+            ],
+        )
+        self.assertNotIn(
+            "requested_speed_m_s",
+            tool.params_json_schema["properties"],
+        )
+
+    def test_fabric_direction_and_pose_translators_are_typed_read_only_tools(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            fabric_spatial_translator=_FabricSpatialTranslator(),
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+
+        direction = tools["translate_fabric_direction_to_world"]
+        self.assertFalse(direction.needs_approval)
+        self.assertEqual(
+            direction.params_json_schema["required"],
+            [
+                "direction",
+                "source_reference",
+                "source_frame_id",
+                "source_observed_at_us",
+                "source_session_epoch",
+            ],
+        )
+        self.assertEqual(
+            direction.params_json_schema["properties"]["source_reference"][
+                "enum"
+            ],
+            [
+                "ACTIVE_WORLD",
+                "ARM_BASE",
+                "CONTROLLED_EFFECTOR_FRAME",
+            ],
+        )
+
+        pose = tools["translate_fabric_pose_to_world"]
+        self.assertFalse(pose.needs_approval)
+        self.assertIn("position_m", pose.params_json_schema["required"])
+        self.assertIn("orientation_xyzw", pose.params_json_schema["required"])
+        self.assertNotIn(
+            "requested_speed_m_s",
+            pose.params_json_schema["properties"],
+        )
+        self.assertIn(
+            "never authorizes or submits motion",
             driver.agent.instructions,
         )
 

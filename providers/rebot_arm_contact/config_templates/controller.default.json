@@ -8,7 +8,7 @@
     "lease_duration_ms": 3000,
     "lease_renewal_interval_ms": 1000,
     "command_timeout_ms": 500,
-    "maximum_feedback_age_ms": 150.0,
+    "maximum_feedback_age_ms": 200.0,
     "float_verify_timeout_s": 2.0
   },
   "authorization": {

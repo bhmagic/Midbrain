@@ -1,0 +1,97 @@
+{
+  "skill_type": "translate_fabric_direction",
+  "version": "0.1.0",
+  "display_name": "Translate Fabric Direction to World",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "translate_fabric_direction_to_world",
+    "description": "Translate one explicit unitless direction from active-world, configured arm-base, or current controlled-effector axes into the active Fabric world frame. The read-only result exposes direction_world with frame, epoch, calibration, timestamp, and transform-path provenance. Use it as a tandem coordinate boundary before a downstream Skill that accepts only world directions; it performs no motion and grants no authority.",
+    "when_to_use": [
+      "A downstream Skill requires a world direction but the requested direction is expressed in arm-base or controlled-effector axes.",
+      "A direction must be normalized and transformed without language-model coordinate math.",
+      "A tandem workflow needs a typed direction_world result with current Fabric authority provenance."
+    ],
+    "when_not_to_use": [
+      "The downstream field is a point, displacement with units, pose, wrench, or image direction.",
+      "The requested source axes are ambiguous or are not one of the declared source references.",
+      "No active motion-usable world-frame authority is available."
+    ],
+    "side_effects": [],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "LOW",
+    "required_permissions": [
+      "world.transforms.read"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "One non-zero unitless [x, y, z] direction expressed in source_reference axes. The Skill normalizes it before and after rotation."
+        },
+        "source_reference": {
+          "type": "string",
+          "enum": [
+            "ACTIVE_WORLD",
+            "ARM_BASE",
+            "CONTROLLED_EFFECTOR_FRAME"
+          ],
+          "description": "Axes in which direction is expressed. ARM_BASE means the configured robot arm base; CONTROLLED_EFFECTOR_FRAME means the current configured hand/tool control frame."
+        },
+        "source_frame_id": {
+          "anyOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ],
+          "description": "Optional exact upstream frame ID. Supply it unchanged when available; otherwise use null and the Skill binds the configured frame selected by source_reference."
+        },
+        "source_observed_at_us": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "null"}
+          ],
+          "description": "Optional upstream observation timestamp in Unix microseconds. Supply it unchanged when available; use null for operator-stated axes so Fabric selects the current transform."
+        },
+        "source_session_epoch": {
+          "anyOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ],
+          "description": "Optional upstream resettable-frame epoch. Supply it unchanged when available; otherwise use null."
+        }
+      },
+      "required": [
+        "direction",
+        "source_reference",
+        "source_frame_id",
+        "source_observed_at_us",
+        "source_session_epoch"
+      ],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.translate_fabric_direction.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "world.transforms.timestamped"
+  ],
+  "optional_capabilities": [
+    "robot_arm.transforms.local"
+  ],
+  "route_policy": {
+    "output_field": "direction_world",
+    "rotation_only": true,
+    "translation_applied": false,
+    "normalization": "BEFORE_AND_AFTER_ROTATION",
+    "physical_authority": "NONE"
+  },
+  "published_streams": []
+}

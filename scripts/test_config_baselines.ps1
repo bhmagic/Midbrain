@@ -235,6 +235,12 @@ $requiredSystemKeys = @(
 foreach ($key in $requiredSystemKeys) {
     Assert-True -Condition $systemValues.ContainsKey($key) -Message "system.env.example is missing $key"
 }
+Assert-True `
+    -Condition ($systemValues["OPENAI_AGENT_MODEL"] -eq "gpt-5.6-terra") `
+    -Message "The default Agent model must remain gpt-5.6-terra"
+Assert-True `
+    -Condition ($systemValues["OPENAI_AGENT_REASONING_EFFORT"] -eq "medium") `
+    -Message "The default Agent reasoning effort must be medium"
 
 $apiValues = Read-EnvTemplate $rootApiKeys
 foreach ($key in @("OPENAI_API_KEY", "GEMINI_API_KEY")) {
@@ -265,12 +271,18 @@ Assert-True `
 
 $integratedConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_integrated/config_templates/controller.default.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($integratedConfig.schema_version -eq 3) -Message "Integrated clean controller template must use schema version 3"
+Assert-True `
+    -Condition ([double]$integratedConfig.planning.shadow_planning_time_budget_s -eq 3.0) `
+    -Message "Integrated shadow-planning time budget must be 3.0 seconds"
 
 $contactConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_contact/config_templates/controller.default.json") -Raw | ConvertFrom-Json
 $contactSkills = @($contactConfig.authorization.skill_secret_envs.PSObject.Properties.Name)
 Assert-True `
     -Condition ($contactSkills.Count -eq 1 -and $contactSkills[0] -eq "contact.slicing") `
     -Message "Contact clean controller template must allowlist only contact.slicing"
+Assert-True `
+    -Condition ([double]$contactConfig.basic.maximum_feedback_age_ms -eq 200.0) `
+    -Message "Contact Basic-feedback freshness ceiling must be 200 ms"
 
 $slicingMotionProfiles = Get-Content -LiteralPath (Join-Path $workspace "skills/slicing/config_templates/motion_profiles.default.json") -Raw | ConvertFrom-Json
 Assert-True `

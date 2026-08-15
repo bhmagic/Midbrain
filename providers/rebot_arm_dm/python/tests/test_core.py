@@ -1431,7 +1431,9 @@ class CoreTests(unittest.TestCase):
                     'reason':'safe-home did not reach stable position and velocity before timeout',
                 }
 
+            observation_started=time.monotonic()
             self.assertTrue(controller.safe_home(0.05))
+            observation_elapsed_s=time.monotonic()-observation_started
             result=controller.safe_home_result()
             self.assertTrue(result['termination_allowed'])
             self.assertEqual(
@@ -1439,6 +1441,11 @@ class CoreTests(unittest.TestCase):
                 'MEASURED_STATIONARY_RETRY',
             )
             self.assertTrue(result['stationary_observation']['confirmed'])
+            self.assertGreaterEqual(observation_elapsed_s,0.12)
+            self.assertGreaterEqual(
+                result['stationary_observation']['observed_duration_s'],
+                result['stationary_observation']['minimum_observed_duration_s'],
+            )
             self.assertIn(3,result['failing_position_joint_indices'])
             self.assertGreater(result['maximum_position_error_rad'],0.15)
             self.assertTrue(controller.graceful_stop())

@@ -26,6 +26,8 @@ from jsonschema import validate
 from .agent_events import translate_openai_sdk_events
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .effector_front_adapter import EffectorFrontSkillAdapter
+from .fabric_spatial_translation import FabricSpatialTranslator
+from .fabric_world_point import FabricWorldPointComposer
 from .gemini_pointing_skill import (
     PointingIdentificationSkill,
     VisualSceneAnalysisSkill,
@@ -93,6 +95,48 @@ AgentInput = str | list[dict[str, Any]] | RunState[Any]
 logger = logging.getLogger(__name__)
 PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL = "perform_relative_effector_motion"
 MOVE_EFFECTOR_TO_WORLD_POINT_TOOL = "move_effector_to_world_point"
+DERIVE_FABRIC_WORLD_POINT_TOOL = "derive_fabric_world_point"
+TRANSLATE_FABRIC_DIRECTION_TOOL = "translate_fabric_direction_to_world"
+TRANSLATE_FABRIC_POSE_TOOL = "translate_fabric_pose_to_world"
+
+
+def _select_routed_tools(
+    tools: list[Any],
+    allowed_tools: set[str],
+) -> list[Any]:
+    """Filter capability tools while preserving required SDK infrastructure."""
+
+    selected = [
+        tool
+        for tool in tools
+        if getattr(tool, "name", "") in allowed_tools
+    ]
+    deferred_selected = any(
+        (
+            isinstance(tool, FunctionTool)
+            and bool(tool.defer_loading)
+        )
+        or (
+            isinstance(getattr(tool, "tool_config", None), Mapping)
+            and bool(tool.tool_config.get("defer_loading"))
+        )
+        for tool in selected
+    )
+    if not deferred_selected or any(
+        isinstance(tool, ToolSearchTool) for tool in selected
+    ):
+        return selected
+
+    search_tools = [
+        tool for tool in tools if isinstance(tool, ToolSearchTool)
+    ]
+    if len(search_tools) != 1:
+        raise RuntimeError(
+            "A routed deferred-loading tool surface requires exactly one "
+            "ToolSearchTool"
+        )
+    selected.append(search_tools[0])
+    return selected
 
 
 def _current_user_text(input_value: AgentInput) -> str:
@@ -155,6 +199,65 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             ),
         }
 
+    item_terms = any(
+        term in normalized
+        for term in (
+            "object",
+            "item",
+            "thing",
+            "roll",
+            "toilet paper",
+            "workpiece",
+            "work piece",
+        )
+    )
+    bounds_terms = any(
+        term in normalized
+        for term in (
+            "bounding box",
+            "aabb",
+            "corner",
+            "right-forward",
+            "right forward",
+            "left-forward",
+            "left forward",
+            "right-backward",
+            "right backward",
+            "left-backward",
+            "left backward",
+        )
+    )
+    effector_terms = any(
+        term in normalized
+        for term in ("gripper", "effector", "arm", "hand")
+    )
+    explicit_motion_terms = any(
+        term in normalized
+        for term in (
+            "move",
+            "position",
+            "place",
+            "send",
+            "bring",
+        )
+    )
+    motion_negated = any(
+        term in normalized
+        for term in (
+            "do not move",
+            "don't move",
+            "without moving",
+            "no movement",
+            "not move",
+        )
+    )
+    work_object_motion_terms = (
+        item_terms
+        and bounds_terms
+        and effector_terms
+        and explicit_motion_terms
+        and not motion_negated
+    )
     scene_policy_terms = any(
         term in normalized
         for term in (
@@ -166,6 +269,42 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "don't collide",
         )
     )
+    if scene_policy_terms and work_object_motion_terms:
+        return {
+            "route": "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
+            "allowed_tools": {
+                "configure_scene_segmentation_policy",
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                DERIVE_FABRIC_WORLD_POINT_TOOL,
+                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+            },
+            "instruction": (
+                "This request first defines scene semantics and then requests "
+                "a work-object corner motion. Call "
+                "configure_scene_segmentation_policy with only the objects "
+                "the user described and their requested types. Never infer "
+                "additional KEEP_OUT objects. Include a complete robot-arm "
+                "description for the independent SAM2 arm exclusion mask. "
+                "Then request world_model.arm_scene_compiler HOT with exact "
+                "required_capability=world_model.arm.semantic_scene; Manager "
+                "owns transitive activation of its declared dependencies. "
+                "Do not call inspect_arm_semantic_scene: call "
+                "derive_fabric_world_point directly with the configured "
+                "WORK_OBJECT object_id, canonical named corner, unchanged "
+                "numeric offset and unit, matching offset_reference, and a "
+                "null expected_scene_revision. The coordinate Skill waits "
+                "for and binds one coherent current Fabric snapshot. Never "
+                "perform coordinate addition, unit conversion, transform "
+                "math, or current-pose subtraction in the language model. "
+                "Only after WORLD_POINT_READY, call "
+                "move_effector_to_world_point once, copying "
+                "target_position_world_m, target_world_frame_id, and "
+                "target_session_epoch unchanged. Do not use no-contact "
+                "approach tools for this explicit absolute corner target or "
+                "report completion unless physical_motion_completed=true."
+            ),
+        }
     if scene_policy_terms:
         return {
             "route": "EXPLICIT_SCENE_SEGMENTATION_POLICY",
@@ -200,6 +339,55 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             ),
         }
 
+    slicing_terms = any(
+        term in normalized
+        for term in ("slice", "slicing", "cut with the blade", "blade cut")
+    )
+    mixed_frame_terms = any(
+        term in normalized
+        for term in (
+            "arm base",
+            "arm-base",
+            "hand axis",
+            "hand axes",
+            "effector axis",
+            "effector axes",
+            "controlled effector",
+        )
+    )
+    if slicing_terms and mixed_frame_terms:
+        return {
+            "route": "MIXED_FRAME_SLICING",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                TRANSLATE_FABRIC_DIRECTION_TOOL,
+                "slice_with_blade",
+                "tool_search",
+            },
+            "instruction": (
+                "This slicing request contains directions expressed in more "
+                "than one coordinate frame. Keep directions already stated "
+                "in world axes unchanged. For each direction stated in "
+                "arm-base or controlled-effector axes, first call "
+                "translate_fabric_direction_to_world with the exact numeric "
+                "vector and matching source_reference. Use null source "
+                "identity fields when the direction came from the operator's "
+                "current request rather than timestamped upstream evidence. "
+                "After WORLD_DIRECTION_READY, copy direction_world unchanged "
+                "into the matching semantic slicing field: blade direction "
+                "goes only to blade_direction_world and slicing direction "
+                "goes only to slicing_direction_world. Never swap those roles "
+                "or perform transform math in the language model. A begin "
+                "offset from current IK/current effector in world axes uses "
+                "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD and the exact "
+                "metre offset directly. Then call slice_with_blade once after "
+                "all required world directions are available. Use null for "
+                "both profile selectors unless the operator explicitly named "
+                "profile numbers."
+            ),
+        }
+
     metric_terms = any(
         term in normalized
         for term in (
@@ -212,34 +400,41 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "robot coordinate",
         )
     )
-    item_terms = any(
-        term in normalized
-        for term in (
-            "object",
-            "item",
-            "thing",
-            "roll",
-            "toilet paper",
-            "workpiece",
-            "work piece",
-        )
-    )
-    bounds_terms = any(
-        term in normalized
-        for term in (
-            "bounding box",
-            "aabb",
-            "corner",
-            "right-forward",
-            "right forward",
-            "left-forward",
-            "left forward",
-            "right-backward",
-            "right backward",
-            "left-backward",
-            "left backward",
-        )
-    )
+    if work_object_motion_terms:
+        return {
+            "route": "SEMANTIC_WORK_OBJECT_WORLD_POINT_MOTION",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                DERIVE_FABRIC_WORLD_POINT_TOOL,
+                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+            },
+            "instruction": (
+                "This is a compound semantic-coordinate and free-space "
+                "motion request. Do not call inspect_arm_semantic_scene. "
+                "Call derive_fabric_world_point directly with the exact "
+                "WORK_OBJECT object_id established by the current scene "
+                "policy or prior structured result, the canonical named corner, "
+                "and the user's unchanged numeric offset and unit. Select "
+                "a zero METRES offset when no offset was requested. Select "
+                "SOURCE_FRAME for arm-base/AABB axes, ACTIVE_WORLD for world "
+                "axes, or CONTROLLED_EFFECTOR_FRAME for hand axes. Never "
+                "perform coordinate addition, unit conversion, transform "
+                "math, or current-pose subtraction in the language model. "
+                "Use null expected_scene_revision unless a structured "
+                "upstream result supplied one. The coordinate Skill performs "
+                "the single authoritative scene read and binds one coherent "
+                "current Fabric snapshot at invocation. If no exact object_id "
+                "is available, report that ambiguity instead of inventing one. "
+                "Only after WORLD_POINT_READY, call "
+                "move_effector_to_world_point once, copying "
+                "target_position_world_m, target_world_frame_id, and "
+                "target_session_epoch unchanged. Do not substitute a "
+                "relative move or report completion unless the motion result "
+                "sets physical_motion_completed=true. A visible-surface AABB "
+                "is not a tracked solid extent or contact authorization."
+            ),
+        }
     if item_terms and bounds_terms:
         return {
             "route": "SEMANTIC_WORK_OBJECT_BOUNDS",
@@ -247,6 +442,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "inspect_midbrain_runtime",
                 "set_provider_residency",
                 "inspect_arm_semantic_scene",
+                DERIVE_FABRIC_WORLD_POINT_TOOL,
                 "tool_search",
             },
             "instruction": (
@@ -259,8 +455,11 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "canonical arm-base convention, forward is +X, right is -Y, "
                 "and up is +Z. Do not substitute the first sphere or infer a "
                 "tracked solid extent. If no matching fresh AABB exists, "
-                "report that explicitly instead of guessing. This route is "
-                "read-only and never authorizes movement."
+                "report that explicitly instead of guessing. When the user "
+                "requests an additive offset but no motion, call "
+                "derive_fabric_world_point so the Skill performs the unit, "
+                "vector, and transform math. This route is read-only and "
+                "never authorizes movement."
             ),
         }
     location_terms = any(
@@ -306,10 +505,6 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "reach the",
             "reaching the",
         )
-    )
-    effector_terms = any(
-        term in normalized
-        for term in ("gripper", "effector", "arm", "hand")
     )
     implicit_effector_motion = "move" in normalized and item_terms
     if (
@@ -896,6 +1091,10 @@ class PrototypeAgentDriver:
             NoContactItemApproachAdapter | None
         ) = None,
         semantic_scene_inspector: SemanticSceneInspector | None = None,
+        fabric_world_point_composer: (
+            FabricWorldPointComposer | None
+        ) = None,
+        fabric_spatial_translator: FabricSpatialTranslator | None = None,
         scene_policy_publisher: (
             SceneSegmentationPolicyPublisher | None
         ) = None,
@@ -1160,6 +1359,68 @@ class PrototypeAgentDriver:
             adapters[
                 "test_agent.inspect_arm_semantic_scene.v1"
             ] = BoundMethodSkillAdapter(semantic_scene_inspector_adapter)
+        if fabric_world_point_composer is not None:
+            async def fabric_world_point_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await fabric_world_point_composer.run(
+                    object_id=arguments.get("object_id"),
+                    corner_name=arguments.get("corner_name"),
+                    offset_vector=arguments.get("offset_vector"),
+                    offset_unit=arguments.get("offset_unit"),
+                    offset_reference=arguments.get("offset_reference"),
+                    expected_scene_revision=arguments.get(
+                        "expected_scene_revision"
+                    ),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.derive_fabric_world_point.v1"
+            ] = BoundMethodSkillAdapter(fabric_world_point_adapter)
+            eligible.add(DERIVE_FABRIC_WORLD_POINT_TOOL)
+        if fabric_spatial_translator is not None:
+            async def fabric_direction_translation_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await fabric_spatial_translator.translate_direction(
+                    direction=arguments.get("direction"),
+                    source_reference=arguments.get("source_reference"),
+                    source_frame_id=arguments.get("source_frame_id"),
+                    source_observed_at_us=arguments.get(
+                        "source_observed_at_us"
+                    ),
+                    source_session_epoch=arguments.get(
+                        "source_session_epoch"
+                    ),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            async def fabric_pose_translation_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await fabric_spatial_translator.translate_pose(
+                    position_m=arguments.get("position_m"),
+                    orientation_xyzw=arguments.get("orientation_xyzw"),
+                    source_reference=arguments.get("source_reference"),
+                    source_frame_id=arguments.get("source_frame_id"),
+                    source_observed_at_us=arguments.get(
+                        "source_observed_at_us"
+                    ),
+                    source_session_epoch=arguments.get(
+                        "source_session_epoch"
+                    ),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
+            adapters[
+                "skill.translate_fabric_direction.v1"
+            ] = BoundMethodSkillAdapter(fabric_direction_translation_adapter)
+            adapters[
+                "skill.translate_fabric_pose.v1"
+            ] = BoundMethodSkillAdapter(fabric_pose_translation_adapter)
+            eligible.add(TRANSLATE_FABRIC_DIRECTION_TOOL)
+            eligible.add(TRANSLATE_FABRIC_POSE_TOOL)
         if tool_registration_skill is not None:
             async def tool_registration_adapter(
                 arguments: dict[str, Any],
@@ -1247,7 +1508,6 @@ class PrototypeAgentDriver:
                         "target_orientation_rpy_rad"
                     ),
                 )
-
             async def prepare_integrated_world_point_motion(
                 arguments: dict[str, Any],
             ) -> dict[str, Any]:
@@ -2400,6 +2660,25 @@ class PrototypeAgentDriver:
             "spatial-frame, or physical-action authority. Never use it to "
             "satisfy a finite Skill's live-sensor requirement."
         )
+        if fabric_spatial_translator is not None:
+            instructions += (
+                " Coordinate-frame conversion is a read-only tandem "
+                "operation, not language-model arithmetic. When a downstream "
+                "Skill requires a world direction but the requested vector is "
+                "in arm-base or controlled-effector axes, call "
+                "translate_fabric_direction_to_world and copy its "
+                "direction_world output unchanged into the downstream field "
+                "with the same semantic role. Do not confuse coordinate type "
+                "with role: a translated slicing direction remains a slicing "
+                "direction, and a translated blade direction remains a blade "
+                "direction. Use translate_fabric_pose_to_world only when a "
+                "complete metric position plus XYZW orientation must be "
+                "expressed in the active world. Its output is coordinate "
+                "evidence and never authorizes or submits motion. Do not "
+                "refuse solely because a supported frame conversion is "
+                "required; invoke the appropriate translator and evaluate its "
+                "typed result."
+            )
         self.agent = Agent(
             name="Physical Agent Prototype Driver",
             model=model,
@@ -2520,11 +2799,10 @@ class PrototypeAgentDriver:
             if intent_route is not None and not isinstance(input_value, RunState):
                 allowed_tools = intent_route["allowed_tools"]
                 selected_agent = self.agent.clone(
-                    tools=[
-                        tool
-                        for tool in self.agent.tools
-                        if getattr(tool, "name", "") in allowed_tools
-                    ],
+                    tools=_select_routed_tools(
+                        self.agent.tools,
+                        allowed_tools,
+                    ),
                     instructions=(
                         f"{self.agent.instructions} "
                         f"Deterministic intent route "

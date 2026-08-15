@@ -1252,7 +1252,15 @@ class ArmController:
         feedback_max_age_ms = float(
             control.get("stationary_shutdown_feedback_max_age_ms", 100.0)
         )
-        deadline = time.monotonic() + observation_s
+        observation_started_monotonic = time.monotonic()
+        acquisition_allowance_s = (
+            (feedback_max_age_ms / 1000.0) + (2.0 * self.period)
+        )
+        deadline = (
+            observation_started_monotonic
+            + observation_s
+            + acquisition_allowance_s
+        )
         positions: list[np.ndarray] = []
         velocities: list[np.ndarray] = []
         observed_monotonic_values: list[float] = []
@@ -1279,8 +1287,11 @@ class ArmController:
                     )
                     break
                 if (
-                    last_observed_monotonic is None
-                    or feedback.observed_monotonic > last_observed_monotonic
+                    feedback.observed_monotonic >= observation_started_monotonic
+                    and (
+                        last_observed_monotonic is None
+                        or feedback.observed_monotonic > last_observed_monotonic
+                    )
                 ):
                     indices = self.active_joint_indices
                     positions.append(feedback.positions_rad[list(indices)].copy())
@@ -1290,6 +1301,13 @@ class ArmController:
                         tuple(feedback.feedback_generations[index] for index in indices)
                     )
                     last_observed_monotonic = feedback.observed_monotonic
+                    if (
+                        len(observed_monotonic_values) >= 2
+                        and observed_monotonic_values[-1]
+                        - observed_monotonic_values[0]
+                        >= observation_s
+                    ):
+                        break
             time.sleep(min(self.period, max(0.0, deadline - time.monotonic())))
 
         sample_count = len(positions)
@@ -1315,7 +1333,7 @@ class ArmController:
                 for index in range(len(generation_values[0]))
             )
         )
-        minimum_observed_duration_s = max(0.0, observation_s - (2.0 * self.period))
+        minimum_observed_duration_s = observation_s
         confirmed = bool(
             failure_reason is None
             and sample_count >= 3
@@ -1327,11 +1345,27 @@ class ArmController:
             and observed_max_velocity_rad_s <= max_velocity_rad_s
         )
         if failure_reason is None and not confirmed:
-            failure_reason = "measured joint motion exceeded the stationary shutdown policy"
+            if sample_count < 3:
+                failure_reason = (
+                    "stationary shutdown observation did not collect enough fresh feedback"
+                )
+            elif (
+                not generations_advanced
+                or observed_duration_s < minimum_observed_duration_s
+            ):
+                failure_reason = (
+                    "stationary shutdown observation did not span the required duration"
+                )
+            else:
+                failure_reason = (
+                    "measured joint motion exceeded the stationary shutdown policy"
+                )
         return {
             "confirmed": confirmed,
             "reason": "all installed joints remained stationary" if confirmed else failure_reason,
             "observation_s": observation_s,
+            "minimum_observed_duration_s": minimum_observed_duration_s,
+            "acquisition_allowance_s": acquisition_allowance_s,
             "sample_count": sample_count,
             "observed_duration_s": observed_duration_s,
             "feedback_generations_advanced": generations_advanced,

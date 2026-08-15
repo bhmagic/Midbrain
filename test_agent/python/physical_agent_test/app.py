@@ -41,6 +41,8 @@ from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .config import Settings
 from .depth_capture import DepthCapture
 from .effector_front_adapter import EffectorFrontSkillAdapter
+from .fabric_spatial_translation import FabricSpatialTranslator
+from .fabric_world_point import FabricWorldPointComposer
 from .external_skill_host import (
     ExternalSkillHostServices,
     load_external_skill_host_adapters,
@@ -206,6 +208,15 @@ semantic_scene_inspector = SemanticSceneInspector(
     fabric,
     tracker_base_url=settings.sam2_scene_tracker_url,
     visual_evidence_store=visual_evidence_store,
+)
+fabric_world_point_composer = FabricWorldPointComposer(
+    semantic_scene_inspector,
+    spatial_frame_resolver,
+    controlled_effector_frame=settings.arm_tool_frame,
+)
+fabric_spatial_translator = FabricSpatialTranslator(
+    spatial_frame_resolver,
+    controlled_effector_frame=settings.arm_tool_frame,
 )
 item_locator_skill = MetricItemLocatorAdapter(
     spatial_registration_skill,
@@ -408,6 +419,8 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         effector_front_skill=effector_front_skill,
         no_contact_approach_skill=no_contact_approach_skill,
         semantic_scene_inspector=semantic_scene_inspector,
+        fabric_world_point_composer=fabric_world_point_composer,
+        fabric_spatial_translator=fabric_spatial_translator,
         scene_policy_publisher=scene_segmentation_policy_publisher,
         tool_registration_skill=tool_registration_skill,
         external_skill_adapters=external_skill_adapters,

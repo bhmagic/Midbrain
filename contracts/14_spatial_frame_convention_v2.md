@@ -144,3 +144,27 @@ path, convention revision, and any operator attestation.
 Missing, stale, ambiguous, convention-mismatched, or review-pending frame
 evidence is a rejection condition. The only non-transform fallback is the
 explicit, preview-scoped upright arm-mount attestation defined above.
+
+## Official read-only coordinate translation
+
+Cross-Skill coordinate conversion belongs to a shared finite read-only
+boundary backed by the active Fabric transform graph. A task-specific Skill
+does not need framed variants of each physical operation merely because its
+canonical input frame differs from an upstream coordinate frame.
+
+Direction translation applies rotation only and returns a normalized
+`direction_world`; it never applies the transform translation component. Pose
+translation applies the complete rigid transform to a metric position and
+composes an XYZW orientation, returning `target_position_world_m` and
+`target_orientation_world_xyzw`. Point derivation, direction translation, and
+pose translation remain distinct typed operations so an Agent cannot place a
+valid coordinate into a semantically different downstream field merely
+because the numeric dimensions match.
+
+Each result binds the active world-frame ID, convention, resettable session
+epoch, coordinate timestamp, calibration revision, and transform path. A
+change of active frame authority during translation fails closed. Translation
+is coordinate evidence only: it does not grant motion, contact, calibration,
+lifecycle, or execution authority. A downstream Skill copies the canonical
+world-coordinate field unchanged and independently validates its own physical
+operation.

@@ -155,6 +155,9 @@ $requiredSpatialTools = @(
     "locate_item",
     "plan_no_contact_item_approach",
     "inspect_arm_semantic_scene",
+    "derive_fabric_world_point",
+    "translate_fabric_direction_to_world",
+    "translate_fabric_pose_to_world",
     "refine_arm_root_translation"
 )
 if ($eligibleIndex -ge 0) {
