@@ -1,0 +1,4 @@
+interface:
+  display_name: "Limited Graph"
+  short_description: "Run bounded graphs of finite Skills"
+  default_prompt: "Use $limited-graph for the complete bounded workflow, including every requested graph-eligible stage rather than only an initial prefix."

@@ -58,7 +58,10 @@ from .reviewed_observation_execution import (
 from .skill_catalog import discover_agent_skills
 from .skill_execution import (
     BoundMethodSkillAdapter,
+    HostedModelRouteProfile,
+    HostedSkillInvocationBroker,
     SkillExecutionAdapter,
+    SkillInvocationBrokerHandle,
     build_agent_tools,
 )
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
@@ -98,6 +101,36 @@ MOVE_EFFECTOR_TO_WORLD_POINT_TOOL = "move_effector_to_world_point"
 DERIVE_FABRIC_WORLD_POINT_TOOL = "derive_fabric_world_point"
 TRANSLATE_FABRIC_DIRECTION_TOOL = "translate_fabric_direction_to_world"
 TRANSLATE_FABRIC_POSE_TOOL = "translate_fabric_pose_to_world"
+LIMITED_GRAPH_AGENT_GUIDANCE = (
+    " IMPORTANT: Strongly prefer run_limited_graph whenever two or more "
+    "known finite Skills form one predetermined sequential workflow, "
+    "structured branch, or bounded read-only refinement loop. Load and submit "
+    "the complete graph "
+    "before invoking any graph child directly; do not begin a direct "
+    "multi-Skill sequence and switch to graph later. The graph must include "
+    "every requested graph-eligible stage, including later motion or cutting "
+    "stages; never submit only a prefix and leave known stages outside it. A "
+    "successful terminal must be reachable only after all requested stages "
+    "have completed. Use direct Skill calls "
+    "only for a single operation, open-ended replanning, or a host operation "
+    "that is not graph-eligible. After any necessary non-Skill host setup, "
+    "strongly prefer Limited Graph for the remaining finite Skill sequence. "
+    "A Limited Graph must declare every node and edge up front, must not "
+    "contain another graph, and must provide a terminal path plus strict "
+    "runtime, transition, visit, model-route, physical-action, and "
+    "retained-result limits. Retry only READ_ONLY children. Use MODEL_ROUTE "
+    "only through a named host profile and only to select a predeclared edge; "
+    "always supply a deterministic fallback. Never place credentials, "
+    "authorization assertions, or signed action tokens in graph values. The "
+    "host re-evaluates every exact child invocation."
+)
+LIMITED_GRAPH_ROUTED_REMINDER = (
+    " This routed tool surface includes run_limited_graph. Apply the graph-first "
+    "guidance after the route-specific instructions: submit the complete graph "
+    "covering every requested graph-eligible stage before directly calling two "
+    "or more finite Skills. Do not submit a prefix-only graph, and do not treat "
+    "a tool-search result as graph execution."
+)
 
 
 def _select_routed_tools(
@@ -111,6 +144,21 @@ def _select_routed_tools(
         for tool in tools
         if getattr(tool, "name", "") in allowed_tools
     ]
+    selected_function_count = sum(
+        isinstance(tool, FunctionTool) for tool in selected
+    )
+    if selected_function_count >= 2 and not any(
+        getattr(tool, "name", "") == "run_limited_graph"
+        for tool in selected
+    ):
+        graph_tools = [
+            tool
+            for tool in tools
+            if getattr(tool, "name", "") == "run_limited_graph"
+        ]
+        if len(graph_tools) > 1:
+            raise RuntimeError("Agent surface has duplicate Limited Graph tools")
+        selected.extend(graph_tools)
     deferred_selected = any(
         (
             isinstance(tool, FunctionTool)
@@ -269,6 +317,64 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "don't collide",
         )
     )
+    slicing_terms = any(
+        term in normalized
+        for term in ("slice", "slicing", "cut with the blade", "blade cut")
+    )
+    mixed_frame_terms = any(
+        term in normalized
+        for term in (
+            "arm base",
+            "arm-base",
+            "hand axis",
+            "hand axes",
+            "effector axis",
+            "effector axes",
+            "controlled effector",
+        )
+    )
+    if (
+        scene_policy_terms
+        and work_object_motion_terms
+        and slicing_terms
+        and mixed_frame_terms
+    ):
+        return {
+            "route": "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
+            "allowed_tools": {
+                "configure_scene_segmentation_policy",
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                DERIVE_FABRIC_WORLD_POINT_TOOL,
+                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+                TRANSLATE_FABRIC_DIRECTION_TOOL,
+                "slice_with_blade",
+                "tool_search",
+            },
+            "instruction": (
+                "This request combines scene semantics, an absolute work-object "
+                "corner move, and one or more mixed-frame slicing stages. "
+                "Publish only the requested scene objects and request the arm "
+                "scene compiler HOT as direct host setup. Then submit one "
+                "complete Limited Graph containing every remaining requested "
+                "graph-eligible stage in order; never submit a corner-move "
+                "prefix that omits later cutting or repositioning stages. Use "
+                "derive_fabric_world_point for the named corner and unchanged "
+                "offset, bind its world target unchanged into each requested "
+                "absolute return move, and use "
+                "translate_fabric_direction_to_world for every arm-base or "
+                "controlled-effector direction. Keep world directions "
+                "unchanged. Bind translated direction_world unchanged into "
+                "the matching slicing field. A slicing begin offset from the "
+                "current IK uses point_mode="
+                "RELATIVE_TO_CURRENT_EFFECTOR_WORLD. Use null profile selectors "
+                "unless the operator explicitly requested profile numbers. "
+                "Give every physical request its own predetermined SKILL node; "
+                "never retry or loop a physical node. A successful terminal "
+                "must follow all requested stages and explicit complete child "
+                "results."
+            ),
+        }
     if scene_policy_terms and work_object_motion_terms:
         return {
             "route": "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
@@ -339,22 +445,6 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             ),
         }
 
-    slicing_terms = any(
-        term in normalized
-        for term in ("slice", "slicing", "cut with the blade", "blade cut")
-    )
-    mixed_frame_terms = any(
-        term in normalized
-        for term in (
-            "arm base",
-            "arm-base",
-            "hand axis",
-            "hand axes",
-            "effector axis",
-            "effector axes",
-            "controlled effector",
-        )
-    )
     if slicing_terms and mixed_frame_terms:
         return {
             "route": "MIXED_FRAME_SLICING",
@@ -1130,6 +1220,12 @@ class PrototypeAgentDriver:
         provider_hot_readiness_poll_interval_s: float = 0.25,
         max_turns: int = 16,
         session_history_item_limit: int | None = None,
+        skill_invocation_broker_handle: (
+            SkillInvocationBrokerHandle | None
+        ) = None,
+        limited_graph_model_route_profiles: (
+            Mapping[str, HostedModelRouteProfile] | None
+        ) = None,
     ):
         self.skill = skill
         self.integrated_motion_skill = integrated_motion_skill
@@ -2679,6 +2775,18 @@ class PrototypeAgentDriver:
                 "required; invoke the appropriate translator and evaluate its "
                 "typed result."
             )
+        if "run_limited_graph" in eligible:
+            instructions += LIMITED_GRAPH_AGENT_GUIDANCE
+        if skill_invocation_broker_handle is not None:
+            skill_invocation_broker_handle.bind(
+                HostedSkillInvocationBroker(
+                    self.offered_skill_descriptors,
+                    offered_tools,
+                    model_route_profiles=(
+                        limited_graph_model_route_profiles
+                    ),
+                )
+            )
         self.agent = Agent(
             name="Physical Agent Prototype Driver",
             model=model,
@@ -2798,16 +2906,26 @@ class PrototypeAgentDriver:
             )
             if intent_route is not None and not isinstance(input_value, RunState):
                 allowed_tools = intent_route["allowed_tools"]
+                routed_tools = _select_routed_tools(
+                    self.agent.tools,
+                    allowed_tools,
+                )
+                routed_graph_reminder = (
+                    LIMITED_GRAPH_ROUTED_REMINDER
+                    if any(
+                        getattr(tool, "name", "") == "run_limited_graph"
+                        for tool in routed_tools
+                    )
+                    else ""
+                )
                 selected_agent = self.agent.clone(
-                    tools=_select_routed_tools(
-                        self.agent.tools,
-                        allowed_tools,
-                    ),
+                    tools=routed_tools,
                     instructions=(
                         f"{self.agent.instructions} "
                         f"Deterministic intent route "
                         f"{intent_route['route']}: "
                         f"{intent_route['instruction']}"
+                        f"{routed_graph_reminder}"
                     ),
                 )
             if event_sink is None:

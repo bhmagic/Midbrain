@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Publish every reviewed workcell replacement and all transforms that it
+  supersedes in one Fabric batch. Superseded camera, VIO, and arm-base edges
+  now receive explicit `REVOKED` / `motion_usable=false` envelopes before the
+  Manager commits the new active record, preventing semantic-scene consumers
+  from resolving through a prior calibration graph.
 - Accept the canonical `HAND_ANGULAR_4PI` 1.5 m / 5 mm semantic-scene ROI in
   World State Fabric so the 4096-direction scene compiler output can cross the
   state-plane contract boundary.

@@ -1,0 +1,242 @@
+{
+  "skill_type": "limited_graph",
+  "version": "0.1.0",
+  "display_name": "Limited Graph",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 1,
+    "discoverable": true,
+    "tool_name": "run_limited_graph",
+    "description": "Run one immutable, time-bounded graph of eligible finite Skills with typed JSON-pointer bindings, deterministic or constrained model routing, bounded read-only retry, and explicit terminal results. Strongly prefer this tool before direct child calls for known multi-Skill workflows, structured branches, or predetermined loops. Include every requested graph-eligible stage rather than only an initial prefix. Explicit incomplete child results follow the declared failure edge. The graph cannot invoke another graph, carry credentials, grant child authority, or dynamically add nodes.",
+    "when_to_use": [
+      "Two or more known finite Skills should strongly prefer one bounded graph before any child is called directly.",
+      "Every known requested graph-eligible stage, including later motion or cutting stages, belongs in the submitted graph rather than a prefix-only graph.",
+      "A structured Skill result should select a deterministic continuation.",
+      "A read-only observation or refinement Skill should retry inside predetermined limits.",
+      "A fast configured model should select only one predeclared route from complicated evidence."
+    ],
+    "when_not_to_use": [
+      "Only one finite Skill is required.",
+      "The next operation requires open-ended semantic planning or a new user decision.",
+      "The workflow would retry or loop back to a physical or uncertain-outcome node; separately requested physical operations may use distinct predetermined nodes.",
+      "The desired child Skill is manual-only, ineligible, or another graph executor."
+    ],
+    "side_effects": [
+      "Invokes only child Skills already eligible in the current Agent host.",
+      "May cause the declared side effects of a child Skill after that child's normal authorization policy succeeds.",
+      "Emits a bounded per-node execution trace and retains no raw credentials."
+    ],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "HIGH",
+    "required_permissions": [
+      "agent.skills.invoke.bounded"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "graph": {
+          "type": "object",
+          "properties": {
+            "schema_version": {"type": "integer", "const": 1},
+            "name": {"type": "string", "minLength": 1, "maxLength": 120},
+            "start_node": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+            "initial_values": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+                  "value_json": {"type": "string", "maxLength": 65536}
+                },
+                "required": ["name", "value_json"],
+                "additionalProperties": false
+              }
+            },
+            "nodes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+                  "kind": {"type": "string", "enum": ["SKILL", "SWITCH", "MODEL_ROUTE", "TERMINAL"]},
+                  "skill": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "tool_name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+                      "arguments_json": {"type": "string", "maxLength": 131072},
+                      "bindings": {
+                        "type": "array",
+                        "maxItems": 64,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "target_pointer": {"type": "string", "maxLength": 512},
+                            "source_kind": {"type": "string", "enum": ["INITIAL", "NODE_RESULT"]},
+                            "source_name": {"type": ["string", "null"], "maxLength": 64},
+                            "source_node_id": {"type": ["string", "null"], "maxLength": 64},
+                            "source_pointer": {"type": "string", "maxLength": 512}
+                          },
+                          "required": ["target_pointer", "source_kind", "source_name", "source_node_id", "source_pointer"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "max_attempts": {"type": "integer", "minimum": 1, "maximum": 8},
+                      "retry_condition": {
+                        "type": ["object", "null"],
+                        "properties": {
+                          "source_pointer": {"type": "string", "maxLength": 512},
+                          "operator": {"type": "string", "enum": ["EQ", "NE", "LT", "LTE", "GT", "GTE", "IN", "EXISTS", "TRUTHY"]},
+                          "expected_json": {"type": ["string", "null"], "maxLength": 65536}
+                        },
+                        "required": ["source_pointer", "operator", "expected_json"],
+                        "additionalProperties": false
+                      },
+                      "next_node": {"type": "string", "maxLength": 64},
+                      "failure_node": {"type": "string", "maxLength": 64}
+                    },
+                    "required": ["tool_name", "arguments_json", "bindings", "max_attempts", "retry_condition", "next_node", "failure_node"],
+                    "additionalProperties": false
+                  },
+                  "switch": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "source_kind": {"type": "string", "enum": ["INITIAL", "NODE_RESULT"]},
+                      "source_name": {"type": ["string", "null"], "maxLength": 64},
+                      "source_node_id": {"type": ["string", "null"], "maxLength": 64},
+                      "cases": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "condition": {
+                              "type": "object",
+                              "properties": {
+                                "source_pointer": {"type": "string", "maxLength": 512},
+                                "operator": {"type": "string", "enum": ["EQ", "NE", "LT", "LTE", "GT", "GTE", "IN", "EXISTS", "TRUTHY"]},
+                                "expected_json": {"type": ["string", "null"], "maxLength": 65536}
+                              },
+                              "required": ["source_pointer", "operator", "expected_json"],
+                              "additionalProperties": false
+                            },
+                            "target_node": {"type": "string", "maxLength": 64}
+                          },
+                          "required": ["condition", "target_node"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "default_target": {"type": "string", "maxLength": 64}
+                    },
+                    "required": ["source_kind", "source_name", "source_node_id", "cases", "default_target"],
+                    "additionalProperties": false
+                  },
+                  "model_route": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "routing_profile": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+                      "modality": {"type": "string", "enum": ["TEXT", "VISION"]},
+                      "instruction": {"type": "string", "minLength": 1, "maxLength": 4000},
+                      "inputs": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+                            "source_kind": {"type": "string", "enum": ["INITIAL", "NODE_RESULT"]},
+                            "source_name": {"type": ["string", "null"], "maxLength": 64},
+                            "source_node_id": {"type": ["string", "null"], "maxLength": 64},
+                            "source_pointer": {"type": "string", "maxLength": 512}
+                          },
+                          "required": ["name", "source_kind", "source_name", "source_node_id", "source_pointer"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "routes": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 16,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+                            "description": {"type": "string", "minLength": 1, "maxLength": 500},
+                            "target_node": {"type": "string", "maxLength": 64}
+                          },
+                          "required": ["edge_id", "description", "target_node"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "minimum_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                      "fallback_target": {"type": "string", "maxLength": 64}
+                    },
+                    "required": ["routing_profile", "modality", "instruction", "inputs", "routes", "minimum_confidence", "fallback_target"],
+                    "additionalProperties": false
+                  },
+                  "terminal": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "status": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,63}$"},
+                      "message": {"type": "string", "maxLength": 1000}
+                    },
+                    "required": ["status", "message"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["id", "kind", "skill", "switch", "model_route", "terminal"],
+                "additionalProperties": false
+              }
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "max_active_runtime_s": {"type": "number", "minimum": 0.1, "maximum": 600.0},
+                "max_transitions": {"type": "integer", "minimum": 1, "maximum": 256},
+                "max_visits_per_node": {"type": "integer", "minimum": 1, "maximum": 32},
+                "max_model_routes": {"type": "integer", "minimum": 0, "maximum": 32},
+                "max_physical_actions": {"type": "integer", "minimum": 0, "maximum": 32},
+                "max_retained_result_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+              },
+              "required": ["max_active_runtime_s", "max_transitions", "max_visits_per_node", "max_model_routes", "max_physical_actions", "max_retained_result_bytes"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["schema_version", "name", "start_node", "initial_values", "nodes", "limits"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["graph"],
+      "additionalProperties": false
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.limited_graph.host.v1",
+      "kind": "EXTERNAL_SKILL_ENTRYPOINT",
+      "entrypoint": "python/limited_graph/runner.py",
+      "host_adapter": {
+        "entrypoint": "python/limited_graph/host_adapter.py",
+        "factory": "build_host_adapter"
+      },
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [],
+  "optional_capabilities": [],
+  "route_policy": {
+    "graph_schema_version": 1,
+    "sequential_execution_only": true,
+    "nested_graphs_allowed": false,
+    "dynamic_nodes_allowed": false,
+    "child_eligibility": "CURRENT_AGENT_HOST_INTERSECTION",
+    "child_authorization": "REVALIDATE_EACH_EXACT_INVOCATION",
+    "credential_propagation": "PROHIBITED",
+    "read_only_retry_only": true,
+    "model_route_selection": "PREDECLARED_EDGE_ONLY",
+    "physical_execution": "ELIGIBLE_WITH_STANDARD_CHILD_AUTHORIZATION"
+  },
+  "published_streams": []
+}

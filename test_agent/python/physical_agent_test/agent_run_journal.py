@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 
-TERMINAL_RUN_STATUSES = {"COMPLETED", "FAILED", "INTERRUPTED"}
+TERMINAL_RUN_STATUSES = {
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "INTERRUPTED",
+}
 
 
 @dataclass(frozen=True)
@@ -612,6 +617,17 @@ class AgentRunJournal:
             connection.execute(
                 "UPDATE runs SET assistant_answer = ? WHERE run_id = ?",
                 (str(payload.get("error") or ""), run_id),
+            )
+        elif event_type == "run.cancelled" and isinstance(payload, dict):
+            connection.execute(
+                "UPDATE runs SET assistant_answer = ? WHERE run_id = ?",
+                (
+                    str(
+                        payload.get("message")
+                        or "Run stopped by operator."
+                    ),
+                    run_id,
+                ),
             )
         connection.execute(
             "UPDATE sessions SET updated_at = ? WHERE session_id = ?",

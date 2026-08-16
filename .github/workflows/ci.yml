@@ -47,7 +47,7 @@ jobs:
           PY
       - name: Run Python tests
         env:
-          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:providers/rebot_arm_dm/python:providers/rebot_arm_integrated/python:providers/rebot_arm_contact/python:skills/contact_work_runtime/python:skills/slicing/python:skills/spatial_registration_rgbd/python:test_agent/python
+          PYTHONPATH: providers/local_vio:providers/local_vio/python:providers/orbbec_femto_bolt:providers/orbbec_femto_bolt/python:providers/rebot_arm_dm/python:providers/rebot_arm_integrated/python:providers/rebot_arm_contact/python:skills/contact_work_runtime/python:skills/slicing/python:skills/limited-graph/python:skills/spatial_registration_rgbd/python:test_agent/python
         run: |
           python -m pytest -q --import-mode=importlib \
             providers/orbbec_femto_bolt/python/tests \
@@ -57,6 +57,7 @@ jobs:
             providers/rebot_arm_contact/python/tests \
             skills/contact_work_runtime/python/tests \
             skills/slicing/python/tests \
+            skills/limited-graph/python/tests \
             test_agent/python/tests
 
   rust-build:

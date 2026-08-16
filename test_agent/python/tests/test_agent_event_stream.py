@@ -304,6 +304,34 @@ class AgentRunChannelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["status"], "COMPLETED")
         self.assertEqual(snapshot["last_sequence"], 1)
 
+    async def test_registry_cancels_every_task_owned_by_one_run(self) -> None:
+        registry = AgentRunStreamRegistry()
+        channel = await registry.create("run-cancel")
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def background() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = await registry.launch("run-cancel", background())
+        await started.wait()
+
+        cancelled_count = await registry.cancel("run-cancel")
+        await channel.publish("run.cancelled", {"status": "cancelled"})
+        await channel.set_status("CANCELLED")
+        chunks = [chunk async for chunk in stream_sse(channel)]
+
+        self.assertEqual(cancelled_count, 1)
+        self.assertTrue(task.cancelled())
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(chunks), 1)
+        self.assertIn('"type":"run.cancelled"', chunks[0])
+
     def test_event_sequence_parser_accepts_sse_and_event_ids(self) -> None:
         self.assertEqual(parse_event_sequence("17"), 17)
         self.assertEqual(parse_event_sequence("run-1:18"), 18)

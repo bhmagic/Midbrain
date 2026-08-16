@@ -11,6 +11,9 @@ from typing import Any, Protocol
 
 EVENT_SCHEMA = "midbrain.agent_event"
 EVENT_SCHEMA_VERSION = 1
+TERMINAL_RUN_STATUSES = frozenset(
+    {"COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}
+)
 
 
 class AgentEventJournal(Protocol):
@@ -89,7 +92,7 @@ class AgentRunChannel:
                         int(event["sequence"]) > sequence
                         for event in self._events
                     )
-                    or self.status in {"COMPLETED", "FAILED"}
+                    or self.status in TERMINAL_RUN_STATUSES
                 )
 
             if not ready():
@@ -182,6 +185,23 @@ class AgentRunStreamRegistry:
             task.add_done_callback(discard)
             return task
 
+    async def cancel(self, run_id: str) -> int:
+        """Cancel every active task owned by one Agent run."""
+
+        async with self._lock:
+            if run_id not in self._channels:
+                raise KeyError(run_id)
+            tasks = tuple(
+                task
+                for task in self._tasks.get(run_id, set())
+                if not task.done()
+            )
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return len(tasks)
+
     async def shutdown(self) -> None:
         async with self._lock:
             tasks = tuple(
@@ -201,7 +221,7 @@ class AgentRunStreamRegistry:
         expired = [
             run_id
             for run_id, channel in self._channels.items()
-            if channel.status in {"COMPLETED", "FAILED"}
+            if channel.status in TERMINAL_RUN_STATUSES
             and now - channel.updated_monotonic > self.retention_s
             and not self._tasks.get(run_id)
         ]
@@ -222,9 +242,9 @@ async def stream_sse(
             for event in events:
                 sequence = max(sequence, int(event["sequence"]))
                 yield encode_sse(event)
-        elif status not in {"COMPLETED", "FAILED"}:
+        elif status not in TERMINAL_RUN_STATUSES:
             yield ": keep-alive\n\n"
-        if status in {"COMPLETED", "FAILED"} and not events:
+        if status in TERMINAL_RUN_STATUSES and not events:
             return
 
 

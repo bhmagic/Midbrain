@@ -439,6 +439,20 @@
       this.history.followIfNearBottom(true);
     }
 
+    cancel(message = "Run stopped by operator.") {
+      this.state.status = "CANCELLED";
+      this.state.activity = "Stopped";
+      this.state.answer = text(message, "Run stopped by operator.");
+      this.article.dataset.status = this.state.status;
+      this.activity.textContent = this.state.activity;
+      this.answer.textContent = this.state.answer;
+      this.answer.classList.remove("error");
+      this.addProgress("Run stopped; background Providers preserved");
+      this.renderSummary();
+      this.history.persist();
+      this.history.followIfNearBottom(true);
+    }
+
     fail(error) {
       const message = text(error?.message || error, "Agent run failed");
       this.state.status = "FAILED";
@@ -592,7 +606,13 @@
         .filter(
           (state) =>
             state?.schema === "midbrain.agent_chat_turn.v1" &&
-            ["RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"].includes(
+            [
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELLED",
+              "INTERRUPTED"
+            ].includes(
               state.status
             )
         )

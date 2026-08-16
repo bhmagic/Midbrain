@@ -45,6 +45,7 @@ schema versions it supports.
 | [Agent Run Journal](19_agent_run_journal.md) | Durable normalized diagnostic events and read-only viewer | v0.2 local-diagnostics draft |
 | [Robot Assembly and Free-Space Motion](20_robot_assembly_and_free_space_motion.md) | Assembly profiles, controller separation, and signed free-space goals | v0.1 working draft |
 | [Contact Work Control](21_contact_work_control.md) | Independent contact Provider, finite Skill plans, wrench-to-joint effort limits, replacement, and relaxation | v0.1 working draft |
+| [Limited Skill Graph](22_limited_skill_graph.md) | Immutable bounded composition, typed branching, retry, model routing, and child authorization carry | v0.1 development contract |
 
 ## How to use the set
 

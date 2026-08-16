@@ -35,8 +35,10 @@ The four-case selection is `up+toward -> identity`, `up+away -> Z-180`,
 `down+toward -> X-180`, and `down+away -> Y-180`. Thus a pure front/back
 ambiguity preserves the semantic root, while correcting an upside-down mesh
 hypothesis intentionally recomputes that root across the fixed mesh center.
-The perspective RGB-arrow review is used only when aligned gripper depth is
-unavailable, and that fallback is retained as a warning.
+The perspective RGB-arrow review is used when aligned gripper depth is
+unavailable or the gripper localization confidence is below the configured
+`minimum_gripper_axis_confidence` value, which defaults to 0.70. The fallback
+and its reason are retained as a warning.
 
 Because this is a stationary-camera calibration, the final transform is
 composed from the validated camera-frame CAD pose and the timestamped reference
@@ -201,12 +203,13 @@ host RGB-D math determines whether the raw base +X or -X half-space contains
 the gripper. Host transform math combines that sign with world-up and applies
 exactly one centered-mesh hypothesis from identity/X-180/Y-180/Z-180 before
 the semantic-root offset. It cannot move the observed mesh center or choose an
-intermediate angle. If exact aligned gripper depth is missing,
-the bounded visual-arrow classification is retained as a warning fallback. If
-both attempts exceed the size threshold, the one with the smaller calculated
-mismatch is returned with a warning and both overlays remain available for
-review. Residual base tilt or unavailable world-up is likewise a warning, not
-an alignment error.
+intermediate angle. If exact aligned gripper depth is missing, or the VLM
+gripper localization confidence is below the default 0.70 axis-decision
+minimum, the bounded visual-arrow classification is retained as a warning
+fallback. If both attempts exceed the size threshold, the one with the smaller
+calculated mismatch is returned with a warning and both overlays remain
+available for review. Residual base tilt or unavailable world-up is likewise a
+warning, not an alignment error.
 
 ## Runtime files
 

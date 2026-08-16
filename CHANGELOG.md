@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+- Fix superseded workcell transforms remaining usable in World State Fabric.
+  Manager now publishes the replacement activation and explicit revocations
+  for every prior active camera/VIO/arm-base transform in one batch, so scene
+  spheres cannot be generated in an expired arm-base axis and then converted
+  with the replacement world transform.
+- Stop Limited Graph from treating explicit incomplete child results as
+  success. `workflow_complete=false` and physical
+  `physical_motion_completed=false` now select the declared failure edge and
+  emit `CHILD_RESULT_INCOMPLETE`. Compound mapping, corner-motion, and slicing
+  prompts now retain the full child-tool union so the Agent can submit the
+  complete workflow instead of a prefix-only graph.
+- Allow a hosted Limited Graph child to complete its own exact, typed Provider
+  `HOT` continuation through the existing lifecycle FunctionTool, then resume
+  that same child with unchanged arguments and a fresh call identity. The
+  broker preserves lifecycle enablement, approval, Manager, session, and
+  readiness boundaries; bounds distinct handovers; rejects repeats and any
+  post-authorization physical handover; and traces every lifecycle transition.
+- Reject every graph cycle that contains a physical child during static
+  validation. A retained physical test qualified Contact-to-Integrated
+  Provider handover, two separately requested slicing actions, current-frame
+  provenance, and explicit failure on a bad downstream JSON pointer. The
+  checkpoint remains qualified with known limitations: child output fields are
+  not yet discoverable before graph submission, Provider handover events are
+  buffered until the child returns, and model-selected branching has not yet
+  received a live physical test.
+
+- Fix an apparent FoundationPose recalibration loop found in retained Agent
+  run `9cd2f18e-fd15-4155-b738-0b879723cca7`. Candidate production no longer
+  rejects two finite world-up orientation measurements merely because robust
+  final-pose aggregation changes their magnitudes; activation now receives the
+  final documented base +Z value and retains the earlier resolver value as a
+  separate diagnostic.
+- Add task-scoped Agent cancellation and `Stop task` controls to the regular
+  and developer Agent pages. Cancellation terminates all async work owned by
+  the selected run, clears pending prepared actions, records `CANCELLED` in
+  replayable SSE and SQLite history, and preserves background Providers.
+  Already-submitted physical action remains explicitly unknown rather than
+  being reported as retracted.
+- Begin the standalone `limited-graph` finite Skill and its v0.1 contract.
+  The contract fixes immutable prevalidated topology, sequential typed child
+  invocation, bounded loops, read-only retry, constrained model-selected
+  edges, per-child authorization re-evaluation, credential exclusion, and
+  explicit observability requirements before runtime integration.
+- Implement the stopped-software Limited Graph engine with canonical graph
+  digests, reachability and terminal-path validation, JSON-pointer bindings,
+  deterministic switches, host-profile model routes, read-only retries,
+  physical unknown-outcome handling, execution budgets, and a bounded result
+  trace. This stage remains independent of the live Agent host.
+- Harden the stopped engine before host integration: child eligibility now
+  follows the exact routed Agent surface, bound-schema failures occur before
+  invocation, every completed node is traced, credential-like result fields
+  are redacted before storage or routing, and tests no longer depend on an
+  uninstalled asynchronous pytest plug-in.
+- Integrate Limited Graph through a late-bound Agent host broker. Child nodes
+  reuse final direct-call FunctionTools, inherit root session identity under
+  unique child call IDs, re-evaluate exact approval callbacks, honor the active
+  deterministic route, and resolve only host-registered model profiles.
+  Physical children use the same routed eligibility and exact authorization
+  checks as direct calls without a separate boolean disablement gate.
+- Strongly prefer Limited Graph before direct child calls for predetermined
+  workflows containing two or more finite Skills. Keep the graph tool schema
+  immediately loaded while ordinary child Skills remain deferred so tool
+  search cannot be mistaken for graph execution.
+- Register bounded `FAST_TEXT` and `FAST_VISION` routing profiles. Text routing
+  runs one structured no-tools Agent turn; vision routing resolves only
+  host-stored visual-evidence channels. Both can select only declared edges and
+  fall back deterministically on any unavailable, invalid, or low-confidence
+  decision; custom local profiles use the same host-only callback boundary.
+- Refresh source integrity manifests for the new contract, Skill, host code,
+  tests, and configuration. The refresh also corrects the previously stale
+  recorded hash for the existing five-inch blade effector profile; the profile
+  content itself is unchanged in this work.
+- Harden Test Agent setup after an OS update exposed a present-but-unusable
+  Windows `py` launcher. No-argument setup now verifies and resolves Python
+  3.11, falls back to a working `python.exe`, and has been exercised through a
+  complete editable Test Agent installation and Limited Graph smoke test.
+
 - Keep Linux source validation aligned with the Contact Work package: expose
   the Basic, Integrated, Contact, Contact runtime, and Slicing package roots to
   test discovery, seed the clean checkout with Basic's tracked model and
