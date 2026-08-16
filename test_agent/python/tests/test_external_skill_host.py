@@ -9,6 +9,7 @@ from physical_agent_test.external_skill_host import (
     load_external_skill_host_adapters,
 )
 from physical_agent_test.skill_catalog import discover_agent_skills
+from physical_agent_test.skill_execution import SkillInvocationBrokerHandle
 
 
 def test_manifest_declared_host_adapter_loads_from_skill_directory(
@@ -135,3 +136,25 @@ def test_repository_slicing_host_adapter_loads_when_eligible() -> None:
     assert adapter.manager is manager
     assert adapter.integrated_motion is integrated_motion
     assert adapter.contact_provider_url == "http://127.0.0.1:8794"
+
+
+def test_repository_limited_graph_host_adapter_loads_with_broker_handle() -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    descriptors = discover_agent_skills(workspace)
+    broker_handle = SkillInvocationBrokerHandle()
+
+    adapters = load_external_skill_host_adapters(
+        descriptors,
+        eligible_tool_names={"run_limited_graph"},
+        services=ExternalSkillHostServices(
+            manager=None,
+            fabric=None,
+            spatial=None,
+            vlm_router=None,
+            visual_evidence_store=None,
+            skill_invocation_broker=broker_handle,
+        ),
+    )
+
+    adapter = adapters["skill.limited_graph.host.v1"]
+    assert adapter.broker is broker_handle

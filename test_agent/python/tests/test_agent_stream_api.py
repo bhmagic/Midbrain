@@ -300,6 +300,135 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
             run_interactive.await_args.kwargs["event_sink"]
         )
 
+    async def test_stop_endpoint_cancels_run_and_preserves_providers(
+        self,
+    ) -> None:
+        started_execution = asyncio.Event()
+        cancelled_execution = asyncio.Event()
+
+        async def wait_until_cancelled(*_args, **_kwargs):
+            started_execution.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_execution.set()
+                raise
+
+        transport = httpx.ASGITransport(app=app_module.app)
+        with patch.object(
+            app_module.driver,
+            "run_interactive",
+            new=wait_until_cancelled,
+        ):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                started = await client.post(
+                    "/api/streaming-runs",
+                    json={"prompt": "wait for inspection"},
+                )
+                self.assertEqual(started.status_code, 202)
+                start_payload = started.json()
+                self.assertIn("cancel_url", start_payload)
+                await asyncio.wait_for(started_execution.wait(), timeout=1.0)
+
+                stopped = await client.post(start_payload["cancel_url"])
+                self.assertEqual(stopped.status_code, 202)
+                stop_payload = stopped.json()
+                self.assertEqual(stop_payload["status"], "cancelled")
+                self.assertTrue(
+                    stop_payload["provider_processes_preserved"]
+                )
+                self.assertEqual(stop_payload["cancelled_task_count"], 1)
+                self.assertTrue(cancelled_execution.is_set())
+
+                status = await client.get(start_payload["status_url"])
+                self.assertEqual(status.json()["status"], "CANCELLED")
+                events_response = await client.get(
+                    start_payload["events_url"]
+                )
+                journal_run = await app_module.agent_run_journal.get_run(
+                    start_payload["run_id"]
+                )
+
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in events_response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        self.assertEqual(
+            [event["type"] for event in events],
+            [
+                "run.started",
+                "run.cancellation_requested",
+                "run.cancelled",
+            ],
+        )
+        self.assertIsNotNone(journal_run)
+        assert journal_run is not None
+        self.assertEqual(journal_run["status"], "CANCELLED")
+
+    async def test_stop_endpoint_discards_pending_prepared_actions(
+        self,
+    ) -> None:
+        interruption = SimpleNamespace(
+            tool_name="execute_basic_safe_home",
+            tool_namespace=None,
+            raw_item={"call_id": "move-1", "arguments": "{}"},
+        )
+
+        class State:
+            def get_interruptions(self):
+                return [interruption]
+
+        approval = app_module.PrototypeAgentDriver._approval_description(
+            interruption
+        )
+        pending = InteractiveAgentResult(
+            answer=None,
+            state=State(),
+            approvals=[approval],
+        )
+        transport = httpx.ASGITransport(app=app_module.app)
+        with (
+            patch.object(
+                app_module.driver,
+                "run_interactive",
+                new=AsyncMock(return_value=pending),
+            ),
+            patch.object(
+                app_module.driver,
+                "discard_pending_prepared_action",
+                new=AsyncMock(),
+            ) as discard,
+        ):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                started = await client.post(
+                    "/api/streaming-runs",
+                    json={"prompt": "prepare a motion"},
+                )
+                run_id = started.json()["run_id"]
+                for _ in range(20):
+                    status = await client.get(
+                        f"/api/streaming-runs/{run_id}"
+                    )
+                    if status.json()["status"] == "AWAITING_APPROVAL":
+                        break
+                    await asyncio.sleep(0)
+
+                stopped = await client.post(
+                    f"/api/streaming-runs/{run_id}/cancel"
+                )
+
+        self.assertEqual(stopped.status_code, 202)
+        self.assertTrue(stopped.json()["pending_approval_discarded"])
+        self.assertNotIn(run_id, app_module.pending_agent_runs)
+        discard.assert_awaited_once_with(interruption)
+
     async def test_streaming_approval_resumes_on_the_same_event_channel(
         self,
     ) -> None:

@@ -1,10 +1,41 @@
-param([string]$PythonLauncher = "py")
+param([string]$PythonLauncher = "")
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $agent = Get-AgentRoot
 $workspace = Get-WorkspaceRoot
 $configDir = Join-Path $workspace "config"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+
+function Resolve-DefaultPythonLauncher {
+    $pyCommand = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $pyCommand) {
+        $resolvedPaths = @(
+            & $pyCommand.Source -3.11 -c "import sys; print(sys.executable)" 2>$null
+        )
+        if ($LASTEXITCODE -eq 0 -and $resolvedPaths.Count -gt 0) {
+            $resolvedPath = [string]$resolvedPaths[-1]
+            if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+                return $resolvedPath
+            }
+        }
+    }
+
+    $pythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $pythonCommand) {
+        & $pythonCommand.Source -c (
+            "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+        )
+        if ($LASTEXITCODE -eq 0) {
+            return $pythonCommand.Source
+        }
+    }
+
+    throw "Python 3.11 or newer is required. Pass -PythonLauncher with a working executable."
+}
+
+if ([string]::IsNullOrWhiteSpace($PythonLauncher)) {
+    $PythonLauncher = Resolve-DefaultPythonLauncher
+}
 
 $venv = Join-Path $agent ".venv"
 $python = Join-Path $venv "Scripts\python.exe"
@@ -63,6 +94,12 @@ $itemLocatorSkill = Join-Path $workspace "skills\observe_pointed_object"
 if (Test-Path (Join-Path $itemLocatorSkill "pyproject.toml")) {
     & $python -m pip install -e $itemLocatorSkill
     if ($LASTEXITCODE -ne 0) { throw "Item-locator Skill installation failed." }
+}
+
+$limitedGraphSkill = Join-Path $workspace "skills\limited-graph"
+if (Test-Path (Join-Path $limitedGraphSkill "pyproject.toml")) {
+    & $python -m pip install -e $limitedGraphSkill
+    if ($LASTEXITCODE -ne 0) { throw "Limited Graph Skill installation failed." }
 }
 
 $contactRuntime = Join-Path $workspace "skills\contact_work_runtime"
@@ -158,7 +195,8 @@ $requiredSpatialTools = @(
     "derive_fabric_world_point",
     "translate_fabric_direction_to_world",
     "translate_fabric_pose_to_world",
-    "refine_arm_root_translation"
+    "refine_arm_root_translation",
+    "run_limited_graph"
 )
 if ($eligibleIndex -ge 0) {
     $eligibleValues = [System.Collections.Generic.List[string]]::new()

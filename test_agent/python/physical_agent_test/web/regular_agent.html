@@ -155,6 +155,11 @@
       cursor: pointer;
     }
     button:disabled { opacity: .5; cursor: wait; }
+    .stop-button {
+      border-color: var(--danger);
+      background: transparent;
+      color: var(--danger);
+    }
     .answer-panel {
       display: flex;
       min-height: 0;
@@ -293,6 +298,13 @@
       </div>
       <div class="actions">
         <span class="policy">Stateful and physical operations retain host authorization and Provider-side checks.</span>
+        <button
+          class="stop-button"
+          id="stopRunButton"
+          type="button"
+          title="Cancel this Agent run and its tasks; keep background Providers running. A physical command already submitted can have an unknown outcome."
+          disabled
+        >Stop task</button>
         <button id="runButton" type="button">Run prompt</button>
       </div>
       <details class="authorization-controls" aria-label="Session authorization">
@@ -356,6 +368,8 @@
     const AGENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
     let selectedImageFile = null;
     let selectedImageObjectUrl = null;
+    let activeRun = null;
+    let activeTurn = null;
 
     function clearSelectedImage() {
       if (selectedImageObjectUrl) {
@@ -969,6 +983,18 @@
               turn.complete(finalAnswer);
               byId("activity").textContent = "Completed";
               resolve(payload);
+            } else if (event.type === "run.cancellation_requested") {
+              byId("activity").textContent = "Stopping Agent task...";
+              turn.setActivity("Stopping Agent task...");
+              turn.addProgress("Task cancellation requested");
+            } else if (event.type === "run.cancelled") {
+              terminal = true;
+              source.close();
+              turn.cancel(
+                payload.message || "Run stopped by operator."
+              );
+              byId("activity").textContent = "Stopped";
+              resolve(payload);
             } else if (event.type === "run.failed") {
               fail(new Error(payload.error || "Agent run failed"));
             }
@@ -1008,14 +1034,49 @@
         if (!response.ok) {
           throw new Error(data.detail || JSON.stringify(data));
         }
-        await consumeStreamingRun(data, turn);
-        clearSelectedImage();
+        activeRun = data;
+        activeTurn = turn;
+        byId("stopRunButton").disabled = false;
+        const terminalPayload = await consumeStreamingRun(data, turn);
+        if (terminalPayload.status !== "cancelled") clearSelectedImage();
         await refreshStatus();
       } catch (error) {
         if (turn.state.status === "RUNNING") turn.fail(error);
         byId("activity").textContent = "Agent run failed";
       } finally {
+        if (activeTurn === turn) {
+          activeRun = null;
+          activeTurn = null;
+          byId("stopRunButton").disabled = true;
+        }
         byId("runButton").disabled = false;
+      }
+    });
+
+    byId("stopRunButton").addEventListener("click", async () => {
+      const started = activeRun;
+      const turn = activeTurn;
+      if (!started || !turn) return;
+      byId("stopRunButton").disabled = true;
+      byId("activity").textContent = "Stopping Agent task...";
+      turn.setActivity("Stopping Agent task...");
+      const cancelUrl = started.cancel_url ||
+        `/api/streaming-runs/${encodeURIComponent(started.run_id)}/cancel`;
+      try {
+        const response = await fetch(cancelUrl, {method: "POST"});
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Agent task could not be stopped");
+        }
+        byId("activity").textContent = data.status === "cancelled"
+          ? "Stopped"
+          : `Run already ${data.status}`;
+      } catch (error) {
+        byId("activity").textContent = `Stop failed: ${error.message}`;
+        turn.setActivity(`Stop failed: ${error.message}`);
+        if (activeRun === started && turn.state.status === "RUNNING") {
+          byId("stopRunButton").disabled = false;
+        }
       }
     });
 

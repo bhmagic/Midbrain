@@ -89,6 +89,11 @@ def load_skill_config(path: Path | None = None) -> dict[str, Any]:
     )
     if not 0.0 < base_up_warning_tilt_deg <= 90.0:
         raise ValueError("base_up_warning_tilt_deg must be in (0, 90]")
+    minimum_gripper_axis_confidence = float(
+        base_alignment.get("minimum_gripper_axis_confidence") or 0.0
+    )
+    if not 0.0 < minimum_gripper_axis_confidence <= 1.0:
+        raise ValueError("minimum_gripper_axis_confidence must be in (0, 1]")
     maximum_learned_offset_m = float(
         (config.get("tool_geometry") or {}).get(
             "maximum_learned_tool_to_beak_norm_m"

@@ -71,6 +71,19 @@ from .vlm import (
 TERMINAL_POSE_STATES = {"FAILED", "STOPPED", "EXPIRED", "COMPLETED"}
 
 
+def gripper_axis_depth_is_trusted(
+    detection: dict[str, Any],
+    minimum_confidence: float,
+) -> bool:
+    confidence = detection.get("confidence")
+    return (
+        not isinstance(confidence, bool)
+        and isinstance(confidence, (int, float))
+        and math.isfinite(float(confidence))
+        and float(confidence) >= float(minimum_confidence)
+    )
+
+
 class AlignmentSkill:
     def __init__(
         self,
@@ -347,7 +360,16 @@ class AlignmentSkill:
                 "source": "VLM_GRIPPER_SEGMENTATION_WITH_ALIGNED_DEPTH",
             }
             gripper_mask = masks.get("gripper")
-            if gripper_mask is not None:
+            minimum_gripper_axis_confidence = float(
+                self.config["base_alignment"][
+                    "minimum_gripper_axis_confidence"
+                ]
+            )
+            gripper_detection = vlm["gripper"]
+            if gripper_mask is not None and gripper_axis_depth_is_trusted(
+                gripper_detection,
+                minimum_gripper_axis_confidence,
+            ):
                 try:
                     gripper_surface = segmented_surface_depth(
                         frame,
@@ -366,6 +388,21 @@ class AlignmentSkill:
                         "Aligned gripper depth was unavailable; the bounded "
                         f"RGB axis review will be used instead: {error}"
                     )
+            elif gripper_mask is not None:
+                reported_confidence = gripper_detection.get("confidence")
+                confidence_text = (
+                    f"{float(reported_confidence):.3f}"
+                    if isinstance(reported_confidence, (int, float))
+                    and not isinstance(reported_confidence, bool)
+                    and math.isfinite(float(reported_confidence))
+                    else "unavailable"
+                )
+                gripper_axis_reference["warning"] = (
+                    "The VLM gripper localization confidence "
+                    f"{confidence_text} is below the "
+                    f"{minimum_gripper_axis_confidence:.3f} axis-decision "
+                    "minimum; the bounded RGB axis review will be used instead."
+                )
             overlay = render_overlay(frame.rgb, visible_detections, masks, tip_depths)
             (run_dir / "overlay.jpg").write_bytes(overlay)
             await self.artifacts.set_overlay(overlay)
@@ -2926,11 +2963,7 @@ class AlignmentSkill:
             or float(corrected_z_dot_up) < -1e-9
             or not isinstance(inspected_corrected_z_dot_up, (int, float))
             or not math.isfinite(float(inspected_corrected_z_dot_up))
-            or abs(
-                float(inspected_corrected_z_dot_up)
-                - float(corrected_z_dot_up)
-            )
-            > 1e-6
+            or float(inspected_corrected_z_dot_up) < -1e-9
             or correction_axis != expected_correction_axis
             or correction_deg != expected_correction_deg
             or correction_count != expected_correction_count
@@ -2977,7 +3010,12 @@ class AlignmentSkill:
             ),
             "world_up_available": True,
             "raw_base_z_dot_world_up": float(raw_z_dot_up),
-            "corrected_base_z_dot_world_up": float(corrected_z_dot_up),
+            "corrected_base_z_dot_world_up": float(
+                inspected_corrected_z_dot_up
+            ),
+            "orientation_resolution_corrected_base_z_dot_world_up": float(
+                corrected_z_dot_up
+            ),
             "upright_hemisphere_flip_required": needs_upright_flip,
             "selected_orientation_correction_axis": correction_axis,
             "selected_orientation_correction_deg": int(correction_deg),

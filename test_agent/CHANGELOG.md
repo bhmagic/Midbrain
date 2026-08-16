@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Make Limited Graph fail closed on explicit incomplete child results instead
+  of entering a success terminal after FoundationPose review requirements,
+  Integrated recovery, or IK preview rejection. Add a compound scene/corner/
+  slicing route that exposes all required graph children, and forbid
+  prefix-only graphs that omit later requested cutting stages.
+- Follow only child-declared, typed Provider `HOT` continuations inside the
+  hosted Limited Graph broker. Lifecycle work still passes through the
+  existing `set_provider_residency` FunctionTool, authorization, Manager, and
+  readiness path; the same child then resumes with unchanged arguments and a
+  fresh call ID. Bound distinct handovers, stop repeats, reject physical
+  handover after authorization or submission, add lifecycle trace events, and
+  reject physical-node cycles before execution.
+- Record the first live Provider-handover checkpoint. A compound physical run
+  completed Contact-to-Integrated handover and both requested slicing actions
+  with current calibration/frame provenance. An invalid downstream
+  `/outward_retract_end_position_world_m` binding failed explicitly without a
+  physical retry, and a corrected second graph completed. Output-field
+  discovery, immediate handover-event timing, and live model-branch
+  qualification remain known gaps.
+
+- Remove the separate Limited Graph physical-child boolean gate. Physical
+  children remain bounded by the active route, exact child authorization,
+  physical-action limits, no-physical-retry rules, and unknown-outcome stops.
+  Keep `run_limited_graph` immediately loaded and strongly prefer it before
+  direct calls for predetermined workflows with two or more finite Skills.
+- Diagnose the apparent FoundationPose loop from the retained SQLite run
+  journal: a completed candidate was rejected because candidate production
+  required two valid world-up dot products from different aggregation stages
+  to be exactly equal. Preserve both diagnostics, publish the final candidate
+  transform's value to activation, and allow the fresh candidate to advance.
+- Add `POST /api/streaming-runs/{run_id}/cancel`, terminal `CANCELLED` SSE and
+  journal handling, pending-action cleanup, and `Stop task` buttons on both
+  Agent pages. The boundary cancels only the selected run and its subtasks;
+  background Provider processes are not stopped.
 - Keep `gpt-5.6-terra` as the default Agent model and restore its default
   reasoning effort to `medium` after physical tests showed that `low` was less
   reliable when coordinating compound perception and motion requests.

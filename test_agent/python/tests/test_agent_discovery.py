@@ -12,6 +12,8 @@ pytest.importorskip("agents")
 from agents.tool import validate_responses_tool_search_configuration
 
 from physical_agent_test.agent_driver import (
+    LIMITED_GRAPH_AGENT_GUIDANCE,
+    LIMITED_GRAPH_ROUTED_REMINDER,
     PrototypeAgentDriver,
     _resolve_workspace_root,
     _select_routed_tools,
@@ -19,6 +21,7 @@ from physical_agent_test.agent_driver import (
 )
 from physical_agent_test.gemini_pointing_skill import PointingIdentificationSkill
 from physical_agent_test.skill_catalog import discover_agent_skills
+from physical_agent_test.skill_execution import build_agent_tools
 
 
 class _PointingSkill:
@@ -198,6 +201,62 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         validate_responses_tool_search_configuration(selected)
 
+    def test_limited_graph_stays_immediate_when_child_schemas_are_deferred(
+        self,
+    ) -> None:
+        workspace = Path(__file__).resolve().parents[3]
+        descriptor = next(
+            item
+            for item in discover_agent_skills(workspace)
+            if item.tool_name == "run_limited_graph"
+        )
+        tools = build_agent_tools(
+            [descriptor],
+            {descriptor.execution_adapter_id: _ExternalSkillAdapter()},
+            eligible_tool_names={"run_limited_graph"},
+            defer_loading=True,
+        )
+
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0].name, "run_limited_graph")
+        self.assertFalse(tools[0].defer_loading)
+
+    def test_limited_graph_guidance_prefers_graph_before_direct_children(
+        self,
+    ) -> None:
+        self.assertIn(
+            "Strongly prefer run_limited_graph",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "before invoking any graph child directly",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "do not begin a direct multi-Skill sequence",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "every requested graph-eligible stage",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "never submit only a prefix",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "after the route-specific instructions",
+            LIMITED_GRAPH_ROUTED_REMINDER,
+        )
+        self.assertIn(
+            "Do not submit a prefix-only graph",
+            LIMITED_GRAPH_ROUTED_REMINDER,
+        )
+        self.assertIn(
+            "do not treat a tool-search result as graph execution",
+            LIMITED_GRAPH_ROUTED_REMINDER,
+        )
+
     def test_explicit_3d_item_route_excludes_rgb_only_analysis(self) -> None:
         route = deterministic_intent_tool_route(
             "identify the white object on the table center and 3d locate it"
@@ -307,6 +366,43 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "Do not use no-contact approach tools",
             route["instruction"],
         )
+
+    def test_scene_corner_motion_and_slicing_expose_complete_graph_surface(
+        self,
+    ) -> None:
+        route = deterministic_intent_tool_route(
+            "map out the working piece: toilet paper; map out the obstacle: "
+            "white table surface; move the hand to (0, -2, 15) cm in arm "
+            "base axes from the right-forward-up corner; use current IK "
+            "+(0,0,-10) cm for a slice with world -z blade direction and arm "
+            "base -x slicing direction; move above the first slice and slice "
+            "again"
+        )
+
+        self.assertEqual(
+            route["route"],
+            "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
+        )
+        self.assertIn(
+            "configure_scene_segmentation_policy",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "derive_fabric_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "move_effector_to_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "translate_fabric_direction_to_world",
+            route["allowed_tools"],
+        )
+        self.assertIn("slice_with_blade", route["allowed_tools"])
+        self.assertIn("one complete Limited Graph", route["instruction"])
+        self.assertIn("never submit a corner-move prefix", route["instruction"])
+        self.assertIn("never retry or loop a physical node", route["instruction"])
 
     def test_mixed_frame_slicing_uses_direction_translation_tandem(self) -> None:
         route = deterministic_intent_tool_route(
@@ -448,6 +544,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "register_rgbd_pixel_to_world",
                 "register_tool_to_control_frame",
                 "reinitialize_space_cognition",
+                "run_limited_graph",
                 "slice_with_blade",
                 "translate_fabric_direction_to_world",
                 "translate_fabric_pose_to_world",

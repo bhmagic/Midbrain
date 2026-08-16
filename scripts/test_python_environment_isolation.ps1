@@ -13,6 +13,7 @@ $requiredSetupScripts = @(
     "providers\rebot_arm_contact\scripts\setup.ps1",
     "skills\contact_work_runtime\scripts\setup.ps1",
     "skills\slicing\scripts\setup.ps1",
+    "skills\limited-graph\scripts\setup.ps1",
     "skills\locate-effector-front\scripts\setup.ps1",
     "skills\register_tool_to_control_frame\scripts\setup.ps1",
     "skills\refine-arm-root-translation\scripts\setup.ps1",

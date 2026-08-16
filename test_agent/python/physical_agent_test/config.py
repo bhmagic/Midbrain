@@ -83,6 +83,14 @@ class Settings:
     openai_agent_session_history_items: int = int(
         os.getenv("OPENAI_AGENT_SESSION_HISTORY_ITEMS", "32")
     )
+    limited_graph_fast_text_model: str | None = (
+        os.getenv("LIMITED_GRAPH_FAST_TEXT_MODEL", "gpt-5.6-luna").strip()
+        or None
+    )
+    limited_graph_enable_vision_router: bool = os.getenv(
+        "LIMITED_GRAPH_ENABLE_VISION_ROUTER",
+        "true",
+    ).lower() in {"1", "true", "yes", "on"}
     agent_run_journal_max_runs: int = int(
         os.getenv("AGENT_RUN_JOURNAL_MAX_RUNS", "500")
     )
@@ -173,7 +181,8 @@ class Settings:
                 "verify_rgbd_image_alignment,"
                 "reinitialize_space_cognition,"
                 "refine_arm_root_translation,"
-                "slice_with_blade"
+                "slice_with_blade,"
+                "run_limited_graph"
             ),
         ).split(",")
         if item.strip()

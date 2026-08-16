@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Prevent low-confidence gripper masks from choosing the FoundationPose base
+  axis's 0/180-degree ambiguity. A localization below the configured 0.70
+  confidence minimum now falls back to the existing bounded RGB axis review
+  and records that decision instead of treating its aligned depth as axis
+  authority.
+- Accept distinct finite world-up dot products from the discrete orientation
+  resolver and the final robust accepted pose. Candidate provenance now stores
+  the final pose's documented value for activation checks while retaining the
+  resolver-stage value separately, preventing a successful calibration from
+  being rejected and immediately repeated.
+
 ## 0.8.9 - 2026-08-05
 
 - Retain FoundationPose as an explicit finite initializer while removing it as

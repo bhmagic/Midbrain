@@ -31,6 +31,7 @@ from .agent_driver import (
 )
 from .agent_event_stream import (
     AgentRunStreamRegistry,
+    TERMINAL_RUN_STATUSES,
     parse_event_sequence,
     stream_sse,
 )
@@ -56,6 +57,7 @@ from .initialize_space_cognition_skill import InitializeSpaceCognitionSkill
 from .integrated_client import IntegratedControllerClient
 from .integrated_motion_adapter import IntegratedRelativeMotionAdapter
 from .item_locator_adapter import MetricItemLocatorAdapter
+from .limited_graph_routing import build_limited_graph_model_route_profiles
 from .manager_client import ManagerClient
 from .no_contact_approach import NoContactItemApproachAdapter
 from .observation_motion import (
@@ -79,6 +81,7 @@ from .reviewed_observation_execution import (
 )
 from .skill_catalog import discover_agent_skills
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
+from .skill_execution import SkillInvocationBrokerHandle
 from .spatial_frames import SpatialFrameResolver, rotation_matrix
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
 from .stationary_calibration_activation import (
@@ -347,6 +350,20 @@ integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
     authorization_store=authorization_store,
 )
 
+limited_graph_skill_invocation_broker = SkillInvocationBrokerHandle()
+limited_graph_model_route_profiles = build_limited_graph_model_route_profiles(
+    fast_text_model=settings.limited_graph_fast_text_model,
+    vlm_router=(
+        agent_vlm_router
+        if settings.limited_graph_enable_vision_router
+        else None
+    ),
+    visual_evidence_store=(
+        visual_evidence_store
+        if settings.limited_graph_enable_vision_router
+        else None
+    ),
+)
 external_skill_adapters = load_external_skill_host_adapters(
     agent_skill_catalog,
     eligible_tool_names=set(settings.phase4_eligible_tools),
@@ -358,6 +375,7 @@ external_skill_adapters = load_external_skill_host_adapters(
         visual_evidence_store=visual_evidence_store,
         integrated_motion=integrated_motion_agent_adapter,
         contact_provider_url=settings.contact_controller_url,
+        skill_invocation_broker=limited_graph_skill_invocation_broker,
     ),
 )
 
@@ -456,6 +474,12 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         max_turns=settings.openai_agent_max_turns,
         session_history_item_limit=(
             settings.openai_agent_session_history_items
+        ),
+        skill_invocation_broker_handle=(
+            limited_graph_skill_invocation_broker
+        ),
+        limited_graph_model_route_profiles=(
+            limited_graph_model_route_profiles
         ),
     )
 
@@ -1267,6 +1291,10 @@ def _chat_progress_label(event: dict[str, Any]) -> str | None:
         return "Observation retry exhausted"
     if event_type == "visual.evidence.created":
         return "Visual evidence attached to the response"
+    if event_type == "run.cancellation_requested":
+        return "Operator requested task cancellation"
+    if event_type == "run.cancelled":
+        return "Agent run stopped; background Providers preserved"
     return None
 
 
@@ -1306,6 +1334,7 @@ def _chat_turn_projection(run: dict[str, Any]) -> dict[str, Any] | None:
         "RUNNING",
         "COMPLETED",
         "FAILED",
+        "CANCELLED",
         "INTERRUPTED",
     } else "INTERRUPTED"
     return {
@@ -3011,6 +3040,7 @@ async def start_streaming_run(request: PromptRequest) -> dict[str, Any]:
         "events_url": f"/api/streaming-runs/{run_id}/events",
         "status_url": f"/api/streaming-runs/{run_id}",
         "decision_url": f"/api/streaming-runs/{run_id}/decision",
+        "cancel_url": f"/api/streaming-runs/{run_id}/cancel",
     }
 
 
@@ -3024,6 +3054,79 @@ async def streaming_run_status(run_id: str) -> dict[str, Any]:
             detail="streaming agent run was not found or expired",
         ) from error
     return await channel.snapshot()
+
+
+@app.post("/api/streaming-runs/{run_id}/cancel", status_code=202)
+async def cancel_streaming_run(run_id: str) -> dict[str, Any]:
+    """Cancel one Agent run without stopping background Provider processes."""
+
+    try:
+        channel = await agent_run_stream_registry.get(run_id)
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="streaming agent run was not found or expired",
+        ) from error
+    snapshot = await channel.snapshot()
+    if snapshot["status"] in TERMINAL_RUN_STATUSES:
+        return {
+            "status": str(snapshot["status"]).lower(),
+            "run_id": run_id,
+            "already_terminal": True,
+            "provider_processes_preserved": True,
+        }
+
+    async with pending_agent_runs_lock:
+        pending = pending_agent_runs.pop(run_id, None)
+    pending_cleanup_errors: list[str] = []
+    if pending is not None:
+        for interruption in pending.state.get_interruptions():
+            try:
+                await driver.discard_pending_prepared_action(interruption)
+            except Exception as error:
+                pending_cleanup_errors.append(str(error))
+
+    await channel.publish(
+        "run.cancellation_requested",
+        {
+            "reason": "operator_requested",
+            "provider_processes_preserved": True,
+        },
+    )
+    cancelled_task_count = await agent_run_stream_registry.cancel(run_id)
+    snapshot = await channel.snapshot()
+    if snapshot["status"] in {"COMPLETED", "FAILED"}:
+        return {
+            "status": str(snapshot["status"]).lower(),
+            "run_id": run_id,
+            "already_terminal": True,
+            "provider_processes_preserved": True,
+        }
+
+    result = {
+        "status": "cancelled",
+        "run_id": run_id,
+        "message": "Run stopped by operator; background Providers remain available.",
+        "cancelled_task_count": cancelled_task_count,
+        "pending_approval_discarded": pending is not None,
+        "pending_cleanup_errors": pending_cleanup_errors,
+        "provider_processes_preserved": True,
+        "physical_outcome": "UNKNOWN_IF_ACTION_ALREADY_SUBMITTED",
+    }
+    await channel.publish(
+        "run.cancelled",
+        {
+            "status": "cancelled",
+            "message": result["message"],
+            "reason": "operator_requested",
+            "cancelled_task_count": cancelled_task_count,
+            "pending_approval_discarded": pending is not None,
+            "provider_processes_preserved": True,
+            "physical_outcome": result["physical_outcome"],
+        },
+    )
+    await channel.set_status("CANCELLED", result=result)
+    return result
 
 
 @app.get("/api/streaming-runs/{run_id}/events")
@@ -3501,8 +3604,13 @@ PAGE = r"""
     .developer-composer { max-height: 48vh; overflow-y: auto; padding: 13px 16px 15px; scrollbar-gutter: stable; }
     .developer-composer label[for="prompt"] { display: block; margin-bottom: 6px; color: var(--mb-muted); font-size: 11px; font-weight: 700; }
     .developer-composer textarea { min-height: 86px; }
-    .developer-composer-actions { display: flex; justify-content: flex-end; }
+    .developer-composer-actions { display: flex; justify-content: flex-end; gap: 9px; }
     .developer-composer-actions button { margin-left: 0; }
+    .developer-composer-actions .stop-run-button {
+      border-color: var(--mb-danger);
+      background: transparent;
+      color: var(--mb-danger);
+    }
     .developer-composer .authorization-controls { margin-top: 10px; }
     .authorization-disclosure { margin-top: 10px; }
     .authorization-disclosure > summary { color: var(--mb-muted); font-size: 11px; }
@@ -3723,6 +3831,13 @@ PAGE = r"""
           </div>
         </div>
         <div>
+          <button
+            class="stop-run-button"
+            id="stopRun"
+            type="button"
+            title="Cancel this Agent run and its tasks; keep background Providers running. A physical command already submitted can have an unknown outcome."
+            disabled
+          >Stop task</button>
           <button class="primary" id="run">Run prompt</button>
         </div>
         <div class="authorization-controls" aria-label="Session authorization">
@@ -4015,6 +4130,7 @@ function modernizeDeveloperWorkspace() {
 
 if (!focusedUtilityPage) modernizeDeveloperWorkspace();
 const runButton = document.getElementById('run');
+const stopRunButton = document.getElementById('stopRun');
 const refreshReplayButton = document.getElementById('refreshReplay');
 const initializeButton = document.getElementById('initialize');
 const resetButton = document.getElementById('reset');
@@ -4105,6 +4221,8 @@ const DEVELOPER_AGENT_IMAGE_TYPES = new Set([
 const DEVELOPER_AGENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 let developerSelectedImage = null;
 let developerSelectedImageUrl = null;
+let activeDeveloperRun = null;
+let activeDeveloperTurn = null;
 
 function clearDeveloperSelectedImage() {
   if (developerSelectedImageUrl) {
@@ -5022,6 +5140,16 @@ function consumeStreamingDeveloperRun(started, turn) {
           );
           agentActivity.textContent = 'Completed';
           resolve(payload);
+        } else if (event.type === 'run.cancellation_requested') {
+          agentActivity.textContent = 'Stopping Agent task...';
+          turn.setActivity('Stopping Agent task...');
+          turn.addProgress('Task cancellation requested');
+        } else if (event.type === 'run.cancelled') {
+          terminal = true;
+          source.close();
+          turn.cancel(payload.message || 'Run stopped by operator.');
+          agentActivity.textContent = 'Stopped';
+          resolve(payload);
         } else if (event.type === 'run.failed') {
           fail(new Error(payload.error || 'Autonomous Agent run failed'));
         }
@@ -5056,14 +5184,51 @@ runButton.addEventListener('click', async () => {
     if (!response.ok) {
       throw new Error(data.detail || JSON.stringify(data));
     }
-    await consumeStreamingDeveloperRun(data, turn);
-    clearDeveloperSelectedImage();
+    activeDeveloperRun = data;
+    activeDeveloperTurn = turn;
+    stopRunButton.disabled = false;
+    const terminalPayload = await consumeStreamingDeveloperRun(data, turn);
+    if (terminalPayload.status !== 'cancelled') clearDeveloperSelectedImage();
     refreshStatus();
   } catch (error) {
     if (turn.state.status === 'RUNNING') turn.fail(error);
     agentActivity.textContent = 'Autonomous Agent run failed';
   } finally {
+    if (activeDeveloperTurn === turn) {
+      activeDeveloperRun = null;
+      activeDeveloperTurn = null;
+      stopRunButton.disabled = true;
+    }
     runButton.disabled = false;
+  }
+});
+stopRunButton.addEventListener('click', async () => {
+  const started = activeDeveloperRun;
+  const turn = activeDeveloperTurn;
+  if (!started || !turn) return;
+  stopRunButton.disabled = true;
+  agentActivity.textContent = 'Stopping Agent task...';
+  turn.setActivity('Stopping Agent task...');
+  const cancelUrl = started.cancel_url ||
+    '/api/streaming-runs/' + encodeURIComponent(started.run_id) + '/cancel';
+  try {
+    const response = await fetch(cancelUrl, {method: 'POST'});
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Agent task could not be stopped');
+    }
+    agentActivity.textContent = data.status === 'cancelled'
+      ? 'Stopped'
+      : 'Run already ' + data.status;
+  } catch (error) {
+    agentActivity.textContent = 'Stop failed: ' + error.message;
+    turn.setActivity('Stop failed: ' + error.message);
+    if (
+      activeDeveloperRun === started &&
+      turn.state.status === 'RUNNING'
+    ) {
+      stopRunButton.disabled = false;
+    }
   }
 });
 promptBox.addEventListener('keydown', (event) => {

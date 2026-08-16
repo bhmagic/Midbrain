@@ -15,7 +15,10 @@ from stationary_world_arm_alignment.foundation_engine import (
 )
 from stationary_world_arm_alignment.models import RunMode
 import stationary_world_arm_alignment.skill as skill_module
-from stationary_world_arm_alignment.skill import AlignmentSkill
+from stationary_world_arm_alignment.skill import (
+    AlignmentSkill,
+    gripper_axis_depth_is_trusted,
+)
 
 
 class FakeKeeper:
@@ -51,6 +54,13 @@ def translated(x: float, y: float, z: float) -> np.ndarray:
     result = np.eye(4, dtype=np.float64)
     result[:3, 3] = [x, y, z]
     return result
+
+
+def test_low_confidence_gripper_depth_cannot_select_base_axis() -> None:
+    assert not gripper_axis_depth_is_trusted({"confidence": 0.56}, 0.7)
+    assert not gripper_axis_depth_is_trusted({"confidence": 0.699999}, 0.7)
+    assert gripper_axis_depth_is_trusted({"confidence": 0.7}, 0.7)
+    assert gripper_axis_depth_is_trusted({"confidence": 0.94}, 0.7)
 
 
 def test_both_size_failures_return_closer_attempt_with_warning(
@@ -242,6 +252,55 @@ def test_rgbd_gripper_reference_owns_base_yaw_without_overlay_review() -> None:
                 transform[:3, :3],
                 np.diag([-1.0, -1.0, 1.0]),
             )
+
+
+def test_untrusted_gripper_reference_uses_bounded_overlay_review() -> None:
+    skill = object.__new__(AlignmentSkill)
+    skill.config = load_skill_config()
+    samples = {
+        "base": {
+            "camera": [translated(0.0, 0.0, 1.0) for _ in range(6)],
+            "vio": [translated(0.0, 0.0, 1.0) for _ in range(6)],
+        }
+    }
+
+    class OverlayReview:
+        calls = 0
+
+        async def validate_base_pose(self, *_: object, **__: object) -> dict:
+            self.calls += 1
+            return {"base_x_relation_to_gripper": "TOWARD_GRIPPER"}
+
+    vision = OverlayReview()
+    frame = SimpleNamespace(
+        rgb=np.zeros((100, 100, 3), dtype=np.uint8),
+        intrinsics={"fx": 100.0, "fy": 100.0, "cx": 50.0, "cy": 50.0},
+        camera_frame="camera",
+    )
+    _, selected = asyncio.run(
+        skill._select_and_apply_base_orientation(
+            samples=samples,
+            vision=vision,
+            frame=frame,
+            attempt=1,
+            overlay=b"reviewed-overlay",
+            mesh_minimum=np.array([-0.05, -0.05, 0.0]),
+            mesh_maximum=np.array([0.05, 0.05, 0.1]),
+            mesh_from_semantic=np.eye(4),
+            axis_length_m=0.1,
+            gripper_axis_reference={
+                "available": False,
+                "warning": "Low-confidence depth mask was rejected.",
+            },
+            camera_system_up=np.array([0.0, 0.0, 1.0]),
+        )
+    )
+
+    assert vision.calls == 1
+    resolution = selected["orientation_resolution"]
+    assert resolution["reference_source"] == "VLM_RGB_OVERLAY_FALLBACK"
+    assert resolution["warning"] == "Low-confidence depth mask was rejected."
+    assert resolution["orientation_correction_count"] == 0
 
 
 def test_skill_applies_down_and_away_choice_at_mesh_center() -> None:
@@ -468,7 +527,7 @@ def test_semantic_quality_reports_axis_review_and_warning_success() -> None:
                 "base_up_alignment": {
                     "status": "TILT_WARNING",
                     "world_up_available": True,
-                    "base_z_dot_world_up": 0.95,
+                    "base_z_dot_world_up": 0.91,
                     "base_z_tilt_from_world_up_deg": 18.19,
                     "warning_tilt_deg": 10.0,
                     "warning": "Base +Z differs from gravity up.",
@@ -480,30 +539,30 @@ def test_semantic_quality_reports_axis_review_and_warning_success() -> None:
                 ],
             }
         ],
-            "orientation_fit": {
+        "orientation_fit": {
             "consistency_passed": True,
             "base_x_relation_to_gripper": "UNCLEAR",
             "selected_flip_deg": 0,
             "yaw_correction_translation_norm_m": 0.0,
-                "fitted_yaw_deg": 0.0,
-                "world_up_available": True,
-                "raw_base_z_dot_world_up": 0.95,
-                "corrected_base_z_dot_world_up": 0.95,
-                "selected_orientation_correction_axis": "NONE",
-                "selected_orientation_correction_deg": 0,
-                "orientation_correction_count": 0,
-                "orientation_correction_translation_norm_m": 0.0,
-                "application_origin": (
-                    "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
-                ),
-                "application_order": (
-                    "parent_from_mesh @ mesh_hypothesis_correction @ "
-                    "mesh_from_semantic"
-                ),
-                "mesh_hypothesis_correction_translation_norm_m": 0.0,
-                "mesh_center_translation_preserved": True,
-                "semantic_root_translation_adjustment_norm_m": 0.0,
-                "warning": (
+            "fitted_yaw_deg": 0.0,
+            "world_up_available": True,
+            "raw_base_z_dot_world_up": 0.95,
+            "corrected_base_z_dot_world_up": 0.95,
+            "selected_orientation_correction_axis": "NONE",
+            "selected_orientation_correction_deg": 0,
+            "orientation_correction_count": 0,
+            "orientation_correction_translation_norm_m": 0.0,
+            "application_origin": (
+                "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
+            ),
+            "application_order": (
+                "parent_from_mesh @ mesh_hypothesis_correction @ "
+                "mesh_from_semantic"
+            ),
+            "mesh_hypothesis_correction_translation_norm_m": 0.0,
+            "mesh_center_translation_preserved": True,
+            "semantic_root_translation_adjustment_norm_m": 0.0,
+            "warning": (
                 "The VLM could not determine the base +X relation."
             ),
         },
@@ -517,6 +576,11 @@ def test_semantic_quality_reports_axis_review_and_warning_success() -> None:
     assert quality["selected_base_yaw_flip_deg"] == 0
     assert quality["fitted_base_yaw_deg"] == 0.0
     assert quality["yaw_correction_translation_norm_m"] == 0.0
+    assert quality["corrected_base_z_dot_world_up"] == 0.91
+    assert (
+        quality["orientation_resolution_corrected_base_z_dot_world_up"]
+        == 0.95
+    )
     assert quality["projected_visual_linear_scale_ratio"] == 1.27
     assert quality["base_up_status"] == "TILT_WARNING"
     assert quality["warnings"]

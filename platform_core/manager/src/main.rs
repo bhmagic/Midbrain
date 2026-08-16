@@ -842,16 +842,24 @@ async fn activate_workcell_calibration(
         Utc::now(),
     )
     .map_err(|error| api_error(StatusCode::CONFLICT, error.to_string()))?;
-    publish_workcell_calibration(&state, &record, true)
+    let superseded = {
+        let records = state.workcell_calibrations.lock().await;
+        superseded_active_workcell_calibrations(&records, &record)
+    };
+    publish_workcell_calibration_supersession(&state, &record, &superseded)
         .await
         .map_err(|error| {
             api_error(
                 StatusCode::BAD_GATEWAY,
-                format!("workcell calibration was not activated because Fabric publication failed: {error}"),
+                format!(
+                    "workcell calibration was not activated because the Fabric supersession publication failed: {error}"
+                ),
             )
         })?;
     let mut records = state.workcell_calibrations.lock().await;
-    supersede_active_workcell_calibrations(&mut records, &record, Utc::now());
+    for superseded_record in superseded {
+        records.insert(superseded_record.activation_id.clone(), superseded_record);
+    }
     records.insert(record.activation_id.clone(), record.clone());
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -1090,22 +1098,24 @@ fn finite_json_array(value: &Value, length: usize, scope: &str) -> Result<Vec<f6
     Ok(values)
 }
 
-fn supersede_active_workcell_calibrations(
-    records: &mut HashMap<String, WorkcellCalibrationActivationRecord>,
+fn superseded_active_workcell_calibrations(
+    records: &HashMap<String, WorkcellCalibrationActivationRecord>,
     replacement: &WorkcellCalibrationActivationRecord,
-    _now: DateTime<Utc>,
-) {
-    for record in records.values_mut() {
-        if record.state != "ACTIVE" {
-            continue;
-        }
-        record.motion_usable = false;
-        record.state = "SUPERSEDED".to_string();
-        record.last_transition_reason = format!(
-            "superseded by newer reviewed activation {}",
-            replacement.activation_id
-        );
-    }
+) -> Vec<WorkcellCalibrationActivationRecord> {
+    records
+        .values()
+        .filter(|record| record.state == "ACTIVE")
+        .cloned()
+        .map(|mut record| {
+            record.motion_usable = false;
+            record.state = "SUPERSEDED".to_string();
+            record.last_transition_reason = format!(
+                "superseded by newer reviewed activation {}",
+                replacement.activation_id
+            );
+            record
+        })
+        .collect()
 }
 
 async fn revoke_workcell_calibration(
@@ -1875,7 +1885,78 @@ async fn publish_workcell_calibration(
     record: &WorkcellCalibrationActivationRecord,
     active: bool,
 ) -> Result<()> {
+    publish_workcell_calibration_transitions(state, &[(record, active)]).await
+}
+
+async fn publish_workcell_calibration_supersession(
+    state: &AppState,
+    replacement: &WorkcellCalibrationActivationRecord,
+    superseded: &[WorkcellCalibrationActivationRecord],
+) -> Result<()> {
+    let mut transitions = superseded
+        .iter()
+        .map(|record| (record, false))
+        .collect::<Vec<_>>();
+    transitions.push((replacement, true));
+    publish_workcell_calibration_transitions(state, &transitions).await
+}
+
+async fn publish_workcell_calibration_transitions(
+    state: &AppState,
+    transitions: &[(&WorkcellCalibrationActivationRecord, bool)],
+) -> Result<()> {
     let observed_at_us = Utc::now().timestamp_micros().max(0) as u64;
+    let observations = workcell_calibration_transition_observations(
+        transitions,
+        &state.manager_instance_id,
+        &state.manager_boot_id,
+        observed_at_us,
+    );
+    let response = state
+        .http
+        .post(format!(
+            "{}/v1/observations/batch",
+            state.fabric_url.trim_end_matches('/')
+        ))
+        .json(&json!({"observations": observations}))
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(anyhow!("Fabric returned {}", response.status()));
+    }
+    Ok(())
+}
+
+fn workcell_calibration_transition_observations(
+    transitions: &[(&WorkcellCalibrationActivationRecord, bool)],
+    manager_instance_id: &str,
+    manager_boot_id: &str,
+    observed_at_us: u64,
+) -> Vec<Value> {
+    let mut observations = Vec::with_capacity(transitions.len().saturating_mul(4));
+    for (index, (record, active)) in transitions.iter().enumerate() {
+        let sequence_base = observed_at_us.saturating_add((index as u64).saturating_mul(4));
+        observations.extend(workcell_calibration_observations(
+            record,
+            *active,
+            manager_instance_id,
+            manager_boot_id,
+            observed_at_us,
+            sequence_base,
+        ));
+    }
+    observations
+}
+
+fn workcell_calibration_observations(
+    record: &WorkcellCalibrationActivationRecord,
+    active: bool,
+    manager_instance_id: &str,
+    manager_boot_id: &str,
+    observed_at_us: u64,
+    sequence_base: u64,
+) -> Vec<Value> {
     let review_state = if active { "ACCEPTED" } else { "REVOKED" };
     let activation_state = if active { "ACTIVE" } else { "REVOKED" };
     let motion_usable = active;
@@ -1890,9 +1971,9 @@ async fn publish_workcell_calibration(
             "schema_version": 1,
             "stream": stream,
             "provider_id": "manager.workcell_calibration",
-            "provider_instance_id": state.manager_instance_id,
-            "boot_id": state.manager_boot_id,
-            "sequence": observed_at_us.saturating_add(offset),
+            "provider_instance_id": manager_instance_id,
+            "boot_id": manager_boot_id,
+            "sequence": sequence_base.saturating_add(offset),
             "observed_at_us": observed_at_us,
             "coordinate_frame": record.world_frame,
             "calibration_revision": record.calibration_revision,
@@ -1924,7 +2005,7 @@ async fn publish_workcell_calibration(
             }
         })
     };
-    let observations = vec![
+    vec![
         transform(
             "transform.stationary_world.camera",
             &record.camera_frame,
@@ -1948,9 +2029,9 @@ async fn publish_workcell_calibration(
             "schema_version": 1,
             "stream": "manager.workcell_calibration.activation",
             "provider_id": "manager.workcell_calibration",
-            "provider_instance_id": state.manager_instance_id,
-            "boot_id": state.manager_boot_id,
-            "sequence": observed_at_us.saturating_add(3),
+            "provider_instance_id": manager_instance_id,
+            "boot_id": manager_boot_id,
+            "sequence": sequence_base.saturating_add(3),
             "observed_at_us": observed_at_us,
             "coordinate_frame": record.world_frame,
             "calibration_revision": record.calibration_revision,
@@ -1959,21 +2040,7 @@ async fn publish_workcell_calibration(
             "valid": true,
             "data": record
         }),
-    ];
-    let response = state
-        .http
-        .post(format!(
-            "{}/v1/observations/batch",
-            state.fabric_url.trim_end_matches('/')
-        ))
-        .json(&json!({"observations": observations}))
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Err(anyhow!("Fabric returned {}", response.status()));
-    }
-    Ok(())
+    ]
 }
 
 async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderView>> {
@@ -4983,30 +5050,101 @@ mod tests {
         .expect("replacement fixture should activate");
         let mut active = replacement.clone();
         active.activation_id = "active-before-recalibration".to_string();
+        active.candidate_id = "candidate-before-recalibration".to_string();
         active.motion_usable = true;
         let mut second_active = replacement.clone();
         second_active.activation_id = "second-active-before-recalibration".to_string();
+        second_active.candidate_id = "second-candidate-before-recalibration".to_string();
         second_active.motion_usable = true;
-        let mut records = HashMap::from([
+        let records = HashMap::from([
             (active.activation_id.clone(), active),
             (second_active.activation_id.clone(), second_active),
         ]);
 
-        supersede_active_workcell_calibrations(&mut records, &replacement, now);
+        let superseded = superseded_active_workcell_calibrations(&records, &replacement);
 
-        let superseded = records
-            .get("active-before-recalibration")
+        let first = superseded
+            .iter()
+            .find(|record| record.activation_id == "active-before-recalibration")
             .expect("the prior active record should remain auditable");
-        assert_eq!(superseded.state, "SUPERSEDED");
-        assert!(!superseded.motion_usable);
-        assert!(superseded
+        assert_eq!(first.state, "SUPERSEDED");
+        assert!(!first.motion_usable);
+        assert!(first
             .last_transition_reason
             .contains(&replacement.activation_id));
-        let second = records
-            .get("second-active-before-recalibration")
+        let second = superseded
+            .iter()
+            .find(|record| record.activation_id == "second-active-before-recalibration")
             .expect("the second prior record should remain auditable");
         assert_eq!(second.state, "SUPERSEDED");
         assert!(!second.motion_usable);
+
+        for record in &superseded {
+            let observations = workcell_calibration_observations(
+                record,
+                false,
+                "manager-instance",
+                "manager-boot",
+                1_000_000,
+                1_000_000,
+            );
+            let transforms = observations
+                .iter()
+                .filter(|observation| observation["schema"] == "physical_agent.transform")
+                .collect::<Vec<_>>();
+            assert_eq!(transforms.len(), 3);
+            assert!(transforms.iter().all(|observation| {
+                observation["data"]["review_state"] == "REVOKED"
+                    && observation["data"]["activation_state"] == "REVOKED"
+                    && observation["data"]["motion_usable"] == false
+                    && observation["data"]["activation_id"].as_str()
+                        == Some(record.activation_id.as_str())
+            }));
+        }
+
+        let replacement_observations = workcell_calibration_observations(
+            &replacement,
+            true,
+            "manager-instance",
+            "manager-boot",
+            1_000_000,
+            1_000_008,
+        );
+        assert!(replacement_observations
+            .iter()
+            .filter(|observation| observation["schema"] == "physical_agent.transform")
+            .all(|observation| {
+                observation["data"]["review_state"] == "ACCEPTED"
+                    && observation["data"]["activation_state"] == "ACTIVE"
+                    && observation["data"]["motion_usable"] == true
+                    && observation["data"]["activation_id"].as_str()
+                        == Some(replacement.activation_id.as_str())
+            }));
+
+        let mut transitions = superseded
+            .iter()
+            .map(|record| (record, false))
+            .collect::<Vec<_>>();
+        transitions.push((&replacement, true));
+        let batch = workcell_calibration_transition_observations(
+            &transitions,
+            "manager-instance",
+            "manager-boot",
+            1_000_000,
+        );
+        assert_eq!(batch.len(), 12);
+        let sequences = batch
+            .iter()
+            .map(|observation| {
+                observation["sequence"]
+                    .as_u64()
+                    .expect("every calibration envelope needs a sequence")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(sequences.len(), batch.len());
+        assert!(batch[batch.len() - 4..].iter().all(|observation| {
+            observation["related_skill_id"].as_str() == Some(replacement.candidate_id.as_str())
+        }));
     }
 
     #[test]
