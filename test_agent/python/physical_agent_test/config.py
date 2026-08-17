@@ -178,6 +178,7 @@ class Settings:
                 "derive_fabric_world_point,"
                 "translate_fabric_direction_to_world,"
                 "translate_fabric_pose_to_world,"
+                "offset_world_point,"
                 "verify_rgbd_image_alignment,"
                 "reinitialize_space_cognition,"
                 "refine_arm_root_translation,"

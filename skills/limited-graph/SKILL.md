@@ -13,6 +13,10 @@ direct calls only for a single Skill, open-ended replanning, or host operations
 that are not graph-eligible; after host setup, graph the remaining finite Skill
 sequence. Include every requested graph-eligible stage, including later motion
 or cutting stages. Never submit only an initial prefix of a known workflow.
+Before authoring a binding, read the declared structured-result pointers in
+each child tool description. Use only those output paths and the destination
+child's declared input paths; never invent, flatten, rename, or guess a result
+field.
 
 ## Build the graph
 
@@ -21,7 +25,8 @@ or cutting stages. Never submit only an initial prefix of a known workflow.
    `MODEL_ROUTE` nodes only when deterministic routing is insufficient, and
    `TERMINAL` nodes for every final outcome.
 3. Encode literal child arguments as JSON in `arguments_json`. Bind prior
-   values with JSON pointers instead of repeating or interpreting them.
+   values with declared JSON pointers instead of repeating or interpreting
+   them. Output and input pointer paths are preflighted before any child runs.
 4. Give every cycle a predetermined visit and transition budget.
 5. Request retries only for read-only Skills. Treat physical timeout or
    uncertain completion as terminal until authoritative evidence resolves it.

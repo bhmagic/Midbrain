@@ -1,0 +1,141 @@
+{
+  "skill_type": "offset_world_point",
+  "version": "0.1.0",
+  "display_name": "Offset World Point",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 2,
+    "discoverable": true,
+    "tool_name": "offset_world_point",
+    "description": "Add one typed metric offset to an upstream point that is already expressed in the active Fabric world. The offset axes may be active-world, configured arm-base, or current controlled-effector axes. The read-only result exposes target_position_world_m with current frame, epoch, calibration, timestamp, and transform provenance for unchanged forwarding to a downstream world-point consumer.",
+    "when_to_use": [
+      "A downstream target is defined as a metric offset from an earlier Skill's world point.",
+      "An upstream world point and a displacement in world, arm-base, or controlled-effector axes must be composed without language-model arithmetic.",
+      "A Limited Graph needs a typed intermediate world point that can be bound unchanged into a later motion Skill."
+    ],
+    "when_not_to_use": [
+      "The source position is not already expressed in the active world frame.",
+      "The source is a semantic object corner that should be selected by derive_fabric_world_point.",
+      "The request is a direction, complete pose, wrench, image coordinate, or physical motion."
+    ],
+    "side_effects": [],
+    "safety_class": "READ_ONLY",
+    "expected_latency": "LOW",
+    "required_permissions": ["world.transforms.read"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "source_position_world_m": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "Exact upstream [x, y, z] point in metres in source_world_frame_id."
+        },
+        "source_world_frame_id": {
+          "anyOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ],
+          "description": "Exact upstream world frame ID when published; otherwise null. A supplied ID must match the active Fabric world."
+        },
+        "source_observed_at_us": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "null"}
+          ],
+          "description": "Exact upstream observation timestamp in Unix microseconds when published; otherwise null."
+        },
+        "source_session_epoch": {
+          "anyOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ],
+          "description": "Exact upstream resettable-frame epoch when published; otherwise null."
+        },
+        "offset_vector": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "Additive [x, y, z] displacement in offset_unit and offset_reference axes."
+        },
+        "offset_unit": {
+          "type": "string",
+          "enum": ["METRES", "CENTIMETRES", "MILLIMETRES"]
+        },
+        "offset_reference": {
+          "type": "string",
+          "enum": ["ACTIVE_WORLD", "ARM_BASE", "CONTROLLED_EFFECTOR_FRAME"],
+          "description": "Axes in which offset_vector is expressed."
+        }
+      },
+      "required": [
+        "source_position_world_m",
+        "source_world_frame_id",
+        "source_observed_at_us",
+        "source_session_epoch",
+        "offset_vector",
+        "offset_unit",
+        "offset_reference"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": "physical_agent.fabric_offset_world_point"},
+        "schema_version": {"const": 1},
+        "status": {"type": "string"},
+        "workflow_complete": {"type": "boolean"},
+        "physical_motion_authorized": {"type": "boolean"},
+        "physical_motion_submitted": {"type": "boolean"},
+        "derivation_id": {"type": "string"},
+        "convention_id": {"type": "string"},
+        "source_position_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "source_world_frame_id": {"type": "string"},
+        "source_session_epoch": {"type": "string"},
+        "offset_vector_input": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "offset_unit": {"type": "string"},
+        "offset_reference": {"type": "string"},
+        "offset_vector_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "target_position_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "target_world_frame_id": {"type": "string"},
+        "target_session_epoch": {"type": "string"},
+        "coordinate_at_us": {"type": "integer"},
+        "derived_at_us": {"type": "integer"},
+        "calibration_revision": {"type": ["string", "null"]},
+        "source": {"type": "object"},
+        "derivation": {"type": "object"},
+        "supplied_source_frame_id": {"type": "string"},
+        "active_source_frame_id": {"type": "string"},
+        "supplied_source_world_frame_id": {"type": "string"},
+        "active_world_frame_id": {"type": "string"},
+        "source_world_binding": {"type": "object"},
+        "active_world_binding": {"type": "object"},
+        "required_next_tool": {"type": ["object", "null"]},
+        "message": {"type": "string"}
+      },
+      "required": [
+        "status",
+        "workflow_complete",
+        "physical_motion_authorized",
+        "physical_motion_submitted"
+      ],
+      "additionalProperties": true
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.offset_world_point.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": ["world.transforms.timestamped"],
+  "optional_capabilities": ["robot_arm.transforms.local"],
+  "route_policy": {
+    "source_position_frame": "ACTIVE_WORLD",
+    "offset_references": ["ACTIVE_WORLD", "ARM_BASE", "CONTROLLED_EFFECTOR_FRAME"],
+    "physical_authority": "NONE"
+  },
+  "published_streams": []
+}

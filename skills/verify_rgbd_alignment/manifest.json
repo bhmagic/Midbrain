@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "verify_rgbd_image_alignment",
     "description": "Validate one synchronized RGB-D bundle by checking its actual grids, frame timestamps, registered-depth boundary, shared-memory route, numeric edge correspondence, and a VLM review of the RGB, registered-depth, and overlay image content. Use this read-only Skill before metric registration when image presence alone is insufficient.",
@@ -52,6 +52,41 @@
       },
       "required": [
         "request"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": "physical_agent.rgbd_alignment_validation"},
+        "schema_version": {"const": 1},
+        "request": {"type": "string"},
+        "motion_usable": {"type": "boolean"},
+        "numeric_quality": {"type": "object"},
+        "vlm_review": {"type": "object"},
+        "vlm_route": {"type": "object"},
+        "geometry": {"type": "object"},
+        "timing": {"type": "object"},
+        "data_route": {"type": "object"},
+        "capability_binding": {"type": "object"},
+        "artifacts": {
+          "type": "object",
+          "properties": {
+            "rgb": {"type": "string"},
+            "registered_depth": {"type": "string"},
+            "composite": {"type": "string"}
+          },
+          "required": ["rgb", "registered_depth", "composite"],
+          "additionalProperties": false
+        },
+        "image_review_required": {"type": "boolean"},
+        "images_present_is_not_sufficient": {"type": "boolean"}
+      },
+      "required": [
+        "schema", "schema_version", "request", "motion_usable",
+        "numeric_quality", "vlm_review", "vlm_route", "geometry",
+        "timing", "data_route", "capability_binding", "artifacts",
+        "image_review_required", "images_present_is_not_sufficient"
       ],
       "additionalProperties": false
     },

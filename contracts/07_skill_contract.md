@@ -75,6 +75,12 @@ A Skill that may be selected automatically provides the concise
 OpenAI Agents SDK function-tool name and description model. Provider-instance
 selection is not part of the agent-visible Skill description.
 
+Every installed Skill, including manual-only and normally non-discoverable
+Skills, declares its normalized agent-visible `output_schema` in the same
+manifest metadata. This schema documents stable structured result fields for
+catalogs, validation, replay, and finite composition. Declaring a result field
+does not grant authority to produce, trust, or act on that field.
+
 During the advisory migration phase, the Skill requests capability bindings
 from the Manager and may include explicit provider IDs only as fallbacks.
 Existing direct provider-ID routes remain compatible until a later contract

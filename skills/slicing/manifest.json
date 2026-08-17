@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "slice_with_blade",
     "description": "Perform one non-clamping blade slice from a begin point, world inward blade direction, projected world slicing direction, and slice length. Send null for both profile selectors unless the user explicitly requests profile numbers; never infer or reuse a number from conversation because null resolves the live defaults. The mounted-effector blade-use profile owns optional hard joint locks. The Skill derives the inspection endpoints and measured-start slice and outward-retract displacements, aligns through Integrated, submits exactly three Contact-owned Cartesian segments, and requests relax.",
@@ -110,6 +110,92 @@
         "blade_direction_world",
         "slicing_direction_world",
         "slice_length_m"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {"const": "SLICING_SEQUENCE_SUBMITTED_AND_RELAX_REQUESTED"},
+        "workflow_complete": {"const": true},
+        "physical_motion_requested": {"const": true},
+        "task_success_assessed": {"const": false},
+        "result_semantics": {"const": "COMMAND_HANDLING_ONLY"},
+        "alignment": {"type": "object"},
+        "contact": {"type": "object"},
+        "plan": {
+          "type": "object",
+          "properties": {
+            "skill_id": {"type": "string"},
+            "integrated_alignment_arguments": {"type": "object"},
+            "contact_steps": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "object"}},
+            "path": {
+              "type": "object",
+              "properties": {
+                "slice_begin_point_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "projected_slicing_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "requested_slice_length_m": {"type": "number"},
+                "slice_endpoint_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "slice_position_mode": {"type": "string"},
+                "slice_delta_arm_base_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "retract_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "retract_distance_m": {"type": "number"},
+                "planned_retract_endpoint_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "retract_position_mode": {"type": "string"},
+                "retract_delta_arm_base_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                "construction": {"type": "string"}
+              },
+              "required": [
+                "slice_begin_point_world_m",
+                "projected_slicing_direction_world",
+                "requested_slice_length_m", "slice_endpoint_world_m",
+                "slice_position_mode", "slice_delta_arm_base_m",
+                "retract_direction_world", "retract_distance_m",
+                "planned_retract_endpoint_world_m", "retract_position_mode",
+                "retract_delta_arm_base_m", "construction"
+              ],
+              "additionalProperties": false
+            },
+            "workcell_binding": {
+              "type": "object",
+              "properties": {
+                "activation_id": {"type": "string"},
+                "calibration_revision": {"type": "string"},
+                "world_frame": {"type": "string"},
+                "arm_base_frame": {"type": "string"},
+                "world_from_base": {
+                  "type": "object",
+                  "properties": {
+                    "translation_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+                    "rotation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+                  },
+                  "required": ["translation_m", "rotation_xyzw"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["activation_id", "calibration_revision", "world_frame", "arm_base_frame", "world_from_base"],
+              "additionalProperties": false
+            },
+            "blade_profile_number": {"type": ["integer", "null"]},
+            "motion_profile_number": {"type": ["integer", "null"]},
+            "alignment": {"type": "object"},
+            "timing": {"type": "object"},
+            "load": {"type": "object"},
+            "task_success_assessed": {"type": "boolean"}
+          },
+          "required": [
+            "skill_id", "integrated_alignment_arguments", "contact_steps",
+            "workcell_binding", "blade_profile_number",
+            "motion_profile_number", "alignment", "path", "timing", "load",
+            "task_success_assessed"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "status", "workflow_complete", "physical_motion_requested",
+        "alignment", "contact", "plan", "task_success_assessed",
+        "result_semantics"
       ],
       "additionalProperties": false
     },

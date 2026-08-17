@@ -321,3 +321,262 @@ When investigating a failure, record the graph digest, graph run ID, root and
 child call IDs, terminal status, last completed node, exhausted limit if any,
 and the ordered trace. Never add credentials or signed action tokens to this
 record.
+
+## 2026-08-16: declared child-output preflight
+
+### Defect carried from the live checkpoint
+
+The retained live graph used
+`/outward_retract_end_position_world_m` as a slicing-result source. Because
+child outputs had no discovery contract, graph submission accepted the name,
+ran the first physical slicing child, and discovered the missing field only
+when the later binding tried to read it. The runner stopped without repeating
+the physical child, but the error was avoidably late and consumed an earlier
+physical action.
+
+### Implementation checkpoint
+
+1. Limited Graph child descriptors now carry the same mandatory discovery-v2
+   output schema used by direct Agent FunctionTools.
+2. Static validation resolves every `NODE_RESULT` binding, retry condition,
+   switch condition, and model-route input only through explicitly declared
+   output properties and array items. It also resolves every binding target
+   through the destination Skill's input schema.
+3. Initial-value source pointers are checked against the submitted initial
+   JSON value. Undeclared child paths and destination arguments fail graph
+   validation before the first node is invoked.
+4. Runtime validates each normalized child result against its declared schema
+   before credential redaction, then redacts before retaining or routing it. A physical
+   result mismatch is an uncertain physical outcome and returns
+   `UNKNOWN_OUTCOME`; a read-only mismatch follows the existing bounded retry
+   and failure behavior. Validation errors expose only the failing JSON pointer,
+   validator, and expected schema value; they never include the invalid result
+   instance.
+5. Open schema extensions are valid diagnostic data but are not statically
+   bindable. Optional declared fields can still be absent in a particular
+   result variant, so graph authors must branch on completion/status before
+   consuming success-only values.
+6. Graph authoring guidance now tells the Agent to copy exact declared paths.
+   It documents the real slicing paths and explicitly rejects the invented
+   historical name.
+
+### Output-schema preflight validation checkpoint
+
+The standalone runner passed 24 tests, including valid nested result binding,
+pre-execution rejection of an invented source, pre-execution rejection of an
+invented target argument, and `UNKNOWN_OUTCOME` for a physical output-schema
+mismatch. It also rejects undeclared retry, deterministic-switch, and
+model-route input paths before invocation. The Agent
+discovery/external-host/hosted-broker set passed 52 tests,
+the complete Test Agent run passed 450 tests and 27 subtests, and the configured
+repository package-root run passed 1,105 tests and 27 subtests. Python
+compilation, the Skill Creator validator, documentation integrity, JSON
+parsing, configuration baselines, and Python environment isolation also
+passed. No Provider, Manager runtime, or robot process was started.
+
+## 2026-08-16: semantic audit of every child result contract
+
+The first discovery-v2 migration made output schemas mandatory and enabled
+preflight, but schema presence did not prove semantic correctness. A complete
+source audit subsequently traced all 22 descriptors installed at that checkpoint to the actual
+registered adapter and result-producing implementation. Several plausible
+names described no runtime output, including generic item and effector point
+aliases, reviewed-motion `controller_result`, RGB-D alignment verdict aliases,
+tool-registration candidate aliases, and root-level coordinate
+`transform_path` fields.
+
+The corrected contracts expose the actual composition paths. Important
+examples are `/location/target_point_m` for a metric item,
+`/control_reference/target_point_m` for the effector front,
+`/target_point_m` for direct RGB-D registration,
+`/framed_direction_world/transform_path` for translated-direction provenance,
+and the existing `/plan/path/*` Slicing points. The nested FoundationPose
+primitive remains undiscoverable and has an explicitly empty direct result
+contract because no Agent adapter exists.
+
+The audit regression began with those 22 Skills and binds every installed
+descriptor, including later additions, to its source files
+and representative source tokens, checks required and forbidden published
+root fields, compiles each schema, and compares Limited Graph's own manifest
+with its canonical result schema. This strengthens graph preflight without
+changing child duties, Provider handover, credentials, authentication,
+Manager authority, or physical authorization.
+
+The dedicated audit passed 2 tests. The complete Test Agent suite passed 452
+tests and 27 subtests, and the configured repository package-root suite passed
+1,107 tests and 27 subtests. The Limited Graph wheel built successfully without
+build isolation, the Skill Creator validator accepted the package, and Python
+compilation, documentation integrity, duplicate-key-rejecting JSON parsing,
+configuration baselines, and environment isolation passed. No Provider,
+Manager runtime, robot process, or physical action was started.
+
+## 2026-08-16: live child-contract failure checkpoint
+
+Two live graphs failed before FoundationPose because the newly audited
+`establish_world_axis` schema described `/result/stationary_gate` as an object,
+but its registered `ensure_tracking` adapter produced the valid strings
+`GLOBAL_MOTION_INHIBIT` and `EXISTING_TRACKING_EPOCH`. Graph run IDs
+`f3a106a8e56c43f3a1f10ea4bb96de9a` and
+`9ebe8fb8d2ba4fa99ec3b87280213549` each made one child attempt, emitted
+`CHILD_FAILED`, selected the declared failure edge, and retained no invalid
+result. Active runtime was 7,891 ms when stationary initialization was needed
+and 93 ms when an existing tracking epoch was available.
+
+Historical run `9d1552c6-c73e-4cfb-a522-fbf672b983ef` confirms that the short
+initial graph is the expected staging boundary for this prompt. Its first graph
+`00f1b1a5828f4dd1ae3238bc8731d0bf` produced the FoundationPose candidate; the
+Agent then completed mandatory host review and activation before submitting
+post-calibration graph `2cfeb1d5bd924f25a466f5e321ab465d`, which completed
+the raise, five-sample refinement, forward motion, and down motion. The newest
+runs never reached that continuation because the first child result was
+rejected.
+
+The graph engine behaved according to contract: it did not expose the invalid
+result to a binding or later node, did not retry a stateful no-motion child
+whose graph node allowed only one attempt, and did not submit physical motion.
+The child manifest now declares the two exact string values, and runtime-shaped
+tests validate both branches against discovery. This incident narrows the
+remaining schema-audit risk from missing root names to incorrect nested branch
+types and demonstrates why actual result validation must accompany static
+source-token coverage.
+
+The focused initialization and output-contract set passed 11 tests. The
+complete Test Agent suite passed 453 tests and 27 subtests, and the configured
+repository package-root suite passed 1,108 tests and 27 subtests. These were
+stopped-software validations; no Provider, Manager runtime, robot process, or
+physical action was started.
+
+## 2026-08-17: post-motion authorization validation and combined-route correction
+
+### Retained live evidence
+
+Graph `5beaa4e662fd405597621ec4107db458` completed the Integrated Provider
+handover and submitted one requested raise motion. The child returned a valid
+object-valued `authorization`, but the runner replaced that entire object with
+`[REDACTED]` before validating the declared output schema. Validation then
+reported `/authorization` as a string where an object was required and returned
+`UNKNOWN_OUTCOME`. Corner-move graph `42f784c933b64753be8a5abb7504ff73`
+repeated the same post-motion failure after a fresh Fabric target derivation.
+
+Run `98a689d8-5ebd-4cfc-908e-25abb70d77ee` exposed an independent preflight
+failure. Its request combined an existing-scene work-object corner move with
+mixed-frame slicing, but deterministic discovery selected the narrower slicing
+route. The authored complete graph therefore contained
+`derive_fabric_world_point`, which the host correctly rejected as ineligible.
+This was a route-union defect, not a Fabric freshness, transform, or scene-data
+failure.
+
+### Corrections
+
+1. The runner validates the normalized in-memory child result before redacting
+   credential-like values. Only the redacted result is retained, bound, routed,
+   traced, or returned.
+2. Schema-error serialization reports structural location and expectation but
+   omits the invalid instance, so validating before redaction cannot copy an
+   authorization value into graph diagnostics.
+3. A regression covers a physical result containing an object-valued signed
+   authorization: the graph completes after one child call, retains only
+   `[REDACTED]`, and exposes no token.
+4. A second regression proves that an invalid authorization-shaped result
+   returns `UNKNOWN_OUTCOME` without placing its value in the error.
+5. Agent discovery now has a dedicated existing-scene work-object-motion plus
+   mixed-frame-slicing route. It exposes Fabric point derivation, absolute-world
+   motion, direction translation, slicing, lifecycle tools, and Limited Graph
+   together and requires one complete graph.
+
+The first focused runner and discovery checkpoint passed 60 tests. No Provider,
+Manager runtime, robot process, or physical action was started by this
+validation.
+
+After the alignment visual-evidence integration, the complete Test Agent suite
+passed 455 tests and 27 subtests and the configured repository package-root
+suite passed 1,114 tests and 27 subtests. Python compilation, 134-file
+documentation integrity, 104-file duplicate-key-rejecting JSON parsing,
+configuration baselines, and Python environment isolation passed. Source
+integrity manifests were refreshed. Limited Graph, stationary alignment, and
+Test Agent wheels built successfully from the final source. No Provider, Manager
+runtime, robot process, or physical action was started by these validations.
+
+## 2026-08-17: child visuals and the missing point-offset operation
+
+Retained run `e6ca539b-ca48-416e-b948-eb06b48b694a` proved that graph child
+results held valid FoundationPose and VLM evidence while the UI event layer
+discarded it. This was outside the graph runner: the runner correctly retained
+the child objects under `node_results`, but the SDK event translator accepted
+only JSON text and inspected only root visual evidence. The translator now
+decodes a bounded Python literal representation when needed and sanitizes each
+root or child evidence object into a separate UI event.
+
+Runs `0968b0a2-bb00-442d-a201-3a9cfcb23a89` and
+`6ee0c08e-a27c-4158-9c7f-daaa92c4f155` exposed a separate catalog gap. The
+first correctly observed that copy-only bindings cannot calculate an earlier
+point plus 10 cm. The second graph used a declared but semantically wrong
+Slicing retract endpoint and completed a wrong reposition. Limited Graph did
+not evaluate an expression or choose that path; the authored graph supplied
+the wrong exact source pointer.
+
+The correction preserves the copy-only contract. A new read-only
+`offset_world_point` child accepts an upstream world point, its published frame
+identity, and one typed displacement. Fabric owns unit conversion, current
+frame validation, and arm-base or controlled-effector rotation. Slicing now
+publishes its actual nested workcell world-frame field. Static validation
+accepts the exact first-slice-point to offset to world-motion pointer chain,
+while the route instruction explicitly distinguishes the first point from the
+planned retract endpoint.
+
+Compound scene routes now include `inspect_arm_semantic_scene` as the first
+graph child after host setup so SAM2 evidence is produced before point
+derivation. Safe Home remains outside the graph because it is a host operation;
+the deterministic route carries it out only after a successful compound graph
+and disables Limited Graph on standalone Safe Home requests.
+
+The Limited Graph engine itself required no topology, binding, loop, routing,
+authorization, Provider-handover, or execution-budget change. Its 26-test
+suite passed, and the complete Test Agent suite passed 461 tests and 27
+subtests. The configured package-root suite passed 1,120 tests and 27 subtests,
+plus 79 Rust tests; documentation, JSON, configuration, environment-isolation,
+release Manager, and wheel-build checks passed. No live process or physical
+action was started by this checkpoint.
+
+## 2026-08-17: immediate child-result observation
+
+The successful physical retest showed that graph execution and retained child
+visual evidence were correct, but the host did not receive those visuals until
+the complete graph result returned. The final tool translator could only
+recover `node_results` after every downstream node had finished. This made a
+SAM2 or VLM visual appear to have been produced at graph completion even when
+an earlier child had created it.
+
+`LimitedGraphRunner.run` now accepts an optional child-result observer. The
+runner calls it for each completed child attempt only after the result has
+passed its declared output schema, credential-like values have been redacted,
+the bounded retained copy has been accepted, and `CHILD_ATTEMPT_COMPLETED` has
+been traced. The observer receives a deep copy of that safe result plus the
+node ID, child tool name, attempt number, and graph call context.
+
+The observer is an output-side presentation hook, not a graph operation. It
+cannot return a route, mutate retained state, authorize an action, change a
+retry, extend a deadline, alter a budget, or supply credentials. Both
+synchronous and asynchronous observers are supported. Any observer exception
+is logged and suppressed, and graph execution continues with the same result
+and terminal semantics.
+
+The host adapter connects the runner hook to the broker's
+`observe_child_result` method. A broker that does not publish presentation
+events may retain the default no-op behavior. The final graph result still
+contains its bounded `node_results`, so nonstreaming hosts and replay retain the
+existing compatibility path.
+
+Regression coverage proves that an observer runs before the graph call
+returns, receives the validated/redacted child result, and cannot change a
+successful graph result when it raises. No Provider, Manager runtime, robot
+process, or physical action is started by these tests.
+
+The final checkpoint passed all 28 Limited Graph engine tests. The integrating
+Test Agent suite passed 463 tests and 27 subtests, and every modified Python
+module compiled.
+
+The complete repository checkpoint then passed 1,124 Python tests and 27
+subtests, 79 Rust tests, all configured wheel builds, release Manager
+compilation, configuration and environment-isolation checks, JSON parsing,
+documentation integrity, and source-manifest refresh.

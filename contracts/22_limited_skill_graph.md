@@ -72,6 +72,20 @@ format strings, scripts, or model interpretation. The complete assembled
 object is validated against the child Skill's active discovery schema
 immediately before every attempt.
 
+Before the first node executes, every `NODE_RESULT` source pointer must resolve
+through explicitly declared properties in the source child Skill's mandatory
+output schema. Every binding target pointer must likewise resolve through the
+destination child's input schema. Retry conditions, switch sources and cases,
+and model-route inputs use the same preflight rule. An open
+`additionalProperties` value does not publish arbitrary graph-bindable paths.
+The empty pointer remains valid for copying or inspecting a complete structured
+object.
+
+Preflight establishes that a path is part of the declared result shape; it
+does not claim an optional field will exist in every status variant. A missing
+optional value at runtime remains an explicit graph data failure. Graph authors
+must branch on completion and status before consuming success-only fields.
+
 The runner may normalize a child JSON string into structured JSON, but it must
 retain a digest and bounded trace sufficient to identify what was routed. It
 must not insert credentials or host-private canonical continuation state into
@@ -154,6 +168,13 @@ At minimum the runtime emits or journals node start, node completion, retry,
 edge selection, model fallback, authorization rejection, limit exhaustion,
 unknown outcome, and terminal completion. Observability does not authorize an
 action and must redact credential-like material.
+
+The runtime validates a normalized child result against its published output
+schema before credential redaction so redaction cannot manufacture a type
+mismatch in a valid authorization envelope. Validation-error observability may
+identify the JSON pointer, failed validator, and expected schema value, but must
+not copy the invalid instance. After validation, only the redacted result may
+be retained, bound, routed, traced, or returned by the graph.
 
 A child FunctionTool returning normally means only that its invocation produced
 a result. It does not make a domain-specific operation successful. A graph must

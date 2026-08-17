@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from jsonschema import validate as validate_json
 
 pytest.importorskip("agents")
 from agents.tool import validate_responses_tool_search_configuration
@@ -20,20 +22,68 @@ from physical_agent_test.agent_driver import (
     deterministic_intent_tool_route,
 )
 from physical_agent_test.gemini_pointing_skill import PointingIdentificationSkill
-from physical_agent_test.skill_catalog import discover_agent_skills
+from physical_agent_test.skill_catalog import (
+    declared_schema_pointers,
+    discover_agent_skills,
+)
 from physical_agent_test.skill_execution import build_agent_tools
 
 
 class _PointingSkill:
     async def run(self, question: str) -> str:
-        return question
+        return json.dumps(
+            {
+                "answer": question,
+                "confidence": "high",
+                "annotations": [],
+            }
+        )
 
 
 class _EffectorFrontSkill:
     async def run(self, *, target_frame: str) -> dict[str, object]:
         return {
+            "schema": "physical_agent.effector_front_reference",
+            "schema_version": 1,
+            "status": "REFERENCE_READY",
+            "eligible_for_control_math": True,
+            "motion_usable": False,
+            "publishes_control_frame": False,
+            "specialized_action_point": False,
+            "observed_at_us": 1,
+            "source_frame": "camera_optical",
             "target_frame": target_frame,
+            "calibration_revision": None,
+            "effector_configuration": "SINGLE_FRONT",
+            "front_geometry": "SINGLE_POINT",
+            "depth_fallback_reason": None,
+            "front_points": [],
+            "control_reference": {
+                "method": "SINGLE_REGISTERED_3D_POINT",
+                "target_point_m": [0.1, 0.2, 0.3],
+                "pair_separation_m": None,
+            },
+            "quality_reasons": [],
+            "vlm_reason": "",
+            "data_route": {},
+            "skill_id": "locate-effector-front-test",
+            "safety_class": "READ_ONLY",
             "physical_action_submitted": False,
+            "control_frame_published": False,
+            "capability_binding": {},
+            "binding_mode": "SHADOW",
+            "generic_route_mode": "SHADOW",
+            "camera_capture": {},
+            "transform_provenance": {},
+            "selected_route_metadata": {},
+            "source_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+            "target_convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+            "vlm_route": {},
+            "vlm_geometry": {},
+            "vlm_evidence": {},
+            "evidence_image": None,
+            "visual_evidence": None,
+            "input_temporal_evidence": {},
         }
 
 
@@ -41,9 +91,22 @@ class _ExternalSkillAdapter:
     async def invoke(self, arguments: dict[str, object]) -> str:
         return json.dumps(
             {
+                "schema": "midbrain.arm_root_translation_refinement",
+                "schema_version": 1,
+                "status": "OBSERVATION_ONLY",
+                "workflow_complete": True,
+                "eligible_for_state_update": False,
                 "adoption_factor": arguments.get("adoption_factor", 1.0),
-                "sample_count": arguments.get("sample_count", 1),
-                "landmark_id": arguments.get("landmark_id"),
+                "landmark_id": (
+                    arguments.get("landmark_id") or "default-landmark"
+                ),
+                "multi_sample_refinement": {
+                    "requested_sample_count": arguments.get(
+                        "sample_count", 1
+                    )
+                },
+                "landmark_depth_reselection": {},
+                "physical_motion_authorized": False,
                 "physical_motion_submitted": False,
             }
         )
@@ -61,13 +124,38 @@ class _ItemLocatorSkill:
         task_plane: dict[str, object] | None,
     ) -> dict[str, object]:
         return {
-            "question": question,
+            "schema": "physical_agent.item_location",
+            "schema_version": 1,
+            "status": "REJECTED_OBSERVATION",
+            "eligible_for_control_math": False,
+            "motion_usable": False,
             "target_frame": target_frame,
-            "object_id": object_id,
+            "object_id": object_id or "item-test",
+            "item_label": question,
+            "semantic_role": "WORKPIECE",
             "contact_policy": contact_policy,
-            "depth_requirement": depth_requirement,
-            "task_plane": task_plane,
+            "quality_reasons": ["TEST_FIXTURE"],
+            "vlm_reason": "test fixture",
+            "skill_id": "locate-item-test",
+            "safety_class": "READ_ONLY",
             "physical_action_submitted": False,
+            "control_frame_published": False,
+            "capability_binding": {},
+            "binding_mode": "SHADOW",
+            "generic_route_mode": "SHADOW",
+            "camera_capture": {},
+            "transform_provenance": {},
+            "selected_route_metadata": {},
+            "source_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
+            "target_convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+            "vlm_route": {},
+            "vlm_geometry": {},
+            "vlm_evidence": {},
+            "visual_box_support": {},
+            "evidence_image": None,
+            "visual_evidence": None,
+            "input_temporal_evidence": {},
+            "semantic_scene_assertion": {"status": "NOT_CONFIGURED"},
         }
 
 
@@ -82,9 +170,21 @@ class _ScenePolicyPublisher:
 class _NoContactApproachSkill:
     async def run(self, **arguments):
         return {
+            "schema": "physical_agent.no_contact_item_correction_plan",
+            "schema_version": 1,
+            "status": "PLAN_INPUT_REJECTED",
+            "workflow_complete": False,
             **arguments,
             "physical_motion_authorized": False,
             "motion_submitted": False,
+            "target_frame": "rebot_arm_base",
+            "contact_policy": {
+                "behavior": "NO_CONTACT",
+                "allowed_contact_object_ids": [],
+                "permit_pushable_contact": False,
+            },
+            "next_action": "REOBSERVE_BOTH_AND_REPLAN",
+            "source_evidence": {},
         }
 
     async def execute_current_preview(self):
@@ -97,9 +197,15 @@ class _NoContactApproachSkill:
 class _ReviewedExecutionSkill:
     async def run(self, *, decision_id: str) -> dict[str, object]:
         return {
+            "schema": "physical_agent.reviewed_observation_motion_execution",
+            "schema_version": 1,
             "decision_id": decision_id,
             "status": "COMPLETED",
+            "approval_executes_action": False,
             "model_supplied_motion_parameters": False,
+            "reviewed_scene_refreshed": True,
+            "scene_revision": "scene-test",
+            "integrated_controller": {},
         }
 
 
@@ -157,6 +263,30 @@ class _ColdBindingManager:
 
 
 class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_discovery_rejects_missing_mandatory_output_schema(self) -> None:
+        workspace = Path(__file__).resolve().parents[3]
+        manifest = json.loads(
+            (workspace / "skills" / "slicing" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest["agent_discovery"].pop("output_schema")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            skill_directory = temporary_root / "skills" / "missing-output"
+            skill_directory.mkdir(parents=True)
+            (skill_directory / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "output_schema must be an object",
+            ):
+                discover_agent_skills(temporary_root, include_disabled=True)
+
     def test_workspace_root_uses_launcher_environment_when_installed(self) -> None:
         workspace = Path(__file__).resolve().parents[3]
         with patch.dict(
@@ -403,6 +533,79 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("one complete Limited Graph", route["instruction"])
         self.assertIn("never submit a corner-move prefix", route["instruction"])
         self.assertIn("never retry or loop a physical node", route["instruction"])
+        self.assertIn(
+            "/plan/path/slice_begin_point_world_m",
+            route["instruction"],
+        )
+        self.assertIn(
+            "never substitute /plan/path/planned_retract_endpoint_world_m",
+            route["instruction"],
+        )
+
+    def test_existing_scene_corner_motion_and_slicing_share_graph_route(
+        self,
+    ) -> None:
+        route = deterministic_intent_tool_route(
+            "move the hand to (0, -2, 15) cm in arm base axes from the "
+            "toilet paper right-forward-up corner; use current IK "
+            "+(0,0,-10) cm as the beginning point of cutting, world -z as "
+            "the blade direction, arm base -x as the slicing direction, and "
+            "submit a 20 cm slice using default profiles"
+        )
+
+        self.assertEqual(
+            route["route"],
+            "WORK_OBJECT_MOTION_AND_MIXED_FRAME_SLICING",
+        )
+        self.assertIn(
+            "derive_fabric_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "move_effector_to_world_point",
+            route["allowed_tools"],
+        )
+        self.assertIn(
+            "translate_fabric_direction_to_world",
+            route["allowed_tools"],
+        )
+        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
+        self.assertIn("offset_world_point", route["allowed_tools"])
+        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
+        self.assertIn("offset_world_point", route["allowed_tools"])
+        self.assertIn("slice_with_blade", route["allowed_tools"])
+        self.assertNotIn(
+            "configure_scene_segmentation_policy",
+            route["allowed_tools"],
+        )
+        self.assertIn("one complete Limited Graph", route["instruction"])
+        self.assertIn("never submit only", route["instruction"])
+
+    def test_safe_home_has_an_exact_host_operation_route(self) -> None:
+        route = deterministic_intent_tool_route("safe home")
+
+        self.assertEqual(route["route"], "SAFE_HOME")
+        self.assertFalse(route["allow_limited_graph"])
+        self.assertIn("execute_basic_safe_home", route["allowed_tools"])
+        self.assertIn(
+            "Call execute_basic_safe_home directly",
+            route["instruction"],
+        )
+        self.assertIn("not a Limited Graph child", route["instruction"])
+
+    def test_compound_graph_route_preserves_trailing_safe_home(self) -> None:
+        route = deterministic_intent_tool_route(
+            "map out the working piece and obstacle; move the hand to the "
+            "right-forward-up corner; use current IK for arm base -x slicing; "
+            "move above the first slice, slice again, then safe home"
+        )
+
+        self.assertEqual(
+            route["route"],
+            "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
+        )
+        self.assertIn("execute_basic_safe_home", route["allowed_tools"])
+        self.assertIn("directly only after the graph", route["instruction"])
 
     def test_mixed_frame_slicing_uses_direction_translation_tandem(self) -> None:
         route = deterministic_intent_tool_route(
@@ -538,6 +741,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "locate_effector_front",
                 "locate_item",
                 "move_effector_to_world_point",
+                "offset_world_point",
                 "perform_relative_effector_motion",
                 "plan_no_contact_item_approach",
                 "refine_arm_root_translation",
@@ -607,6 +811,50 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "camera.rgbd.route.direct_shared_memory",
             ],
         )
+
+    def test_all_installed_skills_publish_v2_output_schemas(self) -> None:
+        workspace = Path(__file__).resolve().parents[3]
+        discovery_schema = json.loads(
+            (
+                workspace
+                / "contracts"
+                / "schemas"
+                / "agent_skill_discovery.v2.schema.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        descriptors = discover_agent_skills(workspace, include_disabled=True)
+
+        for manifest_path in sorted((workspace / "skills").glob("*/manifest.json")):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            validate_json(
+                instance=manifest["agent_discovery"],
+                schema=discovery_schema,
+            )
+
+        self.assertEqual(len(descriptors), 23)
+        self.assertTrue(all(item.schema_version == 2 for item in descriptors))
+        self.assertTrue(
+            all(item.output_schema["type"] == "object" for item in descriptors)
+        )
+        slicing = next(
+            item for item in descriptors if item.tool_name == "slice_with_blade"
+        )
+        pointers = declared_schema_pointers(slicing.output_schema)
+        self.assertIn("/plan/path/slice_begin_point_world_m", pointers)
+        self.assertIn("/plan/path/slice_begin_point_world_m/0", pointers)
+        self.assertIn("/plan/path/slice_endpoint_world_m", pointers)
+        self.assertIn("/plan/path/slice_endpoint_world_m/0", pointers)
+        self.assertIn(
+            "/plan/path/planned_retract_endpoint_world_m",
+            pointers,
+        )
+        self.assertIn(
+            "/plan/path/planned_retract_endpoint_world_m/0",
+            pointers,
+        )
+        self.assertIn("/plan/workcell_binding/world_frame", pointers)
+        self.assertNotIn("/outward_retract_end_position_world_m", pointers)
 
     def test_slicing_strict_tool_uses_null_for_live_profile_defaults(self) -> None:
         driver = PrototypeAgentDriver(
@@ -736,8 +984,11 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         parsed = json.loads(result)
         self.assertEqual(parsed["adoption_factor"], 0.4)
-        self.assertEqual(parsed["sample_count"], 1)
-        self.assertIsNone(parsed["landmark_id"])
+        self.assertEqual(
+            parsed["multi_sample_refinement"]["requested_sample_count"],
+            1,
+        )
+        self.assertEqual(parsed["landmark_id"], "default-landmark")
         self.assertFalse(parsed["physical_motion_submitted"])
 
         defaulted = await driver.agent.tools[0].on_invoke_tool(
@@ -746,8 +997,15 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         defaulted_parsed = json.loads(defaulted)
         self.assertEqual(defaulted_parsed["adoption_factor"], 1.0)
-        self.assertEqual(defaulted_parsed["sample_count"], 1)
-        self.assertIsNone(defaulted_parsed["landmark_id"])
+        self.assertEqual(
+            defaulted_parsed["multi_sample_refinement"][
+                "requested_sample_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            defaulted_parsed["landmark_id"], "default-landmark"
+        )
 
         requested = await driver.agent.tools[0].on_invoke_tool(
             None,  # type: ignore[arg-type]
@@ -761,7 +1019,12 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         requested_parsed = json.loads(requested)
         self.assertEqual(requested_parsed["adoption_factor"], 0.5)
-        self.assertEqual(requested_parsed["sample_count"], 5)
+        self.assertEqual(
+            requested_parsed["multi_sample_refinement"][
+                "requested_sample_count"
+            ],
+            5,
+        )
         self.assertEqual(
             requested_parsed["landmark_id"],
             "rail_lateral_endpoint_mean",
@@ -824,7 +1087,6 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(result)
         self.assertEqual(parsed["target_frame"], "rebot_arm_base")
         self.assertEqual(parsed["contact_policy"], "WORKPIECE_CONTACT_ALLOWED")
-        self.assertEqual(parsed["depth_requirement"], "PREFER_METRIC")
         self.assertFalse(parsed["physical_action_submitted"])
 
     async def test_no_contact_approach_manifest_invokes_planning_adapter(
@@ -948,7 +1210,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             '{"question":"Which object?"}',
         )
 
-        self.assertEqual(result, "Which object?")
+        self.assertEqual(json.loads(result)["answer"], "Which object?")
 
     async def test_camera_binding_falls_back_when_advisory_manager_is_unavailable(
         self,

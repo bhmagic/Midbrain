@@ -37,6 +37,7 @@ class LimitedGraphHostAdapter:
             graph,
             root_context=root_context,
             root_call_id=call_id,
+            child_result_observer=self.broker.observe_child_result,
         )
 
 

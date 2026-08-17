@@ -197,6 +197,60 @@ class FabricSpatialTranslatorTests(unittest.IsolatedAsyncioTestCase):
             "world/alignment-1",
         )
 
+    async def test_active_world_point_offset_preserves_source_and_units(self):
+        translator = FabricSpatialTranslator(
+            _SpatialResolver(_Fabric()),
+            controlled_effector_frame="rebot_arm_tool",
+        )
+
+        result = await translator.offset_world_point(
+            source_position_world_m=[0.4, -0.2, 0.3],
+            source_world_frame_id="world/alignment-1",
+            source_observed_at_us=None,
+            source_session_epoch="epoch-1",
+            offset_vector=[0.0, 0.0, 10.0],
+            offset_unit="CENTIMETRES",
+            offset_reference="ACTIVE_WORLD",
+        )
+
+        self.assertEqual(result["status"], "WORLD_POINT_OFFSET_READY")
+        np.testing.assert_allclose(
+            result["target_position_world_m"],
+            [0.4, -0.2, 0.4],
+            atol=1e-12,
+        )
+        self.assertEqual(result["target_world_frame_id"], "world/alignment-1")
+        self.assertEqual(result["target_session_epoch"], "epoch-1")
+        self.assertFalse(result["physical_motion_authorized"])
+        self.assertFalse(result["physical_motion_submitted"])
+
+    async def test_arm_base_point_offset_rotates_without_translation(self):
+        translator = FabricSpatialTranslator(
+            _SpatialResolver(_Fabric()),
+            controlled_effector_frame="rebot_arm_tool",
+        )
+
+        result = await translator.offset_world_point(
+            source_position_world_m=[0.4, -0.2, 0.3],
+            source_world_frame_id="world/alignment-1",
+            source_observed_at_us=None,
+            source_session_epoch=None,
+            offset_vector=[10.0, 0.0, 0.0],
+            offset_unit="CENTIMETRES",
+            offset_reference="ARM_BASE",
+        )
+
+        np.testing.assert_allclose(
+            result["offset_vector_world_m"],
+            [0.0, 0.1, 0.0],
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            result["target_position_world_m"],
+            [0.4, -0.1, 0.3],
+            atol=1e-12,
+        )
+
     async def test_source_frame_mismatch_fails_without_output(self):
         fabric = _Fabric()
         resolver = _SpatialResolver(fabric)

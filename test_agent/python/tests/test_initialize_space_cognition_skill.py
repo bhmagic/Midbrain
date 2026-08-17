@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import unittest
 import time
+from pathlib import Path
+
+from jsonschema import validate
 
 from physical_agent_test.initialize_space_cognition_skill import InitializeSpaceCognitionSkill
+from physical_agent_test.skill_catalog import discover_agent_skills
 from physical_agent_test.spatial_frames import WORLD_CONVENTION_ID
+
+
+WORKSPACE = Path(__file__).resolve().parents[3]
+
+
+def _validate_establish_world_axis_result(result) -> None:
+    descriptor = next(
+        item
+        for item in discover_agent_skills(WORKSPACE, include_disabled=True)
+        if item.tool_name == "establish_world_axis"
+    )
+    validate(instance=result, schema=descriptor.output_schema)
 
 
 class _Manager:
@@ -147,6 +163,7 @@ class InitializeSkillTests(unittest.IsolatedAsyncioTestCase):
 
         result = await skill.ensure_tracking()
 
+        _validate_establish_world_axis_result(result)
         self.assertEqual(result["status"], "tracking_ready")
         self.assertEqual(
             result["result"]["stationary_gate"],
@@ -157,6 +174,28 @@ class InitializeSkillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.inhibit_acquire_calls, 1)
         self.assertEqual(manager.inhibit_release_calls, 1)
         self.assertEqual(manager.provider_request_calls, 0)
+
+    async def test_ensure_tracking_reuses_existing_epoch_contract(self) -> None:
+        fabric = _VerificationFabric(tracking_state="TRACKING")
+        manager = _VerificationManager(fabric)
+        skill = InitializeSpaceCognitionSkill(
+            manager,
+            fabric,
+            camera_provider_id="camera",
+            vio_provider_id="vio",
+            timeout_s=1.0,
+        )
+
+        result = await skill.ensure_tracking()
+
+        _validate_establish_world_axis_result(result)
+        self.assertEqual(result["status"], "tracking_ready")
+        self.assertEqual(
+            result["result"]["stationary_gate"],
+            "EXISTING_TRACKING_EPOCH",
+        )
+        self.assertEqual(manager.inhibit_acquire_calls, 0)
+        self.assertEqual(manager.inhibit_release_calls, 0)
 
     async def test_fixed_rig_tracking_check_does_not_reset_epoch(self) -> None:
         fabric = _VerificationFabric()

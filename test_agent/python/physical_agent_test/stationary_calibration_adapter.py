@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
 from typing import Any, Callable, Protocol
+
+from PIL import Image
 
 from stationary_world_arm_alignment.candidate_review import canonical_sha256
 from stationary_world_arm_alignment.math3d import YawUnobservableError
@@ -74,6 +77,110 @@ class StationaryCalibrationActivator(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class VisualEvidenceRegistrar(Protocol):
+    async def register_channels(
+        self,
+        *,
+        channels: list[dict[str, Any]],
+        default_channel: str,
+        title: str,
+        annotations: list[dict[str, Any]],
+        confidence: str,
+        model: str,
+        source_skill: str,
+    ) -> dict[str, Any]: ...
+
+
+def _visual_artifact_directory(
+    result: dict[str, Any],
+    *,
+    run_root: Path,
+) -> Path | None:
+    alignment_id = str(result.get("alignment_id") or "")
+    if re.fullmatch(r"[0-9A-Za-z-]+", alignment_id) is None:
+        return None
+    root = run_root.resolve()
+    expected_run_dir = (root / alignment_id).resolve()
+    if expected_run_dir.parent != root:
+        return None
+    diagnostics = result.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    validations = diagnostics.get("foundation_pose_validation")
+    if not isinstance(validations, list):
+        return None
+    for validation in reversed(validations):
+        if not isinstance(validation, dict):
+            continue
+        overlay = validation.get("overlay")
+        if not isinstance(overlay, dict):
+            continue
+        local_path = overlay.get("local_path")
+        if not isinstance(local_path, str) or not local_path:
+            continue
+        candidate = Path(local_path).resolve()
+        if candidate.is_file() and candidate.parent == expected_run_dir:
+            return candidate.parent
+    return None
+
+
+def _visual_channel(
+    *,
+    channel_id: str,
+    label: str,
+    path: Path,
+) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    payload = path.read_bytes()
+    with Image.open(path) as image:
+        width, height = image.size
+    media_type = "image/png" if path.suffix.casefold() == ".png" else "image/jpeg"
+    return {
+        "id": channel_id,
+        "label": label,
+        "image_bytes": payload,
+        "media_type": media_type,
+        "width": width,
+        "height": height,
+    }
+
+
+def _visual_channels(
+    result: dict[str, Any],
+    *,
+    run_root: Path,
+) -> list[dict[str, Any]]:
+    run_dir = _visual_artifact_directory(result, run_root=run_root)
+    if run_dir is None:
+        return []
+    selected_overlays = sorted(
+        run_dir.glob("foundation_pose_attempt_*_selected_overlay.jpg")
+    )
+    candidates = [
+        (
+            "pose_overlay",
+            "FoundationPose Alignment",
+            selected_overlays[-1] if selected_overlays else None,
+        ),
+        ("vlm_overlay", "VLM Localization", run_dir / "overlay.jpg"),
+        ("rgb", "RGB", run_dir / "camera.jpg"),
+        ("depth", "Depth", run_dir / "depth.png"),
+    ]
+    channels: list[dict[str, Any]] = []
+    for channel_id, label, path in candidates:
+        if path is None:
+            continue
+        channel = _visual_channel(
+            channel_id=channel_id,
+            label=label,
+            path=path,
+        )
+        if channel is not None:
+            channels.append(channel)
+    return channels
+
+
 class StationaryCalibrationSkillAdapter:
     """Deferred, finite wrapper around the maintained calibration Skill."""
 
@@ -83,10 +190,16 @@ class StationaryCalibrationSkillAdapter:
         *,
         operation_hard_timeout_s: float = 600.0,
         activation_service: StationaryCalibrationActivator | None = None,
+        visual_evidence_store: VisualEvidenceRegistrar | None = None,
+        artifact_run_root: Path | None = None,
     ):
         self.runtime_factory = runtime_factory
         self.operation_hard_timeout_s = float(operation_hard_timeout_s)
         self.activation_service = activation_service
+        self.visual_evidence_store = visual_evidence_store
+        self.artifact_run_root = (
+            artifact_run_root.resolve() if artifact_run_root is not None else None
+        )
         if self.operation_hard_timeout_s <= 0.0:
             raise ValueError(
                 "stationary calibration hard timeout must be positive"
@@ -216,6 +329,52 @@ class StationaryCalibrationSkillAdapter:
                         ),
                     }
                 )
+            if (
+                self.visual_evidence_store is not None
+                and self.artifact_run_root is not None
+            ):
+                try:
+                    channels = _visual_channels(
+                        wrapped,
+                        run_root=self.artifact_run_root,
+                    )
+                    if channels:
+                        channel_ids = {item["id"] for item in channels}
+                        default_channel = (
+                            "pose_overlay"
+                            if "pose_overlay" in channel_ids
+                            else channels[0]["id"]
+                        )
+                        wrapped["visual_evidence"] = (
+                            await self.visual_evidence_store.register_channels(
+                                channels=channels,
+                                default_channel=default_channel,
+                                title=(
+                                    "Stationary world-to-arm alignment "
+                                    f"{alignment_id}"
+                                ),
+                                annotations=[],
+                                confidence=(
+                                    "high" if wrapped.get("valid") is True else "review"
+                                ),
+                                model="FoundationPose + VLM",
+                                source_skill="calibrate_stationary_workcell",
+                            )
+                        )
+                        wrapped["agent_adapter"]["visual_evidence_status"] = (
+                            "REGISTERED"
+                        )
+                    else:
+                        wrapped["agent_adapter"]["visual_evidence_status"] = (
+                            "NO_PERSISTED_ARTIFACTS"
+                        )
+                except Exception as error:
+                    wrapped["agent_adapter"]["visual_evidence_status"] = (
+                        "REGISTRATION_FAILED"
+                    )
+                    wrapped["agent_adapter"]["visual_evidence_error_type"] = (
+                        type(error).__name__
+                    )
             self.last_result = wrapped
             return wrapped
 

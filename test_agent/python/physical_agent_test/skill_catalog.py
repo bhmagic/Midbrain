@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 
 _TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _SAFETY_CLASSES = {
@@ -34,6 +36,7 @@ class AgentSkillDescriptor:
     expected_latency: str
     required_permissions: tuple[str, ...]
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
     execution_adapter_id: str
     execution_adapter_kind: str
     execution_entrypoint: str | None
@@ -87,7 +90,7 @@ def _parse_descriptor(
     expected_latency = discovery.get("expected_latency")
     disabled_reason = discovery.get("disabled_reason")
 
-    if schema_version != 1:
+    if schema_version != 2:
         raise ValueError(f"{manifest_path}: unsupported agent_discovery schema")
     if not isinstance(discoverable, bool):
         raise ValueError(f"{manifest_path}: discoverable must be boolean")
@@ -136,6 +139,20 @@ def _parse_descriptor(
         raise ValueError(f"{manifest_path}: input_schema.properties must be an object")
     if not isinstance(input_schema.get("required"), list):
         raise ValueError(f"{manifest_path}: input_schema.required must be an array")
+    _validate_json_object_schema(
+        manifest_path,
+        input_schema,
+        field="input_schema",
+        allow_references=True,
+    )
+
+    output_schema = discovery.get("output_schema")
+    _validate_json_object_schema(
+        manifest_path,
+        output_schema,
+        field="output_schema",
+        allow_references=False,
+    )
 
     execution_adapter = discovery.get("execution_adapter")
     if not isinstance(execution_adapter, dict):
@@ -205,6 +222,7 @@ def _parse_descriptor(
         expected_latency=expected_latency,
         required_permissions=required_permissions,
         input_schema=json.loads(json.dumps(input_schema)),
+        output_schema=json.loads(json.dumps(output_schema)),
         execution_adapter_id=execution_adapter_id,
         execution_adapter_kind=execution_adapter_kind,
         execution_entrypoint=execution_entrypoint,
@@ -220,6 +238,89 @@ def _parse_descriptor(
         ),
         disabled_reason=disabled_reason,
     )
+
+
+def _validate_json_object_schema(
+    manifest_path: Path,
+    schema: Any,
+    *,
+    field: str,
+    allow_references: bool,
+) -> None:
+    if not isinstance(schema, dict):
+        raise ValueError(f"{manifest_path}: {field} must be an object")
+    if schema.get("type") != "object":
+        raise ValueError(f"{manifest_path}: {field}.type must be object")
+    if not isinstance(schema.get("properties"), dict):
+        raise ValueError(
+            f"{manifest_path}: {field}.properties must be an object"
+        )
+    if not isinstance(schema.get("required"), list) or not all(
+        isinstance(item, str) for item in schema.get("required", [])
+    ):
+        raise ValueError(f"{manifest_path}: {field}.required must be a string array")
+    if not isinstance(schema.get("additionalProperties"), bool):
+        raise ValueError(
+            f"{manifest_path}: {field}.additionalProperties must be boolean"
+        )
+    if not allow_references and _contains_schema_reference(schema):
+        raise ValueError(
+            f"{manifest_path}: {field} must not contain JSON Schema references"
+        )
+    try:
+        Draft202012Validator.check_schema(schema)
+    except Exception as error:
+        raise ValueError(
+            f"{manifest_path}: {field} is not valid JSON Schema: {error}"
+        ) from error
+
+
+def _contains_schema_reference(value: Any) -> bool:
+    if isinstance(value, dict):
+        if "$ref" in value or "$dynamicRef" in value:
+            return True
+        return any(_contains_schema_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_schema_reference(item) for item in value)
+    return False
+
+
+def declared_schema_pointers(schema: dict[str, Any]) -> tuple[str, ...]:
+    """Return deterministic bindable pointers explicitly published by one schema."""
+
+    pointers: set[str] = set()
+
+    def visit(current: Any, prefix: str) -> None:
+        if prefix:
+            pointers.add(prefix)
+        if not isinstance(current, dict):
+            return
+        branches = [
+            item
+            for keyword in ("allOf", "anyOf", "oneOf")
+            for item in current.get(keyword, [])
+            if isinstance(item, dict)
+        ]
+        for branch in branches:
+            visit(branch, prefix)
+        properties = current.get("properties")
+        if isinstance(properties, dict) and properties:
+            for name, child in properties.items():
+                token = str(name).replace("~", "~0").replace("/", "~1")
+                visit(child, f"{prefix}/{token}")
+        items = current.get("items")
+        if isinstance(items, dict):
+            visit(items, f"{prefix}/0")
+
+    visit(schema, "")
+    return tuple(sorted(pointers))
+
+
+def describe_output_schema(schema: dict[str, Any]) -> str:
+    """Render the stable result paths for an Agent tool description."""
+
+    pointers = declared_schema_pointers(schema)
+    return ", ".join(pointers) if pointers else "(complete result object only)"
 
 
 def _required_text(manifest_path: Path, source: dict[str, Any], field: str) -> str:

@@ -30,12 +30,25 @@ _OBJECT_SCHEMA = {
     "additionalProperties": False,
 }
 
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "value": {},
+        "ok": {"type": "boolean"},
+        "workflow_complete": {"type": "boolean"},
+        "physical_motion_completed": {"type": "boolean"},
+    },
+    "required": [],
+    "additionalProperties": True,
+}
+
 
 class FakeBroker:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any], GraphCallContext]] = []
         self.failures_remaining = 0
         self.authorization_required = False
+        self.invalid_result = False
         self.model_decision = ModelRouteDecision(
             edge_id="accept",
             confidence=0.9,
@@ -47,12 +60,14 @@ class FakeBroker:
                 skill_type="echo",
                 safety_class="READ_ONLY",
                 input_schema=_OBJECT_SCHEMA,
+                output_schema=_OUTPUT_SCHEMA,
             ),
             "move_once": ChildDescriptor(
                 tool_name="move_once",
                 skill_type="motion",
                 safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
                 input_schema=_OBJECT_SCHEMA,
+                output_schema=_OUTPUT_SCHEMA,
             ),
             "run_limited_graph": ChildDescriptor(
                 tool_name="run_limited_graph",
@@ -64,6 +79,7 @@ class FakeBroker:
                     "required": [],
                     "additionalProperties": False,
                 },
+                output_schema=_OUTPUT_SCHEMA,
             ),
         }
 
@@ -81,6 +97,8 @@ class FakeBroker:
         if self.failures_remaining:
             self.failures_remaining -= 1
             raise RuntimeError("transient failure")
+        if self.invalid_result:
+            return ["not", "an", "object"]
         return {"value": arguments["value"], "ok": True}
 
     async def route_model(self, **_arguments):
@@ -190,6 +208,188 @@ def test_linear_binding_and_terminal_completion() -> None:
         ).read_text(encoding="utf-8")
     )
     validate_json(instance=result, schema=result_schema)
+
+
+def test_validated_child_result_is_observed_before_graph_returns() -> None:
+    broker = FakeBroker()
+    observed: list[dict[str, Any]] = []
+    graph_returned = False
+
+    async def observe(**event: Any) -> None:
+        observed.append({**event, "graph_returned": graph_returned})
+
+    async def execute() -> dict[str, Any]:
+        nonlocal graph_returned
+        result = await LimitedGraphRunner(broker).run(
+            graph(
+                [
+                    skill("echo", "echo_value", arguments_json='{"value":7}'),
+                    terminal("done"),
+                    terminal("failed", "FAILED"),
+                ]
+            ),
+            child_result_observer=observe,
+        )
+        graph_returned = True
+        return result
+
+    result = asyncio.run(execute())
+
+    assert result["status"] == "COMPLETED"
+    assert len(observed) == 1
+    assert observed[0]["node_id"] == "echo"
+    assert observed[0]["tool_name"] == "echo_value"
+    assert observed[0]["attempt"] == 1
+    assert observed[0]["result"] == {"value": 7, "ok": True}
+    assert observed[0]["graph_returned"] is False
+
+
+def test_child_result_observer_failure_does_not_change_graph_result() -> None:
+    async def broken_observer(**_event: Any) -> None:
+        raise RuntimeError("presentation observer unavailable")
+
+    result = asyncio.run(
+        LimitedGraphRunner(FakeBroker()).run(
+            graph(
+                [
+                    skill("echo", "echo_value", arguments_json='{"value":7}'),
+                    terminal("done"),
+                    terminal("failed", "FAILED"),
+                ]
+            ),
+            child_result_observer=broken_observer,
+        )
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert result["node_results"]["echo"] == {"value": 7, "ok": True}
+
+
+def test_node_result_binding_uses_declared_output_pointer() -> None:
+    broker = FakeBroker()
+    payload = graph(
+        [
+            skill(
+                "source",
+                "echo_value",
+                arguments_json='{"value":7}',
+                next_node="consumer",
+            ),
+            skill(
+                "consumer",
+                "echo_value",
+                bindings=[
+                    {
+                        "target_pointer": "/value",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "source",
+                        "source_pointer": "/value",
+                    }
+                ],
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+
+    result = asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert result["status"] == "COMPLETED"
+    assert result["node_results"]["consumer"]["value"] == 7
+    assert len(broker.calls) == 2
+
+
+def test_undeclared_node_result_pointer_fails_before_any_child() -> None:
+    broker = FakeBroker()
+    payload = graph(
+        [
+            skill(
+                "source",
+                "echo_value",
+                arguments_json='{"value":7}',
+                next_node="consumer",
+            ),
+            skill(
+                "consumer",
+                "echo_value",
+                bindings=[
+                    {
+                        "target_pointer": "/value",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "source",
+                        "source_pointer": "/outward_retract_end_position_world_m",
+                    }
+                ],
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+
+    with pytest.raises(
+        GraphValidationError,
+        match="undeclared schema path.*outward_retract_end_position_world_m",
+    ):
+        asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert broker.calls == []
+
+
+def test_undeclared_binding_target_fails_before_any_child() -> None:
+    broker = FakeBroker()
+    payload = graph(
+        [
+            skill(
+                "echo",
+                "echo_value",
+                bindings=[
+                    {
+                        "target_pointer": "/invented_argument",
+                        "source_kind": "INITIAL",
+                        "source_name": "requested",
+                        "source_node_id": None,
+                        "source_pointer": "/number",
+                    }
+                ],
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ],
+        initial=[{"name": "requested", "value_json": '{"number":7}'}],
+    )
+
+    with pytest.raises(
+        GraphValidationError,
+        match="binding 0 target points to undeclared schema path",
+    ):
+        asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert broker.calls == []
+
+
+def test_physical_output_schema_mismatch_is_unknown_outcome() -> None:
+    broker = FakeBroker()
+    broker.invalid_result = True
+    payload = graph(
+        [
+            skill(
+                "move",
+                "move_once",
+                arguments_json='{"value":7}',
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ],
+        max_physical_actions=1,
+    )
+
+    result = asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert result["status"] == "UNKNOWN_OUTCOME"
+    assert result["physical_action_count"] == 1
+    assert len(broker.calls) == 1
 
 
 def test_read_only_exception_retries_and_remains_visible() -> None:
@@ -551,6 +751,110 @@ def test_physical_exception_is_unknown_and_never_retried() -> None:
     assert len(broker.calls) == 1
 
 
+def test_declared_output_paths_cover_retry_and_branching_sources() -> None:
+    broker = FakeBroker()
+    invalid_retry = graph(
+        [
+            skill(
+                "echo",
+                "echo_value",
+                max_attempts=2,
+                retry_condition={
+                    "source_pointer": "/invented",
+                    "operator": "TRUTHY",
+                    "expected_json": None,
+                },
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+    switch_node = {
+        "id": "route",
+        "kind": "SWITCH",
+        "skill": None,
+        "switch": {
+            "source_kind": "NODE_RESULT",
+            "source_name": None,
+            "source_node_id": "echo",
+            "source_pointer": "",
+            "cases": [
+                {
+                    "condition": {
+                        "source_pointer": "/invented",
+                        "operator": "TRUTHY",
+                        "expected_json": None,
+                    },
+                    "target_node": "done",
+                }
+            ],
+            "default_target": "failed",
+        },
+        "model_route": None,
+        "terminal": None,
+    }
+    invalid_switch = graph(
+        [
+            skill("echo", "echo_value", next_node="route"),
+            switch_node,
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+    model_node = {
+        "id": "route",
+        "kind": "MODEL_ROUTE",
+        "skill": None,
+        "switch": None,
+        "model_route": {
+            "routing_profile": "FAST_TEXT",
+            "modality": "TEXT",
+            "instruction": "Choose a declared edge.",
+            "inputs": [
+                {
+                    "name": "decision",
+                    "source_kind": "NODE_RESULT",
+                    "source_name": None,
+                    "source_node_id": "echo",
+                    "source_pointer": "/invented",
+                }
+            ],
+            "routes": [
+                {
+                    "edge_id": "accept",
+                    "description": "Accept",
+                    "target_node": "done",
+                },
+                {
+                    "edge_id": "reject",
+                    "description": "Reject",
+                    "target_node": "failed",
+                },
+            ],
+            "minimum_confidence": 0.8,
+            "fallback_target": "failed",
+        },
+        "terminal": None,
+    }
+    invalid_model_input = graph(
+        [
+            skill("echo", "echo_value", next_node="route"),
+            model_node,
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+
+    for payload in (invalid_retry, invalid_switch, invalid_model_input):
+        with pytest.raises(
+            GraphValidationError,
+            match="undeclared schema path.*invented",
+        ):
+            validate_graph(payload, broker)
+
+    assert broker.calls == []
+
+
 def test_physical_cancellation_is_unknown_and_never_retried() -> None:
     broker = FakeBroker()
 
@@ -645,6 +949,94 @@ def test_child_result_credentials_are_redacted_before_trace() -> None:
     result = asyncio.run(LimitedGraphRunner(broker).run(payload))
 
     assert result["node_results"]["echo"]["api_token"] == "[REDACTED]"
+    assert "must-not-leak" not in str(result)
+
+
+def test_physical_result_is_validated_before_authorization_redaction() -> None:
+    broker = FakeBroker()
+    broker._descriptors["move_once"] = ChildDescriptor(
+        tool_name="move_once",
+        skill_type="motion",
+        safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+        input_schema=_OBJECT_SCHEMA,
+        output_schema={
+            "type": "object",
+            "properties": {
+                "value": {},
+                "authorization": {"type": "object"},
+            },
+            "required": ["value", "authorization"],
+            "additionalProperties": False,
+        },
+    )
+
+    async def invoke_with_authorization(tool_name, arguments, context):
+        broker.calls.append((tool_name, copy.deepcopy(arguments), context))
+        return {
+            "value": arguments["value"],
+            "authorization": {
+                "decision_id": "decision-1",
+                "signed_action_token": "must-not-leak",
+            },
+        }
+
+    broker.invoke = invoke_with_authorization
+    payload = graph(
+        [
+            skill("move", "move_once", arguments_json='{"value":1}'),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ],
+        max_physical_actions=1,
+    )
+
+    result = asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert result["status"] == "COMPLETED"
+    assert result["physical_action_count"] == 1
+    assert result["node_results"]["move"]["authorization"] == "[REDACTED]"
+    assert "must-not-leak" not in str(result)
+
+
+def test_invalid_physical_result_does_not_expose_authorization_value() -> None:
+    broker = FakeBroker()
+    broker._descriptors["move_once"] = ChildDescriptor(
+        tool_name="move_once",
+        skill_type="motion",
+        safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+        input_schema=_OBJECT_SCHEMA,
+        output_schema={
+            "type": "object",
+            "properties": {
+                "value": {},
+                "authorization": {"type": "object"},
+            },
+            "required": ["value", "authorization"],
+            "additionalProperties": False,
+        },
+    )
+
+    async def invoke_with_invalid_authorization(tool_name, arguments, context):
+        broker.calls.append((tool_name, copy.deepcopy(arguments), context))
+        return {
+            "value": arguments["value"],
+            "authorization": "must-not-leak",
+        }
+
+    broker.invoke = invoke_with_invalid_authorization
+    payload = graph(
+        [
+            skill("move", "move_once", arguments_json='{"value":1}'),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ],
+        max_physical_actions=1,
+    )
+
+    result = asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert result["status"] == "UNKNOWN_OUTCOME"
+    assert "/authorization" in result["message"]
     assert "must-not-leak" not in str(result)
 
 

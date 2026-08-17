@@ -263,6 +263,8 @@ stationary_calibration_agent_adapter = StationaryCalibrationSkillAdapter(
     AlignmentSkill,
     operation_hard_timeout_s=settings.stationary_calibration_timeout_s,
     activation_service=stationary_calibration_activation,
+    visual_evidence_store=visual_evidence_store,
+    artifact_run_root=stationary_alignment_settings.run_root,
 )
 reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
     authorization_store,
@@ -1298,6 +1300,28 @@ def _chat_progress_label(event: dict[str, Any]) -> str | None:
     return None
 
 
+def _chat_visual_evidences(events: list[Any]) -> list[dict[str, Any]]:
+    """Retain a bounded ordered set of visual cards for one chat turn."""
+
+    retained: list[dict[str, Any]] = []
+    evidence_ids: set[str] = set()
+    for event in events:
+        if (
+            not isinstance(event, dict)
+            or event.get("type") != "visual.evidence.created"
+        ):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        evidence_id = str(payload.get("evidence_id") or "").strip()
+        if not evidence_id or evidence_id in evidence_ids:
+            continue
+        evidence_ids.add(evidence_id)
+        retained.append(payload)
+    return retained[-32:]
+
+
 def _chat_turn_projection(run: dict[str, Any]) -> dict[str, Any] | None:
     prompt = run.get("user_prompt")
     if prompt is None:
@@ -1320,15 +1344,8 @@ def _chat_turn_projection(run: dict[str, Any]) -> dict[str, Any] | None:
         for event in safe_events
         if (label := _chat_progress_label(event)) is not None
     ]
-    visual_evidence = next(
-        (
-            event.get("payload")
-            for event in reversed(safe_events)
-            if event.get("type") == "visual.evidence.created"
-            and isinstance(event.get("payload"), dict)
-        ),
-        None,
-    )
+    visual_evidences = _chat_visual_evidences(safe_events)
+    visual_evidence = visual_evidences[-1] if visual_evidences else None
     status_value = str(run.get("status") or "INTERRUPTED").upper()
     status = status_value if status_value in {
         "RUNNING",
@@ -1356,6 +1373,7 @@ def _chat_turn_projection(run: dict[str, Any]) -> dict[str, Any] | None:
         "progress": progress[-80:],
         "event_details": safe_events,
         "visual_evidence": visual_evidence,
+        "visual_evidences": visual_evidences,
     }
 
 
@@ -3651,7 +3669,8 @@ PAGE = r"""
     .chat-event-record { margin: 0; border: 1px solid var(--mb-border); border-radius: 7px; background: #0b0b0b; }
     .chat-event-record > summary { padding: 7px 9px; font-size: 10px; overflow-wrap: anywhere; }
     .chat-event-record > pre { min-height: 0; max-height: 360px; margin: 0 7px 7px; border: 1px solid #2f2f2f; padding: 9px; background: #070707; color: #cfcfcf; font-size: 10px; }
-    .visual-evidence { margin: 12px 0 0; border: 1px solid var(--mb-border); border-radius: 10px; padding: 12px; background: #101010; }
+    .visual-evidence-list { display: grid; gap: 12px; margin: 12px 0 0; }
+    .visual-evidence { margin: 0; border: 1px solid var(--mb-border); border-radius: 10px; padding: 12px; background: #101010; }
     .visual-evidence-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
     .visual-evidence-head h3 { margin: 0 0 3px; font-size: 14px; }
     .visual-evidence-head p { margin: 0; color: var(--mb-muted); font-size: 11px; }

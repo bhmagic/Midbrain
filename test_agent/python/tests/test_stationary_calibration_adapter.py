@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
 import unittest
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 pytest.importorskip("agents")
 
@@ -55,6 +57,22 @@ class _ActivationService:
     async def review_and_activate(self, **arguments):
         self.calls.append(arguments)
         return {"status": "ACTIVE", "motion_usable": True}
+
+
+class _VisualEvidenceStore:
+    def __init__(self):
+        self.calls = []
+
+    async def register_channels(self, **arguments):
+        self.calls.append(arguments)
+        return {
+            "schema": "midbrain.visual_evidence",
+            "schema_version": 1,
+            "evidence_id": "alignment-evidence",
+            "channels": [
+                {"id": item["id"]} for item in arguments["channels"]
+            ],
+        }
 
 
 class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -134,6 +152,77 @@ class StationaryCalibrationAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(activated["motion_usable"])
         self.assertEqual(activation.calls, [next_tool["arguments"]])
+
+    async def test_alignment_artifacts_are_registered_as_visual_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory) / "alignment-visual-1"
+            run_dir.mkdir()
+            for name, image_format in (
+                ("camera.jpg", "JPEG"),
+                ("overlay.jpg", "JPEG"),
+                ("foundation_pose_attempt_1_selected_overlay.jpg", "JPEG"),
+                ("depth.png", "PNG"),
+            ):
+                Image.new("RGB", (16, 12), color=(20, 30, 40)).save(
+                    run_dir / name,
+                    format=image_format,
+                )
+
+            class _VisualRuntime(_Runtime):
+                async def run(self, *_args, **_kwargs):
+                    return {
+                        "status": "CANDIDATE_REVIEW_REQUIRED",
+                        "workflow_complete": False,
+                        "motion_usable": False,
+                        "valid": True,
+                        "alignment_id": "alignment-visual-1",
+                        "diagnostics": {
+                            "foundation_pose_validation": [
+                                {
+                                    "overlay": {
+                                        "local_path": str(
+                                            run_dir
+                                            / (
+                                                "foundation_pose_attempt_1_"
+                                                "selected_overlay.jpg"
+                                            )
+                                        )
+                                    }
+                                }
+                            ]
+                        },
+                    }
+
+            evidence_store = _VisualEvidenceStore()
+            adapter = StationaryCalibrationSkillAdapter(
+                _VisualRuntime,
+                visual_evidence_store=evidence_store,
+                artifact_run_root=Path(temporary_directory),
+            )
+
+            result = await adapter.run(
+                request=FOUNDATIONPOSE_CANONICAL_INVOCATION
+            )
+
+        self.assertEqual(
+            result["visual_evidence"]["schema"],
+            "midbrain.visual_evidence",
+        )
+        self.assertEqual(
+            result["agent_adapter"]["visual_evidence_status"],
+            "REGISTERED",
+        )
+        self.assertEqual(len(evidence_store.calls), 1)
+        call = evidence_store.calls[0]
+        self.assertEqual(call["default_channel"], "pose_overlay")
+        self.assertEqual(
+            [item["id"] for item in call["channels"]],
+            ["pose_overlay", "vlm_overlay", "rgb", "depth"],
+        )
+        self.assertTrue(all(item["width"] == 16 for item in call["channels"]))
+        self.assertTrue(all(item["height"] == 12 for item in call["channels"]))
 
     async def test_unobservable_yaw_returns_actionable_nonmotion_result(
         self,

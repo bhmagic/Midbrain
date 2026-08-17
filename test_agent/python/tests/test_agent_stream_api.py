@@ -48,6 +48,16 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
                             "occurred_at": "2026-08-02T12:00:01Z",
                             "payload": {"text": "Checking current state."},
                         },
+                        {
+                            "type": "visual.evidence.created",
+                            "occurred_at": "2026-08-02T12:00:01Z",
+                            "payload": {"evidence_id": "visual-1"},
+                        },
+                        {
+                            "type": "visual.evidence.created",
+                            "occurred_at": "2026-08-02T12:00:01Z",
+                            "payload": {"evidence_id": "visual-2"},
+                        },
                     ],
                 }
             ],
@@ -83,8 +93,27 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "label": "Started inspect_midbrain_runtime",
                     "occurred_at": "2026-08-02T12:00:00Z",
-                }
+                },
+                {
+                    "label": "Visual evidence attached to the response",
+                    "occurred_at": "2026-08-02T12:00:01Z",
+                },
+                {
+                    "label": "Visual evidence attached to the response",
+                    "occurred_at": "2026-08-02T12:00:01Z",
+                },
             ],
+        )
+        self.assertEqual(
+            payload["turns"][0]["visual_evidences"],
+            [
+                {"evidence_id": "visual-1"},
+                {"evidence_id": "visual-2"},
+            ],
+        )
+        self.assertEqual(
+            payload["turns"][0]["visual_evidence"],
+            {"evidence_id": "visual-2"},
         )
 
     async def asyncSetUp(self) -> None:

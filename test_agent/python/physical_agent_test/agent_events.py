@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
@@ -52,8 +53,7 @@ def translate_openai_sdk_events(
     retry_event = _tool_retry_event(event)
     if retry_event is not None:
         translated.append(retry_event)
-    visual_evidence = _tool_visual_evidence(event)
-    if visual_evidence is not None:
+    for visual_evidence in _tool_visual_evidences(event):
         translated.append(("visual.evidence.created", visual_evidence))
     return translated
 
@@ -118,11 +118,46 @@ def _translate_run_item_event(
     return translated_type, payload
 
 
-def _tool_visual_evidence(event: Any) -> dict[str, Any] | None:
+def _tool_visual_evidences(event: Any) -> list[dict[str, Any]]:
+    """Project root and Limited Graph child visuals onto safe UI events."""
+
     decoded = _tool_output_object(event)
     if decoded is None:
-        return None
-    return sanitize_visual_evidence(decoded.get("visual_evidence"))
+        return []
+
+    return visual_evidences_from_result(decoded)
+
+
+def visual_evidences_from_result(value: Any) -> list[dict[str, Any]]:
+    """Extract a bounded, deduplicated set of safe visual evidence payloads."""
+
+    if not isinstance(value, dict):
+        return []
+
+    candidates: list[Any] = [value.get("visual_evidence")]
+    node_results = value.get("node_results")
+    if isinstance(node_results, dict):
+        for node_id in sorted(node_results):
+            node_result = node_results[node_id]
+            if isinstance(node_result, dict):
+                candidates.append(node_result.get("visual_evidence"))
+
+    projected: list[dict[str, Any]] = []
+    evidence_ids: set[str] = set()
+    for candidate in candidates:
+        values = candidate if isinstance(candidate, list) else [candidate]
+        for value in values:
+            sanitized = sanitize_visual_evidence(value)
+            if sanitized is None:
+                continue
+            evidence_id = sanitized["evidence_id"]
+            if evidence_id in evidence_ids:
+                continue
+            evidence_ids.add(evidence_id)
+            projected.append(sanitized)
+            if len(projected) >= 32:
+                return projected
+    return projected
 
 
 def _tool_retry_event(
@@ -182,10 +217,15 @@ def _tool_output_object(event: Any) -> dict[str, Any] | None:
     item = getattr(event, "item", None)
     output = getattr(item, "output", None)
     if isinstance(output, str):
+        if len(output) > 4 * 1024 * 1024:
+            return None
         try:
             decoded = json.loads(output)
         except json.JSONDecodeError:
-            return None
+            try:
+                decoded = ast.literal_eval(output)
+            except (MemoryError, RecursionError, SyntaxError, ValueError):
+                return None
     elif isinstance(output, dict):
         decoded = output
     else:

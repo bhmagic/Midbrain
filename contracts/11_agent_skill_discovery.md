@@ -1,6 +1,6 @@
 # Agent Skill Discovery Contract
 
-Status: v0.1 advisory working draft.
+Status: v0.2 mandatory discovery contract.
 
 ## Purpose
 
@@ -11,7 +11,8 @@ selection and does not grant physical-control authority.
 The discovery boundary follows the Agents SDK tool model:
 
 - The agent initially sees a stable tool name, a short description of what the
-  Skill does and when to use it, and the tool input schema.
+  Skill does and when to use it, the tool input schema, and the declared
+  structured-result schema.
 - The model semantically selects an eligible Skill from those descriptions.
 - Complete Skill instructions and implementation-specific resources are loaded
   only after selection when deferred tool loading is used.
@@ -29,7 +30,7 @@ Discoverable Skills add an `agent_discovery` object to their existing
 
 Required fields:
 
-- `schema_version`: currently `1`.
+- `schema_version`: currently `2`.
 - `discoverable`: whether normal agents may offer this Skill.
 - `tool_name`: stable snake-case function-tool name.
 - `description`: concise statement of what the Skill does and when to use it.
@@ -41,12 +42,47 @@ Required fields:
 - `expected_latency`: one of `LOW`, `MEDIUM`, `HIGH`, or `UNKNOWN`.
 - `required_permissions`: semantic permissions required before execution.
 - `input_schema`: strict JSON object schema exposed to the Agents SDK.
+- `output_schema`: self-contained JSON Schema for the normalized agent-visible
+  result. The root is an object and explicitly declared `properties` are the
+  stable composition surface. An open `additionalProperties` value may retain
+  diagnostics, but it does not make undeclared fields valid graph-binding
+  targets.
 - `execution_adapter`: stable adapter ID and adapter kind used only after
   selection. Discovery never imports or starts the adapter.
 
 A non-discoverable Skill also provides `disabled_reason`. It remains available
 for explicit local development workflows but is excluded from normal automatic
 selection.
+
+Every installed Skill manifest, including non-discoverable and manual-only
+Skills, must carry discovery schema version 2 and an `output_schema`. This
+keeps installation, catalog inspection, direct invocation, replay tooling, and
+bounded graph composition on one result contract instead of creating a
+graph-specific registry.
+
+The output schema is metadata, not authority. It must not contain credentials,
+signed actions, host-private continuation state, or claims that a physical
+operation is authorized. Result validation does not replace the Skill's domain
+checks, Manager binding, host authorization, or Provider-side safety policy.
+
+## Output validation and composition
+
+The host normalizes a JSON-text result to JSON and validates it against the
+selected Skill's output schema. A schema mismatch is never reported as a
+successful Skill result. If a physical child has already been invoked and its
+result cannot be validated, a bounded orchestrator treats the physical outcome
+as unknown rather than selecting an ordinary success or retry edge.
+
+Composition tools may publish a compact list of explicitly declared result
+pointers from the schema. Only paths reachable through declared `properties`
+and array item schemas are stable composition paths. The empty JSON pointer may
+select the complete result object. External references and dynamically named
+properties are not part of discovery schema version 2.
+
+An optional property can still be absent in a particular failure variant.
+Callers must follow the Skill's completion status and branch before consuming a
+success-only field. Runtime binding remains fail-closed when an optional value
+is absent.
 
 ## Initial evaluation policy
 

@@ -4,7 +4,7 @@
   "display_name": "Limited Graph",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "run_limited_graph",
     "description": "Run one immutable, time-bounded graph of eligible finite Skills with typed JSON-pointer bindings, deterministic or constrained model routing, bounded read-only retry, and explicit terminal results. Strongly prefer this tool before direct child calls for known multi-Skill workflows, structured branches, or predetermined loops. Include every requested graph-eligible stage rather than only an initial prefix. Explicit incomplete child results follow the declared failure edge. The graph cannot invoke another graph, carry credentials, grant child authority, or dynamically add nodes.",
@@ -211,6 +211,54 @@
         }
       },
       "required": ["graph"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"type": "string"},
+        "schema_version": {"type": "integer"},
+        "graph_run_id": {"type": "string"},
+        "graph_sha256": {"type": "string"},
+        "graph_name": {"type": "string"},
+        "status": {"type": "string"},
+        "terminal_node": {"type": ["string", "null"]},
+        "message": {"type": "string"},
+        "last_completed_node": {"type": ["string", "null"]},
+        "active_runtime_ms": {"type": "number"},
+        "transition_count": {"type": "integer"},
+        "node_visits": {"type": "object"},
+        "retry_count": {"type": "integer"},
+        "model_route_count": {"type": "integer"},
+        "physical_action_count": {"type": "integer"},
+        "retained_result_bytes": {"type": "integer"},
+        "limit": {"type": ["string", "null"]},
+        "authorization": {"type": ["object", "null"]},
+        "trace": {"type": "array", "items": {"type": "object"}},
+        "node_results": {"type": "object"}
+      },
+      "required": [
+        "schema",
+        "schema_version",
+        "graph_run_id",
+        "graph_sha256",
+        "graph_name",
+        "status",
+        "terminal_node",
+        "message",
+        "last_completed_node",
+        "active_runtime_ms",
+        "transition_count",
+        "node_visits",
+        "retry_count",
+        "model_route_count",
+        "physical_action_count",
+        "retained_result_bytes",
+        "limit",
+        "authorization",
+        "trace",
+        "node_results"
+      ],
       "additionalProperties": false
     },
     "execution_adapter": {

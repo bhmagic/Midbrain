@@ -13,6 +13,7 @@ from jsonschema import validate
 
 from physical_agent_test.agent_driver import (
     PrototypeAgentDriver,
+    _deduplicating_agent_event_sink,
     consume_openai_agent_stream,
 )
 from physical_agent_test.agent_event_stream import (
@@ -163,6 +164,77 @@ class AgentEventTranslationTests(unittest.TestCase):
         self.assertNotIn("screenshot", visual_payload)
         self.assertNotIn("private", str(visual_payload))
 
+    def test_graph_tool_output_emits_nested_visuals_from_python_repr(self) -> None:
+        def evidence(evidence_id: str) -> dict:
+            return {
+                "schema": "midbrain.visual_evidence",
+                "schema_version": 1,
+                "evidence_id": evidence_id,
+                "title": "Graph child evidence",
+                "default_channel": "rgb",
+                "channels": [
+                    {
+                        "id": "rgb",
+                        "label": "RGB",
+                        "url": (
+                            f"/api/visual-evidence/{evidence_id}/channels/rgb"
+                        ),
+                        "media_type": "image/jpeg",
+                        "width": 640,
+                        "height": 480,
+                        "sha256": "b" * 64,
+                        "private_path": "C:/private/frame.jpg",
+                    }
+                ],
+                "annotations": [],
+                "confidence": "high",
+                "model": "graph-child-test",
+                "source_skill": "test.graph.child",
+            }
+
+        output = {
+            "schema": "midbrain.limited_graph.result",
+            "node_results": {
+                "inspect": {"visual_evidence": evidence("sam2-1")},
+                "refine": {
+                    "visual_evidence": [
+                        evidence("vlm-1"),
+                        {"schema": "private.invalid", "secret": "hidden"},
+                    ]
+                },
+            },
+            "private_graph_state": "must-not-stream",
+        }
+        event = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_output",
+            item=SimpleNamespace(
+                type="tool_call_output_item",
+                raw_item={"call_id": "call-graph", "output": "redacted"},
+                output=str(output),
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=SimpleNamespace(tool_name="run_limited_graph"),
+                title=None,
+            ),
+        )
+
+        translated = translate_openai_sdk_events(event)
+
+        self.assertEqual(
+            [event_type for event_type, _payload in translated],
+            [
+                "tool.completed",
+                "visual.evidence.created",
+                "visual.evidence.created",
+            ],
+        )
+        self.assertEqual(
+            [payload["evidence_id"] for _, payload in translated[1:]],
+            ["sam2-1", "vlm-1"],
+        )
+        self.assertNotIn("private", str(translated))
+        self.assertNotIn("secret", str(translated))
+
     def test_tool_output_projects_safe_capture_retry_recovery(self) -> None:
         output = {
             "answer": "Recovered target",
@@ -240,6 +312,29 @@ class AgentEventTranslationTests(unittest.TestCase):
         self.assertEqual(
             [event_type for event_type, _payload in translated],
             ["tool.completed"],
+        )
+
+
+class AgentEventRelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_and_final_graph_visuals_are_deduplicated(self) -> None:
+        observed: list[tuple[str, dict]] = []
+
+        async def sink(event_type: str, payload: dict) -> None:
+            observed.append((event_type, payload))
+
+        relay = _deduplicating_agent_event_sink(sink)
+        evidence = {"evidence_id": "graph-visual-1"}
+
+        await relay("visual.evidence.created", evidence)
+        await relay("visual.evidence.created", dict(evidence))
+        await relay("tool.completed", {"call_id": "graph-call"})
+
+        self.assertEqual(
+            observed,
+            [
+                ("visual.evidence.created", evidence),
+                ("tool.completed", {"call_id": "graph-call"}),
+            ],
         )
 
 

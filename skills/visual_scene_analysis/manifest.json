@@ -4,7 +4,7 @@
   "display_name": "Current Visual Scene Analysis",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "analyze_visual_scene",
     "description": "Answer a bounded RGB-only visual question from one current camera frame through the configured vision-language router. Use this read-only Skill only when visible appearance is sufficient. It cannot satisfy requests to locate, measure, or report an item in 3D, metric, depth, world, camera, or robot coordinates; those requests require locate_item.",
@@ -39,6 +39,37 @@
       "required": [
         "question"
       ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string"},
+        "answer": {"type": "string"},
+        "confidence": {"type": ["string", "number"]},
+        "annotations": {"type": "array", "items": {"type": "object"}},
+        "annotation_processing": {"type": "object"},
+        "screenshot": {"type": "string"},
+        "frame_id": {"type": ["string", "null"]},
+        "model": {"type": "string"},
+        "vlm_route": {"type": "object"},
+        "input": {"type": "string"},
+        "skill_id": {"type": "string"},
+        "capability_binding": {"type": "object"},
+        "data_route": {"type": "object"},
+        "retry_history": {"type": ["object", "null"]},
+        "visual_evidence": {"type": ["object", "null"]},
+        "required_capability": {"type": "string"},
+        "provider_id": {"type": "string"},
+        "physical_action_submitted": {"type": "boolean"},
+        "developer_activation_url": {"type": "string"},
+        "retryable": {"type": "boolean"},
+        "retry_scope": {"type": "string"},
+        "retry": {"type": "object"},
+        "error": {"type": "string"},
+        "message": {"type": "string"}
+      },
+      "required": [],
       "additionalProperties": false
     },
     "execution_adapter": {

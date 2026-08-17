@@ -67,6 +67,7 @@ class _IntegratedMotionSkill:
         self.executed_preview_ids.append(preview_id)
         return {
             "status": "MOTION_COMPLETED",
+            "workflow_complete": True,
             "physical_motion_completed": True,
             "preview_id": preview_id,
         }
@@ -120,6 +121,17 @@ class _FabricSpatialTranslator:
             "target_orientation_world_xyzw": arguments[
                 "orientation_xyzw"
             ],
+        }
+
+    async def offset_world_point(self, **arguments):
+        return {
+            "status": "WORLD_POINT_OFFSET_READY",
+            "workflow_complete": True,
+            "physical_motion_authorized": False,
+            "physical_motion_submitted": False,
+            "target_position_world_m": arguments["source_position_world_m"],
+            "target_world_frame_id": arguments["source_world_frame_id"],
+            "target_session_epoch": arguments["source_session_epoch"],
         }
 
 
@@ -424,10 +436,25 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             "requested_speed_m_s",
             pose.params_json_schema["properties"],
         )
+        offset = tools["offset_world_point"]
+        self.assertFalse(offset.needs_approval)
+        self.assertEqual(
+            offset.params_json_schema["properties"]["offset_reference"]["enum"],
+            [
+                "ACTIVE_WORLD",
+                "ARM_BASE",
+                "CONTROLLED_EFFECTOR_FRAME",
+            ],
+        )
+        self.assertIn(
+            "source_position_world_m",
+            offset.params_json_schema["required"],
+        )
         self.assertIn(
             "never authorizes or submits motion",
             driver.agent.instructions,
         )
+        self.assertIn("offset_world_point", driver.agent.instructions)
 
     def test_provider_approval_is_human_readable(self) -> None:
         item = SimpleNamespace(

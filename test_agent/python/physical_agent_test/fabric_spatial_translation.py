@@ -19,6 +19,11 @@ _SOURCE_REFERENCES = {
     "ARM_BASE",
     "CONTROLLED_EFFECTOR_FRAME",
 }
+_OFFSET_UNIT_SCALES_M = {
+    "METRES": 1.0,
+    "CENTIMETRES": 0.01,
+    "MILLIMETRES": 0.001,
+}
 
 
 class FabricTransformProtocol(Protocol):
@@ -209,6 +214,120 @@ class FabricSpatialTranslator:
                 "The pose is expressed in the active world frame. A physical "
                 "consumer must independently validate and authorize its own "
                 "operation; this read-only translation grants no authority."
+            ),
+        }
+
+    async def offset_world_point(
+        self,
+        *,
+        source_position_world_m: list[float],
+        source_world_frame_id: str | None,
+        source_observed_at_us: int | None,
+        source_session_epoch: str | None,
+        offset_vector: list[float],
+        offset_unit: str,
+        offset_reference: str,
+    ) -> dict[str, Any]:
+        """Add one typed, Fabric-resolved displacement to a world point."""
+
+        source_position = _finite_vector3(
+            source_position_world_m,
+            "source_position_world_m",
+        )
+        offset_input = _finite_vector3(offset_vector, "offset_vector")
+        selected_unit = str(offset_unit or "").strip().upper()
+        if selected_unit not in _OFFSET_UNIT_SCALES_M:
+            raise ValueError("offset_unit is unsupported")
+        selected_reference = str(offset_reference or "").strip().upper()
+        if selected_reference not in _SOURCE_REFERENCES:
+            raise ValueError("offset_reference is unsupported")
+        normalized_world_frame = (
+            str(source_world_frame_id or "").strip() or None
+        )
+
+        try:
+            context = await self._translation_context(
+                coordinate_kind="POINT_OFFSET",
+                source_reference=selected_reference,
+                source_frame_id=(
+                    normalized_world_frame
+                    if selected_reference == "ACTIVE_WORLD"
+                    else None
+                ),
+                source_observed_at_us=source_observed_at_us,
+                source_session_epoch=source_session_epoch,
+            )
+        except _SpatialTranslationUnavailable as unavailable:
+            return unavailable.payload
+
+        if (
+            normalized_world_frame is not None
+            and normalized_world_frame != context["world_frame"]
+        ):
+            return _failure(
+                "WORLD_POINT_OFFSET_SOURCE_WORLD_FRAME_MISMATCH",
+                (
+                    f"The supplied source world frame {normalized_world_frame} "
+                    f"does not match active world frame {context['world_frame']}."
+                ),
+                supplied_source_world_frame_id=normalized_world_frame,
+                active_world_frame_id=context["world_frame"],
+            )
+
+        scale_m = _OFFSET_UNIT_SCALES_M[selected_unit]
+        offset_source_m = tuple(value * scale_m for value in offset_input)
+        offset_world_m = _rotate_vector(
+            context["source_to_world"],
+            offset_source_m,
+        )
+        target_position_world_m = tuple(
+            source_position[index] + offset_world_m[index]
+            for index in range(3)
+        )
+        completed_at_us = time.time_ns() // 1000
+        derivation = {
+            "operation": "ADD_TYPED_OFFSET_TO_ACTIVE_WORLD_POINT",
+            "source_position_world_m": list(source_position),
+            "source_world_frame_id": context["world_frame"],
+            "source_session_epoch": context["session_epoch"],
+            "offset_vector_input": list(offset_input),
+            "offset_unit": selected_unit,
+            "offset_reference": selected_reference,
+            "offset_source_m": list(offset_source_m),
+            "offset_vector_world_m": list(offset_world_m),
+            "target_position_world_m": list(target_position_world_m),
+            "coordinate_at_us": context["coordinate_at_us"],
+            "transform_path": context["transform_path"],
+        }
+        return {
+            "schema": "physical_agent.fabric_offset_world_point",
+            "schema_version": 1,
+            "status": "WORLD_POINT_OFFSET_READY",
+            "workflow_complete": True,
+            "physical_motion_authorized": False,
+            "physical_motion_submitted": False,
+            "derivation_id": _translation_id("world-point-offset", derivation),
+            "convention_id": WORLD_CONVENTION_ID,
+            "source_position_world_m": list(source_position),
+            "source_world_frame_id": context["world_frame"],
+            "source_session_epoch": context["session_epoch"],
+            "offset_vector_input": list(offset_input),
+            "offset_unit": selected_unit,
+            "offset_reference": selected_reference,
+            "offset_vector_world_m": list(offset_world_m),
+            "target_position_world_m": list(target_position_world_m),
+            "target_world_frame_id": context["world_frame"],
+            "target_session_epoch": context["session_epoch"],
+            "coordinate_at_us": context["coordinate_at_us"],
+            "derived_at_us": completed_at_us,
+            "calibration_revision": context["calibration_revision"],
+            "source": context["source"],
+            "derivation": derivation,
+            "message": (
+                "Copy target_position_world_m, target_world_frame_id, and "
+                "target_session_epoch unchanged into the downstream world-point "
+                "consumer. This read-only derivation grants no motion or "
+                "contact authority."
             ),
         }
 

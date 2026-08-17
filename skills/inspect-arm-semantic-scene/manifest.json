@@ -4,7 +4,7 @@
   "display_name": "Inspect Arm Semantic Sphere Scene",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "inspect_arm_semantic_scene",
     "description": "Inspect the latest Fabric-hosted semantic sphere scene produced for the integrated arm controller. Reports freshness, ROI policies, obstacle/work-object/pushable counts, producer identity, depth fallback mode, fresh arm-base-aligned WORK_OBJECT visible-surface AABBs with named corners, a missing camera-to-arm-base transform prerequisite, and optionally a bounded list of spheres. This Skill never starts hardware and never authorizes motion.",
@@ -37,6 +37,63 @@
         }
       },
       "required": [],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "string"},
+        "workflow_complete": {"type": "boolean"},
+        "physical_motion_authorized": {"type": "boolean"},
+        "policy_revision": {"type": "string"},
+        "reason": {"type": "string"},
+        "required_transform": {"type": "object"},
+        "mapping_failure": {"type": "object"},
+        "compiled_policy_revisions": {"type": "array", "items": {"type": "string"}},
+        "stream": {"type": "string"},
+        "tracked_assertion_stream": {"type": "string"},
+        "tracked_coverage": {"type": "object"},
+        "required_provider_residency": {"type": "string"},
+        "provider_id": {"type": ["string", "null"]},
+        "provider_instance_id": {"type": ["string", "null"]},
+        "boot_id": {"type": ["string", "null"]},
+        "sequence": {"type": ["integer", "null"]},
+        "observed_at_us": {"type": "integer"},
+        "age_ms": {"type": ["number", "null"]},
+        "freshness_ms": {"type": "integer"},
+        "expires_at_us": {"type": "integer"},
+        "scene_revision": {"type": ["string", "null"]},
+        "frame_id": {"type": ["string", "null"]},
+        "contract_valid": {"type": "boolean"},
+        "roi_layers": {"type": "array", "items": {"type": "object"}},
+        "sphere_count": {"type": "integer"},
+        "sphere_type_counts": {"type": "object"},
+        "sphere_scope_counts": {"type": "object"},
+        "sphere_object_counts": {"type": "object"},
+        "visible_surface_aabb_count": {"type": "integer"},
+        "expired_visible_surface_aabb_count": {"type": "integer"},
+        "visible_surface_aabbs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "object_id": {"type": "string"},
+              "frame_id": {"type": "string"},
+              "corners_m": {"type": "object"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "production": {"type": ["object", "null"]},
+        "truncated": {"type": "boolean"},
+        "spheres": {"type": "array", "items": {"type": "object"}},
+        "visual_evidence": {"type": ["object", "null"]},
+        "required_provider_id": {"type": "string"},
+        "required_capability": {"type": "string"},
+        "required_next_tool": {"type": ["object", "null"]},
+        "message": {"type": "string"}
+      },
+      "required": ["status", "workflow_complete", "physical_motion_authorized", "message"],
       "additionalProperties": false
     },
     "execution_adapter": {

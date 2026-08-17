@@ -73,6 +73,22 @@ Use `source_pointer` to select a nested value. An empty pointer selects the
 complete source. Missing sources, malformed pointers, and attempts to replace
 the child argument root with a non-object are invalid.
 
+Every installed Skill declares an output schema in discovery metadata. Child
+tool descriptions list its stable structured-result pointers. A
+`NODE_RESULT` source pointer must be one of those declared paths, and a target
+pointer must exist in the destination input schema. The runner checks both
+before executing the first node. Do not move a nested field to the result root
+or derive a new name from prose. For example, Slicing publishes
+`/plan/path/slice_begin_point_world_m` and
+`/plan/path/planned_retract_endpoint_world_m`; it does not publish
+`/outward_retract_end_position_world_m`.
+
+An output property can be optional because the Skill has multiple status
+variants. Follow the node's failure edge for an incomplete result and use a
+`SWITCH` when a declared field exists only under a particular successful
+status. Preflight confirms the path is declared, while runtime still fails
+closed if that optional value is absent.
+
 ## Conditions and retry
 
 Conditions support `EQ`, `NE`, `LT`, `LTE`, `GT`, `GTE`, `IN`, `EXISTS`, and
