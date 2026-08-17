@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- Record a retained-run performance audit for the complete two-slice workflow.
-  Correct historical runs averaged 103.2 seconds end to end versus 91.2 seconds
-  after consolidation, while successful graph execution remained effectively
-  flat at 33.5 versus 34.1 seconds; the measured gain comes from fewer Agent
-  handoffs rather than faster physical Skills.
+- Record a corrected retained-run performance audit for the complete two-slice
+  workflow. A successful no-graph equivalent required four prompts and 103.8
+  seconds of Agent-active time versus one prompt and 91.2 seconds now, while
+  direct Skill time remained flat at 34.0 versus 34.1 seconds. Earlier
+  single-prompt no-graph attempts did not complete either slice.
 - Stream sanitized visual evidence from each completed Limited Graph child
   while the graph is still running, then deduplicate the compatibility copy in
   the final graph result. Agent turns now retain up to 32 ordered visual cards

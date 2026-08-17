@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Record the retained physical timing comparison: the correct two-slice Agent
-  workflow changed from a 103.2-second historical mean to 91.2 seconds, while
-  successful graph runtime stayed effectively flat at 33.5 versus 34.1
-  seconds. Coordinate mini-Skills consumed about 0.2 seconds in total.
+- Record the corrected retained physical timing comparison. Before Limited
+  Graph, the successful equivalent required four prompts and 103.8 seconds of
+  Agent-active time; the current one-prompt graph took 91.2 seconds. Direct
+  Skill time remained effectively flat at 34.0 versus 34.1 seconds, and the
+  earlier no-graph compound prompts did not complete either slice.
 - Relay sanitized Limited Graph child visuals through the active Agent run as
   soon as each child completes, without giving the presentation hook routing
   or authorization authority. Retain up to 32 independent visual cards per
