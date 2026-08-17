@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- Record a retained-run performance audit for the complete two-slice workflow.
+  Correct historical runs averaged 103.2 seconds end to end versus 91.2 seconds
+  after consolidation, while successful graph execution remained effectively
+  flat at 33.5 versus 34.1 seconds; the measured gain comes from fewer Agent
+  handoffs rather than faster physical Skills.
+- Stream sanitized visual evidence from each completed Limited Graph child
+  while the graph is still running, then deduplicate the compatibility copy in
+  the final graph result. Agent turns now retain up to 32 ordered visual cards
+  instead of replacing every prior FoundationPose, VLM, or SAM2 visual with
+  the last one.
+- Restore SAM2, FoundationPose, and VLM visuals produced inside Limited Graph
+  children by projecting sanitized evidence from retained `node_results`,
+  including bounded SDK dictionary-representation outputs. Scene-and-slicing
+  routes now make semantic-scene inspection the first graph Skill after host
+  setup so SAM2 evidence is actually generated.
+- Add the read-only `offset_world_point` finite Skill for an upstream active-
+  world point plus a typed world, arm-base, or controlled-effector displacement.
+  Compound slicing graphs can now bind the first slicing point and workcell
+  frame into an exact 10 cm-above derivation instead of refusing or substituting
+  the slicer's semantically different retract endpoint.
+- Add a deterministic host-only Safe Home route and preserve an explicitly
+  requested trailing Safe Home after compound graph completion. A disconnected
+  Basic Provider now returns a typed `robot_arm.safe_home` lifecycle
+  continuation instead of an unstructured exception.
+- Fix two live Limited Graph rejection paths. Child outputs are schema-checked
+  before credential redaction but only redacted values are retained or routed,
+  and combined existing-scene corner-motion plus mixed-frame-slicing prompts
+  now receive the complete Fabric/motion/translation/slicing child union.
+- Restore Agent and developer-page visibility for FoundationPose/VLM alignment
+  artifacts. Agent-triggered calibration publishes standard switchable visual
+  evidence, and the aligner page safely serves the latest persisted run when
+  its own in-memory Skill instance is idle.
+- Correct the live `establish_world_axis` output contract: its stationary gate
+  is `EXISTING_TRACKING_EPOCH` or `GLOBAL_MOTION_INHIBIT`, not an object. Add
+  runtime-shaped schema validation for both branches after Limited Graph
+  correctly failed closed on the invalid published contract in two test runs.
+- Complete a source-backed semantic audit of all 23 installed Skill output
+  schemas. Graph-bindable paths now match the actual registered adapter
+  results, while the undiscoverable nested FoundationPose primitive explicitly
+  publishes no direct Agent output until a real adapter exists.
+- Make normalized output schemas mandatory discovery metadata for all 23
+  installed Skills. Agent discovery schema version 2 validates each embedded
+  JSON Schema, exposes exact declared result pointers on FunctionTools, and
+  validates direct Skill results without changing Provider, Manager,
+  authentication, or physical-authorization ownership.
+- Preflight Limited Graph result sources, retry/switch/model condition paths,
+  and destination argument paths against the selected child Skills' declared
+  schemas before invoking the first child. Undeclared names such as
+  `/outward_retract_end_position_world_m` now fail without performing the
+  earlier slicing action; physical result-schema failures remain
+  `UNKNOWN_OUTCOME`, while read-only failures retain their existing bounded
+  retry policy.
 - Fix superseded workcell transforms remaining usable in World State Fabric.
   Manager now publishes the replacement activation and explicit revocations
   for every prior active camera/VIO/arm-base transform in one batch, so scene

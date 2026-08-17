@@ -4,7 +4,7 @@
   "display_name": "Establish Current World Axis",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "establish_world_axis",
     "description": "Ensure the current Local VIO world epoch has a fresh TRACKING body pose without locating the arm base or resetting the world origin. The operation may start the RGB-D camera and Local VIO and may hold a bounded global motion inhibit while stationary IMU samples are collected.",
@@ -34,6 +34,49 @@
       "type": "object",
       "properties": {},
       "required": [],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {"const": "tracking_ready"},
+        "result": {
+          "type": "object",
+          "properties": {
+            "skill_id": {"type": "string"},
+            "operation": {"type": "string"},
+            "session_epoch": {"type": "string"},
+            "world_frame": {"type": "string"},
+            "body_frame": {"type": "string"},
+            "tracking_state": {"type": "string"},
+            "convention_id": {"type": "string"},
+            "body_position_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+            "selected_providers": {"type": "object"},
+            "stationary_gate": {
+              "type": "string",
+              "enum": [
+                "EXISTING_TRACKING_EPOCH",
+                "GLOBAL_MOTION_INHIBIT"
+              ]
+            },
+            "motion_inhibit": {"type": ["object", "null"]},
+            "global_motion_inhibit_acquired": {"type": "boolean"},
+            "epoch_reset_performed": {"type": "boolean"},
+            "workcell_calibrations_revoked": {"type": "boolean"},
+            "physical_motion_submitted": {"type": "boolean"}
+          },
+          "required": [
+            "skill_id", "operation", "session_epoch", "world_frame",
+            "body_frame", "tracking_state", "convention_id",
+            "body_position_m", "selected_providers", "stationary_gate",
+            "motion_inhibit", "global_motion_inhibit_acquired",
+            "epoch_reset_performed", "workcell_calibrations_revoked",
+            "physical_motion_submitted"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": ["status", "result"],
       "additionalProperties": false
     },
     "execution_adapter": {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import contextvars
 import inspect
 import json
 import math
@@ -12,8 +13,9 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 from agents import FunctionTool
 from jsonschema import validate
 
+from .agent_events import visual_evidences_from_result
 from .phase4_policy import extend_current_operation_hard_timeout
-from .skill_catalog import AgentSkillDescriptor
+from .skill_catalog import AgentSkillDescriptor, describe_output_schema
 
 
 _LATENCY_TIMEOUT_FLOORS_S = {
@@ -23,6 +25,20 @@ _LATENCY_TIMEOUT_FLOORS_S = {
 _PROVIDER_LIFECYCLE_TOOL_NAME = "set_provider_residency"
 _MAX_PROVIDER_HANDOVERS_PER_CHILD = 2
 _PROVIDER_HANDOVER_TIMEOUT_MARGIN_S = 0.05
+HostedChildEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+_hosted_child_event_sink: contextvars.ContextVar[HostedChildEventSink | None] = (
+    contextvars.ContextVar("hosted_child_event_sink", default=None)
+)
+
+
+def set_hosted_child_event_sink(sink: HostedChildEventSink | None) -> Any:
+    """Bind the current Agent run's presentation-only child event sink."""
+
+    return _hosted_child_event_sink.set(sink)
+
+
+def reset_hosted_child_event_sink(token: Any) -> None:
+    _hosted_child_event_sink.reset(token)
 
 
 class SkillExecutionAdapter(Protocol):
@@ -36,6 +52,7 @@ class HostedChildDescriptor:
     skill_type: str
     safety_class: str
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
     expected_latency: str
 
     @property
@@ -113,6 +130,9 @@ class SkillInvocationBrokerHandle:
     async def route_model(self, **arguments: Any) -> Any:
         return await self._require_broker().route_model(**arguments)
 
+    async def observe_child_result(self, **arguments: Any) -> None:
+        await self._require_broker().observe_child_result(**arguments)
+
 
 class HostedSkillInvocationBroker:
     """Invoke graph children through the same FunctionTools as direct calls."""
@@ -157,6 +177,7 @@ class HostedSkillInvocationBroker:
                 skill_type=descriptor.skill_type,
                 safety_class=descriptor.safety_class,
                 input_schema=copy.deepcopy(descriptor.input_schema),
+                output_schema=copy.deepcopy(descriptor.output_schema),
                 expected_latency=descriptor.expected_latency,
             )
         self._model_route_profiles = dict(model_route_profiles or {})
@@ -184,6 +205,24 @@ class HostedSkillInvocationBroker:
             for name, descriptor in self._descriptors.items()
             if name in active_names
         }
+
+    async def observe_child_result(
+        self,
+        *,
+        node_id: str,
+        tool_name: str,
+        attempt: int,
+        result: Any,
+        context: Any,
+    ) -> None:
+        """Publish safe child visuals without granting graph authority."""
+
+        del node_id, tool_name, attempt, context
+        sink = _hosted_child_event_sink.get()
+        if sink is None:
+            return
+        for evidence in visual_evidences_from_result(result):
+            await sink("visual.evidence.created", evidence)
 
     async def invoke(
         self,
@@ -606,6 +645,26 @@ class BoundMethodSkillAdapter:
         return await self.invoke_method(arguments)
 
 
+def normalize_skill_result(result: Any) -> dict[str, Any]:
+    """Normalize one agent-visible Skill result to a JSON object."""
+
+    normalized = result
+    if isinstance(result, str):
+        try:
+            normalized = json.loads(result)
+        except json.JSONDecodeError as error:
+            raise ValueError("Skill result must be a JSON object") from error
+    if not isinstance(normalized, dict):
+        raise ValueError("Skill result must be a JSON object")
+    return normalized
+
+
+def validate_skill_result(result: Any, output_schema: dict[str, Any]) -> None:
+    """Validate one normalized result without changing its public encoding."""
+
+    validate(instance=normalize_skill_result(result), schema=output_schema)
+
+
 def build_agent_tools(
     descriptors: list[AgentSkillDescriptor],
     adapters: dict[str, SkillExecutionAdapter],
@@ -693,13 +752,20 @@ def build_agent_tools(
             )
             context_invoke = getattr(selected_adapter, "invoke_with_context", None)
             if callable(context_invoke):
-                return await context_invoke(arguments, _context)
-            return await selected_adapter.invoke(arguments)
+                result = await context_invoke(arguments, _context)
+            else:
+                result = await selected_adapter.invoke(arguments)
+            validate_skill_result(result, selected_descriptor.output_schema)
+            return result
 
         tools.append(
             FunctionTool(
                 name=descriptor.tool_name,
-                description=descriptor.description,
+                description=(
+                    f"{descriptor.description} Declared structured-result "
+                    "pointers for composition: "
+                    f"{describe_output_schema(descriptor.output_schema)}."
+                ),
                 params_json_schema=descriptor.input_schema,
                 on_invoke_tool=invoke_tool,
                 strict_json_schema=True,

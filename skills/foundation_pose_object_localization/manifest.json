@@ -11,7 +11,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": false,
     "disabled_reason": "Nested perception primitive; direct Agent use requires a future typed mask-or-bounding-box initialization contract.",
     "tool_name": "localize_known_cad_object",
@@ -56,6 +56,14 @@
         "initialization_mask_ref",
         "rgbd_bundle_ref"
       ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "description": "No direct Agent result exists while this nested primitive remains undiscoverable and MANUAL_LOCAL_ONLY. A future direct adapter must replace this empty contract before discovery is enabled.",
+      "properties": {},
+      "required": [],
+      "maxProperties": 0,
       "additionalProperties": false
     },
     "execution_adapter": {

@@ -14,15 +14,20 @@ from limited_graph import (
     ChildAuthorizationRequired,
     ChildInvocationNotStarted,
     ChildInvocationResult,
+    ChildDescriptor,
+    validate_graph,
 )
 from limited_graph.host_adapter import LimitedGraphHostAdapter
 from physical_agent_test.skill_catalog import AgentSkillDescriptor
+from physical_agent_test.skill_catalog import discover_agent_skills
 from physical_agent_test.skill_execution import (
     BoundMethodSkillAdapter,
     HostedModelRouteProfile,
     HostedSkillInvocationBroker,
     SkillInvocationBrokerHandle,
     build_agent_tools,
+    reset_hosted_child_event_sink,
+    set_hosted_child_event_sink,
 )
 
 
@@ -31,6 +36,21 @@ _INPUT_SCHEMA = {
     "properties": {"value": {}},
     "required": ["value"],
     "additionalProperties": False,
+}
+
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "value": {},
+        "status": {"type": "string"},
+        "workflow_complete": {"type": "boolean"},
+        "physical_motion_authorized": {"type": "boolean"},
+        "physical_motion_submitted": {"type": "boolean"},
+        "physical_motion_completed": {"type": "boolean"},
+        "required_next_tool": {"type": ["object", "null"]},
+    },
+    "required": [],
+    "additionalProperties": True,
 }
 
 _PROVIDER_LIFECYCLE_SCHEMA = {
@@ -91,7 +111,7 @@ def descriptor(
         skill_version="1.0.0",
         display_name=tool_name,
         manifest_path=f"skills/{tool_name}/manifest.json",
-        schema_version=1,
+        schema_version=2,
         discoverable=True,
         tool_name=tool_name,
         description="A test finite Skill with a typed invocation contract.",
@@ -102,6 +122,7 @@ def descriptor(
         expected_latency="LOW",
         required_permissions=(),
         input_schema=_INPUT_SCHEMA,
+        output_schema=_OUTPUT_SCHEMA,
         execution_adapter_id=f"skill.{tool_name}.v1",
         execution_adapter_kind="IN_PROCESS_BOUND_INSTANCE",
         execution_entrypoint=None,
@@ -113,6 +134,173 @@ def descriptor(
         route_policy=None,
         disabled_reason=None,
     )
+
+
+def test_catalog_schemas_preflight_slice_point_offset_motion_chain() -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    selected_names = {
+        "slice_with_blade",
+        "offset_world_point",
+        "move_effector_to_world_point",
+    }
+    descriptors = {
+        item.tool_name: ChildDescriptor(
+            tool_name=item.tool_name,
+            skill_type=item.skill_type,
+            safety_class=item.safety_class,
+            input_schema=item.input_schema,
+            output_schema=item.output_schema,
+            expected_latency=item.expected_latency,
+        )
+        for item in discover_agent_skills(workspace)
+        if item.tool_name in selected_names
+    }
+
+    class CatalogBroker:
+        def descriptors(self):
+            return descriptors
+
+    def graph_skill(
+        node_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        bindings: list[dict[str, Any]],
+        next_node: str,
+    ) -> dict[str, Any]:
+        return {
+            "id": node_id,
+            "kind": "SKILL",
+            "skill": {
+                "tool_name": tool_name,
+                "arguments_json": json.dumps(arguments),
+                "bindings": bindings,
+                "max_attempts": 1,
+                "retry_condition": None,
+                "next_node": next_node,
+                "failure_node": "failed",
+            },
+            "switch": None,
+            "model_route": None,
+            "terminal": None,
+        }
+
+    payload = {
+        "schema_version": 1,
+        "name": "slice point offset preflight",
+        "start_node": "slice1",
+        "initial_values": [],
+        "nodes": [
+            graph_skill(
+                "slice1",
+                "slice_with_blade",
+                {
+                    "point_mode": "RELATIVE_TO_CURRENT_EFFECTOR_WORLD",
+                    "slice_begin_point_m": [0.0, 0.0, -0.1],
+                    "blade_direction_world": [0.0, 0.0, -1.0],
+                    "slicing_direction_world": [-1.0, 0.0, 0.0],
+                    "slice_length_m": 0.2,
+                    "blade_profile_number": None,
+                    "motion_profile_number": None,
+                    "integrated_execution_backend": "IMPEDANCE",
+                },
+                [],
+                "offset",
+            ),
+            graph_skill(
+                "offset",
+                "offset_world_point",
+                {
+                    "source_position_world_m": [0.0, 0.0, 0.0],
+                    "source_world_frame_id": None,
+                    "source_observed_at_us": None,
+                    "source_session_epoch": None,
+                    "offset_vector": [0.0, 0.0, 10.0],
+                    "offset_unit": "CENTIMETRES",
+                    "offset_reference": "ACTIVE_WORLD",
+                },
+                [
+                    {
+                        "target_pointer": "/source_position_world_m",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "slice1",
+                        "source_pointer": "/plan/path/slice_begin_point_world_m",
+                    },
+                    {
+                        "target_pointer": "/source_world_frame_id",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "slice1",
+                        "source_pointer": "/plan/workcell_binding/world_frame",
+                    },
+                ],
+                "move",
+            ),
+            graph_skill(
+                "move",
+                "move_effector_to_world_point",
+                {
+                    "target_position_world_m": [0.0, 0.0, 0.0],
+                    "target_world_frame_id": None,
+                    "target_session_epoch": None,
+                    "requested_speed_m_s": None,
+                    "execution_backend": "IMPEDANCE",
+                },
+                [
+                    {
+                        "target_pointer": "/target_position_world_m",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "offset",
+                        "source_pointer": "/target_position_world_m",
+                    },
+                    {
+                        "target_pointer": "/target_world_frame_id",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "offset",
+                        "source_pointer": "/target_world_frame_id",
+                    },
+                    {
+                        "target_pointer": "/target_session_epoch",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "offset",
+                        "source_pointer": "/target_session_epoch",
+                    },
+                ],
+                "done",
+            ),
+            {
+                "id": "done",
+                "kind": "TERMINAL",
+                "skill": None,
+                "switch": None,
+                "model_route": None,
+                "terminal": {"status": "COMPLETED", "message": "done"},
+            },
+            {
+                "id": "failed",
+                "kind": "TERMINAL",
+                "skill": None,
+                "switch": None,
+                "model_route": None,
+                "terminal": {"status": "FAILED", "message": "failed"},
+            },
+        ],
+        "limits": {
+            "max_active_runtime_s": 30.0,
+            "max_transitions": 8,
+            "max_visits_per_node": 1,
+            "max_model_routes": 0,
+            "max_physical_actions": 2,
+            "max_retained_result_bytes": 262144,
+        },
+    }
+
+    validated = validate_graph(payload, CatalogBroker())
+
+    assert set(validated.descriptors) == selected_names
 
 
 class ContextAwareAdapter:
@@ -147,6 +335,99 @@ def test_external_adapter_receives_original_function_tool_context() -> None:
 
     assert result == {"value": 7}
     assert adapter.context is root_context
+
+
+def test_direct_skill_tool_validates_declared_output_schema() -> None:
+    async def invalid_result(_arguments: dict[str, Any]) -> str:
+        return "not-json"
+
+    selected_descriptor = descriptor("echo_value")
+    tool = build_agent_tools(
+        [selected_descriptor],
+        {
+            selected_descriptor.execution_adapter_id: BoundMethodSkillAdapter(
+                invalid_result
+            )
+        },
+        eligible_tool_names={"echo_value"},
+    )[0]
+
+    with pytest.raises(ValueError, match="Skill result must be a JSON object"):
+        asyncio.run(tool.on_invoke_tool(SimpleNamespace(), '{"value":1}'))
+
+
+def test_skill_tool_description_publishes_declared_result_pointers() -> None:
+    selected_descriptor = descriptor("echo_value")
+    tool = build_agent_tools(
+        [selected_descriptor],
+        {
+            selected_descriptor.execution_adapter_id: BoundMethodSkillAdapter(
+                ContextAwareAdapter()
+            )
+        },
+        eligible_tool_names={"echo_value"},
+    )[0]
+
+    assert "Declared structured-result pointers" in tool.description
+    assert "/value" in tool.description
+
+
+def test_hosted_child_observer_publishes_safe_visual_immediately() -> None:
+    observed: list[tuple[str, dict[str, Any]]] = []
+    graph_returned = False
+
+    async def sink(event_type: str, payload: dict[str, Any]) -> None:
+        observed.append(
+            (event_type, {**payload, "graph_returned": graph_returned})
+        )
+
+    evidence_id = "live-graph-visual"
+    result = {
+        "visual_evidence": {
+            "schema": "midbrain.visual_evidence",
+            "schema_version": 1,
+            "evidence_id": evidence_id,
+            "title": "Live graph child visual",
+            "default_channel": "rgb",
+            "channels": [
+                {
+                    "id": "rgb",
+                    "label": "RGB",
+                    "url": f"/api/visual-evidence/{evidence_id}/channels/rgb",
+                    "media_type": "image/png",
+                    "width": 640,
+                    "height": 480,
+                    "sha256": "a" * 64,
+                }
+            ],
+            "annotations": [],
+            "confidence": "high",
+            "model": "test-model",
+            "source_skill": "test.live.graph",
+            "private_path": "must-not-stream",
+        }
+    }
+    broker = HostedSkillInvocationBroker([], [])
+    token = set_hosted_child_event_sink(sink)
+    try:
+        asyncio.run(
+            broker.observe_child_result(
+                node_id="inspect",
+                tool_name="inspect_arm_semantic_scene",
+                attempt=1,
+                result=result,
+                context=SimpleNamespace(graph_run_id="graph-1"),
+            )
+        )
+        graph_returned = True
+    finally:
+        reset_hosted_child_event_sink(token)
+
+    assert len(observed) == 1
+    assert observed[0][0] == "visual.evidence.created"
+    assert observed[0][1]["evidence_id"] == evidence_id
+    assert observed[0][1]["graph_returned"] is False
+    assert "private_path" not in observed[0][1]
 
 
 def test_broker_preserves_principal_and_intersects_active_route() -> None:

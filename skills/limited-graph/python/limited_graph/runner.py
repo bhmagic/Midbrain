@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
+import logging
 import math
 import time
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from jsonschema import validate as validate_json
 from jsonschema.exceptions import ValidationError
@@ -35,6 +37,10 @@ from .validation import (
 )
 
 
+logger = logging.getLogger(__name__)
+ChildResultObserver = Callable[..., None | Awaitable[None]]
+
+
 class LimitedGraphRunner:
     """Execute one immutable, sequential, host-bounded Skill graph."""
 
@@ -47,6 +53,7 @@ class LimitedGraphRunner:
         *,
         root_context: Any = None,
         root_call_id: str = "",
+        child_result_observer: ChildResultObserver | None = None,
     ) -> dict[str, Any]:
         validated = validate_graph(
             graph,
@@ -96,7 +103,12 @@ class LimitedGraphRunner:
 
             try:
                 if kind == "SKILL":
-                    outcome = await self._run_skill(node, state, deadline)
+                    outcome = await self._run_skill(
+                        node,
+                        state,
+                        deadline,
+                        child_result_observer=child_result_observer,
+                    )
                     if isinstance(outcome, dict):
                         return outcome
                     next_node = outcome
@@ -136,6 +148,8 @@ class LimitedGraphRunner:
         node: dict[str, Any],
         state: "_RunState",
         deadline: float,
+        *,
+        child_result_observer: ChildResultObserver | None,
     ) -> str | dict[str, Any]:
         node_id = str(node["id"])
         config = node["skill"]
@@ -213,7 +227,12 @@ class LimitedGraphRunner:
                             **safe_event,
                         )
                     raw_result = raw_result.result
-                result = redact_credential_values(_normalize_result(raw_result))
+                normalized_result = _normalize_result(raw_result)
+                validate_json(
+                    instance=normalized_result,
+                    schema=descriptor.output_schema,
+                )
+                result = redact_credential_values(normalized_result)
                 exceeded = state.retain_result(node_id, result)
                 if exceeded is not None:
                     return state.limit_result(exceeded, time.monotonic())
@@ -223,6 +242,14 @@ class LimitedGraphRunner:
                     tool_name=tool_name,
                     attempt=attempt,
                     result=state.trace_payload(result),
+                )
+                await _notify_child_result_observer(
+                    child_result_observer,
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    attempt=attempt,
+                    result=result,
+                    context=child_context,
                 )
                 incomplete_reason = _explicit_incomplete_reason(
                     result,
@@ -504,6 +531,38 @@ class LimitedGraphRunner:
         return target
 
 
+async def _notify_child_result_observer(
+    observer: ChildResultObserver | None,
+    *,
+    node_id: str,
+    tool_name: str,
+    attempt: int,
+    result: Any,
+    context: GraphCallContext,
+) -> None:
+    """Notify host presentation plumbing without affecting graph semantics."""
+
+    if observer is None:
+        return
+    try:
+        observed = observer(
+            node_id=node_id,
+            tool_name=tool_name,
+            attempt=attempt,
+            result=copy.deepcopy(result),
+            context=context,
+        )
+        if inspect.isawaitable(observed):
+            await observed
+    except Exception:
+        logger.exception(
+            "Limited Graph child-result observer failed for %s/%s attempt %d",
+            node_id,
+            tool_name,
+            attempt,
+        )
+
+
 class _RunState:
     def __init__(
         self,
@@ -647,6 +706,25 @@ def _normalize_result(value: Any) -> Any:
 
 
 def _safe_error(error: BaseException) -> str:
+    if isinstance(error, ValidationError):
+        pointer = "/" + "/".join(
+            str(token).replace("~", "~0").replace("/", "~1")
+            for token in error.absolute_path
+        )
+        if pointer == "/":
+            pointer = "<root>"
+        expected = json.dumps(
+            error.validator_value,
+            ensure_ascii=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        if len(expected) > 200:
+            expected = expected[:197] + "..."
+        return (
+            f"ValidationError: value at {pointer} failed "
+            f"{error.validator!r} validation; expected {expected}"
+        )
     message = str(redact_credential_values(str(error)))
     if len(message) > 500:
         message = message[:497] + "..."

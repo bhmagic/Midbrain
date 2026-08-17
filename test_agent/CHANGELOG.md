@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- Record the retained physical timing comparison: the correct two-slice Agent
+  workflow changed from a 103.2-second historical mean to 91.2 seconds, while
+  successful graph runtime stayed effectively flat at 33.5 versus 34.1
+  seconds. Coordinate mini-Skills consumed about 0.2 seconds in total.
+- Relay sanitized Limited Graph child visuals through the active Agent run as
+  soon as each child completes, without giving the presentation hook routing
+  or authorization authority. Retain up to 32 independent visual cards per
+  chat turn and deduplicate the final graph-result compatibility projection.
+- Emit standard UI visuals from Limited Graph child results, including bounded
+  Python dictionary-representation tool outputs, and add a semantic-scene
+  inspection node to compound scene-and-slicing routes so SAM2 evidence is
+  generated before downstream Fabric point derivation.
+- Add the Fabric-backed read-only `offset_world_point` Skill and publish the
+  Slicing workcell world-frame path needed to bind an earlier slicing point
+  into it. The exact slice-point-offset-motion graph chain now passes static
+  schema preflight and no longer needs model coordinate arithmetic or a
+  semantically wrong retract endpoint.
+- Route standalone Safe Home directly to its registered host operation, retain
+  trailing Safe Home after a compound graph, and return a typed Basic Provider
+  activation continuation when Safe Home is requested while disconnected.
+- Restore FoundationPose/VLM visuals for Agent-triggered calibration. The
+  calibration adapter registers persisted pose-overlay, VLM-overlay, RGB, and
+  depth channels with the shared Agent evidence store, while the standalone
+  aligner page safely falls back to the latest persisted run outside a local
+  active calibration.
+- Fix the combined existing-scene corner-motion plus mixed-frame-slicing route
+  so one Limited Graph may use Fabric point derivation, absolute-world motion,
+  direction translation, and slicing. This removes a false child-eligibility
+  rejection without weakening Fabric freshness or graph preflight.
+- Validate Limited Graph child outputs before credential redaction, then retain
+  and route only the redacted value. This prevents valid object-valued physical
+  authorization metadata from becoming a schema-invalid string after a motion,
+  while safe validation errors omit the invalid instance.
+- Correct the `establish_world_axis` discovery contract after two live Limited
+  Graph runs exposed that `/result/stationary_gate` is a two-value string, not
+  an object. Validate both real runtime branches against the installed schema
+  so graph result enforcement cannot reject valid world-axis establishment.
+- Audit all 23 installed Skill output schemas against their registered Agent
+  adapters and result-producing source. Replace invented field names with the
+  actual success, failure, recovery, and continuation shapes; add a checked-in
+  source map and forbidden-name regression for every installed descriptor.
+- Require discovery schema version 2 and a self-contained normalized
+  `output_schema` for every installed Skill, including manual-only and normally
+  disabled entries. FunctionTool descriptions publish exact declared JSON
+  pointers for composition, and the host rejects non-object or schema-invalid
+  direct results.
+- Give Limited Graph the same output contracts through its hosted child
+  descriptors. Static graph validation now rejects undeclared source,
+  condition, and target pointers before the first child call; runtime result
+  mismatches cannot be treated as successful graph nodes.
 - Make Limited Graph fail closed on explicit incomplete child results instead
   of entering a success terminal after FoundationPose review requirements,
   Integrated recovery, or IK preview rejection. Add a compound scene/corner/

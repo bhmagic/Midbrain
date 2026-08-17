@@ -4,6 +4,7 @@
   const DEFAULT_MAXIMUM_TURNS = 40;
   const DEFAULT_MAXIMUM_PROGRESS_ITEMS = 80;
   const DEFAULT_MAXIMUM_DETAILED_EVENTS = 2048;
+  const DEFAULT_MAXIMUM_VISUAL_EVIDENCES = 32;
 
   function text(value, fallback = "") {
     const candidate = String(value ?? "").trim();
@@ -49,6 +50,29 @@
     return `${values.length}:${latest ? eventKey(latest) : ""}`;
   }
 
+  function visualEvidenceKey(evidence) {
+    return text(evidence?.evidence_id);
+  }
+
+  function visualEvidenceList(state) {
+    const values = Array.isArray(state?.visual_evidences)
+      ? state.visual_evidences
+      : (state?.visual_evidence ? [state.visual_evidence] : []);
+    const retained = [];
+    const evidenceIds = new Set();
+    for (const evidence of values) {
+      const evidenceId = visualEvidenceKey(evidence);
+      if (!evidenceId || evidenceIds.has(evidenceId)) continue;
+      evidenceIds.add(evidenceId);
+      retained.push(evidence);
+    }
+    return retained;
+  }
+
+  function visualEvidenceRevision(state) {
+    return visualEvidenceList(state).map(visualEvidenceKey).join(":");
+  }
+
   function serverStateRevision(state) {
     const progress = Array.isArray(state?.progress) ? state.progress : [];
     const latestProgress = progress.at(-1) || {};
@@ -65,7 +89,7 @@
       text(latestProgress.label),
       text(latestProgress.occurred_at),
       eventListRevision(state?.event_details),
-      state?.visual_evidence ? "visual" : ""
+      visualEvidenceRevision(state)
     ].join("|");
   }
 
@@ -207,17 +231,15 @@
       this.eventList.className = "chat-event-list";
       this.eventPanel.append(this.eventTitle, this.eventList);
 
-      this.visualElements = createVisualEvidenceElements();
-      this.visualViewer = new window.MidbrainVisualEvidenceViewer({
-        elements: this.visualElements,
-        onStatus: (message) => this.setActivity(message)
-      });
+      this.visualEvidenceList = document.createElement("div");
+      this.visualEvidenceList.className = "visual-evidence-list";
+      this.visualViewers = new Map();
       assistantMessage.append(
         assistantHead,
         this.activity,
         this.summaryPanel,
         this.eventPanel,
-        this.visualElements.panel,
+        this.visualEvidenceList,
         this.answer
       );
       this.article.append(userMessage, assistantMessage);
@@ -388,8 +410,8 @@
       const statusChanged = previousState.status !== nextState.status;
       const eventsChanged = eventListRevision(previousState.event_details) !==
         eventListRevision(nextState.event_details);
-      const visualChanged = serialized(previousState.visual_evidence) !==
-        serialized(nextState.visual_evidence);
+      const visualChanged = serialized(visualEvidenceList(previousState)) !==
+        serialized(visualEvidenceList(nextState));
 
       this.state = nextState;
       this.localOwner = false;
@@ -409,8 +431,8 @@
       } else {
         this.renderEventTitle();
       }
-      if (visualChanged && nextState.visual_evidence) {
-        this.visualViewer.show(nextState.visual_evidence);
+      if (visualChanged) {
+        this.syncVisualEvidences(visualEvidenceList(nextState));
       }
     }
 
@@ -422,9 +444,53 @@
       this.eventTitle.textContent = `Normalized event record | ${events.length} event${events.length === 1 ? "" : "s"}`;
     }
 
+    syncVisualEvidences(evidences) {
+      const values = Array.isArray(evidences) ? evidences : [];
+      const desired = new Set();
+      for (const evidence of values) {
+        const evidenceId = visualEvidenceKey(evidence);
+        if (!evidenceId || desired.has(evidenceId)) continue;
+        desired.add(evidenceId);
+        let entry = this.visualViewers.get(evidenceId);
+        if (!entry) {
+          const elements = createVisualEvidenceElements();
+          entry = {
+            elements,
+            viewer: new window.MidbrainVisualEvidenceViewer({
+              elements,
+              onStatus: (message) => this.setActivity(message)
+            })
+          };
+          this.visualViewers.set(evidenceId, entry);
+        }
+        entry.viewer.show(evidence);
+        this.visualEvidenceList.appendChild(entry.elements.panel);
+      }
+      for (const [evidenceId, entry] of this.visualViewers) {
+        if (desired.has(evidenceId)) continue;
+        entry.elements.panel.remove();
+        this.visualViewers.delete(evidenceId);
+      }
+    }
+
     showVisualEvidence(evidence) {
-      this.state.visual_evidence = evidence;
-      this.visualViewer.show(evidence);
+      const evidenceId = visualEvidenceKey(evidence);
+      if (!evidenceId) return;
+      const values = visualEvidenceList(this.state);
+      const existingIndex = values.findIndex(
+        (candidate) => visualEvidenceKey(candidate) === evidenceId
+      );
+      if (existingIndex >= 0) {
+        values[existingIndex] = evidence;
+      } else {
+        values.push(evidence);
+      }
+      if (values.length > this.history.maximumVisualEvidences) {
+        values.splice(0, values.length - this.history.maximumVisualEvidences);
+      }
+      this.state.visual_evidences = values;
+      this.state.visual_evidence = values.at(-1) || null;
+      this.syncVisualEvidences(values);
       this.history.followIfNearBottom(this.state.status === "RUNNING");
     }
 
@@ -482,9 +548,7 @@
         }
       }
       this.renderEventTitle();
-      if (this.state.visual_evidence) {
-        this.visualViewer.show(this.state.visual_evidence);
-      }
+      this.syncVisualEvidences(visualEvidenceList(this.state));
     }
 
     renderSummary() {
@@ -527,6 +591,7 @@
       maximumProgressItems = DEFAULT_MAXIMUM_PROGRESS_ITEMS,
       detailedEvents = false,
       maximumDetailedEvents = DEFAULT_MAXIMUM_DETAILED_EVENTS,
+      maximumVisualEvidences = DEFAULT_MAXIMUM_VISUAL_EVIDENCES,
       onStatus = () => {}
     }) {
       this.container = container;
@@ -535,6 +600,7 @@
       this.maximumProgressItems = maximumProgressItems;
       this.detailedEvents = Boolean(detailedEvents);
       this.maximumDetailedEvents = maximumDetailedEvents;
+      this.maximumVisualEvidences = maximumVisualEvidences;
       this.onStatus = onStatus;
       this.turns = [];
     }
@@ -567,7 +633,8 @@
         reasoning: "",
         progress: [],
         event_details: [],
-        visual_evidence: null
+        visual_evidence: null,
+        visual_evidences: []
       };
       const turn = new AgentChatTurn(this, state, {attachmentUrl});
       this.turns.push(turn);
@@ -616,18 +683,25 @@
               state.status
             )
         )
-        .map((state) => ({
-          ...state,
-          prompt: String(state.prompt ?? ""),
-          answer: String(state.answer ?? ""),
-          reasoning: String(state.reasoning ?? ""),
-          progress: Array.isArray(state.progress)
-            ? state.progress.slice(-this.maximumProgressItems)
-            : [],
-          event_details: Array.isArray(state.event_details)
-            ? state.event_details.slice(-this.maximumDetailedEvents)
-            : []
-        }));
+        .map((state) => {
+          const visualEvidences = visualEvidenceList(state).slice(
+            -this.maximumVisualEvidences
+          );
+          return {
+            ...state,
+            prompt: String(state.prompt ?? ""),
+            answer: String(state.answer ?? ""),
+            reasoning: String(state.reasoning ?? ""),
+            progress: Array.isArray(state.progress)
+              ? state.progress.slice(-this.maximumProgressItems)
+              : [],
+            event_details: Array.isArray(state.event_details)
+              ? state.event_details.slice(-this.maximumDetailedEvents)
+              : [],
+            visual_evidence: visualEvidences.at(-1) || null,
+            visual_evidences: visualEvidences
+          };
+        });
 
       const serverRunIds = new Set(
         normalizedStates

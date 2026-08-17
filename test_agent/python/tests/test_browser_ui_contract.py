@@ -921,6 +921,11 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn("createVisualEvidenceElements", chat_history)
         self.assertIn("new window.MidbrainVisualEvidenceViewer", chat_history)
+        self.assertIn("DEFAULT_MAXIMUM_VISUAL_EVIDENCES = 32", chat_history)
+        self.assertIn('className = "visual-evidence-list"', chat_history)
+        self.assertIn("this.visualViewers = new Map()", chat_history)
+        self.assertIn("visual_evidences: []", chat_history)
+        self.assertIn("this.syncVisualEvidences(values)", chat_history)
         self.assertIn('copyButton.textContent = "Copy annotated"', chat_history)
         self.assertIn(
             'downloadButton.textContent = "Download PNG"',

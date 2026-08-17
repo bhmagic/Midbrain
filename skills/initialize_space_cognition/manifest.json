@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "reinitialize_space_cognition",
     "description": "Deliberately establish a new local spatial origin from the robot's current stationary pose. This resets the Local VIO session epoch, clears epoch-bound accumulated world observations, and revokes active stationary-workcell calibrations before the origin changes. Use it to recover from VIO drift or to define a new local origin, not as a routine readiness check.",
@@ -56,6 +56,42 @@
       },
       "required": [
         "reason"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {"const": "initialized"},
+        "message": {"type": "string"},
+        "requested_reason": {"type": "string"},
+        "point_cloud_resumed": {"type": "boolean"},
+        "result": {
+          "type": "object",
+          "properties": {
+            "skill_id": {"type": "string"},
+            "session_epoch": {"type": "string"},
+            "world_frame": {"type": "string"},
+            "body_frame": {"type": "string"},
+            "selected_providers": {"type": "object"},
+            "reused_physical_provider": {"type": "boolean"},
+            "motion_inhibit": {"type": ["object", "null"]},
+            "operation": {"type": "string"},
+            "previous_session_epoch": {"type": ["string", "null"]},
+            "invalidated_workcell_activation_ids": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": [
+            "skill_id", "session_epoch", "world_frame", "body_frame",
+            "selected_providers", "reused_physical_provider",
+            "motion_inhibit", "operation", "previous_session_epoch",
+            "invalidated_workcell_activation_ids"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "status", "message", "requested_reason", "point_cloud_resumed",
+        "result"
       ],
       "additionalProperties": false
     },

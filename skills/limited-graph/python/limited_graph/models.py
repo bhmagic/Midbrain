@@ -52,6 +52,7 @@ class ChildDescriptor:
     skill_type: str
     safety_class: str
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
     expected_latency: str = "UNKNOWN"
 
     @property

@@ -4,7 +4,7 @@
   "display_name": "RGB-D Spatial Registration",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "register_rgbd_pixel_to_world",
     "description": "Register a selected RGB image point into a requested 3D frame using explicitly identified camera_system_x/y/z optical coordinates, provider-aligned depth, independent channel grids, calibration, and a timestamped transform. Use this read-only Skill after a visual Skill identifies a pixel or small region.",
@@ -58,6 +58,55 @@
         "pixel_yx",
         "target_frame",
         "depth_policy"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": "physical_agent.spatial_registration_rgbd"},
+        "schema_version": {"const": 1},
+        "observed_at_us": {"type": "integer"},
+        "source_frame": {"type": "string"},
+        "target_frame": {"type": "string"},
+        "rgb_pixel_yx": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "registered_depth_pixel_yx": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer"}},
+        "camera_system_point_m": {
+          "type": "object",
+          "properties": {
+            "camera_system_x": {"type": "number"},
+            "camera_system_y": {"type": "number"},
+            "camera_system_z": {"type": "number"}
+          },
+          "required": ["camera_system_x", "camera_system_y", "camera_system_z"],
+          "additionalProperties": false
+        },
+        "target_point_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "depth_selection": {"type": "object"},
+        "calibration_revision": {"type": ["string", "null"]},
+        "data_route": {"type": "object"},
+        "skill_id": {"type": "string"},
+        "safety_class": {"type": "string"},
+        "physical_action_submitted": {"type": "boolean"},
+        "capability_binding": {"type": "object"},
+        "binding_mode": {"type": "string"},
+        "generic_route_mode": {"type": "string"},
+        "camera_capture": {"type": "object"},
+        "transform_provenance": {"type": "object"},
+        "selected_route_metadata": {"type": "object"},
+        "source_convention_id": {"type": "string"},
+        "target_convention_id": {"type": "string"},
+        "input_temporal_evidence": {"type": "object"}
+      },
+      "required": [
+        "schema", "schema_version", "observed_at_us", "source_frame",
+        "target_frame", "rgb_pixel_yx", "registered_depth_pixel_yx",
+        "camera_system_point_m", "target_point_m", "depth_selection",
+        "calibration_revision", "data_route", "skill_id", "safety_class",
+        "physical_action_submitted", "capability_binding", "binding_mode",
+        "generic_route_mode", "camera_capture", "transform_provenance",
+        "selected_route_metadata", "source_convention_id",
+        "target_convention_id", "input_temporal_evidence"
       ],
       "additionalProperties": false
     },

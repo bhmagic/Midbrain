@@ -4,7 +4,7 @@
   "display_name": "Execute Reviewed Observation Motion",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "execute_reviewed_observation_motion",
     "description": "Commit exactly one fresh Integrated Controller observation-path preview that has already received a separate decision-specific operator approval. The only model-supplied input is the authorization decision ID; coordinates, speeds, modes, contact permissions, leases, and fallback motions cannot be supplied or changed by the model.",
@@ -41,6 +41,27 @@
       },
       "required": [
         "decision_id"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": "physical_agent.reviewed_observation_motion_execution"},
+        "schema_version": {"const": 1},
+        "status": {"type": "string"},
+        "decision_id": {"type": "string"},
+        "approval_executes_action": {"type": "boolean"},
+        "model_supplied_motion_parameters": {"type": "boolean"},
+        "reviewed_scene_refreshed": {"type": "boolean"},
+        "scene_revision": {"type": ["string", "null"]},
+        "integrated_controller": {"type": "object"}
+      },
+      "required": [
+        "schema", "schema_version", "decision_id", "status",
+        "approval_executes_action", "model_supplied_motion_parameters",
+        "reviewed_scene_refreshed", "scene_revision",
+        "integrated_controller"
       ],
       "additionalProperties": false
     },

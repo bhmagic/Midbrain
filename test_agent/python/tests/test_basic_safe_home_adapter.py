@@ -62,9 +62,22 @@ class BasicSafeHomeAdapterTests(unittest.IsolatedAsyncioTestCase):
         client = _BasicClient(state="DISCONNECTED")
         adapter = BasicSafeHomeAdapter(client)
 
-        with self.assertRaisesRegex(RuntimeError, "must be running"):
-            await adapter.execute()
+        result = await adapter.execute()
 
+        self.assertEqual(result["status"], "DEPENDENCY_UNAVAILABLE")
+        self.assertFalse(result["workflow_complete"])
+        self.assertFalse(result["physical_motion_completed"])
+        self.assertEqual(
+            result["required_next_tool"],
+            {
+                "name": "set_provider_residency",
+                "arguments": {
+                    "provider_id": "robot_arm.rebot_dm",
+                    "action": "hot",
+                    "required_capability": "robot_arm.safe_home",
+                },
+            },
+        )
         self.assertEqual(client.safe_home_count, 0)
 
 

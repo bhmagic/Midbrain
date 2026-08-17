@@ -4,7 +4,7 @@
   "display_name": "Locate Effector Front",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "locate_effector_front",
     "description": "Locate the most distal visible point of the current robot effector, mounted tool, or held tool that still has reliable registered-depth evidence. Native camera geometry is returned only as explicit camera_system_x/y/z optical coordinates; transformed target points carry convention provenance. This is general alignment evidence, not a task-specific action point.",
@@ -40,6 +40,94 @@
       },
       "required": [
         "target_frame"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"const": "physical_agent.effector_front_reference"},
+        "schema_version": {"const": 1},
+        "status": {"type": "string"},
+        "eligible_for_control_math": {"type": "boolean"},
+        "motion_usable": {"type": "boolean"},
+        "publishes_control_frame": {"type": "boolean"},
+        "specialized_action_point": {"type": "boolean"},
+        "observed_at_us": {"type": "integer"},
+        "source_frame": {"type": "string"},
+        "target_frame": {"type": "string"},
+        "calibration_revision": {"type": ["string", "null"]},
+        "effector_configuration": {"type": "string"},
+        "front_geometry": {"type": "string"},
+        "depth_fallback_reason": {"type": ["string", "null"]},
+        "front_points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "point_id": {"type": "string"},
+              "registered_depth_pixel_yx": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer"}},
+              "camera_system_point_m": {"type": "object"},
+              "target_point_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+              "depth_m": {"type": "number"},
+              "depth_evidence": {"type": "object"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "control_reference": {
+          "type": "object",
+          "properties": {
+            "method": {"type": "string"},
+            "target_point_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+            "pair_separation_m": {"type": ["number", "null"]}
+          },
+          "required": ["method", "target_point_m", "pair_separation_m"],
+          "additionalProperties": false
+        },
+        "uncertainty_radius_m": {"type": "number"},
+        "quality_reasons": {"type": "array", "items": {"type": "string"}},
+        "quality_warnings": {"type": "array", "items": {"type": "string"}},
+        "visual_measurement_usable": {"type": "boolean"},
+        "controller_consistency": {"type": "object"},
+        "control_math_policy": {"type": "string"},
+        "rejected_visual_reference": {"type": "object"},
+        "vlm_reason": {"type": "string"},
+        "vlm_provenance": {"type": "object"},
+        "data_route": {"type": "object"},
+        "skill_id": {"type": "string"},
+        "safety_class": {"type": "string"},
+        "physical_action_submitted": {"type": "boolean"},
+        "control_frame_published": {"type": "boolean"},
+        "capability_binding": {"type": "object"},
+        "binding_mode": {"type": "string"},
+        "generic_route_mode": {"type": "string"},
+        "camera_capture": {"type": "object"},
+        "transform_provenance": {"type": "object"},
+        "selected_route_metadata": {"type": "object"},
+        "source_convention_id": {"type": "string"},
+        "target_convention_id": {"type": "string"},
+        "vlm_route": {"type": "object"},
+        "vlm_geometry": {"type": "object"},
+        "vlm_evidence": {"type": "object"},
+        "evidence_image": {"type": ["object", "null"]},
+        "visual_evidence": {"type": ["object", "null"]},
+        "input_temporal_evidence": {"type": "object"}
+      },
+      "required": [
+        "schema", "schema_version", "status", "eligible_for_control_math",
+        "motion_usable", "publishes_control_frame",
+        "specialized_action_point", "observed_at_us", "source_frame",
+        "target_frame", "calibration_revision", "effector_configuration",
+        "front_geometry", "depth_fallback_reason", "front_points",
+        "control_reference", "quality_reasons", "vlm_reason", "data_route",
+        "skill_id", "safety_class", "physical_action_submitted",
+        "control_frame_published", "capability_binding", "binding_mode",
+        "generic_route_mode", "camera_capture", "transform_provenance",
+        "selected_route_metadata", "source_convention_id",
+        "target_convention_id", "vlm_route", "vlm_geometry",
+        "vlm_evidence", "evidence_image", "visual_evidence",
+        "input_temporal_evidence"
       ],
       "additionalProperties": false
     },

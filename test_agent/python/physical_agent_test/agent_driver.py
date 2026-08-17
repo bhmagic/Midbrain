@@ -55,7 +55,7 @@ from .scene_segmentation_policy_publisher import (
 from .reviewed_observation_execution import (
     ReviewedObservationExecutionAdapter,
 )
-from .skill_catalog import discover_agent_skills
+from .skill_catalog import describe_output_schema, discover_agent_skills
 from .skill_execution import (
     BoundMethodSkillAdapter,
     HostedModelRouteProfile,
@@ -63,6 +63,9 @@ from .skill_execution import (
     SkillExecutionAdapter,
     SkillInvocationBrokerHandle,
     build_agent_tools,
+    reset_hosted_child_event_sink,
+    set_hosted_child_event_sink,
+    validate_skill_result,
 )
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
@@ -101,6 +104,7 @@ MOVE_EFFECTOR_TO_WORLD_POINT_TOOL = "move_effector_to_world_point"
 DERIVE_FABRIC_WORLD_POINT_TOOL = "derive_fabric_world_point"
 TRANSLATE_FABRIC_DIRECTION_TOOL = "translate_fabric_direction_to_world"
 TRANSLATE_FABRIC_POSE_TOOL = "translate_fabric_pose_to_world"
+OFFSET_WORLD_POINT_TOOL = "offset_world_point"
 LIMITED_GRAPH_AGENT_GUIDANCE = (
     " IMPORTANT: Strongly prefer run_limited_graph whenever two or more "
     "known finite Skills form one predetermined sequential workflow, "
@@ -122,7 +126,12 @@ LIMITED_GRAPH_AGENT_GUIDANCE = (
     "only through a named host profile and only to select a predeclared edge; "
     "always supply a deterministic fallback. Never place credentials, "
     "authorization assertions, or signed action tokens in graph values. The "
-    "host re-evaluates every exact child invocation."
+    "host re-evaluates every exact child invocation. Before writing any "
+    "binding, read the declared structured-result pointers appended to each "
+    "child tool description. Use those exact nested output paths and exact "
+    "destination input paths; never guess, flatten, or rename a field. The "
+    "host rejects undeclared source and target pointers before the first child "
+    "runs."
 )
 LIMITED_GRAPH_ROUTED_REMINDER = (
     " This routed tool surface includes run_limited_graph. Apply the graph-first "
@@ -136,6 +145,8 @@ LIMITED_GRAPH_ROUTED_REMINDER = (
 def _select_routed_tools(
     tools: list[Any],
     allowed_tools: set[str],
+    *,
+    include_limited_graph: bool = True,
 ) -> list[Any]:
     """Filter capability tools while preserving required SDK infrastructure."""
 
@@ -147,7 +158,7 @@ def _select_routed_tools(
     selected_function_count = sum(
         isinstance(tool, FunctionTool) for tool in selected
     )
-    if selected_function_count >= 2 and not any(
+    if include_limited_graph and selected_function_count >= 2 and not any(
         getattr(tool, "name", "") == "run_limited_graph"
         for tool in selected
     ):
@@ -214,6 +225,59 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
     """Narrow tools for explicit spatial intents that must not degrade."""
 
     normalized = " ".join(str(prompt or "").lower().split())
+    safe_home_requested = any(
+        term in normalized
+        for term in (
+            "safe home",
+            "safe-home",
+            "home the arm",
+            "return the arm home",
+            "send the arm home",
+        )
+    )
+    safe_home_companion_terms = any(
+        term in normalized
+        for term in (
+            "slice",
+            "slicing",
+            "cut with the blade",
+            "map out",
+            "obstacle",
+            "workpiece",
+            "work piece",
+            "corner",
+            "world axis",
+            "world frame",
+            "foundationpose",
+            "foundation pose",
+            "calibrat",
+            "align",
+            "inspect",
+            "locate",
+            "move above",
+            "move the hand",
+            "move the gripper",
+        )
+    )
+    if safe_home_requested and not safe_home_companion_terms:
+        return {
+            "route": "SAFE_HOME",
+            "allow_limited_graph": False,
+            "allowed_tools": {
+                "execute_basic_safe_home",
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+            },
+            "instruction": (
+                "The operator explicitly requested Safe Home. Call "
+                "execute_basic_safe_home directly. It is a host operation, "
+                "not a Limited Graph child Skill. Do not deny the request or "
+                "claim that the tool is unavailable when it is present on "
+                "this routed surface. Follow a typed dependency continuation "
+                "only if the Safe Home result returns one, and report success "
+                "only from controller-confirmed completion."
+            ),
+        }
     world_terms = any(
         term in normalized
         for term in ("world axis", "world axes", "world frame", "world origin")
@@ -257,6 +321,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "toilet paper",
             "workpiece",
             "work piece",
+            "working piece",
         )
     )
     bounds_terms = any(
@@ -345,18 +410,22 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "configure_scene_segmentation_policy",
                 "inspect_midbrain_runtime",
                 "set_provider_residency",
+                "inspect_arm_semantic_scene",
                 DERIVE_FABRIC_WORLD_POINT_TOOL,
                 MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
                 TRANSLATE_FABRIC_DIRECTION_TOOL,
+                OFFSET_WORLD_POINT_TOOL,
                 "slice_with_blade",
                 "tool_search",
-            },
+            }
+            | ({"execute_basic_safe_home"} if safe_home_requested else set()),
             "instruction": (
                 "This request combines scene semantics, an absolute work-object "
                 "corner move, and one or more mixed-frame slicing stages. "
                 "Publish only the requested scene objects and request the arm "
                 "scene compiler HOT as direct host setup. Then submit one "
-                "complete Limited Graph containing every remaining requested "
+                "complete Limited Graph whose first Skill node is "
+                "inspect_arm_semantic_scene and which contains every remaining requested "
                 "graph-eligible stage in order; never submit a corner-move "
                 "prefix that omits later cutting or repositioning stages. Use "
                 "derive_fabric_world_point for the named corner and unchanged "
@@ -368,11 +437,64 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "the matching slicing field. A slicing begin offset from the "
                 "current IK uses point_mode="
                 "RELATIVE_TO_CURRENT_EFFECTOR_WORLD. Use null profile selectors "
-                "unless the operator explicitly requested profile numbers. "
+                "unless the operator explicitly requested profile numbers. If "
+                "a later target is an offset from an earlier Skill result, use "
+                "offset_world_point: bind the earlier point and its world-frame "
+                "identity unchanged, and supply the operator's exact offset, "
+                "unit, and reference. For an offset above the first slicing "
+                "point, bind /plan/path/slice_begin_point_world_m and "
+                "/plan/workcell_binding/world_frame from that slicing node; "
+                "never substitute /plan/path/planned_retract_endpoint_world_m. "
                 "Give every physical request its own predetermined SKILL node; "
                 "never retry or loop a physical node. A successful terminal "
                 "must follow all requested stages and explicit complete child "
-                "results."
+                "results. If Safe Home was also requested, call "
+                "execute_basic_safe_home directly only after the graph "
+                "completes; it is intentionally not a graph child and is not "
+                "a reason to deny the preceding workflow."
+            ),
+        }
+    if work_object_motion_terms and slicing_terms and mixed_frame_terms:
+        return {
+            "route": "WORK_OBJECT_MOTION_AND_MIXED_FRAME_SLICING",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                "inspect_arm_semantic_scene",
+                DERIVE_FABRIC_WORLD_POINT_TOOL,
+                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+                TRANSLATE_FABRIC_DIRECTION_TOOL,
+                OFFSET_WORLD_POINT_TOOL,
+                "slice_with_blade",
+                "tool_search",
+            }
+            | ({"execute_basic_safe_home"} if safe_home_requested else set()),
+            "instruction": (
+                "This request combines an absolute work-object corner move "
+                "with one or more mixed-frame slicing stages under the "
+                "existing scene policy. Submit one complete Limited Graph "
+                "starting with inspect_arm_semantic_scene and containing every "
+                "requested graph-eligible stage in order; "
+                "never submit only the corner move or only the slice. Use "
+                "derive_fabric_world_point for the named corner and unchanged "
+                "offset, then bind its world target fields unchanged into "
+                "move_effector_to_world_point. Use "
+                "translate_fabric_direction_to_world for every arm-base or "
+                "controlled-effector direction and keep world directions "
+                "unchanged. Bind direction_world unchanged into the matching "
+                "slicing field. A slicing begin offset from current IK uses "
+                "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD. Use null "
+                "profile selectors unless the operator explicitly requested "
+                "profile numbers. Use offset_world_point for any later target "
+                "defined relative to an earlier Skill result. For a target "
+                "above the first slice point, bind that slicing node's "
+                "/plan/path/slice_begin_point_world_m and "
+                "/plan/workcell_binding/world_frame; never substitute its "
+                "planned retract endpoint. Give every physical request its own "
+                "predetermined SKILL node and never retry or loop it. If Safe "
+                "Home was also requested, call execute_basic_safe_home "
+                "directly after graph completion; it is not graph-eligible "
+                "and must not be treated as unavailable."
             ),
         }
     if scene_policy_terms and work_object_motion_terms:
@@ -1087,6 +1209,23 @@ async def consume_openai_agent_stream(
     return result
 
 
+def _deduplicating_agent_event_sink(event_sink: AgentEventSink) -> AgentEventSink:
+    """Suppress duplicate visual payloads from live children and final tools."""
+
+    visual_evidence_ids: set[str] = set()
+
+    async def publish(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "visual.evidence.created":
+            evidence_id = str(payload.get("evidence_id") or "").strip()
+            if evidence_id and evidence_id in visual_evidence_ids:
+                return
+            if evidence_id:
+                visual_evidence_ids.add(evidence_id)
+        await event_sink(event_type, payload)
+
+    return publish
+
+
 def build_turn_safe_session_input(
     history: list[Any],
     new_input: list[Any],
@@ -1509,14 +1648,40 @@ class PrototypeAgentDriver:
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
+            async def world_point_offset_adapter(
+                arguments: dict[str, Any],
+            ) -> str:
+                result = await fabric_spatial_translator.offset_world_point(
+                    source_position_world_m=arguments.get(
+                        "source_position_world_m"
+                    ),
+                    source_world_frame_id=arguments.get(
+                        "source_world_frame_id"
+                    ),
+                    source_observed_at_us=arguments.get(
+                        "source_observed_at_us"
+                    ),
+                    source_session_epoch=arguments.get(
+                        "source_session_epoch"
+                    ),
+                    offset_vector=arguments.get("offset_vector"),
+                    offset_unit=arguments.get("offset_unit"),
+                    offset_reference=arguments.get("offset_reference"),
+                )
+                return json.dumps(result, ensure_ascii=False, default=str)
+
             adapters[
                 "skill.translate_fabric_direction.v1"
             ] = BoundMethodSkillAdapter(fabric_direction_translation_adapter)
             adapters[
                 "skill.translate_fabric_pose.v1"
             ] = BoundMethodSkillAdapter(fabric_pose_translation_adapter)
+            adapters["skill.offset_world_point.v1"] = BoundMethodSkillAdapter(
+                world_point_offset_adapter
+            )
             eligible.add(TRANSLATE_FABRIC_DIRECTION_TOOL)
             eligible.add(TRANSLATE_FABRIC_POSE_TOOL)
+            eligible.add(OFFSET_WORLD_POINT_TOOL)
         if tool_registration_skill is not None:
             async def tool_registration_adapter(
                 arguments: dict[str, Any],
@@ -2230,6 +2395,10 @@ class PrototypeAgentDriver:
                     call_id,
                     arguments,
                 )
+                validate_skill_result(
+                    result,
+                    integrated_motion_descriptor.output_schema,
+                )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
             eligible.add(PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL)
@@ -2251,7 +2420,10 @@ class PrototypeAgentDriver:
                             "reach the autonomous free-space policy and "
                             "controller commit. Dependency, alignment, "
                             "confirmation, preview, authorization, freshness, "
-                            "and controller failures return without motion."
+                            "and controller failures return without motion. "
+                            "Declared structured-result pointers for "
+                            "composition: "
+                            f"{describe_output_schema(integrated_motion_descriptor.output_schema)}."
                         ),
                         params_json_schema=integrated_motion_descriptor.input_schema,
                         on_invoke_tool=perform_relative_effector_motion,
@@ -2337,6 +2509,10 @@ class PrototypeAgentDriver:
                         arguments,
                     )
                 )
+                validate_skill_result(
+                    result,
+                    world_point_motion_descriptor.output_schema,
+                )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
             eligible.add(MOVE_EFFECTOR_TO_WORLD_POINT_TOOL)
@@ -2359,7 +2535,9 @@ class PrototypeAgentDriver:
                         "and binds the signed preview continuation to this "
                         "call. Frame, epoch, transform, collision, IK, "
                         "authorization, and dependency failures return "
-                        "without motion."
+                        "without motion. Declared structured-result pointers "
+                        "for composition: "
+                        f"{describe_output_schema(world_point_motion_descriptor.output_schema)}."
                     ),
                     params_json_schema=(
                         world_point_motion_descriptor.input_schema
@@ -2773,7 +2951,11 @@ class PrototypeAgentDriver:
                 "evidence and never authorizes or submits motion. Do not "
                 "refuse solely because a supported frame conversion is "
                 "required; invoke the appropriate translator and evaluate its "
-                "typed result."
+                "typed result. When a downstream world point is defined as a "
+                "metric offset from an earlier structured world point, call "
+                "offset_world_point with the earlier point and frame identity "
+                "unchanged. Never perform that addition in the model or "
+                "substitute a nearby field with different semantics."
             )
         if "run_limited_graph" in eligible:
             instructions += LIMITED_GRAPH_AGENT_GUIDANCE
@@ -2888,6 +3070,12 @@ class PrototypeAgentDriver:
                 ),
             )
         vlm_token = set_vlm_model_selection(vlm_model_override)
+        active_event_sink = (
+            _deduplicating_agent_event_sink(event_sink)
+            if event_sink is not None
+            else None
+        )
+        child_event_token = set_hosted_child_event_sink(active_event_sink)
         try:
             if (
                 not isinstance(input_value, RunState)
@@ -2909,6 +3097,10 @@ class PrototypeAgentDriver:
                 routed_tools = _select_routed_tools(
                     self.agent.tools,
                     allowed_tools,
+                    include_limited_graph=intent_route.get(
+                        "allow_limited_graph",
+                        True,
+                    ),
                 )
                 routed_graph_reminder = (
                     LIMITED_GRAPH_ROUTED_REMINDER
@@ -2928,7 +3120,7 @@ class PrototypeAgentDriver:
                         f"{routed_graph_reminder}"
                     ),
                 )
-            if event_sink is None:
+            if active_event_sink is None:
                 awaitable = Runner.run(
                     selected_agent,
                     input_value,
@@ -2941,13 +3133,14 @@ class PrototypeAgentDriver:
                         input_value,
                         **runner_arguments,
                     ),
-                    event_sink,
+                    active_event_sink,
                 )
             result = await await_with_progress_heartbeat(
                 awaitable,
                 stage="AGENT_MODEL_AWAITING_RESPONSE",
             )
         finally:
+            reset_hosted_child_event_sink(child_event_token)
             reset_vlm_model_selection(vlm_token)
         report_operation_progress("AGENT_RUN_COMPLETED")
         return result

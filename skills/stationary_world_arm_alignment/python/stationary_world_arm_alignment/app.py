@@ -73,6 +73,39 @@ def auto_bootstrap_providers_enabled() -> bool:
     }
 
 
+def persisted_alignment_image(
+    kind: str,
+    *,
+    latest: dict[str, Any] | None,
+    run_root: Path,
+) -> bytes | None:
+    """Read the latest persisted image without trusting stored local paths."""
+
+    if kind not in {"rgb", "depth", "overlay"} or not isinstance(latest, dict):
+        return None
+    alignment_id = str(latest.get("alignment_id") or "")
+    if re.fullmatch(r"[0-9A-Za-z-]+", alignment_id) is None:
+        return None
+    root = run_root.resolve()
+    run_dir = (root / alignment_id).resolve()
+    if run_dir.parent != root or not run_dir.is_dir():
+        return None
+    if kind == "overlay":
+        selected = sorted(
+            run_dir.glob("foundation_pose_attempt_*_selected_overlay.jpg")
+        )
+        candidates = [*reversed(selected), run_dir / "overlay.jpg"]
+    elif kind == "rgb":
+        candidates = [run_dir / "camera.jpg"]
+    else:
+        candidates = [run_dir / "depth.png"]
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.parent == run_dir and resolved.is_file():
+            return resolved.read_bytes()
+    return None
+
+
 def _consume_task(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
@@ -247,6 +280,18 @@ async def image(kind: str) -> Response:
     if kind not in {"rgb", "depth", "overlay"}:
         raise HTTPException(404)
     payload = await artifacts.image(kind)
+    progress = await skill.progress.snapshot()
+    if str(progress.get("state") or "") != "RUNNING":
+        try:
+            persisted = persisted_alignment_image(
+                kind,
+                latest=skill.store.latest(),
+                run_root=settings.run_root,
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            persisted = None
+        if persisted is not None:
+            payload = persisted
     if payload is None:
         raise HTTPException(404, detail=f"{kind} image has not been captured")
     mime = "image/png" if kind == "depth" else "image/jpeg"

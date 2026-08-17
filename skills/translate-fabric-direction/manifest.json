@@ -4,7 +4,7 @@
   "display_name": "Translate Fabric Direction to World",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "discoverable": true,
     "tool_name": "translate_fabric_direction_to_world",
     "description": "Translate one explicit unitless direction from active-world, configured arm-base, or current controlled-effector axes into the active Fabric world frame. The read-only result exposes direction_world with frame, epoch, calibration, timestamp, and transform-path provenance. Use it as a tandem coordinate boundary before a downstream Skill that accepts only world directions; it performs no motion and grants no authority.",
@@ -73,6 +73,51 @@
         "source_session_epoch"
       ],
       "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {"type": "string"},
+        "schema_version": {"type": "integer"},
+        "status": {"type": "string"},
+        "workflow_complete": {"type": "boolean"},
+        "physical_motion_authorized": {"type": "boolean"},
+        "physical_motion_submitted": {"type": "boolean"},
+        "translation_id": {"type": "string"},
+        "convention_id": {"type": "string"},
+        "direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "target_world_frame_id": {"type": "string"},
+        "target_session_epoch": {"type": "string"},
+        "coordinate_at_us": {"type": "integer"},
+        "translated_at_us": {"type": "integer"},
+        "calibration_revision": {"type": ["string", "null"]},
+        "framed_direction_world": {
+          "type": "object",
+          "properties": {
+            "vector": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+            "units": {"type": "string"},
+            "frame_id": {"type": "string"},
+            "convention_id": {"type": "string"},
+            "observed_at_us": {"type": "integer"},
+            "session_epoch": {"type": "string"},
+            "calibration_revision": {"type": ["string", "null"]},
+            "transform_path": {"type": "array"}
+          },
+          "required": ["vector", "units", "frame_id", "convention_id", "observed_at_us", "session_epoch", "calibration_revision", "transform_path"],
+          "additionalProperties": false
+        },
+        "source": {"type": "object"},
+        "derivation": {"type": "object"},
+        "supplied_source_frame_id": {"type": "string"},
+        "active_source_frame_id": {"type": "string"},
+        "source_frame_id": {"type": "string"},
+        "source_world_binding": {"type": "object"},
+        "active_world_binding": {"type": "object"},
+        "required_next_tool": {"type": ["object", "null"]},
+        "message": {"type": "string"}
+      },
+      "required": ["status", "workflow_complete", "physical_motion_authorized", "physical_motion_submitted"],
+      "additionalProperties": true
     },
     "execution_adapter": {
       "adapter_id": "skill.translate_fabric_direction.v1",

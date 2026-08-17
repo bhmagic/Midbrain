@@ -7,8 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .bindings import decode_json, pointer_tokens
+from .bindings import decode_json, pointer_tokens, resolve_pointer
 from .models import ChildDescriptor, ChildSkillBroker, GraphValidationError
+from .schema_paths import require_schema_pointer, schema_pointer_candidates
 
 
 _NODE_KINDS = {
@@ -98,8 +99,9 @@ def _validate_source(
     *,
     initial_values: dict[str, Any],
     nodes: dict[str, dict[str, Any]],
+    descriptors: Mapping[str, ChildDescriptor],
     field: str,
-) -> None:
+) -> tuple[dict[str, Any], ...] | None:
     kind = source.get("source_kind")
     source_name = source.get("source_name")
     source_node_id = source.get("source_node_id")
@@ -112,6 +114,12 @@ def _validate_source(
             raise GraphValidationError(
                 f"{field} INITIAL source_node_id must be null"
             )
+        resolve_pointer(
+            initial_values[source_name],
+            str(source.get("source_pointer") or ""),
+            field=field,
+        )
+        return None
     elif kind == "NODE_RESULT":
         if not isinstance(source_node_id, str) or source_node_id not in nodes:
             raise GraphValidationError(
@@ -121,9 +129,24 @@ def _validate_source(
             raise GraphValidationError(
                 f"{field} NODE_RESULT source_name must be null"
             )
+        source_node = nodes[source_node_id]
+        if source_node["kind"] != "SKILL":
+            raise GraphValidationError(
+                f"{field} source node {source_node_id!r} has no Skill result"
+            )
+        source_tool_name = str(source_node["skill"]["tool_name"])
+        source_descriptor = descriptors.get(source_tool_name)
+        if source_descriptor is None:
+            raise GraphValidationError(
+                f"{field} source Skill {source_tool_name!r} is not eligible"
+            )
+        return schema_pointer_candidates(
+            source_descriptor.output_schema,
+            str(source.get("source_pointer") or ""),
+            field=field,
+        )
     else:
         raise GraphValidationError(f"{field} has invalid source_kind {kind!r}")
-    pointer_tokens(str(source.get("source_pointer") or ""))
 
 
 def _validate_condition(condition: dict[str, Any], *, field: str) -> None:
@@ -260,20 +283,31 @@ def validate_graph(
                     binding,
                     initial_values=initial_values,
                     nodes=nodes,
+                    descriptors=descriptors,
                     field=f"node {node_id} binding {binding_index}",
                 )
-                pointer_tokens(str(binding.get("target_pointer") or ""))
+                require_schema_pointer(
+                    descriptor.input_schema,
+                    str(binding.get("target_pointer") or ""),
+                    field=f"node {node_id} binding {binding_index} target",
+                )
             retry_condition = config.get("retry_condition")
             if retry_condition is not None:
                 _validate_condition(
                     retry_condition,
                     field=f"node {node_id} retry_condition",
                 )
+                require_schema_pointer(
+                    descriptor.output_schema,
+                    str(retry_condition.get("source_pointer") or ""),
+                    field=f"node {node_id} retry_condition",
+                )
         elif kind == "SWITCH":
-            _validate_source(
+            source_schemas = _validate_source(
                 config,
                 initial_values=initial_values,
                 nodes=nodes,
+                descriptors=descriptors,
                 field=f"node {node_id} switch source",
             )
             for case_index, case in enumerate(config.get("cases") or []):
@@ -281,6 +315,12 @@ def validate_graph(
                     case["condition"],
                     field=f"node {node_id} case {case_index}",
                 )
+                if source_schemas is not None:
+                    require_schema_pointer(
+                        {"anyOf": list(source_schemas)},
+                        str(case["condition"].get("source_pointer") or ""),
+                        field=f"node {node_id} case {case_index}",
+                    )
         elif kind == "MODEL_ROUTE":
             _reject_credential_keys(
                 config.get("instruction"),
@@ -298,6 +338,7 @@ def validate_graph(
                     item,
                     initial_values=initial_values,
                     nodes=nodes,
+                    descriptors=descriptors,
                     field=f"node {node_id} model input {input_index}",
                 )
             edge_ids = [str(route.get("edge_id") or "") for route in config.get("routes") or []]

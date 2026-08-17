@@ -21,10 +21,25 @@ class BasicSafeHomeAdapter:
         before = await self.client.state()
         provider_state = str(before.get("provider_state") or "UNKNOWN")
         if provider_state == "DISCONNECTED":
-            raise RuntimeError(
-                "Basic Controller must be running before safe-home; activate "
-                "robot_arm.rebot_dm and retry"
-            )
+            return {
+                "status": "DEPENDENCY_UNAVAILABLE",
+                "workflow_complete": False,
+                "physical_motion_requested": True,
+                "physical_motion_completed": False,
+                "provider_state_before": provider_state,
+                "required_next_tool": {
+                    "name": "set_provider_residency",
+                    "arguments": {
+                        "provider_id": "robot_arm.rebot_dm",
+                        "action": "hot",
+                        "required_capability": "robot_arm.safe_home",
+                    },
+                },
+                "message": (
+                    "Basic Controller is disconnected. Activate its declared "
+                    "safe-home capability and retry this exact operation."
+                ),
+            }
         result = await self.client.safe_home()
         details = result.get("details")
         details = details if isinstance(details, dict) else {}
