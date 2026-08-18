@@ -87,6 +87,34 @@ limitations.
 - Structured results distinguish success, rejection, limitation, uncertain
   outcome, and actionable continuation.
 
+### Limited Graph and compact context
+
+- The concise Agent authoring projection compiles deterministically into the
+  canonical immutable graph and fails before execution on invalid children,
+  inputs, compact pointers, routes, reachability, nesting, or limits.
+- Direct and graph Skill calls validate complete results, expose only declared
+  compact values plus an opaque detail reference, and never make detailed
+  diagnostic storage authoritative for the action outcome.
+- Provider-detail and Skill-result-detail reads remain top-level, read-only,
+  sanitized, and unavailable as graph children.
+- A child-declared Provider handover uses the same Manager lifecycle policy and
+  resumes the same child call without moving Provider selection or credentials
+  into the graph.
+- Each physical child preserves the direct call's prepared-action,
+  authorization, fencing, freshness, completion, and uncertain-outcome checks.
+- Failure routing publishes bounded compact `last_failure`, and no authoring-
+  correction path can repeat a started graph or physical child.
+- Child visual evidence reaches the event stream when produced and remains
+  attributable to the exact graph, node, and child call.
+- Wall time, transitions, physical actions, per-node timeout, and retry counts
+  remain bounded; graph executors cannot be nested.
+
+The current reference implementation is accepted as near stable for its
+retained linear physical workflow. Retained live branch/switch/retry/model-
+route coverage, simultaneous multi-visual presentation, material-cut outcome
+sensing, and strict session-context sizing remain separate qualification; see
+[Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 ### Arm-root translation refinement
 
 - An active motion-usable alignment and matching camera, VIO, arm, convention,

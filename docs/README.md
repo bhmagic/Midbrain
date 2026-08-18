@@ -34,6 +34,10 @@ trying to do rather than by the order in which documents were created.
 - [Runtime catalog and Skill result-tier feasibility](performance/2026-08-17-runtime-and-skill-result-tier-feasibility.md)
   records the measurements, approved design, and implemented compact Manager
   catalog plus mandatory two-tier Skill-result checkpoint.
+- [Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
+  defines what the current near-stable checkpoint proves, which duties remain
+  unchanged, and which routing, presentation, sensing, and context-size tests
+  remain open.
 - [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
   records the implemented non-moving translation refiner and the remaining
   automatic multi-movement six-degree-of-freedom alignment work.
@@ -53,6 +57,7 @@ trying to do rather than by the order in which documents were created.
 | [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) | Active limitations and prioritized work only. |
 | [Release and GitHub](10_RELEASE_AND_GITHUB.md) | Maintainer release workflow. |
 | [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md) | Mixed implementation record: the non-moving XYZ refiner is available; the automatic multi-movement six-degree-of-freedom workflow remains active design. |
+| [Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md) | Current reference-implementation acceptance boundary, unchanged duties, operational interpretation, and open qualification. |
 
 The VIO implementation design belongs to
 [`providers/local_vio`](../providers/local_vio/README.md). FoundationPose setup
@@ -108,3 +113,4 @@ is folded into the owning contract and component documentation, then retired.
 - [Stationary World-Space Arm Alignment Skill](../skills/stationary_world_arm_alignment/README.md)
 - [Refine Arm-Root Translation Skill](../skills/refine-arm-root-translation/SKILL.md)
 - [Reference Agent](../test_agent/README.md)
+- [Limited Graph Skill](../skills/limited-graph/SKILL.md)

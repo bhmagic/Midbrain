@@ -7,6 +7,10 @@ The measurements and proposal analysis below retain their historical wording;
 the implementation disposition is recorded separately so design assumptions
 remain distinguishable from shipped behavior.
 
+Current Limited Graph/context acceptance and remaining qualification are
+maintained in
+[Limited Graph Status and Qualification](../14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 ## 2026-08-17 implementation disposition
 
 The two approved proposals are implemented without changing authentication,

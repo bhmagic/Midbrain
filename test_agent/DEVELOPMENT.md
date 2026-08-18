@@ -1,5 +1,27 @@
 # Development record
 
+## 2026-08-18 — Near-stable documentation reconciliation
+
+The merged implementation checkpoint `8777ebf` / `32c90d1` is now reflected
+across the active framework, architecture, operation, extension, validation,
+roadmap, release, Platform Core, contract, Skill, and Reference Agent
+documentation. One current
+[status and qualification document](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
+owns the meaning of near stable, the unchanged duty and authority boundaries,
+the accepted live linear path, the open qualification, operator
+interpretation, and the failure-investigation record.
+
+The audit also corrected the active roadmap's stale claim that a general
+absolute-world free-space goal was not implemented; the current
+`derive_fabric_world_point` to `move_effector_to_world_point` boundary is now
+described as implemented but still awaiting broader physical qualification.
+An older Limited Graph “Current promotion state” heading was relabeled as its
+2026-08-16 Provider-handover snapshot so it cannot override the new current
+summary. Dated incident and performance records retain their historical
+claims and now point to the current status owner where appropriate. No runtime,
+authentication, authorization, Provider, Fabric, controller, or physical-duty
+behavior changed in this documentation checkpoint.
+
 ## 2026-08-18 — Near-stable checkpoint boundary
 
 The current checkpoint is accepted as near stable based on stopped-software

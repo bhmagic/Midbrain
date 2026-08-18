@@ -1,5 +1,28 @@
 # Limited Graph development record
 
+## Current promotion state
+
+- Near-stable linear reference workflow: accepted at implementation commit
+  `8777ebf`, merged to `main` by `32c90d1`.
+- Stopped composition, concise-to-canonical authoring, schema/output preflight,
+  compact/detail projection, child-declared Provider handover, physical child
+  authorization, failure ownership, `last_failure`, and incremental visual
+  observation are implemented and covered by repository tests.
+- Retained live qualification covers the scene-map, absolute transit,
+  direction translation, two Slicing children, intermediate reposition,
+  Integrated Provider handover, early SAM2 evidence, a trusted
+  pre-submission failure terminal, and separate Basic safe home.
+- Retained live qualification does not yet cover every success/failure branch,
+  switch, retry, model-selected edge, closely timed multiple visual cards, or
+  material-cut sensing. Projected Agent history also remains item-bounded
+  rather than strictly byte/token-bounded, and the refinement Skill's compact
+  tier remains comparatively large.
+
+The exact active boundary is maintained in
+[Limited Graph Status and Qualification](../../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+Older checkpoint sections below retain the state observed on their stated
+date; they are not the current promotion summary.
+
 This file records significant implementation checkpoints, validation evidence,
 and known gaps while the Skill is under development. The normative behavior is
 defined in `contracts/22_limited_skill_graph.md`; this record explains how the
@@ -417,7 +440,7 @@ environment-isolation audit passed. No Provider or robot action was started.
   after the source child had completed. Output-schema discovery is deferred to
   a separate development checkpoint.
 
-## Current promotion state
+## Promotion state at the 2026-08-16 Provider-handover checkpoint
 
 - Stopped unit composition: implemented and passing focused tests.
 - Read-only host composition: implemented and repository-tested.

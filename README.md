@@ -112,6 +112,18 @@ Skill-owned deterministic orchestration. Extra Agent prompting must not be
 used to compensate for an owning component's missing readiness or workflow
 logic.
 
+For a predetermined sequence of two or more eligible finite Skills, the
+reference Agent strongly prefers one bounded Limited Graph. The Agent authors
+a concise ordered-step projection; the host compiles and preflights the
+canonical immutable graph, and every child retains its ordinary typed result,
+Provider lifecycle, authorization, visual-evidence, and physical-completion
+boundary. Installed Skill results use mandatory compact/detail tiers so graph
+bindings and routine model history carry only declared compact fields while
+the top-level Agent can request one exact sanitized detail record when needed.
+The current linear workflow is accepted as near stable, with the remaining
+branch, multi-visual, material-outcome, and context-bound qualifications listed
+in [Limited Graph Status and Qualification](docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 See [Architecture and Data Flow](docs/01_ARCHITECTURE_AND_DATA_FLOW.md) for the
 runtime flow and [Physical AI Contracts](contracts/README.md) for normative and
 working-draft interfaces.
@@ -131,6 +143,9 @@ The repository currently contains:
   arm-root translation refinement, relative and absolute-world free-space
   positioning, no-contact approach, guarded motion, and the development
   non-clamping slicing sequence.
+- A bounded Limited Graph Skill with concise Agent authoring, typed compact
+  bindings, branching, retry and model-route primitives, child-declared
+  Provider handover, per-child authorization, and incremental visual evidence.
 - One backend-owned autonomous Agent runtime with regular and developer views,
   normalized events, visual evidence, chat projection, and a local diagnostic
   journal, plus an explicitly staged numeric Slicing test surface that does not
@@ -197,6 +212,7 @@ Key references:
 - [Validation](docs/06_VALIDATION.md)
 - [Configuration and Security](docs/07_CONFIGURATION_AND_SECURITY.md)
 - [Current Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md)
+- [Limited Graph Status and Qualification](docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
 - [Gripper-Motion Arm-Root Alignment](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
 - [Refine Arm-Root Translation Skill](skills/refine-arm-root-translation/SKILL.md)
 - [Move Effector to World Point Skill](skills/move-effector-to-world-point/SKILL.md)

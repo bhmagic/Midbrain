@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reconcile the Reference Agent documentation with the merged near-stable
+  Limited Graph/context checkpoint. Document the exact accepted linear path,
+  unchanged authority boundaries, `Stop task` ownership, compact/detail
+  context behavior, immediate child visuals, and remaining live routing,
+  multi-visual, task-sensing, and context-size qualification. No Agent runtime
+  behavior changes in this documentation-only checkpoint.
 - Mark the current graph/context implementation near stable after retained live
   runs completed the eight-Skill two-cut graph twice with the same digest,
   four physical actions, successful Provider handover, zero retry/failure, and

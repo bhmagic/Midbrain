@@ -47,6 +47,12 @@ schema versions it supports.
 | [Contact Work Control](21_contact_work_control.md) | Independent contact Provider, finite Skill plans, wrench-to-joint effort limits, replacement, and relaxation | v0.1 working draft |
 | [Limited Skill Graph](22_limited_skill_graph.md) | Immutable bounded composition, typed branching, retry, model routing, and child authorization carry | v0.1 development contract |
 
+The Limited Graph contract remains a development contract even though the
+current reference implementation has a near-stable linear-workflow checkpoint.
+Implementation acceptance and remaining live qualification are tracked
+separately in
+[Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 ## How to use the set
 
 - A new Provider starts with contracts 00–05 and adds the applicable spatial,

@@ -343,3 +343,43 @@ the session parent above the existing run cards. The right pane groups
 envelopes behind category and per-event disclosures. It adds no command,
 resume, approval, or deletion path. Both Agent views link to the viewer, and
 the Manager portal exposes the same loopback surface.
+
+## Bounded multi-Skill graph flow
+
+When the requested workflow contains two or more predetermined eligible finite
+Skills, the reference Agent strongly prefers one Limited Graph instead of a
+new model decision between each Skill. The graph does not merge those Skills
+or transfer their duties. It provides bounded orchestration across their
+existing typed boundaries:
+
+1. Manager publishes the regulated complete Provider/capability catalog.
+   Arbitrary Provider diagnostics remain available only through an explicit
+   top-level detail read.
+2. Skill discovery publishes concise inputs, complete result field names, and
+   each Skill's declared compact result pointers without importing the Skill.
+3. The Agent authors ordered steps, explicit bindings, and any required edge,
+   retry, switch, or model-route policy in the concise authoring schema.
+4. The Agent host deterministically compiles canonical graph version 1 and
+   runs schema, child-eligibility, compact-pointer, reachability, limit, and
+   nested-graph preflight before a child starts.
+5. Each child executes through the same direct-call host adapter. A child-owned
+   Provider continuation may pass through the existing Manager lifecycle
+   broker and resume the same child identity; the graph cannot select a
+   Provider or carry lifecycle credentials.
+6. The host validates the child's complete sanitized result, retains a bounded
+   detail copy when configured, and gives the graph only compact fields plus
+   an opaque detail reference. Bindings and conditions can read only declared
+   compact pointers.
+7. Validated visual evidence is projected to the Agent event stream at child
+   completion rather than waiting for the whole graph. The graph retains a
+   bounded trace and publishes compact terminal state including
+   `last_failure` when applicable.
+8. The top-level Agent evaluates the graph outcome. Any new semantic decision,
+   operator question, unowned recovery, or uncertain physical result starts a
+   separate Agent decision rather than an implicit graph continuation.
+
+Authentication, authorization, signed previews, Provider leases, Fabric
+ownership, controller validation, and physical-completion truth remain with
+their existing owners. See
+[Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
+for the current acceptance boundary.

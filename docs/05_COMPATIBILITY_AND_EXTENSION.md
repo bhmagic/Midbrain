@@ -60,29 +60,55 @@ Copy contracts and behavior—not vendor-specific assumptions or local paths.
 Use a Skill for one bounded operation that begins for a purpose, coordinates
 capabilities, produces a result, cleans up, and ends.
 
-1. Define one narrow outcome and an explicit input/result schema.
-2. Declare required capabilities in the Skill manifest. Discovery must not
+1. Define one narrow outcome and explicit input plus complete-result schemas.
+2. Declare the mandatory compact/detail result policy. Keep task outcome,
+   physical-action state, required continuation, spatial identity, and visual
+   evidence needed for ordinary routing in the compact tier; retain large
+   diagnostics only in the sanitized detail tier.
+3. Declare required capabilities in the Skill manifest. Discovery must not
    import the implementation or start its dependencies.
-3. Bind Providers through Manager rather than embedding a fixed Provider ID
+4. Bind Providers through Manager rather than embedding a fixed Provider ID
    unless a documented explicit fallback is required.
-4. Read coherent observations from Fabric. Do not assemble a private snapshot
+5. Read coherent observations from Fabric. Do not assemble a private snapshot
    by polling several Provider control APIs for their individual “latest”
    values.
-5. Apply a Skill-specific temporal policy using source timestamps, identities,
+6. Apply a Skill-specific temporal policy using source timestamps, identities,
    epochs, uncertainty, and expected cadence. A single global stale timeout is
    not sufficient for all robotic work.
-6. Separate read-only evidence, nonphysical preview, authorization, and
+7. Separate read-only evidence, nonphysical preview, authorization, and
    physical commit.
-7. Bound retries to operations that are nonphysical, idempotent, or proven not
+8. Bound retries to operations that are nonphysical, idempotent, or proven not
    to duplicate an uncertain physical result.
-8. Return structured success, rejection, limitation, and continuation data.
-9. Release leases, sessions, model resources, and Provider residency changes
+9. Return structured success, rejection, limitation, and continuation data.
+10. Release leases, sessions, model resources, and Provider residency changes
    in guaranteed cleanup paths.
 
 The [Finite Skill Contract](../contracts/07_skill_contract.md) defines the
 lifecycle boundary. The Skills under `skills` show manifest discovery,
 read-only perception, initialization, alignment, and guarded-execution
 patterns.
+
+### Make a Skill eligible for Limited Graph
+
+Graph eligibility is derived from the same routed Agent surface; it is not a
+separate permission that weakens a Skill's ordinary checks. A compatible Skill
+must publish schema-valid compact pointers for every field that another node
+may bind, compare, switch on, retry on, or return. The host must validate the
+complete result before projection and reject any undeclared noncompact value
+that leaks into graph-visible state.
+
+A Skill may declare a typed Provider-residency continuation that its direct
+adapter already owns. The graph host may broker that exact continuation under
+normal Manager policy and resume the same child call; the graph must not infer
+a Provider, synthesize lifecycle work, or receive credentials. Physical Skills
+retain exact prepared-action, authorization, fencing, call-identity,
+completion, and uncertain-outcome rules. Valid visual-evidence references must
+remain compact so the event observer can publish them immediately.
+
+Do not expose graph executors, diagnostic Provider-detail reads, or detailed
+Skill-result reads as graph children. See the
+[Limited Skill Graph Contract](../contracts/22_limited_skill_graph.md) and
+[current qualification boundary](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
 
 ### Keep replaceable-effector geometry in profiles
 
@@ -133,7 +159,8 @@ profile revisions and must not become an implicit baseline requirement.
 The Agent is a planner and coordinator, not a privileged device driver. A new
 Agent adapter should:
 
-1. Read the Manager capability and finite-Skill catalog.
+1. Read the regulated complete Manager Provider/capability catalog and finite-
+   Skill catalog; request full sanitized Provider detail only when necessary.
 2. Present only eligible, typed Skills to the model or deterministic planner.
 3. Keep Provider activation, exact preview validation, authority, and
    controller enforcement in Midbrain host paths.
@@ -150,6 +177,17 @@ Agent adapter should:
    host already owns canonical execution state. Resolve authorization limits,
    targets, timing, controller digests, and freshness checks from that pending
    host state immediately before execution.
+10. Validate complete Skill results, expose only their declared compact tier
+    by default, and keep full-result inspection top-level, explicit, scoped to
+    one opaque result reference, and non-authoritative.
+
+For a predetermined sequence of eligible Skills, an adapter may expose the
+concise Limited Graph authoring projection and deterministically compile it to
+canonical graph version 1 before static preflight. It must not place another
+graph executor or either detail-inspection tool inside the graph. Branch,
+retry, switch, and model-route decisions may use only declared compact fields,
+and every physical child retains the same authorization boundary as a direct
+call.
 
 A compatible Agent adapter may reduce one mechanically determined
 preview-to-commit model round trip with a call-scoped prepared-action

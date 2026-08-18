@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Document Manager's regulated complete Agent runtime catalog, explicit
+  sanitized Provider-detail boundary, and the rule that Limited Graph Provider
+  handover continues through ordinary lifecycle policy rather than the detail
+  route. No Platform Core runtime behavior changes in this documentation-only
+  checkpoint.
 - Publish every reviewed workcell replacement and all transforms that it
   supersedes in one Fabric batch. Superseded camera, VIO, and arm-base edges
   now receive explicit `REVOKED` / `motion_usable=false` envelopes before the

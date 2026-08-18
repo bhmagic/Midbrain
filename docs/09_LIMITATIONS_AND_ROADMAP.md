@@ -79,9 +79,11 @@ The current hand-centric angular projection and five-second arm-base-aligned
 visible-surface AABBs still require physical qualification across thin,
 occluded, and depth-poor objects. Named AABB corners are agent-planning
 references only; they do not establish a tracked solid extent or collision
-authority. A separate, general absolute arm-base free-space goal contract is
-still required before an Agent may turn one of these coordinates into motion;
-the perception path must not own that operation.
+authority. The implemented `derive_fabric_world_point` plus
+`move_effector_to_world_point` path can transform one named corner and execute
+an absolute-world free-space goal through the ordinary guarded controller
+boundary. It still requires broader physical qualification, and the perception
+path does not own motion or collision authority.
 
 ### Generalize the no-contact closed loop
 
@@ -145,6 +147,28 @@ preview plus its exact commit as one call-scoped prepared action. Lower-level
 interfaces remain available, and recovery, calibration review, new evidence,
 replanning, operator input, and uncertain physical outcomes still return to
 their owning boundary.
+
+### Complete Limited Graph qualification
+
+The current reference implementation is near stable for the retained linear
+scene-map, absolute transit, two-slice, intermediate reposition, Provider-
+handover, incremental-visual, and separate safe-home workflow. Complete the
+remaining qualification without changing existing duties or authorization:
+
+- exercise purpose-built success/failure branching, switch, bounded retry,
+  and model-selected edge routing with retained evidence;
+- prove that multiple closely timed child visuals remain independently
+  inspectable on both Agent pages;
+- add task-level material-cut sensing instead of treating completed Slicing
+  motion as proof that material was cut;
+- bound projected session context by serialized bytes or model tokens as well
+  as item count; and
+- narrow large nested refinement sample/visual compact fields while preserving
+  the outcome, safety, spatial, continuation, and evidence fields needed by
+  ordinary routing.
+
+See [Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
+for the accepted boundary and investigation record.
 
 ### Reduce Provider- and Skill-owned latency
 
