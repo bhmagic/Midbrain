@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+- Mark the current graph/context implementation near stable after retained live
+  runs completed the eight-Skill two-cut graph twice with the same digest,
+  four physical actions, successful Provider handover, zero retry/failure, and
+  visual publication within 0.5 seconds of graph submission. The repeated
+  request also completed the separate Basic safe-home path. Preserve known
+  follow-up scope—branch/model routing, multi-card presentation, physical task-
+  success sensing, oversized refinement summaries, and byte-aware history—as
+  documented limitations rather than expanding this stabilization checkpoint.
+- Accept both concise initial-binding spellings, `$name#/pointer` and
+  `$initial#/name/pointer`, and publish both consistently in model guidance.
+  This fixes a live FoundationPose graph authoring failure without changing the
+  canonical graph schema, digest, validation, or execution contract.
+- Publish a compact structured `last_failure` from Limited Graph so the Agent
+  sees the failed node, child tool, exact reason, and known physical-submission
+  state without loading the full trace. Treat non-success graph output as a
+  terminal ownership boundary: do not continue failed or remaining child
+  stages directly, and do not reuse prior partial progress for a repeated
+  prompt unless the user explicitly requests resumption.
+- Route a trusted child-owned pre-submission rejection through a Limited Graph
+  failure edge instead of reporting an uncertain physical outcome. Slicing now
+  marks only an Integrated alignment-preview rejection that precedes preview
+  execution as `physical_action_submitted=False`. Unclassified exceptions,
+  timeouts, cancellations, and any possibly submitted physical operation remain
+  `UNKNOWN_OUTCOME` and are never retried.
+- Fix the first live concise-authoring regression. Rename ambiguous `value`,
+  `args`, and condition `value` fields to `value_json`, `args_json`, and
+  `expected_json`. Return one `AUTHORING_INVALID` Limited Graph result only for
+  compilation or static preflight proven to precede all child execution, then
+  terminate a second invalid submission. The explicit format still reduces the
+  retained two-cut graph from 6,451 to 3,789 characters (41.3%) and its schema
+  from 5,421 to 4,874 characters (10.1%).
+- Reduce the scene-policy/runtime/provider setup sequence from three Agent
+  decisions to two on explicit scene-policy routes by returning the fresh
+  regulated Manager catalog with policy publication. Provider lifecycle and
+  authorization remain a separate exact `set_provider_residency` call. Expose
+  a concise Limited Graph authoring projection and deterministically compile it
+  to the unchanged canonical graph before preflight and execution. The retained
+  two-cut graph shrinks materially while preserving exact canonical
+  compilation.
+- Implement the approved complete compact Manager catalog and mandatory
+  two-tier Skill results. The Agent now receives all Provider/capability entries
+  through regulated lifecycle/readiness fields, can explicitly inspect one
+  sanitized full Provider record, and can inspect one complete or selected
+  sanitized Skill result by opaque result ID. All 23 Skill manifests use
+  discovery schema version 3 compact-pointer metadata; shared and prepared
+  motion FunctionTools validate, store, and project through one finalizer.
+  Limited Graph preflight and runtime enforce compact child fields and retain
+  detailed evidence only behind top-level-only references. Existing
+  authentication, Manager/Provider/Fabric duties, and physical authorization
+  paths are unchanged.
+- Document the current non-motion critical path from retained Agent journals
+  and Limited Graph child results. The newest two-slice run bounds strict
+  non-motion at 78.475–84.678 seconds, led by 40.606 seconds of Agent
+  orchestration, 21.359–27.562 seconds of Skill computation/waiting, and
+  15.691 seconds of semantic-scene Provider readiness. Controller
+  completion-minus-plan is now identified as mixed movement and settling. The
+  audit also separates Manager's compact lifecycle/capability primitives from
+  the oversized Agent runtime projection and confirms that output-schema
+  validation is not a two-tier Skill-result projection.
 - Record the corrected retained physical timing comparison. Before Limited
   Graph, the successful equivalent required four prompts and 103.8 seconds of
   Agent-active time; the current one-prompt graph took 91.2 seconds. Direct

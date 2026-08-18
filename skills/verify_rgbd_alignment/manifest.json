@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "verify_rgbd_image_alignment",
     "description": "Validate one synchronized RGB-D bundle by checking its actual grids, frame timestamps, registered-depth boundary, shared-memory route, numeric edge correspondence, and a VLM review of the RGB, registered-depth, and overlay image content. Use this read-only Skill before metric registration when image presence alone is insufficient.",
@@ -88,7 +88,18 @@
         "timing", "data_route", "capability_binding", "artifacts",
         "image_review_required", "images_present_is_not_sufficient"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/request", "/motion_usable",
+          "/numeric_quality", "/vlm_review", "/vlm_route", "/geometry",
+          "/timing", "/artifacts", "/image_review_required",
+          "/images_present_is_not_sufficient"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 65536
+      }
     },
     "execution_adapter": {
       "adapter_id": "test_agent.verify_rgbd_alignment.v1",

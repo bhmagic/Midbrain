@@ -4,7 +4,7 @@
   "display_name": "Locate Visible Item",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "locate_item",
     "description": "Identify and locate one visible requested item in 3D, metric, depth, world, camera, or robot coordinates using synchronized RGB-D evidence. This is the mandatory Skill whenever a request combines object identification with 3D location; do not substitute the RGB-only analyze_visual_scene tool. It returns a metric workpiece point when depth is trustworthy, a task-plane intersection when supplied, or explicit bearing-only evidence with an active-perception recommendation. A successful metric result publishes a short-lived Fabric workpiece assertion for the HOT scene compiler; it never moves the robot or treats reflective/transparent background depth as item geometry.",
@@ -191,7 +191,22 @@
         "visual_evidence", "input_temporal_evidence",
         "semantic_scene_assertion"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/status", "/eligible_for_control_math",
+          "/motion_usable", "/object_id", "/item_label", "/semantic_role",
+          "/contact_policy", "/quality_reasons", "/vlm_reason",
+          "/observed_at_us", "/source_frame", "/target_frame",
+          "/calibration_revision", "/material_class", "/metric_source",
+          "/location", "/bearing", "/degraded_reason",
+          "/recommended_next_action", "/physical_action_submitted",
+          "/source_convention_id", "/target_convention_id", "/visual_evidence"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.observe_pointed_object.locate.v2",

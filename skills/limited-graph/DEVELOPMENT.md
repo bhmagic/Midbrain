@@ -5,6 +5,120 @@ and known gaps while the Skill is under development. The normative behavior is
 defined in `contracts/22_limited_skill_graph.md`; this record explains how the
 current code reached that contract and where to investigate regressions.
 
+## 2026-08-18: initial-value binding spelling compatibility
+
+- Run `e3e0a083-e97f-4944-94e4-ddeed362c9c3` exposed a contradiction in the
+  reference-host concise authoring surface. The model-facing instruction said
+  `$initial#/pointer`, while the compiler treated the token after `$` as the
+  initial-value name and therefore expected `$name#/pointer`.
+- The Agent authored `$initial#/request` for initial value `request`. Static
+  preflight correctly started no child, but the mismatch consumed the one
+  pre-execution correction and the later invalid attempt terminated the run.
+- The concise compiler now accepts both `$name#/pointer` and the equivalent
+  namespace spelling `$initial#/name/pointer`. If an initial value is actually
+  named `initial`, the original `$initial#/pointer` meaning is preserved.
+  Compilation still produces the same canonical `source_kind`, `source_name`,
+  and `source_pointer` fields before unchanged canonical validation.
+- Forward runs `04ff2e46-5024-4ef0-bca0-734a39da19e5` and
+  `e54aaecf-4b93-42b8-9f78-64559a87a73b` also verified the prior compact
+  failure repair. Both complete cutting graphs published the exact first-
+  Slicing rejection in `last_failure`, followed their declared failure edge,
+  and performed no direct or later-stage continuation.
+- The two cutting failures remain child-owned preview rejections: one
+  singularity/IK-residual rejection and one shadow-planning time-budget
+  rejection. This authoring repair does not change Slicing, Integrated, IK,
+  physical retry, authorization, Provider, or Fabric behavior.
+- Validation after the repair passed 485 Test Agent tests plus 27 subtests, 60
+  standalone Limited Graph/Slicing tests, the Limited Graph package validator,
+  141 documentation files, 1,150 repository-wide Python tests plus 27
+  subtests, all Python wheel builds, and 80 Rust tests.
+
+## 2026-08-18: compact terminal-failure visibility and graph ownership
+
+- Autonomous run `2869b95b-a158-42fa-aa39-6e0c7056d8c0` proved the typed
+  pre-submission path worked: the first Slicing node emitted
+  `CHILD_PHYSICAL_ACTION_NOT_SUBMITTED`, selected `failed`, retained one
+  completed physical action, and did not execute either later graph stage.
+- The Agent-facing two-tier projection omitted `trace`, while the retained
+  top-level message remained only `Limited Graph failed`. The Agent therefore
+  lacked the failed node, child tool, rejection reason, and submission state.
+  It guessed that Contact residency was missing and invoked the failed Slicing
+  child directly outside the terminated graph. A repeated prompt in the same
+  session produced a second direct Slicing attempt.
+- Added mandatory compact `last_failure` data with `kind`, `node_id`,
+  `tool_name`, `reason`, and `physical_action_submitted`. Full trace remains in
+  the detail tier; the compact field removes the information gap without
+  restoring trace bloat.
+- Agent guidance now treats every non-success graph result as termination of
+  that submitted workflow. Failed and remaining graph children must not be
+  continued directly. Material replanning must use a new complete bounded
+  graph, and a repeated user message is fresh unless it explicitly requests
+  resumption.
+- This change does not permit physical retry, change child authorization, move
+  Provider responsibility, or modify Slicing, IK, collision, Fabric, or motion
+  behavior.
+- Focused Limited Graph/Test Agent regressions passed 90 tests. The complete
+  Test Agent suite passed 481 tests and 27 subtests; the complete repository
+  suite passed 1,146 tests and 27 subtests, 80 Rust tests, all Python wheel
+  builds, 140 documentation files, 106 JSON files, source-integrity checks,
+  and Skill Creator validation.
+
+## 2026-08-18: live child pre-submission classification
+
+- Live repeated slicing graphs compiled and ran under the explicit concise
+  authoring format. Their first four nodes completed with the same first-slice
+  arguments as the earlier successful canonical graph.
+- Both runs received a Slicing-owned `IK_PREVIEW_REJECTED` exception before an
+  Integrated preview ID or physical submission. The runner conservatively
+  returned `UNKNOWN_OUTCOME` because the exception carried no typed submission
+  evidence, so the declared failure edge was not selected.
+- Added a trusted child-owner `physical_action_submitted=False` exception
+  signal. The Test Agent broker converts only that signal into
+  `ChildPhysicalActionNotSubmitted`; the runner records
+  `CHILD_PHYSICAL_ACTION_NOT_SUBMITTED`, removes the unsubmitted invocation
+  from the physical-action count, and follows the declared failure edge once.
+- Unclassified exceptions, timeouts, cancellations, schema-invalid physical
+  results, and possibly submitted operations retain `UNKNOWN_OUTCOME` and are
+  never retried.
+- Focused validation passed 31 runner tests, 21 host-broker tests, and 14
+  Slicing host-adapter tests. The complete Test Agent suite passed 481 tests
+  and 27 subtests; the complete Slicing suite passed 29 tests.
+
+## 2026-08-17: reference-host concise authoring projection
+
+- Kept the canonical manifest, runner, graph digest, validation and execution
+  contract unchanged. The reference Test Agent now exposes a smaller strict
+  authoring projection and deterministically compiles it to canonical version 1
+  before the installed schema and all static preflight checks run.
+- Ordered Skill steps imply ordinary success and failure edges. Bindings retain
+  exact JSON pointers; edge overrides, read-only retries, switches, model
+  routes, custom terminals and all six limits remain explicit when used.
+- The exact retained eight-Skill two-cut graph round-tripped to the original
+  canonical structure while shrinking from 6,451 to 3,749 serialized
+  characters (41.9%). The model-facing schema shrank from 5,421 to 4,572
+  compact characters (15.7%).
+- Focused compiler, strict schema, concise end-to-end, canonical compatibility,
+  Provider-handover, discovery and route validation passed 82 tests without
+  starting runtime or physical processes.
+- The complete Test Agent suite subsequently passed 477 tests and 27 subtests;
+  Skill Creator validation passed, and repository documentation, configuration,
+  environment-isolation, JSON and source-integrity checks completed.
+
+## 2026-08-17: live concise JSON-field correction
+
+- Two live runs failed before their first node because the shortened
+  `initial[].value` field received raw operator text rather than encoded JSON.
+  No child or physical action started.
+- Renamed JSON-bearing projection fields to `value_json`, `args_json`, and
+  `expected_json`. Added one model-visible `AUTHORING_INVALID` correction only
+  for compilation or static preflight before all execution; a second invalid
+  submission terminates.
+- Added exact raw-text, corrected-resubmission, zero-child and bounded-second-
+  rejection regressions. The reliable projection still reduces the retained
+  two-cut graph by 41.3% and its model-facing schema by 10.1%.
+- Focused validation passed 100 tests. The complete Test Agent suite passed 479
+  tests and 27 subtests without starting runtime or physical processes.
+
 ## 2026-08-15: contract and standalone package
 
 - Created the standalone `skills/limited-graph` Skill package with concise

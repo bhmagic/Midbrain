@@ -7,7 +7,10 @@ import tempfile
 import unittest
 
 from slicing_skill import BLADE_PROFILE_EXTENSION_ID
-from slicing_skill.host_adapter import SlicingHostAdapter
+from slicing_skill.host_adapter import (
+    SlicingAlignmentPreviewRejected,
+    SlicingHostAdapter,
+)
 
 
 def activation(*, activation_id="activation-1"):
@@ -359,6 +362,26 @@ class SlicingHostAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["plan"]["blade_profile_number"], 1)
         self.assertEqual(result["plan"]["motion_profile_number"], 1)
         self.assertEqual(events[-1], ("contact_execute", "contact.slicing", 3))
+
+    async def test_alignment_preview_rejection_proves_no_physical_submission(self):
+        class RejectingIntegrated(FakeIntegrated):
+            async def preview(self, **arguments):
+                self.events.append(("integrated_preview", arguments))
+                return {
+                    "status": "IK_PREVIEW_REJECTED",
+                    "message": "candidate approaches a singularity",
+                }
+
+        events = []
+        integrated = RejectingIntegrated(events)
+
+        with self.assertRaises(SlicingAlignmentPreviewRejected) as caught:
+            await self.adapter(events, integrated=integrated).invoke(agent_arguments())
+
+        self.assertIs(caught.exception.physical_action_submitted, False)
+        self.assertIn("IK_PREVIEW_REJECTED", str(caught.exception))
+        self.assertFalse(any(item[0] == "integrated_execute" for item in events))
+        self.assertFalse(any(item[0] == "contact_execute" for item in events))
 
     async def test_next_agent_invocation_uses_live_profile_edits_and_defaults(self):
         events = []

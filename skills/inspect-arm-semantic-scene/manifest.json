@@ -4,7 +4,7 @@
   "display_name": "Inspect Arm Semantic Sphere Scene",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "inspect_arm_semantic_scene",
     "description": "Inspect the latest Fabric-hosted semantic sphere scene produced for the integrated arm controller. Reports freshness, ROI policies, obstacle/work-object/pushable counts, producer identity, depth fallback mode, fresh arm-base-aligned WORK_OBJECT visible-surface AABBs with named corners, a missing camera-to-arm-base transform prerequisite, and optionally a bounded list of spheres. This Skill never starts hardware and never authorizes motion.",
@@ -94,7 +94,23 @@
         "message": {"type": "string"}
       },
       "required": ["status", "workflow_complete", "physical_motion_authorized", "message"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/message", "/reason", "/required_transform", "/mapping_failure",
+          "/provider_id", "/provider_instance_id", "/boot_id",
+          "/observed_at_us", "/age_ms", "/expires_at_us",
+          "/scene_revision", "/frame_id", "/contract_valid",
+          "/sphere_count", "/sphere_type_counts", "/sphere_scope_counts",
+          "/sphere_object_counts", "/truncated", "/visual_evidence",
+          "/required_provider_id", "/required_capability",
+          "/required_next_tool"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "test_agent.inspect_arm_semantic_scene.v1",

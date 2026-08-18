@@ -4,7 +4,7 @@
   "display_name": "Offset World Point",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "offset_world_point",
     "description": "Add one typed metric offset to an upstream point that is already expressed in the active Fabric world. The offset axes may be active-world, configured arm-base, or current controlled-effector axes. The read-only result exposes target_position_world_m with current frame, epoch, calibration, timestamp, and transform provenance for unchanged forwarding to a downstream world-point consumer.",
@@ -122,7 +122,22 @@
         "physical_motion_authorized",
         "physical_motion_submitted"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/source_position_world_m",
+          "/target_position_world_m", "/offset_vector_world_m",
+          "/source_world_frame_id", "/target_world_frame_id",
+          "/source_session_epoch", "/target_session_epoch",
+          "/convention_id", "/calibration_revision",
+          "/source_world_binding", "/active_world_binding",
+          "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.offset_world_point.v1",

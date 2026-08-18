@@ -4,7 +4,7 @@
   "display_name": "Translate Fabric Direction to World",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "translate_fabric_direction_to_world",
     "description": "Translate one explicit unitless direction from active-world, configured arm-base, or current controlled-effector axes into the active Fabric world frame. The read-only result exposes direction_world with frame, epoch, calibration, timestamp, and transform-path provenance. Use it as a tandem coordinate boundary before a downstream Skill that accepts only world directions; it performs no motion and grants no authority.",
@@ -117,7 +117,21 @@
         "message": {"type": "string"}
       },
       "required": ["status", "workflow_complete", "physical_motion_authorized", "physical_motion_submitted"],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/direction_world",
+          "/framed_direction_world", "/source_frame_id",
+          "/target_world_frame_id", "/target_session_epoch",
+          "/convention_id", "/calibration_revision",
+          "/source_world_binding", "/active_world_binding",
+          "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.translate_fabric_direction.v1",

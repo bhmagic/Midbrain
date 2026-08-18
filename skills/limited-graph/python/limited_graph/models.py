@@ -38,6 +38,16 @@ class ChildInvocationNotStarted(RuntimeError):
         self.reason = reason
 
 
+class ChildPhysicalActionNotSubmitted(RuntimeError):
+    """Report a child-owned rejection proven to precede physical submission."""
+
+    def __init__(self, tool_name: str, child_call_id: str, reason: str):
+        super().__init__(reason)
+        self.tool_name = tool_name
+        self.child_call_id = child_call_id
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class ChildInvocationResult:
     """Return one child result with host-side prerequisite trace events."""
@@ -54,6 +64,7 @@ class ChildDescriptor:
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     expected_latency: str = "UNKNOWN"
+    compact_pointers: tuple[str, ...] = ()
 
     @property
     def read_only(self) -> bool:

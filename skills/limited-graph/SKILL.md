@@ -20,17 +20,30 @@ field.
 
 ## Build the graph
 
-1. Select a finite start node and at least one terminal node.
-2. Use `SKILL` nodes for child calls, `SWITCH` nodes for structured conditions,
-   `MODEL_ROUTE` nodes only when deterministic routing is insufficient, and
-   `TERMINAL` nodes for every final outcome.
-3. Encode literal child arguments as JSON in `arguments_json`. Bind prior
-   values with declared JSON pointers instead of repeating or interpreting
-   them. Output and input pointer paths are preflighted before any child runs.
+1. Set `authoring_version` to 1 and list predetermined child calls as ordered
+   `steps`. Each step has `id`, `tool`, child-input JSON encoded in
+   `args_json`, and a `bind` array. Encode each named initial value in
+   `value_json` and each condition comparison in `expected_json`.
+2. Use `{to, from}` bindings. `from` is `node-id#/pointer`,
+   `$name#/pointer`, or the equivalent `$initial#/name/pointer` namespace
+   form. Output and input paths are preflighted before any child runs.
+3. Let order provide ordinary success edges. Add `edges`, `switches`, or
+   `model_routes` only when the workflow needs non-linear routing. An empty
+   `terminals` array supplies the default complete and failed outcomes.
 4. Give every cycle a predetermined visit and transition budget.
 5. Request retries only for read-only Skills. Treat physical timeout or
    uncertain completion as terminal until authoritative evidence resolves it.
+   A trusted child-owner rejection that explicitly proves no physical action
+   was submitted follows the node's failure edge without retry.
 6. Provide a deterministic fallback for every model route.
+
+The reference host compiles this concise projection into canonical Limited
+Graph version 1 before unchanged validation, digesting, authorization and
+execution. The projection cannot add authority or bypass child contracts.
+If the host returns `AUTHORING_INVALID`, correct the reported authoring field
+or topology and submit exactly one replacement graph. This correction is
+available only before any child starts; never use it to repeat an executed or
+uncertain graph.
 
 Represent separately requested physical operations as distinct predetermined
 `SKILL` nodes. Never retry a physical node or route a cycle back to it.
@@ -40,6 +53,13 @@ node's failure edge. For a physical child, it also sends an explicit
 `physical_motion_completed: false` result to the failure edge. Use a `SWITCH`
 for additional domain-specific success requirements. A successful terminal
 must be reachable only after every requested stage has completed.
+
+Every result publishes a compact `last_failure` record when execution reaches
+a failure condition, including the node, tool, reason, and whether physical
+action submission is known. A non-success result terminates that submitted
+workflow. Do not invoke its failed child or remaining stages directly outside
+the graph. A materially different replanning attempt must be expressed as a
+new complete bounded graph; do not use this rule to retry a physical node.
 
 Never place `run_limited_graph` or another Limited Graph executor in a graph.
 Never place credentials, authorization assertions, signed plan tokens, or raw

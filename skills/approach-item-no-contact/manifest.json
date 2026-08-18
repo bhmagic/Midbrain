@@ -4,7 +4,7 @@
   "display_name": "Plan No-Contact Item Approach",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "plan_no_contact_item_approach",
     "description": "Locate one visible item and the effector front in parallel, express both in rebot_arm_base, and plan a Cartesian correction to the requested no-contact boundary. Wording such as reach, touch, until reaching, or until touching describes the boundary destination and is not contact authorization. Observation uncertainty remains explicit evidence instead of becoming a hidden clearance margin. The default extra WORK_OBJECT standoff is 0 mm; Integrated prevents intersection, keeps 10 mm from KEEP_OUT obstacles, and may truncate at closest-safe. The adapter requests a shadow preview and returns an exact autonomously signed execution continuation. Both landmarks are observed again for residual realignment. This planning Skill never submits motion.",
@@ -147,7 +147,24 @@
         "physical_motion_authorized", "motion_submitted", "target_frame",
         "object_id", "contact_policy", "next_action", "source_evidence"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/status", "/workflow_complete",
+          "/physical_motion_authorized", "/motion_submitted", "/target_frame",
+          "/object_id", "/iteration_index", "/contact_policy",
+          "/requested_standoff_m", "/effective_standoff_m",
+          "/current_distance_to_item_m", "/predicted_distance_to_item_m",
+          "/combined_uncertainty_m", "/item_point_arm_base_m",
+          "/effector_point_arm_base_m", "/next_target_arm_base_m",
+          "/step_distance_m", "/maximum_step_m", "/next_action", "/source_evidence",
+          "/controller_preview_valid", "/motion_usable", "/goal_reached",
+          "/motion_outcome", "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.approach_item_no_contact.plan.v1",

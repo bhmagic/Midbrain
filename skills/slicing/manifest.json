@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "slice_with_blade",
     "description": "Perform one non-clamping blade slice from a begin point, world inward blade direction, projected world slicing direction, and slice length. Send null for both profile selectors unless the user explicitly requests profile numbers; never infer or reuse a number from conversation because null resolves the live defaults. The mounted-effector blade-use profile owns optional hard joint locks. The Skill derives the inspection endpoints and measured-start slice and outward-retract displacements, aligns through Integrated, submits exactly three Contact-owned Cartesian segments, and requests relax.",
@@ -197,7 +197,27 @@
         "alignment", "contact", "plan", "task_success_assessed",
         "result_semantics"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_requested",
+          "/task_success_assessed", "/result_semantics", "/plan/skill_id",
+          "/plan/path/slice_begin_point_world_m",
+          "/plan/path/projected_slicing_direction_world",
+          "/plan/path/requested_slice_length_m",
+          "/plan/path/slice_endpoint_world_m",
+          "/plan/path/planned_retract_endpoint_world_m",
+          "/plan/workcell_binding/activation_id",
+          "/plan/workcell_binding/calibration_revision",
+          "/plan/workcell_binding/world_frame",
+          "/plan/workcell_binding/arm_base_frame",
+          "/plan/blade_profile_number", "/plan/motion_profile_number",
+          "/plan/task_success_assessed"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.slicing.host.v1",

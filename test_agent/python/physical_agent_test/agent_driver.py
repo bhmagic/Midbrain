@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import math
@@ -55,6 +56,12 @@ from .scene_segmentation_policy_publisher import (
 from .reviewed_observation_execution import (
     ReviewedObservationExecutionAdapter,
 )
+from .result_projection import (
+    finalize_skill_result,
+    redact_credential_values,
+    select_json_pointer,
+    select_result_detail,
+)
 from .skill_catalog import describe_output_schema, discover_agent_skills
 from .skill_execution import (
     BoundMethodSkillAdapter,
@@ -63,10 +70,12 @@ from .skill_execution import (
     SkillExecutionAdapter,
     SkillInvocationBrokerHandle,
     build_agent_tools,
+    reset_graph_authoring_repair_state,
     reset_hosted_child_event_sink,
+    set_graph_authoring_repair_state,
     set_hosted_child_event_sink,
-    validate_skill_result,
 )
+from .skill_result_details import SkillResultDetailStore
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
@@ -105,6 +114,42 @@ DERIVE_FABRIC_WORLD_POINT_TOOL = "derive_fabric_world_point"
 TRANSLATE_FABRIC_DIRECTION_TOOL = "translate_fabric_direction_to_world"
 TRANSLATE_FABRIC_POSE_TOOL = "translate_fabric_pose_to_world"
 OFFSET_WORLD_POINT_TOOL = "offset_world_point"
+CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL = (
+    "configure_scene_policy_and_inspect_runtime"
+)
+
+
+def _scene_policy_parameters_schema() -> dict[str, Any]:
+    """Return the shared strict input schema for scene-policy publication."""
+
+    return {
+        "type": "object",
+        "properties": {
+            "policy_id": {"type": "string", "minLength": 1},
+            "objects": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "object_id": {"type": "string", "minLength": 1},
+                        "type": {
+                            "type": "string",
+                            "enum": ["KEEP_OUT", "PUSHABLE", "WORK_OBJECT"],
+                        },
+                        "description": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["object_id", "type", "description"],
+                    "additionalProperties": False,
+                },
+            },
+            "arm_description": {"type": "string", "minLength": 1},
+        },
+        "required": ["policy_id", "objects", "arm_description"],
+        "additionalProperties": False,
+    }
+
+
 LIMITED_GRAPH_AGENT_GUIDANCE = (
     " IMPORTANT: Strongly prefer run_limited_graph whenever two or more "
     "known finite Skills form one predetermined sequential workflow, "
@@ -131,7 +176,13 @@ LIMITED_GRAPH_AGENT_GUIDANCE = (
     "child tool description. Use those exact nested output paths and exact "
     "destination input paths; never guess, flatten, or rename a field. The "
     "host rejects undeclared source and target pointers before the first child "
-    "runs."
+    "runs. A non-success Limited Graph result terminates that submitted "
+    "workflow. Never invoke a failed graph child or any remaining graph stage "
+    "directly afterward, and never treat an explicit no-action-submitted "
+    "failure as permission for an out-of-graph physical retry. Replan only as "
+    "a new complete bounded graph when a materially different plan is "
+    "warranted. A repeated user message is a fresh request unless the user "
+    "explicitly asks to resume prior partial progress."
 )
 LIMITED_GRAPH_ROUTED_REMINDER = (
     " This routed tool surface includes run_limited_graph. Apply the graph-first "
@@ -407,8 +458,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
         return {
             "route": "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
             "allowed_tools": {
-                "configure_scene_segmentation_policy",
-                "inspect_midbrain_runtime",
+                CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
                 "set_provider_residency",
                 "inspect_arm_semantic_scene",
                 DERIVE_FABRIC_WORLD_POINT_TOOL,
@@ -422,8 +472,11 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "instruction": (
                 "This request combines scene semantics, an absolute work-object "
                 "corner move, and one or more mixed-frame slicing stages. "
-                "Publish only the requested scene objects and request the arm "
-                "scene compiler HOT as direct host setup. Then submit one "
+                "Call configure_scene_policy_and_inspect_runtime once with only "
+                "the requested scene objects. Use its fresh compact runtime "
+                "catalog to request the arm scene compiler HOT in the next "
+                "tool call; do not call inspect_midbrain_runtime separately. "
+                "Then submit one "
                 "complete Limited Graph whose first Skill node is "
                 "inspect_arm_semantic_scene and which contains every remaining requested "
                 "graph-eligible stage in order; never submit a corner-move "
@@ -501,8 +554,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
         return {
             "route": "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
             "allowed_tools": {
-                "configure_scene_segmentation_policy",
-                "inspect_midbrain_runtime",
+                CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
                 "set_provider_residency",
                 DERIVE_FABRIC_WORLD_POINT_TOOL,
                 MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
@@ -510,11 +562,13 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "instruction": (
                 "This request first defines scene semantics and then requests "
                 "a work-object corner motion. Call "
-                "configure_scene_segmentation_policy with only the objects "
+                "configure_scene_policy_and_inspect_runtime with only the objects "
                 "the user described and their requested types. Never infer "
                 "additional KEEP_OUT objects. Include a complete robot-arm "
                 "description for the independent SAM2 arm exclusion mask. "
-                "Then request world_model.arm_scene_compiler HOT with exact "
+                "Use the returned fresh compact runtime catalog, without a "
+                "separate inspect_midbrain_runtime call, and then request "
+                "world_model.arm_scene_compiler HOT with exact "
                 "required_capability=world_model.arm.semantic_scene; Manager "
                 "owns transitive activation of its declared dependencies. "
                 "Do not call inspect_arm_semantic_scene: call "
@@ -537,9 +591,8 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
         return {
             "route": "EXPLICIT_SCENE_SEGMENTATION_POLICY",
             "allowed_tools": {
-                "configure_scene_segmentation_policy",
+                CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
                 "inspect_arm_semantic_scene",
-                "inspect_midbrain_runtime",
                 "set_provider_residency",
                 "plan_no_contact_item_approach",
                 "execute_no_contact_approach_step",
@@ -547,12 +600,14 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             },
             "instruction": (
                 "The user is explicitly defining scene semantics. Call "
-                "configure_scene_segmentation_policy with only the objects "
+                "configure_scene_policy_and_inspect_runtime with only the objects "
                 "the user described and their requested types. Never infer "
                 "additional KEEP_OUT objects. Include a complete robot-arm "
                 "description for the independent SAM2 arm exclusion mask. "
                 "Unclaimed visible geometry remains PUSHABLE and non-blocking. "
-                "After publishing, request only "
+                "Use the returned fresh compact runtime catalog, without a "
+                "separate inspect_midbrain_runtime call. After publishing, "
+                "request only "
                 "world_model.arm_scene_compiler HOT with exact required_capability="
                 "world_model.arm.semantic_scene; Manager owns transitive "
                 "activation of its declared SAM2, camera, and Basic "
@@ -1254,51 +1309,85 @@ def build_midbrain_runtime_snapshot(
     *,
     eligible_skill_tools: list[str],
 ) -> dict[str, Any]:
-    """Preserve complete current Manager evidence and redact credentials."""
+    """Build the regulated complete-catalog fallback used by host tests."""
 
     compact_providers: list[dict[str, Any]] = []
     for provider in providers:
         config = provider.get("config")
         config = config if isinstance(config, dict) else {}
-        environment = config.get("env")
-        environment = environment if isinstance(environment, dict) else {}
-        safe_environment = {
-            key: (
-                "[REDACTED]"
-                if any(
-                    marker in str(key).strip().upper()
-                    for marker in (
-                        "API_KEY",
-                        "TOKEN",
-                        "SECRET",
-                        "PASSWORD",
-                        "PASSWD",
-                        "CREDENTIAL",
-                        "COOKIE",
-                        "PRIVATE_KEY",
-                    )
-                )
-                else value
-            )
-            for key, value in environment.items()
-        }
-        safe_config = {**config, "env": safe_environment}
+        report = provider.get("report")
+        report = report if isinstance(report, dict) else {}
+        details = report.get("details")
+        details = details if isinstance(details, dict) else {}
+        diagnostics = details.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
         compact_providers.append(
             {
-                **provider,
-                "config": safe_config,
+                "provider_id": config.get("id") or report.get("provider_id"),
+                "display_name": config.get("display_name"),
+                "dependencies": config.get("dependencies") or [],
+                "process_state": provider.get("process_state"),
+                "instance_id": report.get("instance_id"),
+                "boot_id": report.get("boot_id"),
+                "residency": report.get("residency"),
+                "health": report.get("health"),
+                "ready": bool(report.get("ready")),
+                "expired": bool(report.get("expired")),
+                "last_seen": report.get("last_seen"),
+                "last_error": _bounded_runtime_catalog_value(
+                    details.get("last_error")
+                ),
+                "manager_error": _bounded_runtime_catalog_value(
+                    details.get("manager_error")
+                ),
+                "blocking_prerequisite": _bounded_runtime_catalog_value(
+                    diagnostics.get("blocking_prerequisite")
+                ),
+                "detail_schema": "midbrain.manager.provider_detail.v1",
+                "detail_sections": [
+                    "/config",
+                    "/process_state",
+                    "/last_exit",
+                    "/report",
+                ],
             }
         )
+    return redact_credential_values(
+        {
+            "schema": "midbrain.manager.agent_runtime_catalog",
+            "schema_version": 1,
+            "providers": compact_providers,
+            "capabilities": [
+                {
+                    "capability": capability.get("capability"),
+                    "provider_id": capability.get("provider_id"),
+                    "provider_instance_id": capability.get(
+                        "provider_instance_id"
+                    ),
+                    "available": bool(capability.get("available")),
+                }
+                for capability in capabilities
+            ],
+            "eligible_skill_tools": sorted(set(eligible_skill_tools)),
+        }
+    )
+
+
+def _bounded_runtime_catalog_value(value: Any) -> Any:
+    if value is None:
+        return None
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    if len(encoded.encode("utf-8")) <= 2048:
+        return copy.deepcopy(value)
     return {
-        "schema": "midbrain.agent_runtime_summary.v1",
-        "providers": compact_providers,
-        "capabilities": capabilities,
-        "eligible_skill_tools": sorted(set(eligible_skill_tools)),
-        "omitted": (
-            "Only duplicate Skill schemas are omitted. Credential-like "
-            "environment values are retained by name but replaced with "
-            "[REDACTED]; other environment values remain present."
-        ),
+        "truncated": True,
+        "serialized_bytes": len(encoded.encode("utf-8")),
+        "preview": encoded[:400],
     }
 
 
@@ -1365,10 +1454,12 @@ class PrototypeAgentDriver:
         limited_graph_model_route_profiles: (
             Mapping[str, HostedModelRouteProfile] | None
         ) = None,
+        skill_result_detail_store: SkillResultDetailStore | None = None,
     ):
         self.skill = skill
         self.integrated_motion_skill = integrated_motion_skill
         self.no_contact_approach_skill = no_contact_approach_skill
+        self.skill_result_detail_store = skill_result_detail_store
         self._prepared_relative_motion: (
             CallScopedPreparedActionCoordinator | None
         ) = None
@@ -1819,6 +1910,7 @@ class PrototypeAgentDriver:
             descriptors,
             adapters,
             eligible_tool_names=eligible,
+            detail_store=skill_result_detail_store,
             defer_loading=defer_loading,
             adapter_timeout_s=adapter_timeout_s,
             adapter_timeout_overrides_s=(
@@ -1839,9 +1931,57 @@ class PrototypeAgentDriver:
         ]
 
         offered_tools = list(tools)
+        if skill_result_detail_store is not None:
+            async def inspect_skill_result_detail(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                result_id = arguments.get("result_id")
+                pointer = arguments.get("json_pointer")
+                if not isinstance(result_id, str) or not result_id.strip():
+                    raise ValueError("result_id must be non-empty text")
+                if pointer is not None and (
+                    not isinstance(pointer, str) or not pointer.startswith("/")
+                ):
+                    raise ValueError("json_pointer must be null or start with /")
+                record = await skill_result_detail_store.retrieve(result_id)
+                if record is None:
+                    raise ValueError("Skill result detail is unavailable or expired")
+                selected = select_result_detail(record, pointer)
+                return json.dumps(selected, ensure_ascii=False, default=str)
+
+            offered_tools.append(
+                FunctionTool(
+                    name="inspect_skill_result_detail",
+                    description=(
+                        "Read the complete sanitized output, or one exact JSON "
+                        "pointer, from a prior Skill invocation's opaque "
+                        "detail_ref. Use only when compact fields are "
+                        "insufficient. This is a top-level diagnostic "
+                        "observation tool, not a Skill or graph child, and it "
+                        "cannot authorize or repeat an action. Use null for "
+                        "json_pointer to request the full sanitized output."
+                    ),
+                    params_json_schema={
+                        "type": "object",
+                        "properties": {
+                            "result_id": {"type": "string", "minLength": 1},
+                            "json_pointer": {"type": ["string", "null"]},
+                        },
+                        "required": ["result_id", "json_pointer"],
+                        "additionalProperties": False,
+                    },
+                    on_invoke_tool=inspect_skill_result_detail,
+                    strict_json_schema=True,
+                    needs_approval=False,
+                )
+            )
         if defer_loading:
             offered_tools.append(ToolSearchTool())
-        if scene_policy_publisher is not None:
+        if scene_policy_publisher is not None and not (
+            developer_mode or provider_lifecycle_control
+        ):
             async def configure_scene_segmentation_policy(
                 _context,
                 raw_arguments: str,
@@ -1864,56 +2004,7 @@ class PrototypeAgentDriver:
                         "blocking geometry; unclaimed visible depth defaults "
                         "to ignored PUSHABLE geometry. This submits no motion."
                     ),
-                    params_json_schema={
-                        "type": "object",
-                        "properties": {
-                            "policy_id": {
-                                "type": "string",
-                                "minLength": 1,
-                            },
-                            "objects": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "object_id": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                        },
-                                        "type": {
-                                            "type": "string",
-                                            "enum": [
-                                                "KEEP_OUT",
-                                                "PUSHABLE",
-                                                "WORK_OBJECT",
-                                            ],
-                                        },
-                                        "description": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                        },
-                                    },
-                                    "required": [
-                                        "object_id",
-                                        "type",
-                                        "description",
-                                    ],
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "arm_description": {
-                                "type": "string",
-                                "minLength": 1,
-                            },
-                        },
-                        "required": [
-                            "policy_id",
-                            "objects",
-                            "arm_description",
-                        ],
-                        "additionalProperties": False,
-                    },
+                    params_json_schema=_scene_policy_parameters_schema(),
                     on_invoke_tool=configure_scene_segmentation_policy,
                     strict_json_schema=True,
                     needs_approval=False,
@@ -2029,19 +2120,83 @@ class PrototypeAgentDriver:
                     raise ValueError(
                         "inspect_midbrain_runtime does not accept arguments"
                     )
-                providers, capabilities = await asyncio.gather(
-                    manager.providers(),
-                    manager.capabilities(),
+                catalog = redact_credential_values(
+                    await manager.agent_runtime_catalog()
+                )
+                catalog["eligible_skill_tools"] = sorted(
+                    descriptor.tool_name
+                    for descriptor in self.offered_skill_descriptors
                 )
                 return json.dumps(
-                    build_midbrain_runtime_snapshot(
-                        providers,
-                        capabilities,
-                        eligible_skill_tools=[
-                            descriptor.tool_name
-                            for descriptor in self.offered_skill_descriptors
-                        ],
-                    ),
+                    catalog,
+                    ensure_ascii=False,
+                    default=str,
+                )
+
+            async def configure_scene_policy_and_inspect_runtime(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                if scene_policy_publisher is None:
+                    raise RuntimeError(
+                        "combined scene setup requires a scene-policy publisher"
+                    )
+                arguments = json.loads(raw_arguments)
+                policy_result = await scene_policy_publisher.publish_policy(
+                    policy_id=arguments.get("policy_id"),
+                    objects=arguments.get("objects"),
+                    arm_description=arguments.get("arm_description"),
+                )
+                catalog = redact_credential_values(
+                    await manager.agent_runtime_catalog()
+                )
+                catalog["eligible_skill_tools"] = sorted(
+                    descriptor.tool_name
+                    for descriptor in self.offered_skill_descriptors
+                )
+                return json.dumps(
+                    {
+                        "schema": "midbrain.agent.scene_policy_runtime_setup",
+                        "schema_version": 1,
+                        "scene_policy": policy_result,
+                        "runtime_catalog": catalog,
+                        "agent_instruction": (
+                            "Select the exact configured Provider and capability "
+                            "from runtime_catalog, then call "
+                            "set_provider_residency once. This tool did not "
+                            "change Provider lifecycle state or grant authority."
+                        ),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                )
+
+            async def inspect_provider_detail(
+                _context,
+                raw_arguments: str,
+            ) -> str:
+                arguments = json.loads(raw_arguments)
+                provider_id = arguments.get("provider_id")
+                pointer = arguments.get("json_pointer")
+                if not isinstance(provider_id, str) or not provider_id.strip():
+                    raise ValueError("provider_id must be non-empty text")
+                if pointer is not None and (
+                    not isinstance(pointer, str) or not pointer.startswith("/")
+                ):
+                    raise ValueError("json_pointer must be null or start with /")
+                detail = redact_credential_values(
+                    await manager.provider_detail(provider_id.strip())
+                )
+                selected = select_json_pointer(detail, pointer)
+                return json.dumps(
+                    {
+                        "schema": "midbrain.manager.provider_detail_observation",
+                        "schema_version": 1,
+                        "provider_id": provider_id.strip(),
+                        "selected_pointer": pointer,
+                        "detail": selected,
+                    },
                     ensure_ascii=False,
                     default=str,
                 )
@@ -2193,14 +2348,14 @@ class PrototypeAgentDriver:
                     FunctionTool(
                         name="inspect_midbrain_runtime",
                         description=(
-                            "Inspect the complete current Manager evidence for "
-                            "configured Midbrain Providers, including Provider "
-                            "reports, controller telemetry, command and target "
-                            "state, launch configuration, identities, "
-                            "timestamps, capability availability, and eligible "
-                            "finite Skill names. Only duplicate Skill schemas "
-                            "are omitted; credential-like environment values "
-                            "are redacted. This operation is read-only."
+                            "Inspect the regulated current Manager catalog for "
+                            "every configured Provider and every advertised "
+                            "capability, including compact lifecycle, identity, "
+                            "dependency, readiness, expiry, and blocking-error "
+                            "state plus eligible finite Skill names. Use "
+                            "inspect_provider_detail only when this compact "
+                            "complete catalog is insufficient. This operation "
+                            "is read-only."
                         ),
                         params_json_schema={
                             "type": "object",
@@ -2210,6 +2365,35 @@ class PrototypeAgentDriver:
                         },
                         on_invoke_tool=inspect_runtime,
                         strict_json_schema=True,
+                    ),
+                    FunctionTool(
+                        name="inspect_provider_detail",
+                        description=(
+                            "Read the complete sanitized current Manager "
+                            "record, or one exact JSON pointer, for one "
+                            "Provider ID from inspect_midbrain_runtime. This "
+                            "is a top-level diagnostic observation tool, not "
+                            "a Skill, lifecycle command, or graph child. Use "
+                            "null for json_pointer to request the full "
+                            "sanitized Provider record."
+                        ),
+                        params_json_schema={
+                            "type": "object",
+                            "properties": {
+                                "provider_id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                },
+                                "json_pointer": {
+                                    "type": ["string", "null"],
+                                },
+                            },
+                            "required": ["provider_id", "json_pointer"],
+                            "additionalProperties": False,
+                        },
+                        on_invoke_tool=inspect_provider_detail,
+                        strict_json_schema=True,
+                        needs_approval=False,
                     ),
                     FunctionTool(
                         name="set_provider_residency",
@@ -2273,6 +2457,28 @@ class PrototypeAgentDriver:
                     ),
                 ]
             )
+            if scene_policy_publisher is not None:
+                offered_tools.append(
+                    FunctionTool(
+                        name=CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
+                        description=(
+                            "Publish the user's explicit scene segmentation "
+                            "policy to Fabric and return the fresh regulated "
+                            "Manager catalog in the same host call. This combines "
+                            "one policy write with one read-only observation; it "
+                            "does not start, warm, authorize, or invoke a "
+                            "Provider. Use the returned exact Provider and "
+                            "capability in a separate set_provider_residency "
+                            "call."
+                        ),
+                        params_json_schema=_scene_policy_parameters_schema(),
+                        on_invoke_tool=(
+                            configure_scene_policy_and_inspect_runtime
+                        ),
+                        strict_json_schema=True,
+                        needs_approval=False,
+                    )
+                )
         if integrated_motion_skill is not None:
             async def prepare_relative_motion_action(
                 arguments: dict[str, Any],
@@ -2395,11 +2601,16 @@ class PrototypeAgentDriver:
                     call_id,
                     arguments,
                 )
-                validate_skill_result(
+                compact_result = await finalize_skill_result(
                     result,
-                    integrated_motion_descriptor.output_schema,
+                    integrated_motion_descriptor,
+                    skill_result_detail_store,
                 )
-                return json.dumps(result, ensure_ascii=False, default=str)
+                return json.dumps(
+                    compact_result,
+                    ensure_ascii=False,
+                    default=str,
+                )
 
             eligible.add(PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL)
             if integrated_motion_descriptor not in self.offered_skill_descriptors:
@@ -2509,11 +2720,16 @@ class PrototypeAgentDriver:
                         arguments,
                     )
                 )
-                validate_skill_result(
+                compact_result = await finalize_skill_result(
                     result,
-                    world_point_motion_descriptor.output_schema,
+                    world_point_motion_descriptor,
+                    skill_result_detail_store,
                 )
-                return json.dumps(result, ensure_ascii=False, default=str)
+                return json.dumps(
+                    compact_result,
+                    ensure_ascii=False,
+                    default=str,
+                )
 
             eligible.add(MOVE_EFFECTOR_TO_WORLD_POINT_TOOL)
             if (
@@ -2589,11 +2805,10 @@ class PrototypeAgentDriver:
                 "configured Provider and Skill catalog and invoke only the "
                 "typed tools offered by this host. Use "
                 "inspect_midbrain_runtime before choosing a Provider ID. "
-                "Its snapshot includes complete current Provider reports, "
-                "controller telemetry, command and target state, launch "
-                "configuration, identities, capabilities, and timestamps; "
-                "only duplicate Skill schemas are omitted, while "
-                "credential-like environment values are redacted. "
+                "Its compact snapshot includes every Provider and capability "
+                "with regulated lifecycle and readiness fields. Use "
+                "inspect_provider_detail for the complete sanitized record "
+                "of one exact Provider only when needed. "
                 "When a Provider lifecycle transition is necessary, call "
                 "set_provider_residency immediately. Never answer by asking "
                 "for conversational permission. The host autonomously permits "
@@ -3076,6 +3291,9 @@ class PrototypeAgentDriver:
             else None
         )
         child_event_token = set_hosted_child_event_sink(active_event_sink)
+        graph_repair_token = set_graph_authoring_repair_state(
+            maximum_corrections=1
+        )
         try:
             if (
                 not isinstance(input_value, RunState)
@@ -3140,6 +3358,7 @@ class PrototypeAgentDriver:
                 stage="AGENT_MODEL_AWAITING_RESPONSE",
             )
         finally:
+            reset_graph_authoring_repair_state(graph_repair_token)
             reset_hosted_child_event_sink(child_event_token)
             reset_vlm_model_selection(vlm_token)
         report_operation_progress("AGENT_RUN_COMPLETED")

@@ -4,7 +4,7 @@
   "display_name": "Identify Pointed Object",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "identify_pointed_object",
     "description": "Identify the object a person is pointing at in the current RGB camera scene. Use this read-only finite Skill for visible-scene or pointing questions; it reports evidence and uncertainty but does not infer depth or move the robot.",
@@ -69,7 +69,17 @@
         "message": {"type": "string"}
       },
       "required": [],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/answer", "/confidence", "/annotations",
+          "/retryable", "/retry_scope", "/retry", "/error", "/message",
+          "/visual_evidence", "/physical_action_submitted"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 65536
+      }
     },
     "execution_adapter": {
       "adapter_id": "test_agent.identify_pointed_object.v1",

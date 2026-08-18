@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/agent_skill_discovery.v3.schema.json",
+  "title": "Midbrain Agent Skill Discovery Descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "discoverable",
+    "tool_name",
+    "description",
+    "when_to_use",
+    "when_not_to_use",
+    "side_effects",
+    "safety_class",
+    "expected_latency",
+    "required_permissions",
+    "input_schema",
+    "output_schema",
+    "execution_adapter"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "discoverable": {
+      "type": "boolean"
+    },
+    "tool_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 800
+    },
+    "when_to_use": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 4
+      }
+    },
+    "when_not_to_use": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 4
+      }
+    },
+    "side_effects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 3
+      }
+    },
+    "safety_class": {
+      "enum": [
+        "READ_ONLY",
+        "STATEFUL_NO_MOTION",
+        "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+        "MANUAL_ONLY"
+      ]
+    },
+    "expected_latency": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "UNKNOWN"
+      ]
+    },
+    "required_permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 3
+      }
+    },
+    "input_schema": {
+      "$ref": "#/$defs/objectSchema"
+    },
+    "output_schema": {
+      "$ref": "#/$defs/tieredOutputSchema"
+    },
+    "execution_adapter": {
+      "type": "object",
+      "required": [
+        "adapter_id",
+        "kind"
+      ],
+      "properties": {
+        "adapter_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "kind": {
+          "enum": [
+            "IN_PROCESS_BOUND_INSTANCE",
+            "EXTERNAL_SKILL_ENTRYPOINT",
+            "MANUAL_LOCAL_ONLY"
+          ]
+        },
+        "entrypoint": {
+          "type": "string",
+          "minLength": 3
+        },
+        "host_adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entrypoint",
+            "factory"
+          ],
+          "properties": {
+            "entrypoint": {
+              "type": "string",
+              "minLength": 3
+            },
+            "factory": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "invocation_requires_approval": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "disabled_reason": {
+      "type": "string",
+      "minLength": 8
+    }
+  },
+  "$defs": {
+    "objectSchema": {
+      "type": "object",
+      "required": [
+        "type",
+        "properties",
+        "required",
+        "additionalProperties"
+      ],
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "allOf": {
+          "type": "array"
+        },
+        "anyOf": {
+          "type": "array"
+        },
+        "oneOf": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": true
+    },
+    "tieredOutputSchema": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/objectSchema"
+        },
+        {
+          "required": [
+            "x-midbrain-result-tiers"
+          ],
+          "properties": {
+            "x-midbrain-result-tiers": {
+              "$ref": "#/$defs/resultTiers"
+            }
+          }
+        }
+      ]
+    },
+    "resultTiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "compact_pointers",
+        "detail_policy",
+        "max_compact_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "compact_pointers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "detail_policy": {
+          "enum": [
+            "HOST_SANITIZED_REFERENCE",
+            "NONE"
+          ]
+        },
+        "max_compact_bytes": {
+          "type": "integer",
+            "minimum": 1024,
+          "maximum": 1048576
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "discoverable": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "disabled_reason"
+        ]
+      }
+    }
+  ]
+}

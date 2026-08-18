@@ -17,6 +17,16 @@ _SAFETY_CLASSES = {
     "MANUAL_ONLY",
 }
 _LATENCY_CLASSES = {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}
+_RESULT_TIER_KEY = "x-midbrain-result-tiers"
+_DETAIL_POLICIES = {"HOST_SANITIZED_REFERENCE", "NONE"}
+
+
+@dataclass(frozen=True)
+class SkillResultTierPolicy:
+    schema_version: int
+    compact_pointers: tuple[str, ...]
+    detail_policy: str
+    max_compact_bytes: int
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,7 @@ class AgentSkillDescriptor:
     required_permissions: tuple[str, ...]
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    result_tiers: SkillResultTierPolicy
     execution_adapter_id: str
     execution_adapter_kind: str
     execution_entrypoint: str | None
@@ -90,8 +101,10 @@ def _parse_descriptor(
     expected_latency = discovery.get("expected_latency")
     disabled_reason = discovery.get("disabled_reason")
 
-    if schema_version != 2:
-        raise ValueError(f"{manifest_path}: unsupported agent_discovery schema")
+    if schema_version != 3:
+        raise ValueError(
+            f"{manifest_path}: agent_discovery schema_version 3 is required"
+        )
     if not isinstance(discoverable, bool):
         raise ValueError(f"{manifest_path}: discoverable must be boolean")
     if not isinstance(tool_name, str) or not _TOOL_NAME.fullmatch(tool_name):
@@ -152,6 +165,11 @@ def _parse_descriptor(
         output_schema,
         field="output_schema",
         allow_references=False,
+    )
+    result_tiers = _parse_result_tiers(
+        manifest_path,
+        output_schema,
+        required=True,
     )
 
     execution_adapter = discovery.get("execution_adapter")
@@ -223,6 +241,7 @@ def _parse_descriptor(
         required_permissions=required_permissions,
         input_schema=json.loads(json.dumps(input_schema)),
         output_schema=json.loads(json.dumps(output_schema)),
+        result_tiers=result_tiers,
         execution_adapter_id=execution_adapter_id,
         execution_adapter_kind=execution_adapter_kind,
         execution_entrypoint=execution_entrypoint,
@@ -283,6 +302,111 @@ def _contains_schema_reference(value: Any) -> bool:
     if isinstance(value, list):
         return any(_contains_schema_reference(item) for item in value)
     return False
+
+
+def _parse_result_tiers(
+    manifest_path: Path,
+    output_schema: dict[str, Any],
+    *,
+    required: bool,
+) -> SkillResultTierPolicy:
+    raw = output_schema.get(_RESULT_TIER_KEY)
+    if raw is None:
+        if required:
+            raise ValueError(
+                f"{manifest_path}: output_schema.{_RESULT_TIER_KEY} is required"
+            )
+        return SkillResultTierPolicy(
+            schema_version=0,
+            compact_pointers=declared_schema_pointers(output_schema),
+            detail_policy="NONE",
+            max_compact_bytes=1_048_576,
+        )
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY} must be an object"
+        )
+    if set(raw) != {
+        "schema_version",
+        "compact_pointers",
+        "detail_policy",
+        "max_compact_bytes",
+    }:
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY} has unsupported fields"
+        )
+    if raw.get("schema_version") != 1:
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY}.schema_version must be 1"
+        )
+    compact_pointers = raw.get("compact_pointers")
+    if not isinstance(compact_pointers, list) or not all(
+        isinstance(pointer, str) and pointer.startswith("/")
+        for pointer in compact_pointers
+    ):
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY}.compact_pointers "
+            "must be a JSON-pointer array without the empty root pointer"
+        )
+    if len(set(compact_pointers)) != len(compact_pointers):
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY}.compact_pointers "
+            "must be unique"
+        )
+    declared = set(declared_schema_pointers(output_schema))
+    undeclared = sorted(set(compact_pointers) - declared)
+    if undeclared:
+        raise ValueError(
+            f"{manifest_path}: compact result pointers are undeclared: {undeclared}"
+        )
+    required_common = {
+        f"/{name}"
+        for name in (
+            "status",
+            "message",
+            "workflow_complete",
+            "physical_motion_authorized",
+            "physical_motion_requested",
+            "physical_motion_submitted",
+            "physical_motion_completed",
+            "task_success_assessed",
+            "result_semantics",
+            "required_next_tool",
+            "visual_evidence",
+        )
+        if f"/{name}" in declared
+    }
+    missing_common = sorted(required_common - set(compact_pointers))
+    if missing_common:
+        raise ValueError(
+            f"{manifest_path}: compact result omits common outcome pointers: "
+            f"{missing_common}"
+        )
+    detail_policy = raw.get("detail_policy")
+    if detail_policy not in _DETAIL_POLICIES:
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY}.detail_policy is invalid"
+        )
+    max_compact_bytes = raw.get("max_compact_bytes")
+    if (
+        not isinstance(max_compact_bytes, int)
+        or isinstance(max_compact_bytes, bool)
+        or not 1024 <= max_compact_bytes <= 1_048_576
+    ):
+        raise ValueError(
+            f"{manifest_path}: output_schema.{_RESULT_TIER_KEY}.max_compact_bytes "
+            "must be an integer from 1024 through 1048576"
+        )
+    if detail_policy == "NONE" and output_schema.get("properties"):
+        raise ValueError(
+            f"{manifest_path}: non-empty Skill outputs require HOST_SANITIZED_REFERENCE"
+        )
+    return SkillResultTierPolicy(
+        schema_version=1,
+        compact_pointers=tuple(compact_pointers),
+        detail_policy=str(detail_policy),
+        max_compact_bytes=int(max_compact_bytes),
+    )
 
 
 def declared_schema_pointers(schema: dict[str, Any]) -> tuple[str, ...]:

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Preserve the near-stable Limited Graph/context checkpoint after live forward
+  tests completed scene mapping, corner transit, two slicing submissions,
+  intermediate repositioning, child-declared Provider handover, incremental
+  SAM2 visual delivery, and separate Basic safe home. Compact Manager and
+  graph-result payloads materially reduce Agent context and orchestration time
+  without changing direct Skill time or responsibility boundaries. Remaining
+  work is explicitly non-blocking for this checkpoint: branch/model-route and
+  multi-card UI tests, material-cut outcome sensing, narrower refinement
+  summaries, and byte/token-aware session projection.
+- Add the complete compact Manager Agent catalog and mandatory two-tier Skill
+  results approved by the feasibility audit. Manager retains all Provider and
+  capability entries in the regulated default response and offers one exact
+  full Provider record on demand. Discovery schema version 3 now requires a
+  source-backed compact-pointer policy; all 23 installed Skills are migrated.
+  The Agent host validates, sanitizes, stores, and projects complete Skill
+  results at the shared FunctionTool boundary, while top-level-only detail
+  tools retrieve a full or JSON-pointer-selected sanitized Provider/Skill
+  record. Limited Graph binds and retains compact fields only. Authentication,
+  Manager authority, Provider/Fabric ownership, leases, and physical
+  authorization are unchanged.
+- Add a source-backed current non-motion wait inventory for all 23 installed
+  Skills. The latest two-slice run spent 78.475–84.678 of 91.225 seconds
+  outside physical or mixed controller execution: 40.606 seconds in Agent
+  orchestration, 21.359–27.562 seconds in child-Skill waiting/computation, and
+  15.691 seconds in semantic-scene Provider readiness. The audit also
+  identifies the unretained controller and Provider phase telemetry needed for
+  exact movement/settling and sphere/input attribution, distinguishes the
+  existing Manager lifecycle/capability summaries from the Agent's complete
+  101.7 KB Provider snapshot, and records that Skill output schemas do not yet
+  provide a compact-result/diagnostic-reference tier.
 - Record a corrected retained-run performance audit for the complete two-slice
   workflow. A successful no-graph equivalent required four prompts and 103.8
   seconds of Agent-active time versus one prompt and 91.2 seconds now, while

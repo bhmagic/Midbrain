@@ -14,6 +14,7 @@
     "graph_name",
     "terminal_node",
     "last_completed_node",
+    "last_failure",
     "active_runtime_ms",
     "transition_count",
     "node_visits",
@@ -36,6 +37,24 @@
     "graph_name": {"type": "string", "minLength": 1},
     "terminal_node": {"type": ["string", "null"]},
     "last_completed_node": {"type": ["string", "null"]},
+    "last_failure": {
+      "type": ["object", "null"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 2},
+        "node_id": {"type": ["string", "null"]},
+        "tool_name": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+        "physical_action_submitted": {"type": ["boolean", "null"]}
+      },
+      "required": [
+        "kind",
+        "node_id",
+        "tool_name",
+        "reason",
+        "physical_action_submitted"
+      ],
+      "additionalProperties": false
+    },
     "active_runtime_ms": {"type": "number", "minimum": 0},
     "transition_count": {"type": "integer", "minimum": 0},
     "node_visits": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},

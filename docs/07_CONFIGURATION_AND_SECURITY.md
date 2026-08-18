@@ -92,11 +92,18 @@ process or a compromised browser session.
 
 ## Retained Agent records
 
-Agent sessions, normalized run events, attachments, and visual evidence may
-contain prompts, images, workcell information, and operational history. The
-current robot-local SQLite and in-memory stores are development diagnostics.
-They are not authenticated, encrypted, redacted, tamper-evident, or suitable as
-field-audit evidence.
+Agent sessions, normalized run events, sanitized complete Skill-result detail,
+attachments, and visual evidence may contain prompts, images, workcell
+information, and operational history. Skill-result detail removes
+credential-like and authorization-like values before retention, but the
+robot-local SQLite stores remain development diagnostics. They are not
+authenticated, encrypted, tamper-evident, or suitable as field-audit evidence.
+
+Skill-result detail is session-scoped and bounded by configured result-count,
+per-result-byte, total-byte, and age limits. Those limits reduce persistence and
+context exposure; they do not create a remote-user security boundary. Keep the
+default database under ignored runtime state, and do not point
+`SKILL_RESULT_DETAIL_STORE_PATH` at a tracked or shared directory.
 
 Exclude runtime databases and evidence from publication and support bundles
 unless they have been deliberately reviewed. Field deployment requires defined

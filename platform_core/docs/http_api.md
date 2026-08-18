@@ -21,6 +21,8 @@ These are prototype local interfaces. They are intentionally simple and are not 
 | GET | `/shutdown` | Whole-workspace shutdown confirmation page |
 | POST | `/v1/ui/shutdown` | Confirmed delegation to the dependency-aware workspace shutdown supervisor |
 | GET | `/v1/providers` | Configured providers, process state, and latest report |
+| GET | `/v1/agent-runtime-catalog` | Every configured Provider and advertised capability projected to regulated Agent lifecycle/readiness fields |
+| GET | `/v1/providers/{id}/detail` | Complete current Manager `ProviderView` for one exact Provider ID; Agent hosts must sanitize diagnostic values before model exposure |
 | GET | `/v1/capabilities` | Capability-specific availability derived from provider heartbeats |
 | POST | `/v1/capability-bindings` | Create a non-enforcing deterministic capability-to-provider snapshot |
 | GET | `/v1/capability-bindings/{id}` | Inspect one advisory binding by opaque binding ID |
@@ -60,6 +62,15 @@ confirmation. The distinct confirmed activation endpoint may request Provider
 the developer UI, not the finite Skill operation. Authentication and
 authorization remain the responsibility of the developer surface and its
 underlying control APIs.
+
+The Agent runtime catalog is also read-only. It preserves complete Provider and
+capability coverage without copying arbitrary heartbeat diagnostics, launch
+commands, or environment values into routine model context. The per-Provider
+detail endpoint returns Manager's existing complete record and therefore does
+not create another state owner. It does not perform model-facing sanitization;
+the Agent host applies credential-like redaction and may select one JSON pointer
+before exposing the record. Neither endpoint changes lifecycle state or grants
+request authority.
 
 The shutdown UI starts `stop_workspace.ps1` itself with a 750 ms response delay;
 it does not duplicate the Provider shutdown algorithm. Its request uses the

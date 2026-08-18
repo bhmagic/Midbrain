@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "perform_relative_effector_motion",
     "description": "Perform one measured-start free-space end-effector pose move through the controller-owned signed path-plan/path-commit boundary. Fresh scenes are collision-checked; PUSHABLE is ignored, KEEP_OUT adds 10 mm, and WORK_OBJECT adds 0 mm while intersection remains forbidden. Translation accepts a signed axis or arbitrary 3D vector; orientation may be preserved, changed by controlled-frame RPY, or set in arm-base RPY. The host owns the exact preview continuation and autonomous authorization; the Agent cannot select or replay a plan ID.",
@@ -313,7 +313,23 @@
         "message": {"type": "string"}
       },
       "required": ["status", "workflow_complete"],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/physical_motion_requested",
+          "/physical_motion_completed", "/motion_intent", "/direction",
+          "/reference_frame", "/resolved_direction_arm_base", "/distance_m",
+          "/start_position_m", "/target_position_m", "/translation_vector_m",
+          "/requested_speed_m_s", "/planned_duration_s", "/timing",
+          "/final_state", "/goal_reached", "/closest_safe",
+          "/visual_motion_confirmed", "/visual_translation_confirmed",
+          "/visual_orientation_confirmed", "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.integrated_relative_effector_motion.perform.v1",

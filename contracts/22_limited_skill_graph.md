@@ -43,6 +43,31 @@ normalizes the graph, computes one canonical SHA-256 digest, and rejects:
 No node or edge may be added, removed, or changed after execution begins.
 Changing graph content creates a different digest and a new run.
 
+### 2.1 Agent-facing authoring projection
+
+An Agent host may expose a smaller, strict authoring projection instead of the
+canonical version 1 node union. The reference Test Agent accepts ordered Skill
+steps, compact bindings and optional edge, retry, switch, model-route and
+terminal records. It deterministically compiles that projection into the
+complete canonical version 1 graph before schema validation, static preflight,
+digest calculation or execution.
+
+The projection is an authoring convenience, not a second execution contract.
+It cannot omit or weaken a canonical validation, discover a child, change the
+active routed surface, select a Provider, carry authorization, increase a
+limit, or modify a graph after execution begins. The compiled canonical graph
+is the only value used for the immutable digest and runner. Programmatic hosts
+may continue to submit the complete canonical version 1 shape.
+
+The reference host may return one model-visible `AUTHORING_INVALID` result for
+a concise-compilation or canonical-static-preflight rejection proven to occur
+before creation of graph execution state and before any child invocation. The
+result reports zero transitions and zero physical actions. The Agent may
+submit at most one corrected replacement graph in that top-level run; a second
+authoring rejection terminates. This path never handles a runtime node error,
+authorization outcome, timeout, cancellation, uncertain outcome, or any graph
+whose child execution may have begun.
+
 ## 3. Node and edge semantics
 
 Contract version 1 executes one node at a time and supports:
@@ -74,22 +99,26 @@ immediately before every attempt.
 
 Before the first node executes, every `NODE_RESULT` source pointer must resolve
 through explicitly declared properties in the source child Skill's mandatory
-output schema. Every binding target pointer must likewise resolve through the
+complete output schema and must be selected by that Skill's compact-result
+tier. A selected object or array pointer also publishes its declared
+descendants. Every binding target pointer must likewise resolve through the
 destination child's input schema. Retry conditions, switch sources and cases,
 and model-route inputs use the same preflight rule. An open
-`additionalProperties` value does not publish arbitrary graph-bindable paths.
-The empty pointer remains valid for copying or inspecting a complete structured
-object.
+`additionalProperties` value does not publish arbitrary graph-bindable paths,
+and the empty pointer cannot expose a complete detailed result.
 
 Preflight establishes that a path is part of the declared result shape; it
 does not claim an optional field will exist in every status variant. A missing
 optional value at runtime remains an explicit graph data failure. Graph authors
 must branch on completion and status before consuming success-only fields.
 
-The runner may normalize a child JSON string into structured JSON, but it must
-retain a digest and bounded trace sufficient to identify what was routed. It
-must not insert credentials or host-private canonical continuation state into
-the graph value store.
+The direct FunctionTool boundary validates the complete child result, stores a
+sanitized bounded detail copy, and returns a compact result plus opaque detail
+reference. The runner normalizes and validates that compact object against the
+source schema and selected compact pointers. It retains only compact node
+results, their detail references, and a bounded trace. It must not insert
+credentials, complete diagnostic payloads, or host-private canonical
+continuation state into the graph value store.
 
 ## 5. Identity, authentication, and authorization carry
 
@@ -158,23 +187,35 @@ backend selection remains host configuration, never graph data.
 
 ## 9. Results and observability
 
-The final result reports the graph run ID and digest, terminal status and node,
-transition and visit counts, active runtime, retry count, selected edges,
-bounded per-attempt results or hashes, authorization interruptions, exhausted
-limit, and last completed node. Inner child calls must remain observable even
-though they are not separate Agent turns.
+The complete final result reports the graph run ID and digest, terminal status
+and node, transition and visit counts, active runtime, retry count, selected
+edges, bounded per-attempt results or hashes, authorization interruptions,
+exhausted limit, last completed node, trace, and compact node results. Its
+normal Agent return is itself projected to the Limited Graph manifest's compact
+tier, which retains node results and outcome counters while leaving the trace
+in the graph result's opaque detail record. Inner child calls must remain
+observable even though they are not separate Agent turns.
 
 At minimum the runtime emits or journals node start, node completion, retry,
 edge selection, model fallback, authorization rejection, limit exhaustion,
 unknown outcome, and terminal completion. Observability does not authorize an
 action and must redact credential-like material.
 
-The runtime validates a normalized child result against its published output
-schema before credential redaction so redaction cannot manufacture a type
-mismatch in a valid authorization envelope. Validation-error observability may
-identify the JSON pointer, failed validator, and expected schema value, but must
-not copy the invalid instance. After validation, only the redacted result may
-be retained, bound, routed, traced, or returned by the graph.
+The Agent host validates a normalized complete child result against its
+published output schema before sanitization and projection so sanitization
+cannot manufacture a type mismatch in a valid envelope. The graph runner then
+rejects any returned field outside the child's selected compact tier and
+validates every present selected value against its source subschema.
+Validation-error observability may identify the JSON pointer, failed validator,
+and expected schema value, but must not copy the invalid instance. Only the
+sanitized compact result may be retained, bound, routed, traced, or returned by
+the graph.
+
+Each compact child result may contain an opaque host detail reference. The
+top-level Agent may inspect that exact completed Skill result outside the graph,
+but Limited Graph cannot register or invoke Provider-detail or Skill-detail
+inspection FunctionTools. Detailed values never become graph-bindable through
+inspection.
 
 A child FunctionTool returning normally means only that its invocation produced
 a result. It does not make a domain-specific operation successful. A graph must

@@ -42,6 +42,12 @@ class ContactPreflightRejected(RuntimeError):
     """Reject Contact before provider activation or Contact authorization."""
 
 
+class SlicingAlignmentPreviewRejected(RuntimeError):
+    """Reject slicing before an Integrated physical action is submitted."""
+
+    physical_action_submitted = False
+
+
 @dataclass
 class _DevelopmentSession:
     session_id: str
@@ -387,12 +393,14 @@ class SlicingHostAdapter:
             **plan.integrated_alignment_arguments
         )
         if preview.get("status") != "PREVIEW_READY":
-            raise RuntimeError(
+            raise SlicingAlignmentPreviewRejected(
                 self._preview_rejection_message(preview)
             )
         preview_id = str(preview.get("preview_id") or "").strip()
         if not preview_id:
-            raise RuntimeError("Integrated slicing alignment preview has no ID")
+            raise SlicingAlignmentPreviewRejected(
+                "Integrated slicing alignment preview has no ID"
+            )
         return {
             "plan": plan,
             "preview": copy.deepcopy(preview),

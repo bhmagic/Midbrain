@@ -35,6 +35,23 @@ class ManagerClient:
         response.raise_for_status()
         return response.json()
 
+    async def agent_runtime_catalog(self) -> dict[str, Any]:
+        response = await self._client.get(
+            f"{self.base_url}/v1/agent-runtime-catalog"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def provider_detail(self, provider_id: str) -> dict[str, Any]:
+        normalized = str(provider_id).strip()
+        if not normalized:
+            raise ValueError("provider_id must not be empty")
+        response = await self._client.get(
+            f"{self.base_url}/v1/providers/{quote(normalized, safe='')}/detail"
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def ui_overview(self) -> dict[str, Any]:
         response = await self._client.get(f"{self.base_url}/v1/ui/overview")
         response.raise_for_status()

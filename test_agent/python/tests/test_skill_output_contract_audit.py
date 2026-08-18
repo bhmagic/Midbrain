@@ -5,7 +5,10 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from physical_agent_test.skill_catalog import discover_agent_skills
+from physical_agent_test.skill_catalog import (
+    declared_schema_pointers,
+    discover_agent_skills,
+)
 
 
 WORKSPACE = Path(__file__).resolve().parents[3]
@@ -209,6 +212,12 @@ def test_all_installed_skill_outputs_have_source_backed_audit_entries() -> None:
         descriptor = descriptors[tool_name]
         schema = descriptor.output_schema
         Draft202012Validator.check_schema(schema)
+        assert descriptor.schema_version == 3
+        assert schema["x-midbrain-result-tiers"]["schema_version"] == 1
+        assert set(descriptor.result_tiers.compact_pointers) <= set(
+            declared_schema_pointers(schema)
+        )
+        assert "/authorization" not in descriptor.result_tiers.compact_pointers
         properties = set(schema.get("properties", {}))
         assert set(schema.get("required", [])) <= properties
         assert set(audit.get("declares", [])) <= properties
@@ -216,6 +225,12 @@ def test_all_installed_skill_outputs_have_source_backed_audit_entries() -> None:
         if audit.get("empty_direct_contract"):
             assert descriptor.discoverable is False
             assert properties == set()
+            assert descriptor.result_tiers.detail_policy == "NONE"
+        else:
+            assert (
+                descriptor.result_tiers.detail_policy
+                == "HOST_SANITIZED_REFERENCE"
+            )
 
         source_text = "\n".join(
             (WORKSPACE / relative_path).read_text(encoding="utf-8")

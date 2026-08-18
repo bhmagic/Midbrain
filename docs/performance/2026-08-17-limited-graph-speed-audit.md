@@ -2,6 +2,11 @@
 
 Date: 2026-08-17
 
+For the current long-to-short inventory of Agent, Provider, Skill-compute,
+controller-settling, and graph waiting with signed physical trajectory time
+removed, see the
+[current non-motion wait inventory](2026-08-17-current-non-motion-wait-inventory.md).
+
 ## Scope and measurement
 
 This audit uses retained physical Agent runs from
@@ -52,7 +57,8 @@ policy tools are excluded from that Skill-only number.
 
 The current comparison run is
 `2792e656-a7cc-4f26-806b-789c03b5ded3`: 91.225 seconds, four top-level tool
-calls, and one eight-node graph with 34.125 seconds of active runtime.
+calls, and one graph with eight Skill nodes plus terminal nodes and 34.125
+seconds of active runtime.
 
 | Measurement | No graph, four prompts | Current graph, one prompt | Change |
 | --- | ---: | ---: | ---: |
@@ -130,6 +136,56 @@ seconds to 114.406 seconds. Of the 22.125-second graph reduction, 21.703
 seconds came from FoundationPose candidate production. This cross-check must
 not be attributed to Limited Graph acceleration because FoundationPose runtime
 and perception conditions dominate that difference.
+
+## 2026-08-18 compact-context live checkpoint
+
+Run `b30f99cd-2967-42de-9290-77bf9f5c7022` is the first retained successful
+apples-to-apples two-cut workflow after the compact Manager catalog, two-tier
+Skill results, combined policy/runtime observation, concise graph authoring,
+and initial-binding compatibility repairs were all active. It completed in
+75.582 seconds. The three top-level tools occupied 50.009 seconds, leaving
+25.573 seconds of Agent orchestration residual. Its eight-Skill graph completed
+in 33.828 seconds with eight transitions, four physical actions, no retry, no
+model route, no limit, and no failure.
+
+Against the prior current-system run `2792e656-a7cc-4f26-806b-789c03b5ded3`,
+Agent orchestration decreased from 40.606 to 25.573 seconds: 15.033 seconds or
+37.0% less, an observed 1.59x speedup. End-to-end wall decreased from 91.225 to
+75.582 seconds: 15.643 seconds or 17.1% less, an observed 1.21x speedup.
+Top-level tool time changed from 50.619 to 50.009 seconds and graph active time
+from 34.125 to 33.828 seconds; both are effectively flat.
+
+The five Agent response intervals in the new run were 3.132 seconds from run
+start to the combined policy/runtime call, 2.723 seconds from that result to
+the Provider call, 3.475 seconds from Provider readiness to deferred Skill
+discovery, 11.208 seconds from discovery output to graph submission, and 5.009
+seconds from graph completion to the final answer. The graph-construction span
+from Provider readiness through submission was 14.695 seconds, down from
+22.706 seconds in the prior run. The first live run still needed a deferred
+Skill-discovery response, so response count remained five even though setup
+policy and runtime observation were combined.
+
+The compact payload changes explain the Agent-side reduction. The regulated
+runtime payload was 13,140 characters rather than 101,700, the graph argument
+was 4,161 rather than 8,239, and the compact graph result was 14,581 rather
+than 128,485. Using the same retained 32-item serialized-history measurement,
+the graph-generation input footprint decreased from 310,889 to 139,834
+characters and the final-response footprint from 456,024 to 165,184. These are
+serialized character counts, not token-usage records.
+
+Immediate repeat run `6724f1b6-5fb3-413e-b680-a7d68798ec75` authored the same
+graph digest without another deferred discovery call. Its Provider-ready-to-
+graph interval was 8.483 seconds. The complete request also included a separate
+Basic safe-home operation, so its 20.786-second Agent residual is not directly
+apples-to-apples with the no-safe-home baseline. It nevertheless completed the
+graph, the additional safe-home call, and the final response in 65.391 seconds.
+
+Both live graphs emitted their SAM2 visual evidence 0.484 and 0.344 seconds
+after graph submission, respectively, more than 33 seconds before graph
+completion. This verifies incremental graph visual publication for these
+single-evidence runs. It does not test multiple simultaneous evidence cards.
+Both graphs exercised successful child-declared Integrated Provider handover.
+Neither exercised a retry, failure branch, switch, or model-routing branch.
 
 ## Conclusion
 

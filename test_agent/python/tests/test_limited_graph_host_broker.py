@@ -14,11 +14,16 @@ from limited_graph import (
     ChildAuthorizationRequired,
     ChildInvocationNotStarted,
     ChildInvocationResult,
+    ChildPhysicalActionNotSubmitted,
     ChildDescriptor,
+    GraphValidationError,
     validate_graph,
 )
 from limited_graph.host_adapter import LimitedGraphHostAdapter
-from physical_agent_test.skill_catalog import AgentSkillDescriptor
+from physical_agent_test.skill_catalog import (
+    AgentSkillDescriptor,
+    SkillResultTierPolicy,
+)
 from physical_agent_test.skill_catalog import discover_agent_skills
 from physical_agent_test.skill_execution import (
     BoundMethodSkillAdapter,
@@ -26,9 +31,12 @@ from physical_agent_test.skill_execution import (
     HostedSkillInvocationBroker,
     SkillInvocationBrokerHandle,
     build_agent_tools,
+    reset_graph_authoring_repair_state,
     reset_hosted_child_event_sink,
+    set_graph_authoring_repair_state,
     set_hosted_child_event_sink,
 )
+from physical_agent_test.skill_result_details import SkillResultDetailStore
 
 
 _INPUT_SCHEMA = {
@@ -111,7 +119,7 @@ def descriptor(
         skill_version="1.0.0",
         display_name=tool_name,
         manifest_path=f"skills/{tool_name}/manifest.json",
-        schema_version=2,
+        schema_version=3,
         discoverable=True,
         tool_name=tool_name,
         description="A test finite Skill with a typed invocation contract.",
@@ -123,6 +131,20 @@ def descriptor(
         required_permissions=(),
         input_schema=_INPUT_SCHEMA,
         output_schema=_OUTPUT_SCHEMA,
+        result_tiers=SkillResultTierPolicy(
+            schema_version=1,
+            compact_pointers=(
+                "/value",
+                "/status",
+                "/workflow_complete",
+                "/physical_motion_authorized",
+                "/physical_motion_submitted",
+                "/physical_motion_completed",
+                "/required_next_tool",
+            ),
+            detail_policy="HOST_SANITIZED_REFERENCE",
+            max_compact_bytes=16384,
+        ),
         execution_adapter_id=f"skill.{tool_name}.v1",
         execution_adapter_kind="IN_PROCESS_BOUND_INSTANCE",
         execution_entrypoint=None,
@@ -150,6 +172,7 @@ def test_catalog_schemas_preflight_slice_point_offset_motion_chain() -> None:
             safety_class=item.safety_class,
             input_schema=item.input_schema,
             output_schema=item.output_schema,
+            compact_pointers=item.result_tiers.compact_pointers,
             expected_latency=item.expected_latency,
         )
         for item in discover_agent_skills(workspace)
@@ -333,7 +356,15 @@ def test_external_adapter_receives_original_function_tool_context() -> None:
         tool.on_invoke_tool(root_context, '{"value":7}')
     )
 
-    assert result == {"value": 7}
+    assert json.loads(result) == {
+        "value": 7,
+        "detail_ref": {
+            "schema": "midbrain.skill_result_detail_ref",
+            "schema_version": 1,
+            "available": False,
+            "reason": "DETAIL_STORE_NOT_CONFIGURED",
+        },
+    }
     assert adapter.context is root_context
 
 
@@ -368,7 +399,8 @@ def test_skill_tool_description_publishes_declared_result_pointers() -> None:
         eligible_tool_names={"echo_value"},
     )[0]
 
-    assert "Declared structured-result pointers" in tool.description
+    assert "Complete structured-result pointers" in tool.description
+    assert "Compact graph-bindable pointers" in tool.description
     assert "/value" in tool.description
 
 
@@ -564,6 +596,47 @@ def test_broker_rechecks_dynamic_tool_enablement_before_invocation() -> None:
             broker.invoke("echo_value", {"value": 1}, graph_context)
         )
     assert not invoked
+
+
+def test_broker_maps_trusted_pre_submission_rejection() -> None:
+    class PreviewRejected(RuntimeError):
+        physical_action_submitted = False
+
+    async def reject_preview(_context: Any, _raw_arguments: str) -> Any:
+        raise PreviewRejected("preview rejected before physical submission")
+
+    motion_tool = FunctionTool(
+        name="move_once",
+        description="A physical test Skill.",
+        params_json_schema=_INPUT_SCHEMA,
+        on_invoke_tool=reject_preview,
+        needs_approval=False,
+    )
+    broker = HostedSkillInvocationBroker(
+        [
+            descriptor(
+                "move_once",
+                safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+            )
+        ],
+        [motion_tool],
+    )
+    graph_context = SimpleNamespace(
+        root_context=SimpleNamespace(
+            context=object(),
+            agent=SimpleNamespace(tools=[motion_tool]),
+        ),
+        child_call_id="graph:move:1",
+        deadline_monotonic=time.monotonic() + 2.0,
+    )
+
+    with pytest.raises(ChildPhysicalActionNotSubmitted) as caught:
+        asyncio.run(
+            broker.invoke("move_once", {"value": 1}, graph_context)
+        )
+
+    assert caught.value.child_call_id == "graph:move:1"
+    assert caught.value.reason == "PreviewRejected: preview rejected before physical submission"
 
 
 def test_broker_completes_exact_provider_handover_then_resumes_child() -> None:
@@ -1011,75 +1084,356 @@ def test_graph_function_tool_invokes_child_function_tool_end_to_end() -> None:
         )
     )
     graph_tool = next(tool for tool in tools if tool.name == "run_limited_graph")
+    assert "authoring_version" in graph_tool.params_json_schema["properties"][
+        "graph"
+    ]["properties"]
+    assert "nodes" not in graph_tool.params_json_schema["properties"]["graph"][
+        "properties"
+    ]
     root_context = SimpleNamespace(
         context=object(),
         tool_call_id="root-graph-call",
         agent=SimpleNamespace(tools=tools),
     )
     graph = {
-        "schema_version": 1,
+        "authoring_version": 1,
         "name": "end to end",
-        "start_node": "echo",
-        "initial_values": [],
-        "nodes": [
+        "start": "",
+        "initial": [],
+        "steps": [
             {
                 "id": "echo",
-                "kind": "SKILL",
-                "skill": {
-                    "tool_name": "echo_value",
-                    "arguments_json": '{"value":11}',
-                    "bindings": [],
-                    "max_attempts": 1,
-                    "retry_condition": None,
-                    "next_node": "done",
-                    "failure_node": "failed",
-                },
-                "switch": None,
-                "model_route": None,
-                "terminal": None,
-            },
-            {
-                "id": "done",
-                "kind": "TERMINAL",
-                "skill": None,
-                "switch": None,
-                "model_route": None,
-                "terminal": {"status": "COMPLETED", "message": "done"},
-            },
-            {
-                "id": "failed",
-                "kind": "TERMINAL",
-                "skill": None,
-                "switch": None,
-                "model_route": None,
-                "terminal": {"status": "FAILED", "message": "failed"},
+                "tool": "echo_value",
+                "args_json": '{"value":11}',
+                "bind": [],
             },
         ],
+        "edges": [],
+        "retries": [],
+        "switches": [],
+        "model_routes": [],
+        "terminals": [],
         "limits": {
-            "max_active_runtime_s": 5.0,
-            "max_transitions": 4,
-            "max_visits_per_node": 2,
-            "max_model_routes": 0,
-            "max_physical_actions": 0,
-            "max_retained_result_bytes": 4096,
+            "seconds": 5.0,
+            "transitions": 4,
+            "visits": 2,
+            "model_routes": 0,
+            "physical_actions": 0,
+            "result_bytes": 4096,
         },
     }
 
-    result = asyncio.run(
+    result = json.loads(asyncio.run(
         graph_tool.on_invoke_tool(
             root_context,
             json.dumps({"graph": graph}),
         )
-    )
+    ))
 
     assert result["status"] == "COMPLETED"
-    assert result["node_results"]["echo"] == {
-        "value": 11,
-        "source": "direct-function-tool",
+    assert result["node_results"]["echo"]["value"] == 11
+    assert "source" not in result["node_results"]["echo"]
+    assert result["node_results"]["echo"]["detail_ref"]["available"] is False
+
+
+def test_graph_authoring_error_allows_one_corrected_preexecution_call() -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    graph_descriptor = next(
+        item
+        for item in discover_agent_skills(workspace)
+        if item.tool_name == "run_limited_graph"
+    )
+    child_invocations = 0
+
+    async def echo(arguments: dict[str, Any]) -> dict[str, Any]:
+        nonlocal child_invocations
+        child_invocations += 1
+        return {"value": arguments["value"]}
+
+    echo_descriptor = descriptor("echo_value")
+    handle = SkillInvocationBrokerHandle()
+    tools = build_agent_tools(
+        [echo_descriptor, graph_descriptor],
+        {
+            echo_descriptor.execution_adapter_id: BoundMethodSkillAdapter(echo),
+            graph_descriptor.execution_adapter_id: LimitedGraphHostAdapter(handle),
+        },
+        eligible_tool_names={"echo_value", "run_limited_graph"},
+    )
+    handle.bind(HostedSkillInvocationBroker([echo_descriptor, graph_descriptor], tools))
+    graph_tool = next(tool for tool in tools if tool.name == "run_limited_graph")
+    root_context = SimpleNamespace(
+        context=object(),
+        tool_call_id="root-authoring-repair",
+        agent=SimpleNamespace(tools=tools),
+    )
+    operator_request = "establish the arm base axis by foundation pose"
+
+    def authoring_arguments(value_json: str) -> dict[str, Any]:
+        return {
+            "graph": {
+                "authoring_version": 1,
+                "name": "live operator request regression",
+                "start": "",
+                "initial": [
+                    {
+                        "name": "operator_request",
+                        "value_json": value_json,
+                    }
+                ],
+                "steps": [
+                    {
+                        "id": "echo",
+                        "tool": "echo_value",
+                        "args_json": '{"value":""}',
+                        "bind": [
+                            {
+                                "to": "/value",
+                                "from": "$operator_request#",
+                            }
+                        ],
+                    }
+                ],
+                "edges": [],
+                "retries": [],
+                "switches": [],
+                "model_routes": [],
+                "terminals": [],
+                "limits": {
+                    "seconds": 5.0,
+                    "transitions": 4,
+                    "visits": 2,
+                    "model_routes": 0,
+                    "physical_actions": 0,
+                    "result_bytes": 4096,
+                },
+            }
+        }
+
+    async def scenario() -> tuple[dict[str, Any], dict[str, Any]]:
+        token = set_graph_authoring_repair_state(maximum_corrections=1)
+        try:
+            rejected = json.loads(
+                await graph_tool.on_invoke_tool(
+                    root_context,
+                    json.dumps(authoring_arguments(operator_request)),
+                )
+            )
+            corrected = json.loads(
+                await graph_tool.on_invoke_tool(
+                    root_context,
+                    json.dumps(
+                        authoring_arguments(json.dumps(operator_request))
+                    ),
+                )
+            )
+            return rejected, corrected
+        finally:
+            reset_graph_authoring_repair_state(token)
+
+    rejected, corrected = asyncio.run(scenario())
+
+    assert rejected["status"] == "AUTHORING_INVALID"
+    assert rejected["physical_action_count"] == 0
+    assert rejected["transition_count"] == 0
+    assert "value_json" in rejected["message"]
+    assert child_invocations == 1
+    assert corrected["status"] == "COMPLETED"
+    assert corrected["node_results"]["echo"]["value"] == operator_request
+
+
+def test_graph_authoring_second_invalid_call_terminates() -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    graph_descriptor = next(
+        item
+        for item in discover_agent_skills(workspace)
+        if item.tool_name == "run_limited_graph"
+    )
+    echo_descriptor = descriptor("echo_value")
+    handle = SkillInvocationBrokerHandle()
+    tools = build_agent_tools(
+        [echo_descriptor, graph_descriptor],
+        {
+            echo_descriptor.execution_adapter_id: BoundMethodSkillAdapter(
+                lambda arguments: arguments
+            ),
+            graph_descriptor.execution_adapter_id: LimitedGraphHostAdapter(handle),
+        },
+        eligible_tool_names={"echo_value", "run_limited_graph"},
+    )
+    handle.bind(HostedSkillInvocationBroker([echo_descriptor, graph_descriptor], tools))
+    graph_tool = next(tool for tool in tools if tool.name == "run_limited_graph")
+    root_context = SimpleNamespace(
+        context=object(),
+        tool_call_id="root-authoring-limit",
+        agent=SimpleNamespace(tools=tools),
+    )
+    invalid = {
+        "graph": {
+            "authoring_version": 1,
+            "name": "bounded authoring failure",
+            "start": "",
+            "initial": [{"name": "request", "value_json": "raw text"}],
+            "steps": [
+                {
+                    "id": "echo",
+                    "tool": "echo_value",
+                    "args_json": '{"value":""}',
+                    "bind": [{"to": "/value", "from": "$request#"}],
+                }
+            ],
+            "edges": [],
+            "retries": [],
+            "switches": [],
+            "model_routes": [],
+            "terminals": [],
+            "limits": {
+                "seconds": 5.0,
+                "transitions": 4,
+                "visits": 2,
+                "model_routes": 0,
+                "physical_actions": 0,
+                "result_bytes": 4096,
+            },
+        }
     }
 
+    async def scenario() -> dict[str, Any]:
+        token = set_graph_authoring_repair_state(maximum_corrections=1)
+        try:
+            first = json.loads(
+                await graph_tool.on_invoke_tool(
+                    root_context,
+                    json.dumps(invalid),
+                )
+            )
+            with pytest.raises(GraphValidationError, match="not valid JSON"):
+                await graph_tool.on_invoke_tool(
+                    root_context,
+                    json.dumps(invalid),
+                )
+            return first
+        finally:
+            reset_graph_authoring_repair_state(token)
 
-def test_graph_function_tool_completes_provider_handover_end_to_end() -> None:
+    first = asyncio.run(scenario())
+    assert first["status"] == "AUTHORING_INVALID"
+
+
+def test_graph_function_tool_routes_pre_submission_rejection_end_to_end(
+    tmp_path: Path,
+) -> None:
+    workspace = Path(__file__).resolve().parents[3]
+    graph_descriptor = next(
+        item
+        for item in discover_agent_skills(workspace)
+        if item.tool_name == "run_limited_graph"
+    )
+    child_invocations = 0
+
+    class PreviewRejected(RuntimeError):
+        physical_action_submitted = False
+
+    async def reject_preview(_arguments: dict[str, Any]) -> dict[str, Any]:
+        nonlocal child_invocations
+        child_invocations += 1
+        raise PreviewRejected("preview rejected before physical submission")
+
+    move_descriptor = descriptor(
+        "move_once",
+        safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    )
+    detail_store = SkillResultDetailStore(
+        tmp_path / "details.sqlite3",
+        session_id="pre-submission-test",
+        maximum_results=20,
+        maximum_result_bytes=64 * 1024,
+        maximum_total_bytes=256 * 1024,
+        retention_days=1,
+    )
+    handle = SkillInvocationBrokerHandle()
+    tools = build_agent_tools(
+        [move_descriptor, graph_descriptor],
+        {
+            move_descriptor.execution_adapter_id: BoundMethodSkillAdapter(
+                reject_preview
+            ),
+            graph_descriptor.execution_adapter_id: LimitedGraphHostAdapter(handle),
+        },
+        eligible_tool_names={"move_once", "run_limited_graph"},
+        detail_store=detail_store,
+        approval_overrides={"move_once": False},
+    )
+    handle.bind(
+        HostedSkillInvocationBroker([move_descriptor, graph_descriptor], tools)
+    )
+    graph_tool = next(tool for tool in tools if tool.name == "run_limited_graph")
+    root_context = SimpleNamespace(
+        context=object(),
+        tool_call_id="root-pre-submission-rejection",
+        agent=SimpleNamespace(tools=tools),
+    )
+    graph = {
+        "authoring_version": 1,
+        "name": "pre-submission rejection",
+        "start": "",
+        "initial": [],
+        "steps": [
+            {
+                "id": "move",
+                "tool": "move_once",
+                "args_json": '{"value":1}',
+                "bind": [],
+            }
+        ],
+        "edges": [],
+        "retries": [],
+        "switches": [],
+        "model_routes": [],
+        "terminals": [],
+        "limits": {
+            "seconds": 5.0,
+            "transitions": 4,
+            "visits": 2,
+            "model_routes": 0,
+            "physical_actions": 1,
+            "result_bytes": 4096,
+        },
+    }
+
+    result = json.loads(
+        asyncio.run(
+            graph_tool.on_invoke_tool(
+                root_context,
+                json.dumps({"graph": graph}),
+            )
+        )
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["terminal_node"] == "failed"
+    assert result["physical_action_count"] == 0
+    assert result["last_failure"]["kind"] == (
+        "CHILD_PHYSICAL_ACTION_NOT_SUBMITTED"
+    )
+    assert result["last_failure"]["node_id"] == "move"
+    assert result["last_failure"]["tool_name"] == "move_once"
+    assert result["last_failure"]["physical_action_submitted"] is False
+    assert "preview rejected" in result["last_failure"]["reason"]
+    assert child_invocations == 1
+    graph_detail = asyncio.run(
+        detail_store.retrieve(result["detail_ref"]["result_id"])
+    )
+    assert graph_detail is not None
+    assert any(
+        event["event"] == "CHILD_PHYSICAL_ACTION_NOT_SUBMITTED"
+        for event in graph_detail["payload"]["trace"]
+    )
+
+
+def test_graph_function_tool_completes_provider_handover_end_to_end(
+    tmp_path: Path,
+) -> None:
     workspace = Path(__file__).resolve().parents[3]
     from physical_agent_test.skill_catalog import discover_agent_skills
 
@@ -1107,6 +1461,14 @@ def test_graph_function_tool_completes_provider_handover_end_to_end() -> None:
         "move_once",
         safety_class="PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
     )
+    detail_store = SkillResultDetailStore(
+        tmp_path / "details.sqlite3",
+        session_id="graph-test",
+        maximum_results=20,
+        maximum_result_bytes=64 * 1024,
+        maximum_total_bytes=256 * 1024,
+        retention_days=1,
+    )
     handle = SkillInvocationBrokerHandle()
     skill_tools = build_agent_tools(
         [move_descriptor, graph_descriptor],
@@ -1115,6 +1477,7 @@ def test_graph_function_tool_completes_provider_handover_end_to_end() -> None:
             graph_descriptor.execution_adapter_id: LimitedGraphHostAdapter(handle),
         },
         eligible_tool_names={"move_once", "run_limited_graph"},
+        detail_store=detail_store,
         approval_overrides={"move_once": False},
     )
     lifecycle_tool = FunctionTool(
@@ -1188,18 +1551,22 @@ def test_graph_function_tool_completes_provider_handover_end_to_end() -> None:
         },
     }
 
-    result = asyncio.run(
+    result = json.loads(asyncio.run(
         graph_tool.on_invoke_tool(
             root_context,
             json.dumps({"graph": graph}),
         )
-    )
+    ))
 
     assert result["status"] == "COMPLETED"
     assert result["physical_action_count"] == 1
     assert child_invocations == 2
+    graph_detail = asyncio.run(
+        detail_store.retrieve(result["detail_ref"]["result_id"])
+    )
+    assert graph_detail is not None
     assert [
         event["event"]
-        for event in result["trace"]
+        for event in graph_detail["payload"]["trace"]
         if event["event"].startswith("PROVIDER_HANDOVER_")
     ] == ["PROVIDER_HANDOVER_STARTED", "PROVIDER_HANDOVER_COMPLETED"]

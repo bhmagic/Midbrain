@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -25,8 +26,38 @@ class _Manager:
     async def capabilities(self):
         return []
 
+    async def agent_runtime_catalog(self):
+        return {
+            "schema": "midbrain.manager.agent_runtime_catalog",
+            "schema_version": 1,
+            "providers": [],
+            "capabilities": [],
+        }
+
+    async def provider_detail(self, provider_id: str):
+        return {
+            "config": {
+                "id": provider_id,
+                "env": {"API_KEY": "must-not-enter-model-context"},
+            },
+            "process_state": "running",
+            "report": {"ready": True},
+        }
+
     async def set_residency(self, provider_id: str, action: str):
         return {"provider_id": provider_id, "action": action}
+
+
+class _ScenePolicyPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def publish_policy(self, **arguments):
+        self.calls.append(dict(arguments))
+        return {
+            "status": "PUBLISHED",
+            "policy_id": arguments["policy_id"],
+        }
 
 
 class _IntegratedMotionSkill:
@@ -179,7 +210,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertEqual(combined[2]["id"], "fc_required")
         self.assertEqual(combined[-1]["content"], "establish coordinates")
 
-    def test_runtime_snapshot_keeps_complete_manager_evidence(
+    def test_runtime_snapshot_keeps_regulated_complete_catalog(
         self,
     ) -> None:
         snapshot = build_midbrain_runtime_snapshot(
@@ -200,9 +231,11 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
                         "health": "DEGRADED",
                         "ready": False,
                         "details": {
-                            "fault_reason": "Basic lease lost",
-                            "ik_mode": "POSE_6DOF",
-                            "observed_at_us": 123,
+                            "last_error": "Basic lease lost",
+                            "manager_error": "authorization=must-redact",
+                            "diagnostics": {
+                                "blocking_prerequisite": "basic lease"
+                            },
                             "model_view": {"large": ["telemetry"] * 100},
                         },
                         "last_seen": "2026-07-31T12:00:00Z",
@@ -222,36 +255,29 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
 
         provider = snapshot["providers"][0]
         self.assertEqual(
-            provider["report"]["details"]["fault_reason"],
+            snapshot["schema"],
+            "midbrain.manager.agent_runtime_catalog",
+        )
+        self.assertEqual(
+            provider["last_error"],
             "Basic lease lost",
         )
         self.assertEqual(
-            provider["report"]["details"]["ik_mode"],
-            "POSE_6DOF",
+            provider["manager_error"],
+            "authorization=[REDACTED]",
         )
         self.assertEqual(
-            provider["report"]["details"]["observed_at_us"],
-            123,
+            provider["blocking_prerequisite"],
+            "basic lease",
         )
-        self.assertIn("model_view", provider["report"]["details"])
         self.assertEqual(
-            provider["report"]["last_seen"],
+            provider["last_seen"],
             "2026-07-31T12:00:00Z",
         )
-        self.assertEqual(provider["config"]["command"], "large command")
-        self.assertEqual(
-            provider["config"]["env"]["CONTROLLER_MODE"],
-            "POSE_6DOF",
-        )
-        self.assertEqual(
-            provider["config"]["env"]["SECRET"],
-            "[REDACTED]",
-        )
+        self.assertNotIn("config", provider)
+        self.assertNotIn("report", provider)
         self.assertNotIn("must not enter model context", str(snapshot))
-        self.assertEqual(
-            snapshot["capabilities"][0]["last_seen"],
-            "2026-07-31T12:00:01Z",
-        )
+        self.assertNotIn("last_seen", snapshot["capabilities"][0])
         self.assertEqual(
             snapshot["eligible_skill_tools"],
             ["calibrate_stationary_workcell"],
@@ -271,6 +297,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
 
         self.assertEqual(driver.max_turns, 16)
         self.assertIn("inspect_midbrain_runtime", tools)
+        self.assertIn("inspect_provider_detail", tools)
         self.assertIn("set_provider_residency", tools)
         self.assertFalse(tools["inspect_midbrain_runtime"].needs_approval)
         self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
@@ -279,6 +306,66 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             driver.agent.instructions,
         )
         self.assertIsNone(driver.run_config.session_input_callback)
+
+    def test_combined_scene_setup_publishes_policy_and_returns_catalog(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[3]
+        publisher = _ScenePolicyPublisher()
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-5.6-terra",
+            workspace_root=root,
+            eligible_tool_names={"identify_pointed_object"},
+            manager=_Manager(),
+            provider_lifecycle_control=True,
+            scene_policy_publisher=publisher,  # type: ignore[arg-type]
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+        self.assertNotIn("configure_scene_segmentation_policy", tools)
+
+        result = asyncio.run(
+            tools[
+                "configure_scene_policy_and_inspect_runtime"
+            ].on_invoke_tool(
+                None,  # type: ignore[arg-type]
+                json.dumps(
+                    {
+                        "policy_id": "table-and-roll",
+                        "objects": [
+                            {
+                                "object_id": "table",
+                                "type": "KEEP_OUT",
+                                "description": "white table surface",
+                            },
+                            {
+                                "object_id": "roll",
+                                "type": "WORK_OBJECT",
+                                "description": "toilet paper roll",
+                            },
+                        ],
+                        "arm_description": "complete robot arm",
+                    }
+                ),
+            )
+        )
+
+        parsed = json.loads(result)
+        self.assertEqual(
+            parsed["schema"],
+            "midbrain.agent.scene_policy_runtime_setup",
+        )
+        self.assertEqual(parsed["scene_policy"]["status"], "PUBLISHED")
+        self.assertEqual(
+            parsed["runtime_catalog"]["schema"],
+            "midbrain.manager.agent_runtime_catalog",
+        )
+        self.assertEqual(
+            parsed["runtime_catalog"]["eligible_skill_tools"],
+            ["identify_pointed_object"],
+        )
+        self.assertEqual(len(publisher.calls), 1)
+        self.assertIn("set_provider_residency", parsed["agent_instruction"])
 
     def test_regular_driver_exposes_confirmed_provider_lifecycle(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -295,6 +382,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         tools = {tool.name: tool for tool in driver.agent.tools}
 
         self.assertIn("inspect_midbrain_runtime", tools)
+        self.assertIn("inspect_provider_detail", tools)
         self.assertIn("set_provider_residency", tools)
         self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
         self.assertIn("perform_relative_effector_motion", tools)
@@ -338,6 +426,23 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             "instead of answering with a permission request",
             driver.agent.instructions,
         )
+
+        detail = json.loads(
+            asyncio.run(
+                tools["inspect_provider_detail"].on_invoke_tool(
+                    None,
+                    json.dumps(
+                        {
+                            "provider_id": "vision.primary",
+                            "json_pointer": "/config",
+                        }
+                    ),
+                )
+            )
+        )
+        self.assertEqual(detail["selected_pointer"], "/config")
+        self.assertEqual(detail["detail"]["env"]["API_KEY"], "[REDACTED]")
+        self.assertNotIn("must-not-enter-model-context", str(detail))
         self.assertIn(
             "call set_provider_residency immediately",
             driver.agent.instructions,

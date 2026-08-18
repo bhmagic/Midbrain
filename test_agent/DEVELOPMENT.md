@@ -1,5 +1,368 @@
 # Development record
 
+## 2026-08-18 — Near-stable checkpoint boundary
+
+The current checkpoint is accepted as near stable based on stopped-software
+validation and retained live forward tests. The linear graph success path,
+failure ownership and compact `last_failure`, concise-authoring correction,
+Provider handover, two slicing submissions, intermediate motion, incremental
+single-card visuals, FoundationPose review continuation, and separate Basic
+safe home have all produced the intended bounded behavior. Authentication,
+authorization, Manager/Provider/Fabric duties, per-child call identity, and the
+prohibition on nested Limited Graph remain unchanged.
+
+This checkpoint does not claim complete feature coverage. A purpose-built
+branch/switch/model-route test, multiple simultaneous visual-card presentation,
+and material-cut task-success sensing remain unverified. The 32-item session
+history is not byte/token bounded, and `refine_arm_root_translation` still
+selects large nested sample and visual subtrees into its nominal compact tier.
+Those are retained follow-up items; they did not cause a wrong authorization,
+wrong branch, unbounded continuation, or failed action in the accepted live
+success runs.
+
+## 2026-08-18 — Successful compact graph and Agent-latency checkpoint
+
+Runs `b30f99cd-2967-42de-9290-77bf9f5c7022` and
+`6724f1b6-5fb3-413e-b680-a7d68798ec75` completed the scene-map, corner transit,
+two-slice, and intermediate reposition graph after the compact-context and
+authoring repairs. Both graphs used the same digest, completed eight Skill
+transitions and four physical actions, performed no retry or model route, and
+reported no failure or limit. Both slicing children submitted and requested
+relax. The second Agent request also completed Basic safe home through the
+separate top-level path.
+
+The first comparable run used five Agent response intervals and 25.573 seconds
+of orchestration residual, down from 40.606 seconds in retained run
+`2792e656-a7cc-4f26-806b-789c03b5ded3`. Graph active time remained effectively
+flat at 33.828 versus 34.125 seconds. The immediate repeat avoided another
+deferred Skill-discovery response before graph authoring and used 20.786
+seconds of Agent residual despite adding the safe-home response and tool call.
+
+The current runtime payload, graph argument, and graph result were 13,140,
+4,161, and 14,581 serialized characters. Their retained pre-reduction
+counterparts were 101,700, 8,239, and 128,485 characters. Visual evidence was
+published 0.484 and 0.344 seconds after the two graph submissions rather than
+at graph completion. The run verifies the success path and Provider handover;
+it does not exercise retry, failure branching, switch branching, model routing,
+or multiple simultaneous visual cards.
+
+## 2026-08-18 — Concise initial-binding spelling contradiction
+
+Run `e3e0a083-e97f-4944-94e4-ddeed362c9c3` first completed a one-node world-
+axis graph. The next FoundationPose graph declared initial value `request` but
+bound it as `$initial#/request`. The model-facing authoring guidance had
+published that namespace-shaped spelling, while the compiler documented and
+implemented `$request#`. The graph returned `AUTHORING_INVALID` with zero
+physical actions. A later invalid correction exceeded the one correction
+budget and failed the Agent run.
+
+The compiler now resolves `$initial#/request` to initial name `request` at its
+root, and `$initial#/request/payload` to that initial value's `/payload`
+pointer. Existing `$request#/payload` remains accepted. A genuinely declared
+initial value named `initial` keeps the original direct-name interpretation.
+Only the Test Agent's concise projection changed; the compiled canonical graph
+and all Limited Graph validation, authorization, and runtime behavior remain
+unchanged.
+
+The same forward-test session subsequently produced two full cutting graphs.
+Both stayed inside graph ownership and exposed their exact Slicing preview
+rejection through compact `last_failure`; neither directly retried Slicing nor
+ran a later graph node. Those physical-workflow failures are recorded in the
+separate Slicing handoff.
+
+Post-repair validation passed 485 Test Agent tests plus 27 subtests, 60
+standalone Limited Graph/Slicing tests, the Limited Graph package validator,
+141 documentation files, 1,150 repository-wide Python tests plus 27 subtests,
+all Python wheel builds, and 80 Rust tests.
+
+## 2026-08-18 — Limited Graph terminal escape after compact projection
+
+Run `2869b95b-a158-42fa-aa39-6e0c7056d8c0` compiled and executed the complete
+two-slice graph. Scene inspection, Fabric corner derivation, corner motion, and
+direction translation completed. The first Slicing child returned the trusted
+pre-submission marker for `SHADOW_PLANNING_TIME_BUDGET_EXCEEDED`; the graph
+followed `first-slice -> failed`, counted only the corner motion, and executed
+no later graph node.
+
+The compact graph result excluded its detailed trace and exposed only the
+generic message `Limited Graph failed`. The next Agent cycle did not receive
+the failed node, tool, reason, or submission fact. It activated Contact,
+derived another point, and directly called `slice_with_blade`. That call failed
+with the same pre-submission class. Run
+`b00c5c6b-3d56-44ff-b2a6-2d31c5ebbcc2` then reused the partial session history
+and directly invoked Slicing again when the prompt was repeated.
+
+Limited Graph now publishes `last_failure` in the compact tier and the full
+detail tier. The Agent's graph-first guidance forbids direct continuation of a
+failed or remaining graph stage after non-success termination and treats a
+repeated message as fresh unless resumption is explicit. The fix preserves the
+existing no-physical-retry rule, per-child authorization, Provider duties, and
+all Slicing/IK/Fabric behavior.
+
+Focused regressions passed 90 tests. The stopped complete Test Agent suite
+passed 481 tests and 27 subtests. Repository qualification passed 1,146 tests
+and 27 subtests, 80 Rust tests, all wheel builds, 140 documentation files, 106
+JSON files, refreshed source-integrity manifests, and Limited Graph Skill
+validation.
+
+## 2026-08-18 — Live slicing preview rejection classification
+
+### Retained run evidence
+
+Autonomous runs `2a3a6f77-ecfe-464e-afbe-887b004a33e6` and
+`9d3a86e6-86de-4e6c-a9ad-06e206d937d2` prove the repaired concise graph
+authoring path compiled and executed. Both graphs completed scene inspection,
+Fabric corner derivation, absolute-world corner motion, and arm-base slicing-
+direction translation. Their first-slice arguments match the earlier successful
+canonical graph: relative current-effector world point `[0, 0, -0.1]`, blade
+direction `[0, 0, -1]`, translated arm-base `-X`, length `0.2 m`, null live-
+default profile selectors, and the Impedance alignment backend.
+
+Run `2a3a6f77-ecfe-464e-afbe-887b004a33e6` reached its first slice after four
+graph transitions and received `IK_PREVIEW_REJECTED` with a zero singularity
+metric, `0.005602 m` position residual against `0.001500 m`, and `0.145810 rad`
+orientation residual against `0.035000 rad`. Run
+`9d3a86e6-86de-4e6c-a9ad-06e206d937d2` repeated the topology and received
+`0.007761 m` and `0.199557 rad` residuals. No slicing result was retained and no
+later offset, reposition, second slice, or Contact result occurred.
+
+The Slicing host raised an ordinary `RuntimeError` from Integrated preview
+construction before it had a preview ID or submitted physical action. Limited
+Graph correctly refused to infer safety from the error text, but therefore
+reported `UNKNOWN_OUTCOME`, counted the attempted slicing node as a second
+physical action, and stopped without following the graph's declared failure
+edge.
+
+### Bounded graph integration repair
+
+Added `ChildPhysicalActionNotSubmitted` as a child-owner proof signal. The
+hosted broker accepts it only from an installed physical child exception whose
+`physical_action_submitted` attribute is exactly `False`. The runner records a
+distinct trace event, removes that unsubmitted call from the physical-action
+count, and selects the declared failure edge without retry. It does not inspect
+error prose.
+
+The Slicing adapter now emits the proof only when Integrated returns a non-
+`PREVIEW_READY` alignment preview or omits the preview ID. Alignment execution,
+Contact preflight after an alignment motion, provider transition, timeout,
+cancellation, malformed result, and unclassified exceptions are unchanged and
+remain conservatively uncertain when physical submission cannot be excluded.
+The Slicing IK, singularity, collision, transform, profile, Contact, and motion
+logic was not changed.
+
+Focused stopped-software validation passed 31 Limited Graph runner tests, 21
+Test Agent host-broker tests, and 14 Slicing host-adapter tests. No Manager,
+Provider, Fabric runtime, controller, or robot operation was started by these
+tests. The complete Test Agent suite then passed 481 tests and 27 subtests in
+31.99 seconds, and the complete Slicing suite passed 29 tests in 0.26 seconds.
+
+## 2026-08-17 — Agent setup-turn and graph-authoring reduction
+
+### Checkpoint 1: scene policy and runtime observation
+
+The explicit scene-policy routes previously required one model continuation to
+publish the Fabric policy and another continuation to call the argument-free
+runtime inspection tool. Added the top-level host FunctionTool
+`configure_scene_policy_and_inspect_runtime`, which publishes the exact
+operator-authored scene policy and returns the fresh regulated Manager catalog
+in one call. The tool performs no Provider lifecycle action and grants no
+authority. The next Agent continuation still selects an exact configured
+Provider and invokes the separately authorized `set_provider_residency` path.
+
+The combined tool is route-visible only where the current prompt defines a new
+scene policy. Standalone policy publication and runtime inspection remain
+available on their existing non-composed surfaces. A lifecycle-enabled Agent
+does not also expose the redundant standalone policy tool, so this composition
+does not add a duplicate policy schema to its general tool surface. Manager
+remains the owner of Provider identity, capability state, lifecycle, and
+readiness; Fabric remains the policy-data owner. Focused route and FunctionTool
+validation passed 58 tests. No Manager state, Provider process, Fabric runtime,
+controller, or robot was started by this checkpoint.
+
+### Checkpoint 2: concise graph authoring and canonical compilation
+
+The Test Agent now exposes a strict concise schema for `run_limited_graph`.
+Ordered `steps` remove repeated node-kind null unions and ordinary success and
+failure edges. Compact `{to, from}` bindings retain exact JSON-pointer data
+flow. Edge overrides, read-only retries, deterministic switches, model routes,
+custom terminals and all six execution limits remain available. Empty terminal
+records deterministically add the ordinary `complete` and `failed` outcomes.
+
+The host validates the concise projection and compiles it before applying the
+unchanged installed Limited Graph manifest schema. The compiled canonical graph
+continues through the existing eligible-child, compact-output-pointer,
+reachability, physical-cycle, retry, authorization, digest and execution paths.
+The public canonical manifest, runner and Provider-handover contract were not
+changed. Direct host-callback callers using canonical version 1 remain
+accepted.
+
+The exact retained two-cut graph from Agent session message 9811 was converted
+in memory and compiled back to a structure equal to its original canonical
+arguments. Its compact serialization decreased from 6,451 to 3,749 characters,
+a 2,702-character or 41.9% reduction. The model-facing schema decreased from
+5,421 to 4,572 compact characters, or 15.7%. After including the new
+470-character usage guidance, the always-loaded graph schema-plus-guidance
+surface remains 379 characters smaller than the prior canonical schema alone.
+
+Focused compiler, strict-schema, concise end-to-end graph, canonical
+compatibility, Provider-handover, route and combined scene setup validation
+passed 82 tests. No Manager runtime, Provider, Fabric runtime, controller or
+robot process was started for this checkpoint.
+
+### Checkpoint 3: complete stopped-software validation
+
+The final complete Test Agent suite passed 477 tests and 27 subtests in 30.64
+seconds. Skill Creator validation reported `Skill is valid!`. Repository
+checks passed for 138 Markdown files, persistent configuration baselines,
+Python component environment isolation, and 106 JSON files. Source integrity
+manifests were refreshed after the final code and documentation changes.
+
+The first integrity refresh encountered a Windows user-mapped-section lock on
+`test_agent/FILE_MANIFEST.sha256` after updating the preceding component
+manifests. A standalone deterministic refresh immediately afterward completed
+all component manifests and the 883-file repository manifest. No runtime or
+physical process was started, stopped or changed during validation.
+
+### Checkpoint 4: first live concise-authoring failure and repair
+
+Live autonomous runs `261e0ec0-e3a0-4094-b1df-7eafb2cf91e9` and
+`531775cc-6326-43b3-aeaa-55668de69167` loaded the concise tool, searched the
+needed child schemas and called `run_limited_graph`, but both failed before the
+first node with `initial value operator_request is not valid JSON`. The
+projection's shortened `initial[].value` name did not communicate that the
+string was canonical encoded JSON. The first attempt failed after 7.23 seconds
+and the second after 6.19 seconds. No graph child, Provider lifecycle action,
+authorization path or physical action started.
+
+Renamed all JSON-bearing authoring fields to `value_json`, `args_json`, and
+`expected_json` and retained short schema descriptions explaining string JSON
+quoting. Added one run-local mutable correction budget. A compilation or
+canonical static-preflight error consumes that budget and returns a
+schema-valid Limited Graph result with `status=AUTHORING_INVALID`, zero
+transitions and zero physical actions. The model is instructed to correct and
+resubmit exactly once. A second invalid submission raises and terminates.
+Errors after runner state or child execution begins never enter this path.
+
+The exact live raw-text failure, corrected JSON-string resubmission and
+second-invalid termination are regression tested. The explicit reliable format
+reduces the retained two-cut graph from 6,451 to 3,789 characters, or 41.3%,
+and the model-facing schema from 5,421 to 4,874 characters, or 10.1%. Its
+499-character usage guidance leaves schema plus guidance 48 characters smaller
+than the prior canonical schema alone.
+
+Focused authoring, broker, route, surface and event validation passed 100
+tests. The final complete Test Agent suite passed 479 tests and 27 subtests in
+31.21 seconds. No Manager runtime, Provider, Fabric runtime, controller or
+robot process was started or changed by this repair validation.
+
+## 2026-08-17 — Compact Manager catalog and two-tier Skill results
+
+### Approved boundary
+
+The operator approved two coupled context-reduction changes: retain every
+Provider and capability in a regulated Manager catalog with explicit full
+Provider inspection, and require all 23 installed Skill output schemas to
+publish compact and detailed tiers with explicit full Skill-result inspection.
+The inspection operations are top-level Agent host observations. They are not
+Skills, Providers, lifecycle commands, or Limited Graph children.
+
+Authentication and responsibility boundaries are unchanged. Manager remains
+the lifecycle and capability-state owner; Providers remain responsible for
+their published state and request handling; Fabric remains the owner of data
+designed for Fabric hosting; Skills remain responsible for complete finite
+outcomes; and existing host, Manager, lease, Provider, and controller checks
+remain authoritative for physical actions.
+
+### Two-tier implementation checkpoints
+
+1. Added mandatory Agent Skill discovery schema version 3. Its
+   `x-midbrain-result-tiers` annotation declares source-backed compact JSON
+   pointers, an opaque sanitized-detail policy, and a compact byte ceiling.
+   The loader rejects older discovery versions and requires common outcome,
+   continuation, and visual pointers when the complete schema declares them.
+2. Read the registered result sources and existing source-backed audit for all
+   23 installed Skills, then migrated every manifest. Twenty-two descriptors
+   retain sanitized complete results; the undiscoverable nested FoundationPose
+   primitive keeps its exact empty direct-result contract and declares no
+   detail tier.
+3. Added a shared result finalizer used by ordinary FunctionTools and both
+   call-scoped prepared motion wrappers. It validates the complete raw output,
+   sanitizes credential-like and authorization-like values, stores a bounded
+   complete diagnostic copy, projects compact pointers, and returns an opaque
+   detail reference. Normal FunctionTools preserve their JSON-text return
+   encoding.
+4. Added bounded session-scoped SQLite detail storage with result-count,
+   per-result-byte, total-byte, and age limits. Store failure is represented in
+   `detail_ref` and cannot change an outcome or trigger physical retry.
+5. Added top-level `inspect_skill_result_detail` for one exact result ID and an
+   optional JSON pointer. A null pointer returns the complete sanitized output.
+   The complete output schema and all declared field names remain visible on
+   the selected Skill tool even though only compact values return by default.
+6. Carried compact pointers into hosted Limited Graph descriptors. Static
+   validation rejects bindings, retry conditions, switch sources, and model
+   inputs outside the source compact tier. Runtime validation rejects leaked
+   noncompact child fields, and graph node results and the graph FunctionTool
+   return are compact by construction. Opaque child detail references remain
+   top-level-only.
+7. Added Manager `GET /v1/agent-runtime-catalog` and
+   `GET /v1/providers/{id}/detail`. The first keeps every Provider and
+   capability with regulated lifecycle/readiness/error fields; the second
+   reuses the complete current `ProviderView`. The Agent sanitizes both and
+   exposes full or JSON-pointer-selected Provider detail only through the
+   top-level `inspect_provider_detail` observation tool.
+8. Updated the discovery, Limited Graph, Provider, HTTP API, configuration,
+   performance, and changelog documents alongside the corresponding code
+   checkpoints. Added direct projection, sanitization, retention, pruning,
+   session-scope, explicit detail-read, graph compact-preflight, leaked-field,
+   and Provider-detail regressions.
+
+### Initial stopped-software validation
+
+The 23-manifest discovery load, discovery-v3 JSON Schema check, source-backed
+output audit, focused result-store tests, hosted graph tests, standalone graph
+tests, and Rust Manager compile check pass. No Provider, Manager runtime, robot
+process, controller command, or physical action was started by this checkpoint.
+
+### Validation corrections retained for investigation
+
+- The first bulk manifest edit placed 14 tier annotations beside
+  `input_schema` because the patch matched the first generic
+  `additionalProperties` line. A structural audit printed both input/output
+  annotation locations for all 23 manifests, after which every annotation was
+  moved to `output_schema`. The discovery loader now proves all 23 output
+  locations and the v3 meta-schema rejects misplaced metadata.
+- The first curated pointer audit found obsolete draft names in the no-contact
+  approach and three coordinate mini-Skills. The loader reported every
+  undeclared pointer; each was replaced with its source-backed field name before
+  graph tests ran.
+- The common finalizer initially returned a Python dictionary from ordinary
+  FunctionTools. Existing SDK-host tests correctly required the established
+  JSON-text encoding. The boundary now serializes the compact dictionary after
+  projection, while internal graph normalization continues to accept JSON text.
+- Review identified that a legal oversized selected diagnostic could otherwise
+  fail after a physical action. The finalizer now retains bounded outcome fields
+  and the detail reference, omits only fields that do not fit, and emits an
+  explicit non-bindable projection marker. A 100 KB selected annotation
+  regression covers this path.
+- The first complete Test Agent run exposed one missing `copy` import in the
+  legacy runtime-catalog fallback. The failure occurred before runtime state or
+  physical code; the import was added and the entire suite was rerun.
+- Repository validation separately caught a duplicate development heading and
+  a missed Platform Core `system.env` template mirror. Both were corrected
+  before integrity manifests were refreshed.
+
+### Final stopped-software validation
+
+The complete Test Agent suite passes 469 tests and 27 subtests. The configured
+cross-package Python suite passes 1,132 tests and 27 subtests. Manager passes 54
+Rust tests and Fabric passes 26; the complete Rust workspace release build
+passes. Documentation integrity validates 138 Markdown files, configuration
+baseline and Python-environment isolation checks pass, 106 JSON files parse,
+Rust formatting passes, and source integrity manifests were refreshed. Native
+CameraHost was not rebuilt because this change does not affect it. No Provider,
+Manager runtime, robot process, controller command, or physical action was
+started.
+
 ## 2026-08-15 — FoundationPose recalibration loop and Agent task stop
 
 ### Report and retained evidence
@@ -518,7 +881,7 @@ physical action was started.
 ## 2026-08-17 — Live graph visuals and multi-evidence chat turns
 
 The retained successful retest separated graph correctness from presentation.
-Run `5eefde4d-20b7-4cc1-b327-463cd1abec87` completed its eight-node compound
+Run `5eefde4d-20b7-4cc1-b327-463cd1abec87` completed its eight-Skill-node compound
 SAM2/corner/two-slice graph with four physical actions, one visit per node, and
 no retries. The SAM2 visual existed in the inspection child result, but the
 journal published it only when `run_limited_graph` completed. The earlier

@@ -18,7 +18,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "calibrate_stationary_workcell",
     "description": "Run the retained FoundationPose stationary-workcell initializer when the operator explicitly mentions FoundationPose by name. Matching is case-insensitive and tolerates spacing, hyphenation, and minor spelling errors. This long-running initializer is not an automatic or default alignment fallback.",
@@ -109,7 +109,23 @@
         "visual_evidence": {"type": ["object", "null"]}
       },
       "required": ["workflow_complete", "motion_usable", "agent_request", "agent_adapter"],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/status", "/workflow_complete",
+          "/physical_motion_submitted", "/alignment_id", "/skill_id",
+          "/created_at_us", "/expires_at_us", "/mode", "/world_frame",
+          "/vio_world_frame", "/vio_session_epoch", "/camera_frame",
+          "/camera_calibration_revision", "/world_from_base",
+          "/valid", "/review_state", "/candidate_review_mode",
+          "/candidate_sha256", "/motion_usable", "/required_next_tool",
+          "/agent_instruction", "/reason_code", "/reason", "/message",
+          "/required_operator_action", "/agent_request", "/visual_evidence"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 65536
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.stationary_world_arm_alignment.cli.v1",

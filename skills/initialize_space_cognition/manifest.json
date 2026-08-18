@@ -16,7 +16,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "reinitialize_space_cognition",
     "description": "Deliberately establish a new local spatial origin from the robot's current stationary pose. This resets the Local VIO session epoch, clears epoch-bound accumulated world observations, and revokes active stationary-workcell calibrations before the origin changes. Use it to recover from VIO drift or to define a new local origin, not as a routine readiness check.",
@@ -93,7 +93,19 @@
         "status", "message", "requested_reason", "point_cloud_resumed",
         "result"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/message", "/requested_reason", "/point_cloud_resumed",
+          "/result/skill_id", "/result/session_epoch", "/result/world_frame",
+          "/result/body_frame", "/result/operation",
+          "/result/previous_session_epoch",
+          "/result/invalidated_workcell_activation_ids"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 16384
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.initialize_space_cognition.reinitialize.v1",

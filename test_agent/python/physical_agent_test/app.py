@@ -82,6 +82,7 @@ from .reviewed_observation_execution import (
 from .skill_catalog import discover_agent_skills
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
 from .skill_execution import SkillInvocationBrokerHandle
+from .skill_result_details import SkillResultDetailStore
 from .spatial_frames import SpatialFrameResolver, rotation_matrix
 from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
 from .stationary_calibration_activation import (
@@ -390,6 +391,14 @@ agent_session_database = (
 )
 agent_session_database.parent.mkdir(parents=True, exist_ok=True)
 agent_runtime_session_epoch = uuid.uuid4().hex
+skill_result_detail_store = SkillResultDetailStore(
+    settings.skill_result_detail_store_path,
+    session_id=agent_runtime_session_epoch,
+    maximum_results=settings.skill_result_detail_max_results,
+    maximum_result_bytes=settings.skill_result_detail_max_result_bytes,
+    maximum_total_bytes=settings.skill_result_detail_max_total_bytes,
+    retention_days=settings.skill_result_detail_retention_days,
+)
 midbrain_session_id = f"agent-process-{agent_runtime_session_epoch}"
 midbrain_session_source = "agent_process_fallback"
 midbrain_session_identity_lock = asyncio.Lock()
@@ -483,6 +492,7 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         limited_graph_model_route_profiles=(
             limited_graph_model_route_profiles
         ),
+        skill_result_detail_store=skill_result_detail_store,
     )
 
 
@@ -499,6 +509,7 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
     adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
     workspace_root=settings.workspace_root,
     max_turns=settings.openai_agent_max_turns,
+    skill_result_detail_store=skill_result_detail_store,
 )
 
 

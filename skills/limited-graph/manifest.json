@@ -4,7 +4,7 @@
   "display_name": "Limited Graph",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "run_limited_graph",
     "description": "Run one immutable, time-bounded graph of eligible finite Skills with typed JSON-pointer bindings, deterministic or constrained model routing, bounded read-only retry, and explicit terminal results. Strongly prefer this tool before direct child calls for known multi-Skill workflows, structured branches, or predetermined loops. Include every requested graph-eligible stage rather than only an initial prefix. Explicit incomplete child results follow the declared failure edge. The graph cannot invoke another graph, carry credentials, grant child authority, or dynamically add nodes.",
@@ -225,6 +225,18 @@
         "terminal_node": {"type": ["string", "null"]},
         "message": {"type": "string"},
         "last_completed_node": {"type": ["string", "null"]},
+        "last_failure": {
+          "type": ["object", "null"],
+          "properties": {
+            "kind": {"type": "string"},
+            "node_id": {"type": ["string", "null"]},
+            "tool_name": {"type": ["string", "null"]},
+            "reason": {"type": "string"},
+            "physical_action_submitted": {"type": ["boolean", "null"]}
+          },
+          "required": ["kind", "node_id", "tool_name", "reason", "physical_action_submitted"],
+          "additionalProperties": false
+        },
         "active_runtime_ms": {"type": "number"},
         "transition_count": {"type": "integer"},
         "node_visits": {"type": "object"},
@@ -247,6 +259,7 @@
         "terminal_node",
         "message",
         "last_completed_node",
+        "last_failure",
         "active_runtime_ms",
         "transition_count",
         "node_visits",
@@ -259,7 +272,21 @@
         "trace",
         "node_results"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/graph_run_id", "/graph_sha256",
+          "/graph_name", "/status", "/terminal_node", "/message",
+          "/last_completed_node", "/active_runtime_ms", "/transition_count",
+          "/last_failure",
+          "/node_visits", "/retry_count", "/model_route_count",
+          "/physical_action_count", "/retained_result_bytes", "/limit",
+          "/node_results"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 131072
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.limited_graph.host.v1",
