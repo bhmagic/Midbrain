@@ -2,6 +2,10 @@
 
 Date: 2026-08-17
 
+Current implementation acceptance and open live qualification are maintained
+in [Limited Graph Status and Qualification](../14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+This dated document remains the measurement record.
+
 For the current long-to-short inventory of Agent, Provider, Skill-compute,
 controller-settling, and graph waiting with signed physical trajectory time
 removed, see the

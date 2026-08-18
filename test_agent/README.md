@@ -26,6 +26,11 @@ Skill-owned staged adapter, which retains Manager lifecycle, exact Integrated
 signed-preview execution, workcell binding, explicit Integrated `WARM` lease
 relinquishment, Contact signing, and terminal relax boundaries.
 
+Both Agent pages expose **Stop task** for one active backend run. It cancels
+that run and its owned asynchronous subtasks without stopping background
+Providers. It cannot retract an already accepted controller command or prove a
+physical outcome.
+
 ## Agent boundary
 
 The Agent may interpret objectives, inspect available capabilities, select
@@ -77,6 +82,13 @@ boundary. JSON-bearing projection fields retain explicit names:
 `value_json`, `args_json`, and `expected_json`. A pre-execution authoring or
 static-preflight rejection may be corrected exactly once; it cannot repeat a
 started graph or physical action.
+
+The current Limited Graph implementation is accepted as near stable for the
+retained linear scene-map, transit, two-slice, intermediate-motion, Provider-
+handover, incremental-visual, and separate safe-home workflow. This does not
+qualify every branch, retry, switch, model route, multi-visual presentation,
+or material-cut outcome. See
+[Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
 
 ## Skill discovery and execution
 
@@ -263,6 +275,9 @@ current scope.
   configured eligible Skills, authority, and controller qualification.
 - Browser disconnect or model cancellation does not prove a physical action's
   outcome.
+- Limited Graph's retained linear workflow is near stable, but purpose-built
+  live routing-branch coverage, simultaneous multi-visual presentation,
+  material-cut sensing, and strict projected-session size bounds remain open.
 
 Outside agent integrations should start with the
 [Compatibility and Extension Guide](../docs/05_COMPATIBILITY_AND_EXTENSION.md)

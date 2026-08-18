@@ -79,4 +79,10 @@ Authentication is not embedded; use Git Credential Manager or GitHub CLI.
 - [ ] Third-party Orbbec SDK redistribution terms have been reviewed.
 - [ ] Package, manifest, documentation, and changelog versions are consistent.
 - [ ] Active documentation passes link, navigation, and stale-path checks.
+- [ ] A near-stable checkpoint names its accepted live path, unchanged duty and
+  authorization boundaries, open qualification, implementation commit, and
+  rollback/investigation evidence in the owning status and development docs.
+- [ ] Dated incidents and performance reports remain historical; current
+  architecture, operation, validation, roadmap, and component documents have
+  been reconciled rather than relying on changelog entries alone.
 - [ ] A version tag and release notes are created only for an explicitly approved release.

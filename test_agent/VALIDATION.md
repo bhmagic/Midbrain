@@ -1,5 +1,12 @@
 # Validation
 
+The current Limited Graph/context checkpoint is accepted as near stable for
+the retained linear physical workflow described in
+[Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+The coverage below does not promote unexercised live branch, switch, retry,
+model-route, simultaneous multi-visual, or material-cut sensing behavior to
+qualified status.
+
 Run the stopped software suite from the repository root with the Test Agent's
 own environment:
 

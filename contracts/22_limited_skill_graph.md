@@ -233,6 +233,15 @@ a separate Limited Graph boolean gate. Exact routed-surface eligibility,
 prepared-action binding, per-child authorization, physical-action budgets,
 timeout handling, and unknown-outcome handling remain mandatory.
 
+The current reference implementation has reached a near-stable linear
+physical-workflow checkpoint with compact result tiers, declared child-output
+preflight, child-owned Provider handover, terminal `last_failure`, and
+incremental child visuals. That implementation status does not change this
+contract's maturity or qualify every routing form. Retained live qualification
+of purpose-built branch, switch, retry, model-route, simultaneous multi-visual,
+and material-outcome paths remains open and is tracked in
+[Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 Version 1 does not promise parallel nodes, nested graphs, automatic restart
 resume, automatic authorization resume, or generic dynamic model installation.
 An authorization requirement ends the current invocation before the child

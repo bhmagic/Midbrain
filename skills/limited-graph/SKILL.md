@@ -71,4 +71,6 @@ condition operators, result statuses, and compact examples before composing a
 new graph shape.
 
 Implementation and qualification checkpoints are recorded in
-[DEVELOPMENT.md](DEVELOPMENT.md).
+[DEVELOPMENT.md](DEVELOPMENT.md). The framework-level meaning of the current
+near-stable status and its open live qualifications are maintained in
+[Limited Graph Status and Qualification](../../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).

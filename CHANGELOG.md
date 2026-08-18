@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Reconcile all active Limited Graph documentation with the merged near-stable
+  context/execution checkpoint. Add one current status and qualification owner,
+  link it from framework, architecture, operation, extension, validation,
+  roadmap, release, Platform Core, Agent, Skill, and contract documentation,
+  document Agent task cancellation and incremental child visuals, correct the
+  stale roadmap claim that absolute-world free-space motion was missing, and
+  relabel an older promotion snapshot so it cannot be mistaken for current
+  state. This documentation checkpoint changes no runtime duty,
+  authentication, authorization, Provider, Fabric, or controller behavior.
 - Preserve the near-stable Limited Graph/context checkpoint after live forward
   tests completed scene mapping, corner transit, two slicing submissions,
   intermediate repositioning, child-declared Provider handover, incremental

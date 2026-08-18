@@ -10,6 +10,8 @@ Manager owns:
 
 - Provider discovery, process lifecycle, dependency activation, and health;
 - per-capability readiness and selection surfaces;
+- the regulated complete Agent runtime catalog and explicit sanitized detail
+  view for one Provider;
 - resource, motion-inhibit, authority, and shutdown coordination;
 - guarded activation, flat translation-only refinement, and revocation of
   reviewed workcell calibration; and
@@ -75,6 +77,13 @@ These are loopback development interfaces. The detailed current endpoint
 inventory is in [Local HTTP API](docs/http_api.md). Semantic compatibility is
 defined by contracts and schemas, not by assuming these prototype URLs are a
 permanent remote protocol.
+
+The Agent runtime catalog intentionally includes every configured Provider and
+advertised capability while excluding arbitrary heartbeat diagnostics, launch
+environment, and other unbounded details. The explicit Provider-detail route
+is read-only and does not activate, authorize, or select a Provider. Limited
+Graph cannot call that detail route; graph child handover continues through
+the ordinary lifecycle broker and Manager policy.
 
 ## Provider lifecycle
 

@@ -186,6 +186,32 @@ Closing an SSE connection or browser tab does not cancel a backend run or prove
 the outcome of a physical action. Reopen the Agent page or run journal to
 inspect retained state.
 
+Both Agent pages expose **Stop task** while a run is active. It cancels the
+selected run and the asynchronous subtasks owned by that run while preserving
+Manager-controlled background Providers. Cancellation does not retract a
+physical command that a controller has already accepted and does not prove its
+outcome; inspect measured state and the terminal safe-state evidence before
+starting another physical request.
+
+### Use a bounded multi-Skill workflow
+
+For a request containing a predetermined sequence of two or more eligible
+finite Skills, the reference Agent should normally author one Limited Graph.
+The graph should be visible as one top-level tool call, while its child calls,
+Provider handovers, compact results, failures, and visual evidence remain
+individually observable in the run events and journal.
+
+Child visuals are streamed when each child produces them; they should not wait
+for graph completion. Multiple visuals remain separate evidence records even
+when the page layout shows only a subset at once. Use the developer page and
+run journal to verify the originating run, graph, node, and child call.
+
+Do not interpret graph transport completion as task or physical success.
+Check terminal status, `last_completed_node`, compact `last_failure`, exhausted
+limits, child outcome fields, physical completion, and required post-action
+evidence. The current qualification boundary and known open tests are in
+[Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
+
 FoundationPose is available to the regular Agent only when the operator
 explicitly mentions it by name. Matching is case-insensitive and tolerates
 spacing, hyphenation, and minor spelling errors. A canonical request is:
