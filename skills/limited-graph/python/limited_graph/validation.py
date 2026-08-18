@@ -9,7 +9,11 @@ from typing import Any, Mapping
 
 from .bindings import decode_json, pointer_tokens, resolve_pointer
 from .models import ChildDescriptor, ChildSkillBroker, GraphValidationError
-from .schema_paths import require_schema_pointer, schema_pointer_candidates
+from .schema_paths import (
+    require_compact_schema_pointer,
+    require_schema_pointer,
+    schema_pointer_candidates,
+)
 
 
 _NODE_KINDS = {
@@ -140,6 +144,12 @@ def _validate_source(
             raise GraphValidationError(
                 f"{field} source Skill {source_tool_name!r} is not eligible"
             )
+        require_compact_schema_pointer(
+            source_descriptor.output_schema,
+            source_descriptor.compact_pointers,
+            str(source.get("source_pointer") or ""),
+            field=field,
+        )
         return schema_pointer_candidates(
             source_descriptor.output_schema,
             str(source.get("source_pointer") or ""),
@@ -297,8 +307,9 @@ def validate_graph(
                     retry_condition,
                     field=f"node {node_id} retry_condition",
                 )
-                require_schema_pointer(
+                require_compact_schema_pointer(
                     descriptor.output_schema,
+                    descriptor.compact_pointers,
                     str(retry_condition.get("source_pointer") or ""),
                     field=f"node {node_id} retry_condition",
                 )

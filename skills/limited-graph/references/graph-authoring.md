@@ -3,6 +3,7 @@
 ## Contents
 
 - Graph envelope
+- Reference-host concise projection
 - Node behavior
 - Data bindings
 - Conditions and retry
@@ -11,14 +12,61 @@
 
 ## Graph envelope
 
-Set `schema_version` to `1`, provide a stable human-readable `name`, identify
-one `start_node`, and declare all nodes and execution limits before invocation.
-`initial_values` is a list of named JSON values. Encode each value in
-`value_json`; duplicate names are invalid.
+The immutable execution contract uses `schema_version` 1, a stable
+human-readable `name`, one `start_node`, complete `nodes`, `initial_values`, and
+execution limits. Programmatic graph hosts may submit that canonical shape.
+The reference Test Agent exposes the smaller authoring projection below and
+compiles it to this canonical shape before validation or execution.
 
 Every node object contains `skill`, `switch`, `model_route`, and `terminal`.
 Set exactly one matching the node `kind` to an object and set the other three
 to null. This explicit shape keeps the Agent tool schema strict.
+
+## Reference-host concise projection
+
+Set `authoring_version` to 1 and put finite child calls in ordered `steps`.
+Each step contains `id`, `tool`, child-input JSON encoded in `args_json`, and a
+`bind` array. Encode each named initial value in `value_json`; a text value
+must include its JSON quotes. Encode each condition comparison in
+`expected_json`. A binding uses `{to, from}`. `to` is a child-input JSON
+pointer; `from` is `node-id#/pointer` for a prior compact result or
+`$name#/pointer` for a named initial JSON value. The reference host also
+accepts the equivalent namespace form `$initial#/name/pointer`; for example,
+`$request#` and `$initial#/request` both select the root of initial value
+`request`.
+
+Step order supplies the ordinary success edges. The final step goes to
+`complete`, and each failure goes to `failed`. Add an `edges` record only to
+override those defaults. Add `retries`, `switches`, and `model_routes` only
+when the workflow needs them. An empty `terminals` array creates bounded
+default `complete` and `failed` terminal nodes; explicit terminal records
+retain a workflow-specific status and message.
+
+The concise limits map to the canonical limits as follows:
+
+| Authoring field | Canonical field |
+| --- | --- |
+| `seconds` | `max_active_runtime_s` |
+| `transitions` | `max_transitions` |
+| `visits` | `max_visits_per_node` |
+| `model_routes` | `max_model_routes` |
+| `physical_actions` | `max_physical_actions` |
+| `result_bytes` | `max_retained_result_bytes` |
+
+Compilation is deterministic and grants no authority. The host validates the
+concise input, compiles it, then applies the unchanged canonical schema,
+eligible-child, compact-pointer, reachability, retry, cycle, limit,
+authorization, digest and execution checks. The canonical graph is the only
+graph used by the runner.
+
+If concise compilation or canonical static preflight rejects the graph before
+the runner creates a graph run or starts a child, the reference host returns a
+normal Limited Graph result with `status` equal to `AUTHORING_INVALID`, zero
+transitions and zero physical actions. Correct the reported field or topology
+and submit exactly one replacement graph in that Agent run. A second authoring
+rejection terminates the run. Runtime data errors, authorization stops,
+timeouts, uncertain outcomes and completed child calls never use this
+authoring-correction path.
 
 ## Node behavior
 
@@ -104,6 +152,13 @@ repeat. Separately requested physical operations may be represented by
 distinct predetermined `SKILL` nodes, but no cycle may route back to a physical
 node and no physical node may have more than one attempt.
 
+A physical child exception remains `UNKNOWN_OUTCOME` unless the installed
+child owner emits the trusted host signal that no physical action was
+submitted. That explicit pre-submission rejection follows `failure_node`,
+decrements the graph's submitted physical-action count, and does not retry.
+The graph never derives this signal from exception text, status prose, HTTP
+codes, or timing.
+
 ## Limits
 
 Every graph supplies maximum active runtime, transitions, visits per node,
@@ -116,5 +171,13 @@ ceilings may lower these values. Hitting the first limit returns
 Treat `COMPLETED` and `COMPLETED_WITH_RETRIES` as successful terminal runs.
 Treat `AUTHORIZATION_REQUIRED`, `UNKNOWN_OUTCOME`, `LIMIT_EXHAUSTED`,
 `MODEL_ROUTE_UNAVAILABLE`, and `FAILED` as explicit incomplete outcomes.
-Inspect `trace`, `terminal_node`, `limit`, and `last_completed_node` rather than
-inferring completion from the final child payload alone.
+Use compact `last_failure` for the most recent failure kind, node, child tool,
+reason, and known physical-submission state. Inspect full `trace` explicitly
+through the detail reference when more evidence is required. Also inspect
+`terminal_node`, `limit`, and `last_completed_node` rather than inferring
+completion from the final child payload alone.
+
+A non-success result ends ownership of that submitted workflow. Do not invoke
+the failed child or any remaining graph stage directly afterward. Express a
+materially different replan as a new complete bounded graph. This is not
+permission to retry a physical node.

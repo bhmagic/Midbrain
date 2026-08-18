@@ -4,7 +4,7 @@
   "display_name": "Current Visual Scene Analysis",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "analyze_visual_scene",
     "description": "Answer a bounded RGB-only visual question from one current camera frame through the configured vision-language router. Use this read-only Skill only when visible appearance is sufficient. It cannot satisfy requests to locate, measure, or report an item in 3D, metric, depth, world, camera, or robot coordinates; those requests require locate_item.",
@@ -70,7 +70,17 @@
         "message": {"type": "string"}
       },
       "required": [],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/answer", "/confidence", "/annotations",
+          "/retryable", "/retry_scope", "/retry", "/error", "/message",
+          "/visual_evidence", "/physical_action_submitted"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 65536
+      }
     },
     "execution_adapter": {
       "adapter_id": "test_agent.visual_scene_analysis.v1",

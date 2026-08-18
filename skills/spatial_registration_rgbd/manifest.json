@@ -4,7 +4,7 @@
   "display_name": "RGB-D Spatial Registration",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "register_rgbd_pixel_to_world",
     "description": "Register a selected RGB image point into a requested 3D frame using explicitly identified camera_system_x/y/z optical coordinates, provider-aligned depth, independent channel grids, calibration, and a timestamped transform. Use this read-only Skill after a visual Skill identifies a pixel or small region.",
@@ -108,7 +108,20 @@
         "selected_route_metadata", "source_convention_id",
         "target_convention_id", "input_temporal_evidence"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/observed_at_us", "/source_frame",
+          "/target_frame", "/rgb_pixel_yx", "/registered_depth_pixel_yx",
+          "/camera_system_point_m", "/target_point_m", "/depth_selection",
+          "/calibration_revision", "/skill_id", "/physical_action_submitted",
+          "/source_convention_id", "/target_convention_id",
+          "/input_temporal_evidence"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.spatial_registration_rgbd.v1",

@@ -11,11 +11,20 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from agents import FunctionTool
+from jsonschema.exceptions import ValidationError
 from jsonschema import validate
+from limited_graph import GraphValidationError
 
 from .agent_events import visual_evidences_from_result
+from .limited_graph_authoring import (
+    LIMITED_GRAPH_AUTHORING_GUIDANCE,
+    compile_limited_graph_arguments,
+    limited_graph_authoring_input_schema,
+)
 from .phase4_policy import extend_current_operation_hard_timeout
+from .result_projection import finalize_skill_result
 from .skill_catalog import AgentSkillDescriptor, describe_output_schema
+from .skill_result_details import SkillResultDetailStore
 
 
 _LATENCY_TIMEOUT_FLOORS_S = {
@@ -29,6 +38,9 @@ HostedChildEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 _hosted_child_event_sink: contextvars.ContextVar[HostedChildEventSink | None] = (
     contextvars.ContextVar("hosted_child_event_sink", default=None)
 )
+_graph_authoring_repair_state: contextvars.ContextVar[
+    dict[str, int] | None
+] = contextvars.ContextVar("graph_authoring_repair_state", default=None)
 
 
 def set_hosted_child_event_sink(sink: HostedChildEventSink | None) -> Any:
@@ -39,6 +51,84 @@ def set_hosted_child_event_sink(sink: HostedChildEventSink | None) -> Any:
 
 def reset_hosted_child_event_sink(token: Any) -> None:
     _hosted_child_event_sink.reset(token)
+
+
+def set_graph_authoring_repair_state(*, maximum_corrections: int = 1) -> Any:
+    """Bind one mutable, run-local graph authoring correction budget."""
+
+    if maximum_corrections < 0:
+        raise ValueError("maximum_corrections must not be negative")
+    return _graph_authoring_repair_state.set(
+        {"remaining": int(maximum_corrections)}
+    )
+
+
+def reset_graph_authoring_repair_state(token: Any) -> None:
+    _graph_authoring_repair_state.reset(token)
+
+
+def _consume_graph_authoring_correction() -> bool:
+    state = _graph_authoring_repair_state.get()
+    if state is None or int(state.get("remaining", 0)) <= 0:
+        return False
+    state["remaining"] = int(state["remaining"]) - 1
+    return True
+
+
+def _graph_authoring_error_message(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        pointer = "/" + "/".join(str(item) for item in error.absolute_path)
+        location = pointer if pointer != "/" else "the graph root"
+        return (
+            f"concise input failed {error.validator or 'schema'} "
+            f"validation at {location}"
+        )
+    return str(error).strip().replace("\r", " ").replace("\n", " ")[:700]
+
+
+def _graph_authoring_failure_result(
+    arguments: dict[str, Any],
+    error: Exception,
+) -> dict[str, Any]:
+    graph = arguments.get("graph")
+    graph = graph if isinstance(graph, dict) else {}
+    graph_name = str(graph.get("name") or "uncompiled-graph")[:120]
+    reason = _graph_authoring_error_message(error)
+    return {
+        "schema": "midbrain.limited_graph.result",
+        "schema_version": 1,
+        "graph_run_id": "",
+        "graph_sha256": "",
+        "graph_name": graph_name,
+        "status": "AUTHORING_INVALID",
+        "terminal_node": None,
+        "message": (
+            "Graph authoring was rejected before any child started: "
+            f"{reason}. Correct the reported field or topology and call "
+            "run_limited_graph exactly once more. Encode initial values, "
+            "child arguments, and comparison values as JSON in value_json, "
+            "args_json, and expected_json."
+        ),
+        "last_completed_node": None,
+        "last_failure": {
+            "kind": "AUTHORING_INVALID",
+            "node_id": None,
+            "tool_name": "run_limited_graph",
+            "reason": reason,
+            "physical_action_submitted": False,
+        },
+        "active_runtime_ms": 0.0,
+        "transition_count": 0,
+        "node_visits": {},
+        "retry_count": 0,
+        "model_route_count": 0,
+        "physical_action_count": 0,
+        "retained_result_bytes": 0,
+        "limit": None,
+        "authorization": None,
+        "trace": [],
+        "node_results": {},
+    }
 
 
 class SkillExecutionAdapter(Protocol):
@@ -54,6 +144,7 @@ class HostedChildDescriptor:
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     expected_latency: str
+    compact_pointers: tuple[str, ...] = ()
 
     @property
     def read_only(self) -> bool:
@@ -178,6 +269,7 @@ class HostedSkillInvocationBroker:
                 safety_class=descriptor.safety_class,
                 input_schema=copy.deepcopy(descriptor.input_schema),
                 output_schema=copy.deepcopy(descriptor.output_schema),
+                compact_pointers=descriptor.result_tiers.compact_pointers,
                 expected_latency=descriptor.expected_latency,
             )
         self._model_route_profiles = dict(model_route_profiles or {})
@@ -248,13 +340,27 @@ class HostedSkillInvocationBroker:
         active_call_id = child_call_id
 
         while True:
-            raw_result = await self._invoke_function_tool(
-                tool,
-                tool_name=tool_name,
-                arguments=arguments,
-                call_id=active_call_id,
-                context=context,
-            )
+            try:
+                raw_result = await self._invoke_function_tool(
+                    tool,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    call_id=active_call_id,
+                    context=context,
+                )
+            except Exception as error:
+                if (
+                    available[tool_name].physical
+                    and getattr(error, "physical_action_submitted", None) is False
+                ):
+                    from limited_graph import ChildPhysicalActionNotSubmitted
+
+                    raise ChildPhysicalActionNotSubmitted(
+                        tool_name,
+                        active_call_id,
+                        _bounded_error_text(error),
+                    ) from error
+                raise
             continuation = _provider_handover_continuation(
                 raw_result,
                 physical=available[tool_name].physical,
@@ -670,6 +776,7 @@ def build_agent_tools(
     adapters: dict[str, SkillExecutionAdapter],
     *,
     eligible_tool_names: set[str],
+    detail_store: SkillResultDetailStore | None = None,
     defer_loading: bool = False,
     adapter_timeout_s: float = 60.0,
     adapter_timeout_overrides_s: dict[str, float] | None = None,
@@ -745,28 +852,93 @@ def build_agent_tools(
             arguments = json.loads(raw_arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("Skill tool arguments must be a JSON object")
-            validate(instance=arguments, schema=selected_descriptor.input_schema)
+            is_limited_graph = (
+                selected_descriptor.tool_name == "run_limited_graph"
+            )
+
+            async def encode_result(result: Any) -> str:
+                compact_result = await finalize_skill_result(
+                    result,
+                    selected_descriptor,
+                    detail_store,
+                )
+                return json.dumps(
+                    compact_result,
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                )
+
+            if is_limited_graph:
+                authoring_arguments = arguments
+                try:
+                    graph = arguments.get("graph")
+                    if (
+                        isinstance(graph, dict)
+                        and "authoring_version" in graph
+                    ):
+                        validate(
+                            instance=arguments,
+                            schema=limited_graph_authoring_input_schema(),
+                        )
+                    arguments = compile_limited_graph_arguments(arguments)
+                    validate(
+                        instance=arguments,
+                        schema=selected_descriptor.input_schema,
+                    )
+                except (ValidationError, ValueError) as error:
+                    if not _consume_graph_authoring_correction():
+                        raise
+                    return await encode_result(
+                        _graph_authoring_failure_result(
+                            authoring_arguments,
+                            error,
+                        )
+                    )
+            else:
+                validate(
+                    instance=arguments,
+                    schema=selected_descriptor.input_schema,
+                )
             extend_current_operation_hard_timeout(
                 effective_timeout_s,
                 stage=f"skill:{selected_descriptor.tool_name}:running",
             )
             context_invoke = getattr(selected_adapter, "invoke_with_context", None)
-            if callable(context_invoke):
-                result = await context_invoke(arguments, _context)
-            else:
-                result = await selected_adapter.invoke(arguments)
-            validate_skill_result(result, selected_descriptor.output_schema)
-            return result
+            try:
+                if callable(context_invoke):
+                    result = await context_invoke(arguments, _context)
+                else:
+                    result = await selected_adapter.invoke(arguments)
+            except GraphValidationError as error:
+                if not is_limited_graph or not _consume_graph_authoring_correction():
+                    raise
+                return await encode_result(
+                    _graph_authoring_failure_result(arguments, error)
+                )
+            return await encode_result(result)
 
         tools.append(
             FunctionTool(
                 name=descriptor.tool_name,
                 description=(
-                    f"{descriptor.description} Declared structured-result "
-                    "pointers for composition: "
-                    f"{describe_output_schema(descriptor.output_schema)}."
+                    f"{descriptor.description} Complete structured-result "
+                    f"pointers: {describe_output_schema(descriptor.output_schema)}. "
+                    "Compact graph-bindable pointers: "
+                    f"{', '.join(descriptor.result_tiers.compact_pointers) or '(none)'}. "
+                    "A completed result includes an opaque detail reference "
+                    "for explicit full-output inspection."
+                    + (
+                        LIMITED_GRAPH_AUTHORING_GUIDANCE
+                        if descriptor.tool_name == "run_limited_graph"
+                        else ""
+                    )
                 ),
-                params_json_schema=descriptor.input_schema,
+                params_json_schema=(
+                    limited_graph_authoring_input_schema()
+                    if descriptor.tool_name == "run_limited_graph"
+                    else descriptor.input_schema
+                ),
                 on_invoke_tool=invoke_tool,
                 strict_json_schema=True,
                 needs_approval=approval_overrides.get(

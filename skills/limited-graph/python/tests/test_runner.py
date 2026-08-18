@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from limited_graph import (
     ChildAuthorizationRequired,
     ChildDescriptor,
     ChildInvocationResult,
+    ChildPhysicalActionNotSubmitted,
     GraphCallContext,
     GraphValidationError,
     LimitedGraphRunner,
@@ -335,6 +337,80 @@ def test_undeclared_node_result_pointer_fails_before_any_child() -> None:
         asyncio.run(LimitedGraphRunner(broker).run(payload))
 
     assert broker.calls == []
+
+
+def test_node_result_pointer_outside_compact_tier_fails_preflight() -> None:
+    broker = FakeBroker()
+    broker._descriptors["echo_value"] = replace(
+        broker._descriptors["echo_value"],
+        compact_pointers=("/value",),
+    )
+    payload = graph(
+        [
+            skill(
+                "source",
+                "echo_value",
+                arguments_json='{"value":7}',
+                next_node="consumer",
+            ),
+            skill(
+                "consumer",
+                "echo_value",
+                bindings=[
+                    {
+                        "target_pointer": "/value",
+                        "source_kind": "NODE_RESULT",
+                        "source_name": None,
+                        "source_node_id": "source",
+                        "source_pointer": "/ok",
+                    }
+                ],
+            ),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+
+    with pytest.raises(
+        GraphValidationError,
+        match="outside the compact Skill result tier.*'/ok'",
+    ):
+        validate_graph(payload, broker)
+
+    assert broker.calls == []
+
+
+def test_child_cannot_return_fields_outside_compact_tier() -> None:
+    broker = FakeBroker()
+    broker._descriptors["echo_value"] = replace(
+        broker._descriptors["echo_value"],
+        compact_pointers=("/value",),
+    )
+
+    result = asyncio.run(
+        LimitedGraphRunner(broker).run(
+            graph(
+                [
+                    skill(
+                        "echo",
+                        "echo_value",
+                        arguments_json='{"value":7}',
+                    ),
+                    terminal("done"),
+                    terminal("failed", "FAILED"),
+                ]
+            )
+        )
+    )
+
+    assert result["status"] == "FAILED"
+    failed = next(
+        event
+        for event in result["trace"]
+        if event["event"] == "CHILD_FAILED"
+    )
+    assert "undeclared compact path '/ok'" in failed["error"]
+    assert result["node_results"] == {}
 
 
 def test_undeclared_binding_target_fails_before_any_child() -> None:
@@ -749,6 +825,48 @@ def test_physical_exception_is_unknown_and_never_retried() -> None:
 
     assert result["status"] == "UNKNOWN_OUTCOME"
     assert len(broker.calls) == 1
+
+
+def test_proven_pre_submission_rejection_follows_failure_edge() -> None:
+    broker = FakeBroker()
+
+    async def reject_before_submission(tool_name, arguments, context):
+        broker.calls.append((tool_name, copy.deepcopy(arguments), context))
+        raise ChildPhysicalActionNotSubmitted(
+            tool_name,
+            str(context.child_call_id),
+            "preview rejected before physical submission",
+        )
+
+    broker.invoke = reject_before_submission
+    payload = graph(
+        [
+            skill("move", "move_once", arguments_json='{"value":1}'),
+            terminal("done"),
+            terminal("failed", "FAILED"),
+        ]
+    )
+
+    result = asyncio.run(LimitedGraphRunner(broker).run(payload))
+
+    assert result["status"] == "FAILED"
+    assert result["terminal_node"] == "failed"
+    assert result["physical_action_count"] == 0
+    assert result["last_failure"] == {
+        "kind": "CHILD_PHYSICAL_ACTION_NOT_SUBMITTED",
+        "node_id": "move",
+        "tool_name": "move_once",
+        "reason": "preview rejected before physical submission",
+        "physical_action_submitted": False,
+    }
+    assert len(broker.calls) == 1
+    rejection = next(
+        item
+        for item in result["trace"]
+        if item["event"] == "CHILD_PHYSICAL_ACTION_NOT_SUBMITTED"
+    )
+    assert rejection["node_id"] == "move"
+    assert rejection["failure_node"] == "failed"
 
 
 def test_declared_output_paths_cover_retry_and_branching_sources() -> None:

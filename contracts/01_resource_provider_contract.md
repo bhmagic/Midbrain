@@ -325,6 +325,23 @@ It must declare:
 
 Visualization is read-only by default. User actions must be sent through an authorized command path. A GUI crash must not stop robot safety supervision or physical control.
 
+### Agent observation projection
+
+Manager exposes a regulated Agent runtime catalog that retains every configured
+Provider and every currently advertised capability while projecting only
+lifecycle, dependency, process, instance, boot, residency, health, readiness,
+expiry, last-seen, and bounded blocking-error fields. This is an observation
+projection of Manager state. It does not change Provider heartbeat content,
+capability ownership, lifecycle authority, or request authentication.
+
+The top-level Agent may request the complete current Manager `ProviderView` for
+one exact Provider ID when the regulated catalog is insufficient. The Agent
+host sanitizes credential-like values before returning that diagnostic record.
+Provider-detail inspection is not a Provider capability, Skill, lifecycle
+request, or Limited Graph child and cannot change residency or authorize an
+operation. The Manager's complete record remains canonical; the Agent receives
+only an observation copy.
+
 ## 14. Versioning and conformance
 
 Protocol versions must be negotiated during registration. Breaking semantic changes require a new major version.

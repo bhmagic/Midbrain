@@ -11,7 +11,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "refine_arm_root_translation",
     "description": "Follow Basic's active mounted-effector selection, observe its profile-defined rigid visual landmark with synchronized RGB-D and timestamp-bracketed FK, keep the active arm-root rotation unchanged, and estimate an XYZ-only translation refinement. The configured landmark may contain one to eight required points; every point must be detected and registered independently before their 3D arithmetic mean is usable. The caller may request one to five independent samples; the Skill excludes failed samples, averages accepted raw corrections, and performs at most one compact state update. The Skill creates no motion request and exposes the exact VLM evidence through Midbrain visual annotations.",
@@ -137,7 +137,25 @@
         "landmark_depth_reselection", "physical_motion_submitted",
         "physical_motion_authorized"
       ],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/status", "/workflow_complete",
+          "/eligible_for_state_update", "/state_update_applied",
+          "/retry_same_tool", "/motion_usable", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/rotation_change_allowed",
+          "/landmark_id", "/source_revision", "/raw_translation_delta_m",
+          "/raw_translation_delta_norm_m", "/adoption_factor",
+          "/adopted_translation_delta_m", "/adopted_translation_delta_norm_m",
+          "/active_revision", "/aggregate_candidate_only",
+          "/multi_sample_refinement", "/landmark_depth_reselection",
+          "/visual_evidence", "/required_capability", "/dependency",
+          "/required_next_tool", "/reason", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 65536
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.refine_arm_root_translation.v1",

@@ -47,6 +47,37 @@ An Agent SDK approval interruption is a development interaction mechanism, not
 the hardware safety boundary and not a permanent requirement for every field
 action.
 
+Routine runtime inspection returns a regulated catalog containing every
+Provider and advertised capability without arbitrary heartbeat diagnostics or
+launch environment. The top-level Agent can explicitly inspect one complete
+sanitized Provider record when necessary; that read is not a lifecycle action
+and is unavailable as a Limited Graph child.
+
+Every installed Skill publishes a complete result schema and a smaller compact
+pointer tier. Direct and graph calls validate the complete result but return
+only compact values plus an opaque detail reference. The top-level Agent may
+explicitly read one selected field or the complete sanitized result associated
+with that exact reference. Detailed-result storage and inspection are
+diagnostic only and cannot authorize, repeat, or change a physical outcome.
+
+For routes that publish a new explicit scene policy, the host combines that
+policy publication with the fresh regulated Manager catalog observation in one
+FunctionTool result. Provider selection and `set_provider_residency` remain a
+separate next call, with unchanged Manager lifecycle, readiness and
+authorization ownership. Lifecycle-enabled Agents expose this composed policy
+tool instead of also loading the redundant standalone policy schema.
+
+The Agent-facing `run_limited_graph` schema is a concise authoring projection:
+ordered Skill steps imply ordinary success edges, while bindings, overrides,
+retries, switches and model routes remain explicit. The host deterministically
+compiles it into the canonical immutable Limited Graph version 1 shape before
+the existing schema validation, static preflight, digest, authorization and
+execution paths. Canonical graph callers remain supported at the host callback
+boundary. JSON-bearing projection fields retain explicit names:
+`value_json`, `args_json`, and `expected_json`. A pre-execution authoring or
+static-preflight rejection may be corrected exactly once; it cannot repeat a
+started graph or physical action.
+
 ## Skill discovery and execution
 
 Discovery reads concise manifest metadata without importing or starting Skill

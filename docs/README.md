@@ -31,6 +31,9 @@ trying to do rather than by the order in which documents were created.
 
 - [Current Limitations and Roadmap](09_LIMITATIONS_AND_ROADMAP.md) contains
   only active gaps and priorities.
+- [Runtime catalog and Skill result-tier feasibility](performance/2026-08-17-runtime-and-skill-result-tier-feasibility.md)
+  records the measurements, approved design, and implemented compact Manager
+  catalog plus mandatory two-tier Skill-result checkpoint.
 - [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
   records the implemented non-moving translation refiner and the remaining
   automatic multi-movement six-degree-of-freedom alignment work.

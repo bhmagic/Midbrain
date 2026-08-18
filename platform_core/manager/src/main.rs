@@ -163,6 +163,42 @@ struct CapabilityView {
     last_seen: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+struct AgentProviderView {
+    provider_id: String,
+    display_name: String,
+    dependencies: Vec<String>,
+    process_state: String,
+    instance_id: Option<String>,
+    boot_id: Option<String>,
+    residency: Option<String>,
+    health: Option<String>,
+    ready: bool,
+    expired: bool,
+    last_seen: Option<DateTime<Utc>>,
+    last_error: Option<Value>,
+    manager_error: Option<Value>,
+    blocking_prerequisite: Option<Value>,
+    detail_schema: &'static str,
+    detail_sections: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentCapabilityView {
+    capability: String,
+    provider_id: String,
+    provider_instance_id: Option<String>,
+    available: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentRuntimeCatalog {
+    schema: &'static str,
+    schema_version: u32,
+    providers: Vec<AgentProviderView>,
+    capabilities: Vec<AgentCapabilityView>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct CapabilityBindingRequest {
     required_capabilities: Vec<String>,
@@ -606,6 +642,8 @@ async fn main() -> Result<()> {
         .route("/v1/ui/shutdown", post(ui::shutdown_midbrain))
         .route("/health", get(health))
         .route("/v1/providers", get(list_providers))
+        .route("/v1/agent-runtime-catalog", get(agent_runtime_catalog))
+        .route("/v1/providers/:id/detail", get(get_provider_detail))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capability-bindings", post(create_capability_binding))
         .route("/v1/capability-bindings/:id", get(get_capability_binding))
@@ -2047,6 +2085,70 @@ async fn list_providers(State(state): State<AppState>) -> Json<Vec<ProviderView>
     Json(collect_provider_views(&state).await)
 }
 
+async fn get_provider_detail(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProviderView>, (StatusCode, Json<Value>)> {
+    collect_provider_views(&state)
+        .await
+        .into_iter()
+        .find(|view| view.config.id == id)
+        .map(Json)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "unknown provider"))
+}
+
+async fn agent_runtime_catalog(State(state): State<AppState>) -> Json<AgentRuntimeCatalog> {
+    let provider_views = collect_provider_views(&state).await;
+    let capabilities = collect_capability_views(&state).await;
+    let providers = provider_views
+        .into_iter()
+        .map(|view| {
+            let report = view.report.as_ref();
+            let details = report.map(|value| &value.details);
+            let diagnostics = details.and_then(|value| value.get("diagnostics"));
+            AgentProviderView {
+                provider_id: view.config.id,
+                display_name: view.config.display_name,
+                dependencies: view.config.dependencies,
+                process_state: view.process_state,
+                instance_id: report.map(|value| value.instance_id.clone()),
+                boot_id: report.map(|value| value.boot_id.clone()),
+                residency: report.map(|value| value.residency.clone()),
+                health: report.map(|value| value.health.clone()),
+                ready: report.is_some_and(|value| value.ready),
+                expired: report.is_some_and(|value| value.expired),
+                last_seen: report.map(|value| value.last_seen),
+                last_error: bounded_agent_catalog_value(
+                    details.and_then(|value| value.get("last_error")),
+                ),
+                manager_error: bounded_agent_catalog_value(
+                    details.and_then(|value| value.get("manager_error")),
+                ),
+                blocking_prerequisite: bounded_agent_catalog_value(
+                    diagnostics.and_then(|value| value.get("blocking_prerequisite")),
+                ),
+                detail_schema: "midbrain.manager.provider_detail.v1",
+                detail_sections: vec!["/config", "/process_state", "/last_exit", "/report"],
+            }
+        })
+        .collect();
+    let capabilities = capabilities
+        .into_iter()
+        .map(|view| AgentCapabilityView {
+            capability: view.capability,
+            provider_id: view.provider_id,
+            provider_instance_id: view.provider_instance_id,
+            available: view.available,
+        })
+        .collect();
+    Json(AgentRuntimeCatalog {
+        schema: "midbrain.manager.agent_runtime_catalog",
+        schema_version: 1,
+        providers,
+        capabilities,
+    })
+}
+
 async fn collect_provider_views(state: &AppState) -> Vec<ProviderView> {
     let mut processes = state.processes.lock().await;
     let reports = state.reports.lock().await;
@@ -2076,6 +2178,10 @@ async fn collect_provider_views(state: &AppState) -> Vec<ProviderView> {
 }
 
 async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<CapabilityView>> {
+    Json(collect_capability_views(&state).await)
+}
+
+async fn collect_capability_views(state: &AppState) -> Vec<CapabilityView> {
     let reports = state.reports.lock().await;
     let mut result = Vec::new();
 
@@ -2112,7 +2218,7 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<Capability
             .cmp(&b.capability)
             .then_with(|| a.provider_id.cmp(&b.provider_id))
     });
-    Json(result)
+    result
 }
 
 async fn create_capability_binding(
@@ -4307,6 +4413,25 @@ fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Jso
     (status, Json(json!({"error": message.into()})))
 }
 
+fn bounded_agent_catalog_value(value: Option<&Value>) -> Option<Value> {
+    const MAX_SERIALIZED_BYTES: usize = 2_048;
+    const PREVIEW_CHARS: usize = 400;
+
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    let serialized = serde_json::to_string(value).ok()?;
+    if serialized.len() <= MAX_SERIALIZED_BYTES {
+        return Some(value.clone());
+    }
+    Some(json!({
+        "truncated": true,
+        "serialized_bytes": serialized.len(),
+        "preview": serialized.chars().take(PREVIEW_CHARS).collect::<String>(),
+    }))
+}
+
 fn internal_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     error!(error = %error, "request failed");
     api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
@@ -4322,6 +4447,19 @@ mod tests {
             "display_name": "Example",
             "command": "example.exe"
         })
+    }
+
+    #[test]
+    fn agent_catalog_detail_values_are_bounded() {
+        let small = json!({"status": "blocked", "message": "calibrate"});
+        assert_eq!(bounded_agent_catalog_value(Some(&small)), Some(small));
+
+        let large = json!({"samples": vec!["diagnostic"; 1000]});
+        let bounded = bounded_agent_catalog_value(Some(&large))
+            .expect("large detail should produce a bounded summary");
+        assert_eq!(bounded["truncated"], true);
+        assert!(bounded["serialized_bytes"].as_u64().unwrap_or(0) > 2_048);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() < 2_048);
     }
 
     fn provider_config(id: &str) -> ProviderConfig {

@@ -363,6 +363,14 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             LIMITED_GRAPH_AGENT_GUIDANCE,
         )
         self.assertIn(
+            "Never invoke a failed graph child",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
+            "fresh request unless the user explicitly asks to resume",
+            LIMITED_GRAPH_AGENT_GUIDANCE,
+        )
+        self.assertIn(
             "do not begin a direct multi-Skill sequence",
             LIMITED_GRAPH_AGENT_GUIDANCE,
         )
@@ -468,9 +476,10 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
         )
         self.assertIn(
-            "configure_scene_segmentation_policy",
+            "configure_scene_policy_and_inspect_runtime",
             route["allowed_tools"],
         )
+        self.assertNotIn("inspect_midbrain_runtime", route["allowed_tools"])
         self.assertIn(
             "derive_fabric_world_point",
             route["allowed_tools"],
@@ -514,9 +523,10 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
         )
         self.assertIn(
-            "configure_scene_segmentation_policy",
+            "configure_scene_policy_and_inspect_runtime",
             route["allowed_tools"],
         )
+        self.assertNotIn("inspect_midbrain_runtime", route["allowed_tools"])
         self.assertIn(
             "derive_fabric_world_point",
             route["allowed_tools"],
@@ -698,9 +708,10 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "EXPLICIT_SCENE_SEGMENTATION_POLICY",
         )
         self.assertIn(
-            "configure_scene_segmentation_policy",
+            "configure_scene_policy_and_inspect_runtime",
             route["allowed_tools"],
         )
+        self.assertNotIn("inspect_midbrain_runtime", route["allowed_tools"])
         self.assertIn(
             "inspect_arm_semantic_scene",
             route["allowed_tools"],
@@ -812,14 +823,14 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    def test_all_installed_skills_publish_v2_output_schemas(self) -> None:
+    def test_all_installed_skills_publish_v3_two_tier_output_schemas(self) -> None:
         workspace = Path(__file__).resolve().parents[3]
         discovery_schema = json.loads(
             (
                 workspace
                 / "contracts"
                 / "schemas"
-                / "agent_skill_discovery.v2.schema.json"
+                / "agent_skill_discovery.v3.schema.json"
             ).read_text(encoding="utf-8")
         )
 
@@ -833,9 +844,22 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(len(descriptors), 23)
-        self.assertTrue(all(item.schema_version == 2 for item in descriptors))
+        self.assertTrue(all(item.schema_version == 3 for item in descriptors))
         self.assertTrue(
             all(item.output_schema["type"] == "object" for item in descriptors)
+        )
+        self.assertTrue(
+            all(
+                "x-midbrain-result-tiers" in item.output_schema
+                for item in descriptors
+            )
+        )
+        self.assertTrue(
+            all(
+                item.result_tiers.detail_policy
+                in {"HOST_SANITIZED_REFERENCE", "NONE"}
+                for item in descriptors
+            )
         )
         slicing = next(
             item for item in descriptors if item.tool_name == "slice_with_blade"
@@ -854,6 +878,10 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             pointers,
         )
         self.assertIn("/plan/workcell_binding/world_frame", pointers)
+        self.assertIn(
+            "/plan/path/slice_endpoint_world_m",
+            slicing.result_tiers.compact_pointers,
+        )
         self.assertNotIn("/outward_retract_end_position_world_m", pointers)
 
     def test_slicing_strict_tool_uses_null_for_live_profile_defaults(self) -> None:

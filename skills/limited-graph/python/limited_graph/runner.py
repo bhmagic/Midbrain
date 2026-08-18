@@ -25,6 +25,7 @@ from .models import (
     ChildInvocationNotStarted,
     ChildInvocationResult,
     ChildInvocationTimeout,
+    ChildPhysicalActionNotSubmitted,
     ChildSkillBroker,
     GraphCallContext,
     GraphValidationError,
@@ -35,6 +36,7 @@ from .validation import (
     redact_credential_values,
     validate_graph,
 )
+from .schema_paths import validate_compact_instance
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,13 @@ class LimitedGraphRunner:
                 else:  # pragma: no cover - validation owns this invariant.
                     raise GraphValidationError(f"unsupported node kind {kind!r}")
             except GraphValidationError as error:
+                state.record_failure(
+                    kind="GRAPH_DATA_ERROR",
+                    node_id=current,
+                    tool_name=None,
+                    reason=_safe_error(error),
+                    physical_action_submitted=None,
+                )
                 state.trace_event(
                     "GRAPH_DATA_ERROR",
                     node_id=current,
@@ -170,6 +179,13 @@ class LimitedGraphRunner:
         try:
             validate_json(instance=arguments, schema=descriptor.input_schema)
         except ValidationError as error:
+            state.record_failure(
+                kind="CHILD_ARGUMENTS_INVALID",
+                node_id=node_id,
+                tool_name=tool_name,
+                reason=_safe_error(error),
+                physical_action_submitted=False if descriptor.physical else None,
+            )
             state.trace_event(
                 "CHILD_ARGUMENTS_INVALID",
                 node_id=node_id,
@@ -228,9 +244,11 @@ class LimitedGraphRunner:
                         )
                     raw_result = raw_result.result
                 normalized_result = _normalize_result(raw_result)
-                validate_json(
-                    instance=normalized_result,
-                    schema=descriptor.output_schema,
+                validate_compact_instance(
+                    normalized_result,
+                    descriptor.output_schema,
+                    descriptor.compact_pointers,
+                    field=f"child Skill {tool_name}",
                 )
                 result = redact_credential_values(normalized_result)
                 exceeded = state.retain_result(node_id, result)
@@ -257,6 +275,20 @@ class LimitedGraphRunner:
                 )
                 if incomplete_reason is not None:
                     failure_node = str(config["failure_node"])
+                    state.record_failure(
+                        kind="CHILD_RESULT_INCOMPLETE",
+                        node_id=node_id,
+                        tool_name=tool_name,
+                        reason=incomplete_reason,
+                        physical_action_submitted=(
+                            result.get("physical_action_submitted")
+                            if descriptor.physical
+                            and isinstance(
+                                result.get("physical_action_submitted"), bool
+                            )
+                            else None
+                        ),
+                    )
                     state.trace_event(
                         "CHILD_RESULT_INCOMPLETE",
                         node_id=node_id,
@@ -297,6 +329,13 @@ class LimitedGraphRunner:
                         tool_name=tool_name,
                         attempt=attempt,
                     )
+                    state.record_failure(
+                        kind="CHILD_RETRY_EXHAUSTED",
+                        node_id=node_id,
+                        tool_name=tool_name,
+                        reason="read-only result retry condition remained true",
+                        physical_action_submitted=None,
+                    )
                     return str(config["failure_node"])
                 state.last_completed_node = node_id
                 return str(config["next_node"])
@@ -324,6 +363,15 @@ class LimitedGraphRunner:
             except ChildInvocationNotStarted as error:
                 if descriptor.physical:
                     state.physical_actions -= 1
+                state.record_failure(
+                    kind="CHILD_NOT_STARTED",
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    reason=error.reason,
+                    physical_action_submitted=(
+                        False if descriptor.physical else None
+                    ),
+                )
                 state.trace_event(
                     "CHILD_NOT_STARTED",
                     node_id=node_id,
@@ -332,8 +380,34 @@ class LimitedGraphRunner:
                     reason=error.reason,
                 )
                 return str(config["failure_node"])
+            except ChildPhysicalActionNotSubmitted as error:
+                if descriptor.physical:
+                    state.physical_actions -= 1
+                state.record_failure(
+                    kind="CHILD_PHYSICAL_ACTION_NOT_SUBMITTED",
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    reason=error.reason,
+                    physical_action_submitted=False,
+                )
+                state.trace_event(
+                    "CHILD_PHYSICAL_ACTION_NOT_SUBMITTED",
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    child_call_id=error.child_call_id,
+                    reason=error.reason,
+                    failure_node=str(config["failure_node"]),
+                )
+                return str(config["failure_node"])
             except (ChildInvocationTimeout, TimeoutError) as error:
                 if descriptor.physical:
+                    state.record_failure(
+                        kind="UNKNOWN_OUTCOME",
+                        node_id=node_id,
+                        tool_name=tool_name,
+                        reason=_safe_error(error),
+                        physical_action_submitted=None,
+                    )
                     state.trace_event(
                         "UNKNOWN_OUTCOME",
                         node_id=node_id,
@@ -364,9 +438,23 @@ class LimitedGraphRunner:
                     attempt=attempt,
                     error=_safe_error(error),
                 )
+                state.record_failure(
+                    kind="CHILD_FAILED",
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    reason=_safe_error(error),
+                    physical_action_submitted=None,
+                )
                 return str(config["failure_node"])
             except asyncio.CancelledError:
                 if descriptor.physical:
+                    state.record_failure(
+                        kind="UNKNOWN_OUTCOME",
+                        node_id=node_id,
+                        tool_name=tool_name,
+                        reason="CancelledError: physical child call was cancelled",
+                        physical_action_submitted=None,
+                    )
                     state.trace_event(
                         "UNKNOWN_OUTCOME",
                         node_id=node_id,
@@ -383,6 +471,13 @@ class LimitedGraphRunner:
                 raise
             except Exception as error:
                 if descriptor.physical:
+                    state.record_failure(
+                        kind="UNKNOWN_OUTCOME",
+                        node_id=node_id,
+                        tool_name=tool_name,
+                        reason=_safe_error(error),
+                        physical_action_submitted=None,
+                    )
                     state.trace_event(
                         "UNKNOWN_OUTCOME",
                         node_id=node_id,
@@ -412,6 +507,13 @@ class LimitedGraphRunner:
                     tool_name=tool_name,
                     attempt=attempt,
                     error=_safe_error(error),
+                )
+                state.record_failure(
+                    kind="CHILD_FAILED",
+                    node_id=node_id,
+                    tool_name=tool_name,
+                    reason=_safe_error(error),
+                    physical_action_submitted=None,
                 )
                 return str(config["failure_node"])
 
@@ -582,6 +684,7 @@ class _RunState:
         self.physical_actions = 0
         self.retained_result_bytes = 0
         self.last_completed_node: str | None = None
+        self.last_failure: dict[str, Any] | None = None
 
     def trace_event(self, event: str, **payload: Any) -> None:
         self.trace.append(
@@ -601,6 +704,23 @@ class _RunState:
             "omitted": True,
             "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    def record_failure(
+        self,
+        *,
+        kind: str,
+        node_id: str | None,
+        tool_name: str | None,
+        reason: str,
+        physical_action_submitted: bool | None,
+    ) -> None:
+        self.last_failure = {
+            "kind": str(kind),
+            "node_id": node_id,
+            "tool_name": tool_name,
+            "reason": str(reason),
+            "physical_action_submitted": physical_action_submitted,
         }
 
     def check_before_node(self, node_id: str, now: float) -> str | None:
@@ -633,6 +753,13 @@ class _RunState:
         return None
 
     def limit_result(self, limit: str, now: float) -> dict[str, Any]:
+        self.record_failure(
+            kind="LIMIT_EXHAUSTED",
+            node_id=None,
+            tool_name=None,
+            reason=f"Limited Graph exhausted {limit}",
+            physical_action_submitted=None,
+        )
         self.trace_event("LIMIT_EXHAUSTED", limit=limit)
         return self.final_result(
             status="LIMIT_EXHAUSTED",
@@ -662,6 +789,7 @@ class _RunState:
             "graph_name": self.validated.graph["name"],
             "terminal_node": terminal_node,
             "last_completed_node": self.last_completed_node,
+            "last_failure": copy.deepcopy(self.last_failure),
             "active_runtime_ms": round((now - self.started) * 1000.0, 3),
             "transition_count": self.transitions,
             "node_visits": copy.deepcopy(self.visits),

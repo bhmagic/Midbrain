@@ -100,6 +100,18 @@ class Settings:
     agent_run_journal_retention_days: float = float(
         os.getenv("AGENT_RUN_JOURNAL_RETENTION_DAYS", "30")
     )
+    skill_result_detail_max_results: int = int(
+        os.getenv("SKILL_RESULT_DETAIL_MAX_RESULTS", "1000")
+    )
+    skill_result_detail_max_result_bytes: int = int(
+        os.getenv("SKILL_RESULT_DETAIL_MAX_RESULT_BYTES", "1048576")
+    )
+    skill_result_detail_max_total_bytes: int = int(
+        os.getenv("SKILL_RESULT_DETAIL_MAX_TOTAL_BYTES", "67108864")
+    )
+    skill_result_detail_retention_days: float = float(
+        os.getenv("SKILL_RESULT_DETAIL_RETENTION_DAYS", "7")
+    )
     authorization_signing_secret: str = os.getenv(
         "MIDBRAIN_AUTHORIZATION_SECRET",
         "",
@@ -217,4 +229,16 @@ class Settings:
             / "test_agent"
             / "run"
             / "agent_run_journal.v1.sqlite3"
+        )
+
+    @property
+    def skill_result_detail_store_path(self) -> Path:
+        configured = os.getenv("SKILL_RESULT_DETAIL_STORE_PATH", "").strip()
+        if configured:
+            return Path(configured).resolve()
+        return (
+            self.workspace_root
+            / "test_agent"
+            / "run"
+            / "skill_result_details.v1.sqlite3"
         )

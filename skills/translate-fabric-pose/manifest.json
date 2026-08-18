@@ -4,7 +4,7 @@
   "display_name": "Translate Fabric Pose to World",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "translate_fabric_pose_to_world",
     "description": "Rigidly transform one metric position plus XYZW orientation from active-world, configured arm-base, or current controlled-effector coordinates into the active Fabric world frame. The read-only result exposes target_position_world_m and target_orientation_world_xyzw with frame, epoch, calibration, timestamp, and transform-path provenance. It performs no movement and does not create a world-pose motion authority.",
@@ -126,7 +126,21 @@
         "message": {"type": "string"}
       },
       "required": ["status", "workflow_complete", "physical_motion_authorized", "physical_motion_submitted"],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/target_position_world_m",
+          "/target_orientation_world_xyzw", "/framed_pose_world",
+          "/source_frame_id", "/target_world_frame_id", "/target_session_epoch",
+          "/convention_id", "/calibration_revision",
+          "/source_world_binding", "/active_world_binding",
+          "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.translate_fabric_pose.v1",

@@ -29,7 +29,7 @@ schema versions it supports.
 | [Device Calibration](08_device_calibration_contract.md) | Physical identity, persistence, ownership, and runtime bias separation | v0.3 working draft |
 | [Local VIO and Space Cognition](09_local_vio_and_space_cognition.md) | Inertial-first Provider and initialization Skill | v0.4 working draft |
 | [Motion Inhibit for Initialization](10_motion_inhibit_initialization_policy.md) | Stationary initialization coordination | v0.3 working draft |
-| [Agent Skill Discovery](11_agent_skill_discovery.md) | Concise discovery and adapter boundary | v0.1 advisory draft |
+| [Agent Skill Discovery](11_agent_skill_discovery.md) | Concise discovery, mandatory compact/detail result tiers, and adapter boundary | v0.3 mandatory contract |
 | [Data-Route Advertisement](12_data_route_advertisement.md) | Direct payload-route discovery with Fabric-visible semantics | v0.1 working draft |
 | [Component Observation UI](13_component_observation_ui.md) | Portal, observation, development transition, and UI descriptors | v0.1 advisory draft |
 | [Spatial Frame Convention](14_spatial_frame_convention_v2.md) | +X forward, +Y left, +Z up semantics and native optical frames | v0.4 working draft |

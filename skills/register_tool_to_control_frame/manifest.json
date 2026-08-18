@@ -4,7 +4,7 @@
   "display_name": "Register Tool to Control Frame",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "register_tool_to_control_frame",
     "description": "Build a review-only tool control-frame candidate from VLM-selected image landmarks, flexible-grid RGB-D registration, and the observed robot tool pose. This Skill handles reflective tools by selecting nearby valid depth with explicit per-landmark policy and provenance.",
@@ -107,7 +107,23 @@
         "camera_transform_provenance", "tool_transform_provenance",
         "selected_route_metadata", "vlm_route"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema", "/schema_version", "/status", "/motion_usable",
+          "/operator_review_required", "/eligible_for_authorization",
+          "/publishes_control_frame", "/activation_requires_separate_authorization",
+          "/tool_from_control_frame", "/control_origin_from_tool_m",
+          "/control_rotation_matrix_from_tool", "/quality_metrics",
+          "/quality_reasons", "/observed_at_us", "/target_frame",
+          "/calibration_revision", "/tool_description",
+          "/control_frame_purpose", "/physical_action_submitted",
+          "/control_frame_published"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.register_tool_to_control_frame.v1",

@@ -10,23 +10,45 @@ own environment:
 The suite is expected to validate:
 
 - manifest-only Skill discovery and allowlisting;
-- mandatory discovery-v2 input/output schema validation across every installed
-  Skill, exact result-pointer publication, and normalized direct-result
-  validation;
+- mandatory discovery-v3 input/output schema and two-tier metadata validation
+  across every installed Skill, complete field-name publication, compact
+  result-pointer publication, normalized complete-result validation,
+  sanitization, bounded detail retention, and direct-result projection;
 - source-backed coverage for all 23 installed output contracts, including
   representative result-construction tokens, required and forbidden published
   fields, the deliberately empty nested FoundationPose direct contract, and
   Limited Graph manifest/canonical-result alignment;
 - adapter binding after selection;
 - Provider lifecycle readiness and structured continuation;
+- combined explicit scene-policy publication and regulated runtime-catalog
+  observation, followed by a separate exact Provider lifecycle call with no
+  authority or responsibility transfer;
+- concise Limited Graph authoring-schema compilation into canonical version 1,
+  including linear defaults, bindings, edge overrides, read-only retry,
+  switches, model routes, custom/default terminals, canonical compatibility,
+  explicit JSON-bearing field names, one model-visible pre-execution authoring
+  correction, second-rejection termination, and unchanged canonical preflight
+  and execution;
+- equivalent concise initial-binding spellings through `$name#/pointer` and
+  `$initial#/name/pointer`, including preservation of a genuinely declared
+  initial value named `initial`;
 - Limited Graph child-declared Provider handover through the existing
   lifecycle FunctionTool, including unchanged child arguments, fresh call
   identities, lifecycle authorization, bounded repeat handling, and ordered
   trace evidence;
 - Limited Graph binding and explicit incomplete-result failure paths,
-  declared source/condition/target pointer preflight, physical-cycle
-  rejection, validation-before-redaction with retained credential exclusion,
-  no physical retry, and physical unknown-outcome stops;
+  compact source/condition/target pointer preflight, leaked noncompact-field
+  rejection, physical-cycle rejection, validation-before-sanitization with
+  retained credential exclusion, trusted child-owned pre-submission failure
+  routing, no physical retry, and physical unknown-outcome stops for every
+  unclassified or possibly submitted exception;
+- compact Limited Graph `last_failure` publication after failure-edge routing,
+  including exact child identity, failure kind, reason, and known physical-
+  submission state while full trace data remains detail-only;
+- regulated complete Provider/capability catalog projection, sanitized exact
+  Provider-detail reads, opaque full/selected Skill-result detail reads,
+  session scoping and retention pruning, and exclusion of both detail tools
+  from Limited Graph children;
 - compound existing-scene work-object motion and mixed-frame slicing discovery,
   including Fabric derivation, absolute-world motion, direction translation,
   and slicing in one eligible graph child catalog;

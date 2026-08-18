@@ -4,7 +4,7 @@
   "display_name": "Establish Current World Axis",
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "establish_world_axis",
     "description": "Ensure the current Local VIO world epoch has a fresh TRACKING body pose without locating the arm base or resetting the world origin. The operation may start the RGB-D camera and Local VIO and may hold a bounded global motion inhibit while stationary IMU samples are collected.",
@@ -77,7 +77,22 @@
         }
       },
       "required": ["status", "result"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/result/skill_id", "/result/session_epoch",
+          "/result/world_frame", "/result/body_frame",
+          "/result/tracking_state", "/result/convention_id",
+          "/result/body_position_m", "/result/stationary_gate",
+          "/result/global_motion_inhibit_acquired",
+          "/result/epoch_reset_performed",
+          "/result/workcell_calibrations_revoked",
+          "/result/physical_motion_submitted"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 16384
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.initialize_space_cognition.ensure_tracking.v1",

@@ -11,7 +11,7 @@
   },
   "lifecycle": "FINITE",
   "agent_discovery": {
-    "schema_version": 2,
+    "schema_version": 3,
     "discoverable": true,
     "tool_name": "move_effector_to_world_point",
     "description": "Move the controlled-effector origin to one absolute XYZ point in the active world frame through the Integrated Controller's signed, collision-checked preview/commit boundary. The host resolves world coordinates into arm-base coordinates and preserves the currently measured effector orientation with POSE_6DOF IK. Optional frame and epoch IDs prevent stale coordinates from being reused after spatial-session changes.",
@@ -177,7 +177,25 @@
         "message": {"type": "string"}
       },
       "required": ["status", "workflow_complete"],
-      "additionalProperties": true
+      "additionalProperties": true,
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/status", "/workflow_complete", "/physical_motion_authorized",
+          "/physical_motion_submitted", "/physical_motion_requested",
+          "/physical_motion_completed", "/target_position_world_m",
+          "/target_world_frame_id", "/target_session_epoch",
+          "/current_position_arm_base_m", "/target_position_arm_base_m",
+          "/motion_intent", "/direction", "/reference_frame", "/distance_m",
+          "/start_position_m", "/target_position_m", "/translation_vector_m",
+          "/requested_speed_m_s", "/planned_duration_s", "/timing",
+          "/final_state", "/goal_reached", "/closest_safe",
+          "/visual_motion_confirmed", "/visual_translation_confirmed",
+          "/visual_orientation_confirmed", "/required_next_tool", "/message"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
     },
     "execution_adapter": {
       "adapter_id": "skill.move_effector_to_world_point.perform.v1",

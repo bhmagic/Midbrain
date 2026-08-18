@@ -41,7 +41,7 @@ def build_adapter(*, skill_root, manifest, services):
         "version": "1.0.0",
         "display_name": "Example Skill",
         "agent_discovery": {
-            "schema_version": 2,
+            "schema_version": 3,
             "discoverable": True,
             "tool_name": "example_tool",
             "description": "Exercise a generic manifest-owned host adapter.",
@@ -62,6 +62,12 @@ def build_adapter(*, skill_root, manifest, services):
                 "properties": {},
                 "required": [],
                 "additionalProperties": True,
+                "x-midbrain-result-tiers": {
+                    "schema_version": 1,
+                    "compact_pointers": [],
+                    "detail_policy": "NONE",
+                    "max_compact_bytes": 1024,
+                },
             },
             "execution_adapter": {
                 "adapter_id": "skill.example.v1",
