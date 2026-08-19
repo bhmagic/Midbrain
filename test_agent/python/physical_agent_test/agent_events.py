@@ -115,6 +115,15 @@ def _translate_run_item_event(
     agent_name = _optional_text(getattr(agent, "name", None))
     if agent_name is not None:
         payload["agent_name"] = agent_name
+    decoded_output = _tool_output_object(event)
+    if _is_client_tool_search_output(decoded_output, call_id):
+        tool_name = "tool_search"
+        payload["tool_name"] = tool_name
+    if tool_name == "tool_search":
+        if name == "tool_called":
+            translated_type = "tool.search.called"
+        elif name == "tool_output":
+            translated_type = "tool.search.completed"
     return translated_type, payload
 
 
@@ -231,6 +240,23 @@ def _tool_output_object(event: Any) -> dict[str, Any] | None:
     else:
         return None
     return decoded if isinstance(decoded, dict) else None
+
+
+def _is_client_tool_search_output(
+    value: dict[str, Any] | None,
+    call_id: str | None,
+) -> bool:
+    if value is None:
+        return False
+    output_call_id = _optional_text(value.get("call_id"))
+    return (
+        value.get("type") == "tool_search_output"
+        and value.get("execution") == "client"
+        and value.get("status") == "completed"
+        and isinstance(value.get("tools"), list)
+        and output_call_id is not None
+        and output_call_id == call_id
+    )
 
 
 def _bounded_integer(value: Any, *, minimum: int, maximum: int) -> bool:

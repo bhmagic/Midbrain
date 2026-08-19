@@ -22,6 +22,11 @@ Safe starting points:
 - The main Midbrain page can select among compatible Provider-owned effector profiles while the arm Provider and its dependents are stopped. It writes only the ignored active `primary_manipulator.json`; the clean example remains the installation seed.
 - `platform_core/config_templates` and `test_agent/config_templates` contain validated package-level fallback copies for partial-package setup.
 - The generated `config/api_keys.env` contains blank keys. Fill the active local file only when a hosted-model feature is intentionally enabled.
+- The clean Agent catalog currently selects Gemini through `GEMINI_API_KEY`
+  and retains GPT alternatives through `OPENAI_API_KEY`. The legacy
+  `OPENAI_AGENT_MODEL` and `OPENAI_AGENT_MODELS` names configure the complete
+  multi-provider Agent catalog; setup preserves an existing ignored local
+  selection.
 - The FoundationPose Provider already reads `config/foundation_pose/models.json`; a complete sanitized registry, CAD profile, and reference-atlas copy is shipped at that location.
 - If the shipped profile is deleted or damaged in a Git checkout, restore it with `git restore --source=HEAD -- config/foundation_pose`. The Provider seeding script remains a secondary repair path for missing files.
 

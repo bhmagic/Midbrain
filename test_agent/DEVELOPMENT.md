@@ -1,5 +1,192 @@
 # Development record
 
+## 2026-08-18 — GPT-native and non-GPT client Tool Search boundary
+
+Retained live runs confirmed that GPT and Gemini had the same two-tier
+discovery outcome but not the same transport. Terra's native hosted Tool Search
+returned `tool_search_call`, `tool_search_output`, and the following Limited
+Graph call inside one Responses result. Gemini's OpenAI-compatible Chat
+Completions transport returned an ordinary `tool_search` function call, waited
+for its function output, and used the loaded definitions on the next model
+request. This matches OpenAI's client-executed two-response sequence, not its
+hosted same-response sequence.
+
+The adapter boundary now preserves the original tool list for every model ID
+beginning with `gpt-` and applies the client-executed compatibility surface to
+every other model ID. Gemini identification remains only where its Google
+endpoint, credential, and reasoning levels are required; it no longer decides
+the discovery protocol. The compatibility surface still derives solely from
+the already eligible original FunctionTools, retains exact names,
+descriptions, schemas, and strictness, and stores loaded names only in run-local
+state. Limited Graph and every other nondeferred tool remain immediate.
+
+The first retained compatibility runs also exposed an observer defect. Real
+Chat Completions function-output items retained the call ID and output but not
+the originating function name or the synthetic `tool_origin` used by the unit
+test. The translator now recognizes a completion only when the decoded output
+is an exact completed client `tool_search_output` envelope and its call ID
+matches the SDK item. It then publishes `tool.search.completed` without
+exposing search arguments or loaded definitions. A mismatched generic tool
+output remains `tool.completed`.
+
+No hosted-search emulator, internal model loop, cache layer, catalog, semantic
+router, Provider action, Fabric route, authentication state, authorization
+state, or execution authority was added. A Chat Completions backend cannot
+emit native Responses search items, continue hosted search within the same
+response, or guarantee Responses context-end injection and cache behavior; the
+documentation now names that boundary instead of claiming full hosted parity.
+Focused model-adapter, event-stream, and authorization-context validation
+passed 46 tests plus 6 subtests. The complete Test Agent suite passed 496 tests
+plus 27 subtests. Full stopped-software repository validation then passed: 142
+Markdown files, the configuration baseline and environment-isolation checks,
+106 JSON files, 1,161 Python tests plus 27 subtests, every Python wheel build,
+80 Rust tests, the Rust release build, and manifest regeneration.
+
+Live qualification run `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` then exercised
+the generalized boundary with `gemini-3.7-flash` at Medium reasoning. It
+published one matching `tool.search.called` and `tool.search.completed` pair,
+loaded the exact `establish_world_axis`, `calibrate_stationary_workcell`, and
+`refine_arm_root_translation` definitions, completed stationary calibration
+and activation, and submitted one three-child Limited Graph for the upward
+motion, five-sample refinement, and arm-forward motion. Both physical motions
+were controller-confirmed. No Fabric, authorization, compatibility-search, or
+graph-runtime denial occurred.
+
+The run used eight external Agent model responses and spent 25.896 seconds in
+Agent-only time after excluding every tool interval. The client Tool Search
+continuation cost 1.219 seconds between completed search output and the next
+model-selected Skill. The three-child graph completed in 16.734 seconds. All
+five refinement observations were rejected by the Skill's landmark-separation
+policy and did not update state; this was not a graph denial. The authored
+graph nevertheless followed its ordinary success edge because the Skill was
+workflow-complete. Its stored result was 36,993 characters because expanded
+sample, visual, and VLM structures remained beside a `detail_ref`. Semantic
+routing of completed-but-rejected results and narrower nested-result projection
+remain explicit follow-up limitations. They do not invalidate this near-stable
+linear compatibility checkpoint or expand Limited Graph's qualification to
+untested branch, retry, loop, or model-route behavior.
+
+## 2026-08-18 — Gemini client Tool Search compatibility
+
+The first Gemini transport repair removed the unsupported Responses-only
+`ToolSearchTool` and eagerly materialized every eligible FunctionTool. That
+made the streaming adapter valid but changed the model input: two retained
+Gemini runs called the first compound Skills directly, whereas retained GPT
+runs with deferred discovery selected Limited Graph. Gemini used Limited Graph
+later in both runs, so the tool was available and accepted; the asymmetry was
+the discovery surface.
+
+The correction is intentionally limited to matching OpenAI Tool Search. For an
+individual deferred function, OpenAI documents that the model initially sees
+the exact function name and description while mainly the parameter schema is
+deferred. A search selects one or more `paths`; its output contains the loaded
+complete function definitions; and those functions become callable. The
+Gemini Chat-Completions adapter now reproduces those two phases with one
+ordinary FunctionTool named `tool_search`. Its description carries the exact
+names and exact descriptions of the already eligible deferred FunctionTools.
+Its strict input uses `paths`, and its result follows the client-executed
+`tool_search_output` shape with `execution=client`, the SDK call ID, lowercase
+`completed`, and the original complete function definitions.
+
+Each deferred Gemini FunctionTool is converted to `defer_loading=False` only
+to satisfy the Chat Completions converter, but an SDK `is_enabled` predicate
+keeps it out of the request until its path has been loaded. Selection is stored
+only in mutable run-local context and is retained when the SDK resumes an
+interrupted run; a fresh run starts empty. The existing immutable authorization
+object remains a separate field in that context. The search does not invoke a
+Skill. `run_limited_graph` and other originally nondeferred tools remain
+immediately callable, matching their GPT behavior.
+
+No catalog, semantic router, preselection rule, schema copy, new result tier,
+Provider action, Fabric route, authentication state, authorization state, or
+execution authority was added. The existing eligible descriptors, original
+FunctionTools, invocation broker, and normalized observer contract remain the
+only sources. Local compatibility search calls are projected to the same
+`tool.search.called` and `tool.search.completed` events as native Responses
+search without exposing search arguments or definitions to the browser.
+
+Focused validation passed 124 tests plus 6 subtests across model adaptation,
+run-local loading, fresh-run isolation, unknown-path rejection, exact search
+output structure, route-surface narrowing, immediate Limited Graph visibility,
+authorization context, event normalization, manifest discovery, Limited Graph
+broker behavior, and the developer Agent surface. The complete Test Agent suite
+then passed 495 tests plus 27 subtests. Full stopped-software repository
+validation also passed: 142 Markdown files, the configuration baseline and
+environment-isolation checks, 106 JSON files, 1,160 Python tests plus 27
+subtests, every Python wheel build, 80 Rust tests, the Rust release build, and
+manifest regeneration. Subsequent live Gemini qualification is recorded in
+the generalized GPT-native/non-GPT boundary checkpoint above.
+
+## 2026-08-18 — Gemini 3.7 Flash Agent default
+
+Google's current Gemini API catalog identifies `gemini-3.7-flash` as a stable
+model and publishes low, medium, and high thinking support. The Reference
+Agent now resolves a selected Gemini model through Google's documented
+OpenAI-compatible chat-completions base URL and the existing ignored
+`GEMINI_API_KEY`. GPT selections continue through the OpenAI Agents SDK's
+native model resolution and `OPENAI_API_KEY`. The existing
+`OPENAI_AGENT_MODEL`, `OPENAI_AGENT_MODELS`, and
+`OPENAI_AGENT_REASONING_EFFORT` names are retained as compatibility
+configuration keys even though the catalog is now multi-provider.
+
+The clean configuration default and this workstation's ignored active model
+selection are `gemini-3.7-flash` with `medium` reasoning. The model list keeps
+GPT-5.6 Terra, Sol, and Luna as fallbacks. Status now publishes reasoning
+choices per model; both Agent pages update the reasoning selector when the
+model changes. Server-side validation independently rejects a reasoning level
+outside the selected model's published set.
+
+Live validation used no robot tools or motion. A native Gemini API request at
+Medium reasoning accepted the stable model ID; its first deliberately small
+64-token output ceiling produced no final candidate, while the bounded repeat
+with 512 available tokens returned `OK` with 6 prompt, 1 answer, and 97
+thinking tokens. The implemented Agents SDK adapter then returned `OK` for a
+plain request and completed a two-turn function-call smoke test whose local
+tool returned `2`. Tracing was disabled for both adapter smoke tests. No
+secret value was printed or retained in tracked files.
+
+The first Agents SDK streaming smoke request reached Google but returned an
+HTTP 500 after the SDK's bounded retries. Direct OpenAI-compatible streaming
+then returned `DIRECT_STREAM_OK` without an explicit reasoning level and
+`MEDIUM_STREAM_OK` with `reasoning_effort=medium`. An exact replay through
+`Runner.run_streamed` returned `AGENT_STREAM_OK`. The failure was therefore
+not repeatable and did not justify replacing the UI's streaming path with a
+non-streaming compatibility workaround; the retained evidence identifies it
+as a transient hosted-endpoint failure unless a future run reproduces it.
+
+The first full Reference Agent test then exposed a separate local preflight
+failure. Run `6f258c46-0c6a-4fed-8722-197f8d796dbc` failed after approximately
+151 milliseconds and before any model or Skill call because the Gemini
+Chat-Completions-compatible adapter was given `defer_loading=True` on
+`analyze_visual_scene`. The Agents SDK correctly rejected that OpenAI
+Responses-only feature. This was a Reference Agent adapter defect, not a
+Gemini, Skill, Limited Graph, Provider, or streaming-run failure.
+
+The initial model-boundary repair derived its FunctionTool surface from the
+selected adapter. GPT Responses selections retained deferred loading and the
+one `ToolSearchTool`; Gemini temporarily received all otherwise eligible
+FunctionTools with deferred loading disabled. That eager compatibility stage
+is retained here as incident history and is superseded by the Tool Search
+feature-parity section above. Both selections continue through
+`Runner.run_streamed` and the canonical Midbrain streaming-run/event path;
+“Chat Completions” identifies Google's compatible request dialect here, not a
+synchronous browser execution path.
+
+Local regression invokes the SDK's exact Chat Completions tool converter: the
+original deferred tool reproduces the retained error, while the Gemini-
+adapted tool converts successfully and the GPT surface remains unchanged. An
+out-of-band live smoke with the complete production tool catalog was not sent,
+because it would disclose all internal tool names, descriptions, and schemas
+beyond the previously authorized short-message API test. The next normal
+operator run remains the live full-catalog confirmation under the Agent's
+configured hosted-model disclosure policy.
+
+This changes only hosted Agent model transport and selection. It does not
+move model-provider duties into Skills or Limited Graph, and it does not alter
+Manager, Provider, Fabric, authentication, authorization, physical-action, or
+controller contracts. Full live physical and graph-branch qualification with
+the new default remains separate from the non-motion transport smoke tests.
+
 ## 2026-08-18 — Near-stable documentation reconciliation
 
 The merged implementation checkpoint `8777ebf` / `32c90d1` is now reflected

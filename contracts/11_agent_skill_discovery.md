@@ -10,18 +10,48 @@ selection and does not grant physical-control authority.
 
 The discovery boundary follows the Agents SDK tool model:
 
-- The agent initially sees a stable tool name, a short description of what the
-  Skill does and when to use it, the tool input schema, and the declared
-  structured-result schema.
+- The agent initially sees each deferred Skill's stable tool name and exact
+  FunctionTool description, while its parameter schema remains unloaded.
 - The model semantically selects an eligible Skill from those descriptions.
-- Complete Skill instructions and implementation-specific resources are loaded
-  only after selection when deferred tool loading is used.
+- The selected Skill's original complete FunctionTool definition becomes
+  callable after search, including its parameter schema and the structured-
+  result pointers carried by its description.
+- Nondeferred tools remain callable immediately. In the Reference Agent this
+  includes `run_limited_graph`.
 - A user or test policy may explicitly require tool use or narrow the eligible
   tool set.
 - Deterministic guardrails, authorization, Manager binding, and provider-side
   safety checks remain outside semantic selection.
 
-Official reference: <https://openai.github.io/openai-agents-python/tools/>
+Deferred loading is a model-adapter optimization, not a requirement of the
+Skill contract. A host must publish only discovery features supported by the
+selected model adapter. A `gpt-*` model receives the original deferred
+`FunctionTool` definitions plus exactly one native `ToolSearchTool`; this is
+the unchanged OpenAI Responses hosted-search path. Every non-`gpt-*` model
+receives the client-executed compatibility path. That path exposes an ordinary
+`tool_search` FunctionTool whose exact deferred names and descriptions are
+visible first and whose `paths` select from the already eligible functions. Its
+result carries `type=tool_search_output`, `execution=client`, the matching call
+ID, `status=completed`, and the selected original complete FunctionTool
+definitions. SDK run-local dynamic enablement makes those functions callable
+on the following model turn.
+
+The compatibility path reproduces the OpenAI client-executed two-response
+contract. A Chat Completions backend cannot emit native Responses
+`tool_search_call` or `tool_search_output` items, continue through hosted search
+inside the same response, or guarantee Responses context-end injection and
+cache behavior. Midbrain normalizes the ordinary compatibility function events
+to the canonical observer event names but does not claim those unavailable
+transport features. Search does not invoke a Skill, add routing policy, create
+another catalog, persist selection into a fresh run, or grant authority.
+Materialization changes context size and discovery mechanics only; it does not
+change eligibility, arguments, result validation, authorization, or execution
+ownership.
+
+Official references:
+
+- <https://developers.openai.com/api/docs/guides/tools-tool-search>
+- <https://openai.github.io/openai-agents-python/tools/>
 
 ## Manifest field
 

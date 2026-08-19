@@ -104,6 +104,85 @@ class AgentEventTranslationTests(unittest.TestCase):
         self.assertNotIn("arguments", payload)
         self.assertNotIn("must-not-stream", str(payload))
 
+    def test_local_tool_search_uses_canonical_search_events(self) -> None:
+        called = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_called",
+            item=SimpleNamespace(
+                type="tool_call_item",
+                raw_item={
+                    "name": "tool_search",
+                    "call_id": "search-1",
+                    "arguments": '{"tool_names":["skill_a"]}',
+                },
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=None,
+                title=None,
+            ),
+        )
+        completed = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_output",
+            item=SimpleNamespace(
+                type="tool_call_output_item",
+                raw_item={"call_id": "search-1", "output": "redacted"},
+                output=json.dumps(
+                    {
+                        "type": "tool_search_output",
+                        "execution": "client",
+                        "call_id": "search-1",
+                        "status": "completed",
+                        "tools": [],
+                    }
+                ),
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=None,
+                title=None,
+            ),
+        )
+
+        self.assertEqual(
+            translate_openai_sdk_event(called)[0],
+            "tool.search.called",
+        )
+        self.assertEqual(
+            translate_openai_sdk_event(completed)[0],
+            "tool.search.completed",
+        )
+        self.assertEqual(
+            translate_openai_sdk_event(completed)[1]["tool_name"],
+            "tool_search",
+        )
+
+    def test_generic_tool_output_cannot_spoof_search_completion(self) -> None:
+        completed = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_output",
+            item=SimpleNamespace(
+                type="tool_call_output_item",
+                raw_item={"call_id": "other-1"},
+                output=json.dumps(
+                    {
+                        "type": "tool_search_output",
+                        "execution": "client",
+                        "call_id": "different-call",
+                        "status": "completed",
+                        "tools": [],
+                    }
+                ),
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=None,
+                title=None,
+            ),
+        )
+
+        translated = translate_openai_sdk_event(completed)
+
+        self.assertIsNotNone(translated)
+        assert translated is not None
+        self.assertEqual(translated[0], "tool.completed")
+        self.assertNotIn("tool_name", translated[1])
+
     def test_tool_output_emits_only_allowlisted_visual_evidence(self) -> None:
         evidence_id = "evidence-1"
         output = {

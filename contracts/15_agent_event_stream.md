@@ -20,12 +20,26 @@ OpenAI events into the Midbrain event subset. Later OpenAI SDK versions, other
 agent frameworks, deterministic workflows, and Google or local model runtimes
 may implement additional adapters without changing ordinary browser behavior.
 
-The legacy synchronous JSON run endpoints remain available during migration.
-The regular and developer streaming endpoints start backend-owned runs and
-return a run ID plus a separate replayable event URL. Losing the browser
-connection does not cancel or restart the run. Both surfaces use the same
-observer event contract; their tool catalogs and authorization policies remain
-separate.
+The regular and developer pages use only the canonical streaming-run family.
+It starts a backend-owned run and returns a run ID plus a separate replayable
+event URL. Losing the browser connection does not cancel or restart the run.
+Both surfaces use the same observer event contract; their presentation differs
+but their tool catalog and authorization policy do not.
+
+Model transport and observer transport are separate choices. A model adapter
+may stream through Responses, a provider's Chat Completions-compatible API, or
+a future native provider runtime, while the browser still receives the same
+Midbrain events. The term `ChatCompletions` in an internal adapter names an API
+dialect; it does not authorize a synchronous browser route. Model-specific
+tool-discovery features must be adapted before the model request and must not
+change this event contract.
+
+Native GPT Responses Tool Search and non-GPT client-executed compatibility
+search both project as `tool.search.called` and `tool.search.completed`; raw
+search arguments and loaded definitions are not published to browser
+observers. A compatibility completion is recognized only from a matching call
+ID and an exact completed client `tool_search_output` envelope, because a Chat
+Completions function-output item does not retain the originating tool name.
 
 ## Version 1 envelope
 

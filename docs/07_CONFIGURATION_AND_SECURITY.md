@@ -40,6 +40,15 @@ Blank examples document supported variable names. Runtime defaults and model
 selections are owned by the active configuration and component code; other
 documentation should not duplicate them.
 
+The Reference Agent's model catalog is multi-provider but retains the legacy
+`OPENAI_AGENT_MODEL`, `OPENAI_AGENT_MODELS`, and
+`OPENAI_AGENT_REASONING_EFFORT` names for configuration compatibility.
+Selecting a Gemini model uses Google's documented OpenAI-compatible endpoint
+and reads `GEMINI_API_KEY`; selecting a GPT model reads `OPENAI_API_KEY` and
+uses native OpenAI Agents SDK resolution. Existing ignored configuration is
+preserved by setup, so changing tracked defaults does not silently overwrite a
+machine's active model selection.
+
 If a secret appears in a log, review transcript, or Git object, treat it as
 exposed and rotate it. Removing the visible file alone does not invalidate the
 credential or erase history.
