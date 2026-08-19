@@ -7,7 +7,7 @@ import logging
 import math
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,14 @@ from agents import (
 from jsonschema import validate
 
 from .agent_events import translate_openai_sdk_events
+from .agent_models import (
+    is_local_deferred_tool,
+    is_local_tool_search,
+    narrow_local_tool_search,
+    require_agent_model_credential,
+    resolve_agent_model,
+    tools_for_agent_model,
+)
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
 from .effector_front_adapter import EffectorFrontSkillAdapter
 from .fabric_spatial_translation import FabricSpatialTranslator
@@ -103,6 +111,12 @@ class AgentSessionAuthorization:
     auto_authorize_stationary_activation: bool = False
     auto_authorize_safe_home: bool = False
     auto_authorize_space_reinitialization: bool = False
+
+
+@dataclass
+class AgentRunContext:
+    authorization: AgentSessionAuthorization
+    loaded_tool_names: set[str] = field(default_factory=set)
 
 
 AgentEventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -207,7 +221,9 @@ def _select_routed_tools(
         if getattr(tool, "name", "") in allowed_tools
     ]
     selected_function_count = sum(
-        isinstance(tool, FunctionTool) for tool in selected
+        isinstance(tool, FunctionTool)
+        and getattr(tool, "name", "") != "tool_search"
+        for tool in selected
     )
     if include_limited_graph and selected_function_count >= 2 and not any(
         getattr(tool, "name", "") == "run_limited_graph"
@@ -221,6 +237,27 @@ def _select_routed_tools(
         if len(graph_tools) > 1:
             raise RuntimeError("Agent surface has duplicate Limited Graph tools")
         selected.extend(graph_tools)
+    local_deferred_selected = any(
+        is_local_deferred_tool(tool) for tool in selected
+    )
+    if local_deferred_selected and not any(
+        is_local_tool_search(tool) for tool in selected
+    ):
+        search_tools = [
+            tool for tool in tools if is_local_tool_search(tool)
+        ]
+        if len(search_tools) != 1:
+            raise RuntimeError(
+                "A routed local deferred-loading surface requires exactly "
+                "one compatibility tool search"
+            )
+        selected.append(search_tools[0])
+    selected = [
+        narrowed
+        for tool in selected
+        for narrowed in [narrow_local_tool_search(tool, allowed_tools)]
+        if narrowed is not None
+    ]
     deferred_selected = any(
         (
             isinstance(tool, FunctionTool)
@@ -1060,7 +1097,10 @@ async def wait_for_provider_hot_readiness(
 
 
 def _session_authorization(context_wrapper: Any) -> AgentSessionAuthorization:
-    authorization = getattr(context_wrapper, "context", None)
+    context = getattr(context_wrapper, "context", None)
+    if isinstance(context, AgentRunContext):
+        return context.authorization
+    authorization = context
     if isinstance(authorization, AgentSessionAuthorization):
         return authorization
     return AgentSessionAuthorization()
@@ -1069,12 +1109,14 @@ def _session_authorization(context_wrapper: Any) -> AgentSessionAuthorization:
 def _runner_context(
     input_value: AgentInput,
     authorization: AgentSessionAuthorization | None,
-) -> AgentSessionAuthorization | None:
+) -> AgentRunContext | None:
     """Keep the SDK-owned context when resuming an interrupted run."""
 
     if isinstance(input_value, RunState):
         return None
-    return authorization or AgentSessionAuthorization()
+    return AgentRunContext(
+        authorization=authorization or AgentSessionAuthorization()
+    )
 
 
 async def provider_activation_needs_approval(
@@ -1456,6 +1498,12 @@ class PrototypeAgentDriver:
         ) = None,
         skill_result_detail_store: SkillResultDetailStore | None = None,
     ):
+        self.model_id = model.strip()
+        if not self.model_id:
+            raise ValueError("model must not be empty")
+        self._resolved_agent_models = {
+            self.model_id: resolve_agent_model(self.model_id)
+        }
         self.skill = skill
         self.integrated_motion_skill = integrated_motion_skill
         self.no_contact_approach_skill = no_contact_approach_skill
@@ -1929,7 +1977,6 @@ class PrototypeAgentDriver:
             for descriptor in descriptors
             if descriptor.tool_name in eligible
         ]
-
         offered_tools = list(tools)
         if skill_result_detail_store is not None:
             async def inspect_skill_result_detail(
@@ -3184,15 +3231,17 @@ class PrototypeAgentDriver:
                     ),
                 )
             )
+        self._base_agent_tools = tuple(offered_tools)
+        self._agent_tool_surfaces: dict[str, list[Any]] = {}
         self.agent = Agent(
             name="Physical Agent Prototype Driver",
-            model=model,
+            model=self._resolved_agent_models[self.model_id],
             instructions=instructions,
             model_settings=ModelSettings(
                 tool_choice=tool_choice,
                 parallel_tool_calls=False,
             ),
-            tools=offered_tools,
+            tools=self._agent_tools_for_model(self.model_id),
         )
         self.run_config = RunConfig(
             workflow_name="Midbrain Phase 4 finite Skill selection",
@@ -3211,6 +3260,43 @@ class PrototypeAgentDriver:
             tool_not_found_behavior="return_error_to_model",
         )
         self.session = session
+
+    def _resolved_agent_model(self, model_id: str) -> Any:
+        normalized = model_id.strip()
+        cache = getattr(self, "_resolved_agent_models", None)
+        if cache is None:
+            cache = {}
+            self._resolved_agent_models = cache
+        if normalized not in cache:
+            cache[normalized] = resolve_agent_model(normalized)
+        return cache[normalized]
+
+    def _agent_tools_for_model(self, model_id: str) -> list[Any]:
+        normalized = model_id.strip()
+        cache = getattr(self, "_agent_tool_surfaces", None)
+        if cache is None:
+            cache = {}
+            self._agent_tool_surfaces = cache
+        if normalized not in cache:
+            base_tools = getattr(self, "_base_agent_tools", None)
+            if base_tools is None:
+                base_tools = tuple(
+                    getattr(getattr(self, "agent", None), "tools", ())
+                )
+            cache[normalized] = tools_for_agent_model(
+                normalized,
+                base_tools,
+            )
+        return list(cache[normalized])
+
+    def _agent_for_model(self, model_id: str) -> Agent:
+        normalized = model_id.strip()
+        if normalized == getattr(self, "model_id", None):
+            return self.agent
+        return self.agent.clone(
+            model=self._resolved_agent_model(normalized),
+            tools=self._agent_tools_for_model(normalized),
+        )
 
     async def run(self, prompt: str) -> str:
         result = await self._run(prompt)
@@ -3265,18 +3351,19 @@ class PrototypeAgentDriver:
         authorization: AgentSessionAuthorization | None = None,
         event_sink: AgentEventSink | None = None,
     ):
-        if not os.getenv("OPENAI_API_KEY", "").strip():
-            raise RuntimeError("OPENAI_API_KEY is empty in config/api_keys.env")
+        selected_model_id = (
+            model_override
+            or getattr(self, "model_id", None)
+            or "gpt-5.6-terra"
+        )
+        require_agent_model_credential(selected_model_id)
         report_operation_progress("AGENT_MODEL_SELECTION")
         run_config = self.run_config
-        if model_override is not None or reasoning_effort is not None:
+        if reasoning_effort is not None:
             run_config = replace(
                 self.run_config,
-                model=model_override,
                 model_settings=(
-                    None
-                    if reasoning_effort is None
-                    else ModelSettings(
+                    ModelSettings(
                         reasoning={
                             "effort": reasoning_effort,
                             "summary": "auto",
@@ -3306,14 +3393,14 @@ class PrototypeAgentDriver:
                 "run_config": run_config,
                 "session": self.session,
             }
-            selected_agent = self.agent
+            selected_agent = self._agent_for_model(selected_model_id)
             intent_route = deterministic_intent_tool_route(
                 _current_user_text(input_value)
             )
             if intent_route is not None and not isinstance(input_value, RunState):
                 allowed_tools = intent_route["allowed_tools"]
                 routed_tools = _select_routed_tools(
-                    self.agent.tools,
+                    selected_agent.tools,
                     allowed_tools,
                     include_limited_graph=intent_route.get(
                         "allow_limited_graph",
@@ -3328,10 +3415,10 @@ class PrototypeAgentDriver:
                     )
                     else ""
                 )
-                selected_agent = self.agent.clone(
+                selected_agent = selected_agent.clone(
                     tools=routed_tools,
                     instructions=(
-                        f"{self.agent.instructions} "
+                        f"{selected_agent.instructions} "
                         f"Deterministic intent route "
                         f"{intent_route['route']}: "
                         f"{intent_route['instruction']}"

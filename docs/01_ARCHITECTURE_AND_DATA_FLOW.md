@@ -232,6 +232,26 @@ run/approval/streaming implementation. Both pages submit only to the canonical
 developer execution alias. Developer diagnostics do not change the Agent's
 eligible tools, lifecycle policy, retries, or authorization behavior.
 
+Hosted Agent model transport is selected at the model-adapter boundary. A
+Gemini model uses Google's OpenAI-compatible chat-completions endpoint and its
+Gemini credential; GPT models retain native OpenAI Agents SDK resolution. The
+browser receives model-specific reasoning choices, and the server validates
+the pair again before a run. This transport choice does not change Skill,
+Limited Graph, Manager, Provider, Fabric, authorization, or controller duties.
+
+The canonical browser path remains streaming for every model family. A
+`gpt-*` selection retains the original OpenAI Responses surface, including
+deferred Skill tools and native hosted `ToolSearchTool`. Every non-`gpt-*`
+selection receives the client-executed compatibility surface: an ordinary
+`tool_search` FunctionTool exposes the exact deferred names and descriptions,
+returns the selected original full definitions in a completed client search
+envelope, and makes them callable on the following model turn. Limited Graph
+and other nondeferred tools remain immediate. This adds no discovery policy or
+registry and changes neither the normalized event stream nor physical
+authority. A Chat Completions transport still requires the documented second
+model request and does not claim native Responses item types, hosted
+same-response continuation, or Responses cache semantics.
+
 For an ordinary requested Integrated relative motion, the reference Agent host
 projects nonphysical preview and its exact execution continuation as one
 `perform_relative_effector_motion` tool call. Preparation is keyed by the SDK

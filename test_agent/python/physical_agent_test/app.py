@@ -36,6 +36,7 @@ from .agent_event_stream import (
     stream_sse,
 )
 from .agent_run_journal import AgentRunJournal
+from .agent_models import supported_agent_reasoning_efforts
 from .authorization import AuthorizationStore
 from .basic_client import BasicControllerClient
 from .basic_safe_home_adapter import BasicSafeHomeAdapter
@@ -527,7 +528,17 @@ class PendingAgentRun:
 agent_model_options = tuple(
     dict.fromkeys((settings.openai_model, *settings.openai_agent_models))
 )
-agent_reasoning_options = ("low", "medium", "high", "xhigh", "max")
+agent_reasoning_options_by_model = {
+    model: supported_agent_reasoning_efforts(model)
+    for model in agent_model_options
+}
+agent_reasoning_options = tuple(
+    dict.fromkeys(
+        effort
+        for options in agent_reasoning_options_by_model.values()
+        for effort in options
+    )
+)
 vlm_model_options = tuple(
     dict.fromkeys(backend.model_id for backend in agent_vlm_router.backends)
 )
@@ -1469,6 +1480,10 @@ async def status() -> dict[str, Any]:
         "agent_model_options": list(agent_model_options),
         "agent_reasoning_effort": settings.openai_agent_reasoning_effort,
         "agent_reasoning_options": list(agent_reasoning_options),
+        "agent_reasoning_options_by_model": {
+            model: list(options)
+            for model, options in agent_reasoning_options_by_model.items()
+        },
         "openai_agent_tool_choice": settings.openai_agent_tool_choice,
         "agent_session_history_item_limit": (
             settings.openai_agent_session_history_items
@@ -2965,10 +2980,14 @@ def _model_selection(
             status_code=422,
             detail=f"unsupported Agent model: {agent_model}",
         )
-    if reasoning_effort not in agent_reasoning_options:
+    supported_reasoning = agent_reasoning_options_by_model[agent_model]
+    if reasoning_effort not in supported_reasoning:
         raise HTTPException(
             status_code=422,
-            detail=f"unsupported reasoning effort: {reasoning_effort}",
+            detail=(
+                f"unsupported reasoning effort for {agent_model}: "
+                f"{reasoning_effort}"
+            ),
         )
     vlm_model = None if requested_vlm_model == "auto" else requested_vlm_model
     if vlm_model is not None and vlm_model not in vlm_model_options:
@@ -3846,7 +3865,7 @@ PAGE = r"""
         <h2>Prompt</h2>
         <textarea id="prompt" placeholder="Describe the task for the agent."></textarea>
         <div class="model-controls">
-          <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
+          <label>Agent model<select id="agentModel"><option value="gemini-3.7-flash">Gemini 3.7 Flash</option></select></label>
           <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
           <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
         </div>
@@ -4211,6 +4230,8 @@ const developerChatHistory = new window.MidbrainAgentChatHistory({
 const agentModel = document.getElementById('agentModel');
 const reasoningEffort = document.getElementById('reasoningEffort');
 const vlmModel = document.getElementById('vlmModel');
+let agentReasoningOptionsByModel = {};
+let defaultAgentReasoningEffort = 'medium';
 const autoApproveProviders = document.getElementById('autoApproveProviders');
 const autoApproveProviderStop = document.getElementById(
   'autoApproveProviderStop'
@@ -4706,6 +4727,33 @@ function populateModelSelect(select, values, selectedValue, labeler) {
   select.dataset.loaded = 'true';
 }
 
+function agentModelLabel(value) {
+  if (value === 'gemini-3.7-flash') return 'Gemini 3.7 Flash';
+  return value.replace('gpt-5.6-', 'GPT-5.6 ');
+}
+
+function syncAgentReasoningSelect() {
+  const values = agentReasoningOptionsByModel[agentModel.value]
+    || ['medium'];
+  const currentValue = reasoningEffort.value;
+  reasoningEffort.replaceChildren(...values.map((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value.toUpperCase();
+    return option;
+  }));
+  reasoningEffort.value = values.includes(currentValue)
+    ? currentValue
+    : (
+      values.includes(defaultAgentReasoningEffort)
+        ? defaultAgentReasoningEffort
+        : values[0]
+    );
+  reasoningEffort.dataset.loaded = 'true';
+}
+
+agentModel.addEventListener('change', syncAgentReasoningSelect);
+
 function renderComponentCatalog(targetId, items) {
   const target = document.getElementById(targetId);
   target.replaceChildren();
@@ -4738,14 +4786,13 @@ async function refreshStatus() {
       agentModel,
       data.agent_model_options || [data.openai_model],
       data.openai_model,
-      (value) => value.replace('gpt-5.6-', 'GPT-5.6 ')
+      agentModelLabel
     );
-    populateModelSelect(
-      reasoningEffort,
-      data.agent_reasoning_options || ['medium'],
-      data.agent_reasoning_effort || 'medium',
-      (value) => value.toUpperCase()
-    );
+    agentReasoningOptionsByModel =
+      data.agent_reasoning_options_by_model || {};
+    defaultAgentReasoningEffort =
+      data.agent_reasoning_effort || 'medium';
+    syncAgentReasoningSelect();
     populateModelSelect(
       vlmModel,
       data.vlm_model_options || ['auto'],

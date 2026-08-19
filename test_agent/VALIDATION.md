@@ -16,6 +16,18 @@ own environment:
 
 The suite is expected to validate:
 
+- multi-provider Agent model resolution, including Gemini's documented
+  OpenAI-compatible base URL, provider-specific credential selection,
+  low/medium/high reasoning contract, and preservation of native GPT model
+  resolution;
+- model-aware streaming tool surfaces, including native hosted discovery for
+  every `gpt-*` model and client-executed discovery for every non-`gpt-*`
+  model, exact `paths` and client `tool_search_output` shapes, run-local dynamic
+  loading of the original FunctionTools, immediate Limited Graph visibility,
+  exclusion of the Responses-only object from compatibility transports,
+  canonical search events recovered from real function-output envelopes,
+  exact Chat Completions conversion, and preservation of the original GPT
+  tool list;
 - manifest-only Skill discovery and allowlisting;
 - mandatory discovery-v3 input/output schema and two-tier metadata validation
   across every installed Skill, complete field-name publication, compact

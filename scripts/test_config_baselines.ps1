@@ -236,8 +236,11 @@ foreach ($key in $requiredSystemKeys) {
     Assert-True -Condition $systemValues.ContainsKey($key) -Message "system.env.example is missing $key"
 }
 Assert-True `
-    -Condition ($systemValues["OPENAI_AGENT_MODEL"] -eq "gpt-5.6-terra") `
-    -Message "The default Agent model must remain gpt-5.6-terra"
+    -Condition ($systemValues["OPENAI_AGENT_MODEL"] -eq "gemini-3.7-flash") `
+    -Message "The default Agent model must be gemini-3.7-flash"
+Assert-True `
+    -Condition ($systemValues["OPENAI_AGENT_MODELS"].Split(",") -contains "gemini-3.7-flash") `
+    -Message "The Agent model list must include gemini-3.7-flash"
 Assert-True `
     -Condition ($systemValues["OPENAI_AGENT_REASONING_EFFORT"] -eq "medium") `
     -Message "The default Agent reasoning effort must be medium"

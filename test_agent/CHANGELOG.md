@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Qualify generalized non-GPT discovery as near stable after live Gemini run
+  `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` emitted the canonical client Tool
+  Search event pair, loaded three exact deferred Skills, completed world/arm
+  calibration and activation, and used one three-child Limited Graph for two
+  controller-confirmed motions plus five VLM observations. The run completed
+  without a Fabric, authorization, or graph-runtime denial. Preserve the
+  expanded nested refinement result and the graph's ordinary success edge for
+  `REJECTED_OBSERVATION` as documented follow-up limitations.
+- Add the stable `gemini-3.7-flash` Agent model, make it the default with
+  `medium` reasoning, and retain GPT-5.6 Terra/Sol/Luna as selectable models.
+  Resolve Gemini through Google's OpenAI-compatible chat-completions endpoint
+  and require `GEMINI_API_KEY` only when Gemini is selected; GPT models still
+  require `OPENAI_API_KEY`. Both Agent pages consume model-specific reasoning
+  levels, limiting Gemini 3.7 Flash to its published low/medium/high set. Keep
+  both providers on the canonical streaming-run path. Preserve the original
+  native hosted deferred-discovery flow for every `gpt-*` model. Use the OpenAI
+  client-executed two-response contract for every non-`gpt-*` model without the
+  unsupported Responses-only object: exact deferred names and descriptions
+  first, then the selected original full FunctionTools through a completed
+  client `tool_search_output` and run-local SDK enablement. Recover the exact
+  canonical search-completion event from the output envelope and matching call
+  ID. Add no new catalog, routing policy, or authority path.
 - Reconcile the Reference Agent documentation with the merged near-stable
   Limited Graph/context checkpoint. Document the exact accepted linear path,
   unchanged authority boundaries, `Stop task` ownership, compact/detail

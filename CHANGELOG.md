@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Qualify the generalized Agent discovery milestone as near stable after live
+  Gemini run `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` completed one exact client
+  Tool Search round, stationary world/arm calibration and activation, one
+  three-child Limited Graph, two controller-confirmed physical motions, five
+  VLM refinement observations, incremental visual evidence, and final
+  reporting without a Fabric, authorization, or graph-runtime denial. Retain
+  graph-result compaction and semantic routing of completed-but-rejected
+  refinement as explicit non-blocking follow-up rather than claiming full
+  topology or task-success qualification.
+- Add Gemini 3.7 Flash to the Reference Agent model catalog and make it the
+  clean-install default at Medium reasoning. Gemini Agent runs use Google's
+  documented OpenAI-compatible endpoint with `GEMINI_API_KEY`; existing GPT
+  selections retain the native OpenAI Agents SDK path and remain available.
+  Publish model-specific reasoning choices so Gemini cannot be submitted with
+  unsupported `xhigh` or `max` values. Both use the canonical streaming-run
+  path. Every `gpt-*` model preserves the original native hosted deferred
+  discovery flow. Every non-`gpt-*` model uses the OpenAI client-executed
+  two-response contract without the unsupported Responses-only object: exact
+  deferred names and descriptions first, then the selected original full
+  FunctionTools through a completed client search output and run-local SDK
+  enablement. Recover canonical search-completion events from the exact output
+  envelope and matching call ID. No new catalog, routing policy, Skill,
+  Limited Graph, Provider, Fabric, authentication, authorization, or controller
+  boundary is added.
 - Reconcile all active Limited Graph documentation with the merged near-stable
   context/execution checkpoint. Add one current status and qualification owner,
   link it from framework, architecture, operation, extension, validation,

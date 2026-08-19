@@ -250,6 +250,26 @@ journal retention, and endpoint settings belong in ignored local
 configuration. Do not document active secret values or make a model name part
 of the Midbrain compatibility contract.
 
+The Reference Agent model selector is multi-provider while retaining the
+legacy `OPENAI_AGENT_MODEL`, `OPENAI_AGENT_MODELS`, and
+`OPENAI_AGENT_REASONING_EFFORT` configuration names. A Gemini model ID is
+resolved through Google's OpenAI-compatible endpoint and requires
+`GEMINI_API_KEY`; a GPT model uses the native OpenAI Agents SDK route and
+requires `OPENAI_API_KEY`. Both browser views obtain the allowed reasoning
+levels for the selected model from `/api/status` rather than assuming every
+provider supports the same set.
+
+Both choices still execute through `Runner.run_streamed` and the sole
+`/api/streaming-runs` family. Every `gpt-*` model retains the original deferred
+Skill tools and native hosted `ToolSearchTool`. Every non-`gpt-*` model receives
+the client-executed compatibility path: an ordinary `tool_search` FunctionTool
+shows the exact deferred names and descriptions, returns the selected original
+full definitions in the completed client envelope, and makes them callable on
+the following model turn. Limited Graph stays immediate. This introduces no
+new catalog, routing rule, synchronous route, Skill duty, or authorization
+boundary. A Chat Completions backend does not acquire native Responses item
+types, hosted same-response continuation, or Responses cache behavior.
+
 ## Validation
 
 Use the package environment:

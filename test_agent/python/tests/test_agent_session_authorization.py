@@ -26,6 +26,7 @@ from physical_agent_test.app import (
     _validate_automatic_agent_approval,
 )
 from physical_agent_test.agent_driver import (
+    AgentRunContext,
     AgentSessionAuthorization,
     PrototypeAgentDriver,
     _runner_context,
@@ -110,9 +111,16 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
             auto_authorize_provider_activation=True,
         )
 
-        self.assertIs(_runner_context("prompt", explicit), explicit)
+        explicit_context = _runner_context("prompt", explicit)
+        self.assertIsInstance(explicit_context, AgentRunContext)
+        assert explicit_context is not None
+        self.assertIs(explicit_context.authorization, explicit)
+        self.assertEqual(explicit_context.loaded_tool_names, set())
+        default_context = _runner_context("prompt", None)
+        self.assertIsInstance(default_context, AgentRunContext)
+        assert default_context is not None
         self.assertEqual(
-            _runner_context("prompt", None),
+            default_context.authorization,
             AgentSessionAuthorization(),
         )
 

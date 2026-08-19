@@ -14,6 +14,11 @@ This inventory distinguishes source-controlled recovery material from machine-lo
 
 The copies under `platform_core/config_templates` and `test_agent/config_templates` are package-level fallbacks. Validation requires them to remain byte-identical to the corresponding root examples so setup order cannot change the generated configuration.
 
+The Agent model catalog uses compatibility key names beginning with
+`OPENAI_AGENT_`, but values may select either the Gemini adapter or native GPT
+resolution. Gemini and OpenAI credentials remain separate blank template
+fields, and active values remain machine-local.
+
 ## Provider-local configuration
 
 | Component and active path | Clean source or generator | Why it is safe |

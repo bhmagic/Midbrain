@@ -283,7 +283,7 @@
       <label for="prompt">Prompt</label>
       <textarea id="prompt" placeholder="Describe what you want Midbrain to observe or do through its available Skills."></textarea>
       <div class="model-controls" aria-label="Model selection">
-        <label>Agent model<select id="agentModel"><option value="gpt-5.6-terra">GPT-5.6 Terra</option></select></label>
+        <label>Agent model<select id="agentModel"><option value="gemini-3.7-flash">Gemini 3.7 Flash</option></select></label>
         <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
         <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
       </div>
@@ -577,6 +577,37 @@
       select.dataset.loaded = "true";
     }
 
+    let agentReasoningOptionsByModel = {};
+    let defaultAgentReasoningEffort = "medium";
+
+    function agentModelLabel(value) {
+      if (value === "gemini-3.7-flash") return "Gemini 3.7 Flash";
+      return value.replace("gpt-5.6-", "GPT-5.6 ");
+    }
+
+    function syncAgentReasoningSelect() {
+      const model = byId("agentModel").value;
+      const select = byId("reasoningEffort");
+      const values = agentReasoningOptionsByModel[model] || ["medium"];
+      const currentValue = select.value;
+      select.replaceChildren(...values.map((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value.toUpperCase();
+        return option;
+      }));
+      select.value = values.includes(currentValue)
+        ? currentValue
+        : (
+          values.includes(defaultAgentReasoningEffort)
+            ? defaultAgentReasoningEffort
+            : values[0]
+        );
+      select.dataset.loaded = "true";
+    }
+
+    byId("agentModel").addEventListener("change", syncAgentReasoningSelect);
+
     async function refreshStatus() {
       try {
         const [statusResponse, skillsResponse] = await Promise.all([
@@ -592,14 +623,13 @@
           "agentModel",
           status.agent_model_options || [status.openai_model],
           status.openai_model,
-          (value) => value.replace("gpt-5.6-", "GPT-5.6 ")
+          agentModelLabel
         );
-        populateSelect(
-          "reasoningEffort",
-          status.agent_reasoning_options || ["medium"],
-          status.agent_reasoning_effort || "medium",
-          (value) => value.toUpperCase()
-        );
+        agentReasoningOptionsByModel =
+          status.agent_reasoning_options_by_model || {};
+        defaultAgentReasoningEffort =
+          status.agent_reasoning_effort || "medium";
+        syncAgentReasoningSelect();
         populateSelect(
           "vlmModel",
           status.vlm_model_options || ["auto"],

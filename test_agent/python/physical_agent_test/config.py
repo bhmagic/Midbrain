@@ -64,10 +64,13 @@ class Settings:
     )
     ui_host: str = os.getenv("UI_HOST", "127.0.0.1")
     ui_port: int = int(os.getenv("UI_PORT", "8000"))
-    openai_model: str = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6-terra")
+    openai_model: str = os.getenv(
+        "OPENAI_AGENT_MODEL",
+        "gemini-3.7-flash",
+    )
     openai_agent_models: tuple[str, ...] = _csv_environment(
         "OPENAI_AGENT_MODELS",
-        "gpt-5.6-terra,gpt-5.6-sol,gpt-5.6-luna",
+        "gemini-3.7-flash,gpt-5.6-terra,gpt-5.6-sol,gpt-5.6-luna",
     )
     openai_agent_reasoning_effort: str = os.getenv(
         "OPENAI_AGENT_REASONING_EFFORT",
