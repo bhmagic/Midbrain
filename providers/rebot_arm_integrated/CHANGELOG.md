@@ -7,6 +7,9 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+- Accept the exact V3 canonical mounted-camera calibration policy emitted by
+  Locate Arm Base anywhere the controller already accepts V2 canonical-camera
+  identity semantics. Preserve V1 epoch binding and reject unknown versions.
 - Relax the bounded shadow transit-planning time budget from 1.5 to 3.0
   seconds for long exact-pose moves. Collision validation, IK residual limits,
   and physical authorization gates remain unchanged.

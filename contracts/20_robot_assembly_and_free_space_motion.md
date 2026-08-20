@@ -23,11 +23,20 @@ Paths are resolution hints. Profile identity, revision, and digest are the
 compatibility boundary. A resolved profile whose declared identity or content
 does not match the selection must be rejected before physical readiness.
 
+An arm-model profile may contain a flexible `appendix` object for namespaced
+consumer data such as arm-base CAD and visual-reference selection. Field names
+and JSON value shapes inside that appendix are intentionally open. Each
+consumer validates only the namespace it owns, while the arm Provider preserves
+and publishes unknown appendix entries without acquiring the consumer's duties.
+The assembly-selected arm model remains the selector; Skills must reject stale
+local appendix content that does not match the active assembly fingerprint.
+
 The resolved assembly state includes:
 
 - Assembly ID and revision
 - Arm resource and Provider identity
 - Robot model identity and revision
+- Arm-model appendix data for bounded consumers
 - Calibration identity and revision
 - Mounted-effector identity and revision
 - Collision-geometry identity and qualification

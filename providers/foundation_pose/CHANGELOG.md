@@ -1,75 +1,23 @@
 # Changelog
 
-This file records release-level outcomes. Current Provider-versus-Skill and
-frame terminology is defined in
-[Midbrain integration](docs/MIDBRAIN_INTEGRATION.md); Git history retains the
-development-level detail.
+## 1.1.2 - 2026-08-19
 
-## Unreleased
+- Declare the score-network output as an uncalibrated raw ranking value and
+  state explicitly that the Provider defines no absolute acceptance threshold.
+- Retain the compatibility `quality.score` field while adding the unambiguous
+  `ranking_score_raw` and `score_semantics` fields.
+- Prefer an installed Python 3.11 application and safely tolerate a broken
+  Windows `py.exe` launcher during setup discovery.
 
-- Allowed a three-minute Manager heartbeat window for the measured slow GPU
-  cold path without weakening pose quality, session, motion-inhibit, or
-  resource checks.
-- Required explicit native optical convention metadata and published
-  `camera_system_x/y/z` axis names on camera-relative measurements.
-- Made default-profile repair reproduce the canonical persistent layout while
-  preserving existing registries and custom files.
-- Made the documented post-setup publication validator self-contained by
-  installing its test extra, and aligned default-profile integrity checks with
-  the repository's cross-platform canonical text hashing policy.
+## 1.1.1 - 2026-08-18
 
-## 0.3.0
+- Replace the placeholder blue JSON page with a theme-matched, read-only
+  runtime surface showing residency, native readiness, exact latest CAD and
+  RGB/depth/mask evidence, score, timing, and connection diagnostics.
+- Serve the development page as separate HTML, CSS, and JavaScript assets while
+  retaining generic known-object-pose Provider ownership only.
 
-- Added validated pixel and normalized bounding-box initialization for
-  estimate, track, and relocalize requests.
-- Added the model-generic Provider development UI and retained the older
-  robot-specific VLM + SAM2 GUI as a compatibility diagnostic.
-- Added reviewable SAM2 initialization masks, manual correction, prepared CAD
-  reference atlases, independently selectable tracking rates, and a bounded
-  content-fingerprinted prepared-estimator cache.
-- Added Provider-local pinned SAM2 setup and Windows subprocess environment
-  normalization without changing the FoundationPose inference algorithm.
+## 1.1.0 - 2026-08-18
 
-## 0.2.4
-
-- Bundled checksum-verified official refiner and scorer checkpoints for
-  offline release installation and documented their provenance and Git LFS
-  constraint.
-
-## 0.2.3
-
-- Added resumable selective checkpoint recovery and a persistent install cache
-  that survives clean Provider reconstruction.
-
-## 0.2.2
-
-- Added validation for agreement among `VERSION`, manifest, Python metadata,
-  and runtime version surfaces.
-
-## 0.2.1
-
-- Fixed PowerShell 5.1 migration of an existing default Base + Gripper model
-  registry.
-
-## 0.2.0
-
-- Added the complete default reBot B601-DM Base and Gripper reporter profile,
-  stable observed frames, semantic roles, camera-relative transform
-  provenance, retained CAD sources, and license/modification records.
-- Added non-destructive persistent profile seeding, custom rigid-CAD
-  preparation tools, package hygiene, and Manager/Fabric documentation.
-
-## 0.1.3
-
-- Added the guarded native-Windows temporary-mesh compatibility patch and
-  both fast-update and clean-reinstall paths.
-
-## 0.1.2
-
-- Accepted BOM and non-BOM registries, kept persistent model configuration
-  outside the Provider, and preserved full-entry Manager registration.
-
-## 0.1.1
-
-- Added Manager-envelope normalization, Provider-local dependencies,
-  persistent model registry loading, and replace-by-ID registration.
+- Replace the Linux-derived multi-purpose integration with the Windows-native
+  single-function CUDA/TensorRT known-object-pose Provider.

@@ -85,14 +85,18 @@ Two mounted-workcell policies are intentionally supported:
 - `MOUNTED_IDENTITY_TRACKING_GATED_V1` additionally requires
   `vio_session_epoch` and remains bound to camera process/boot and VIO-session
   identity.
-- `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` requires the exact
-  `camera_calibration_revision`. Its reviewed activation does not expire merely
-  because a process or VIO epoch changes, but camera identity, calibration,
-  activation state, or transform revision changes still invalidate use.
+- Exact `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` and
+  `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3` require the exact
+  `camera_calibration_revision`. Their reviewed activations do not expire
+  merely because a process or VIO epoch changes, but camera identity,
+  calibration, activation state, or transform revision changes still
+  invalidate use. V3 is emitted by the current Locate Arm Base candidate path;
+  V2 remains compatible for existing activations.
 
 Callers must copy the policy and its required identity fields from the active
-Manager workcell activation. They must not convert V1 evidence to V2, omit a
-V1 epoch, or invent a calibration revision.
+Manager workcell activation. They must not convert between policy versions,
+omit a V1 epoch, invent a calibration revision, or treat an unknown future
+version as canonical.
 
 Diagnostic path-plan calls may omit this object, but the returned contract then
 reports `request_context_complete: false` and cannot be committed.

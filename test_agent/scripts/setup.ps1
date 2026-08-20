@@ -7,26 +7,34 @@ $configDir = Join-Path $workspace "config"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
 function Resolve-DefaultPythonLauncher {
-    $pyCommand = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $pyCommand) {
-        $resolvedPaths = @(
-            & $pyCommand.Source -3.11 -c "import sys; print(sys.executable)" 2>$null
-        )
-        if ($LASTEXITCODE -eq 0 -and $resolvedPaths.Count -gt 0) {
-            $resolvedPath = [string]$resolvedPaths[-1]
-            if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
-                return $resolvedPath
-            }
-        }
-    }
-
-    $pythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $pythonCommand) {
+    $pythonCommands = @(
+        Get-Command python -CommandType Application -All -ErrorAction SilentlyContinue
+    )
+    foreach ($pythonCommand in $pythonCommands) {
         & $pythonCommand.Source -c (
             "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
         )
         if ($LASTEXITCODE -eq 0) {
             return $pythonCommand.Source
+        }
+    }
+
+    $pyCommands = @(
+        Get-Command py -CommandType Application -All -ErrorAction SilentlyContinue
+    )
+    foreach ($pyCommand in $pyCommands) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $resolvedPaths = @(
+            & $pyCommand.Source -3.11 -c "import sys; print(sys.executable)" 2>$null
+        )
+        $launcherExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        if ($launcherExitCode -eq 0 -and $resolvedPaths.Count -gt 0) {
+            $resolvedPath = [string]$resolvedPaths[-1]
+            if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+                return $resolvedPath
+            }
         }
     }
 
@@ -51,6 +59,10 @@ if (-not (Test-Path $python)) {
 & $python -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "Test-agent pip upgrade failed." }
 
+$bufferRefClient = Join-Path $workspace "contracts\python"
+& $python -m pip install -e $bufferRefClient
+if ($LASTEXITCODE -ne 0) { throw "BufferRef client installation failed." }
+
 $providerPython = Join-Path $workspace "providers\orbbec_femto_bolt\python"
 if (Test-Path (Join-Path $providerPython "pyproject.toml")) {
     & $python -m pip install -e $providerPython
@@ -60,22 +72,16 @@ else {
     Write-Host "Orbbec provider package is not present; RGB/depth capture will be unavailable." -ForegroundColor Yellow
 }
 
-$foundationPosePython = Join-Path $workspace "providers\foundation_pose\python"
-if (Test-Path (Join-Path $foundationPosePython "pyproject.toml")) {
-    & $python -m pip install -e $foundationPosePython
-    if ($LASTEXITCODE -ne 0) { throw "FoundationPose support package installation failed." }
-}
-
 $spatialSkill = Join-Path $workspace "skills\spatial_registration_rgbd"
 if (Test-Path (Join-Path $spatialSkill "pyproject.toml")) {
     & $python -m pip install -e $spatialSkill
     if ($LASTEXITCODE -ne 0) { throw "Spatial RGB-D Skill installation failed." }
 }
 
-$stationarySkill = Join-Path $workspace "skills\stationary_world_arm_alignment"
-if (Test-Path (Join-Path $stationarySkill "pyproject.toml")) {
-    & $python -m pip install -e $stationarySkill
-    if ($LASTEXITCODE -ne 0) { throw "Stationary alignment Skill installation failed." }
+$locateArmBaseSkill = Join-Path $workspace "skills\locate_arm_base"
+if (Test-Path (Join-Path $locateArmBaseSkill "pyproject.toml")) {
+    & $python -m pip install -e $locateArmBaseSkill
+    if ($LASTEXITCODE -ne 0) { throw "Locate Arm Base Skill installation failed." }
 }
 
 $toolRegistrationSkill = Join-Path $workspace "skills\register_tool_to_control_frame"
@@ -154,7 +160,7 @@ foreach ($skillDirectory in Get-ChildItem -LiteralPath $skillsRoot -Directory) {
     }
 }
 
-& $python -m pip install -e (Join-Path $agent "python")
+& $python -m pip install -e "$(Join-Path $agent 'python')[test]"
 if ($LASTEXITCODE -ne 0) { throw "Test-agent package installation failed." }
 
 $keyFile = Join-Path $configDir "api_keys.env"
@@ -188,6 +194,7 @@ for ($index = 0; $index -lt $systemLines.Count; $index++) {
 }
 $requiredSpatialTools = @(
     "establish_world_axis",
+    "locate_arm_base",
     "locate_effector_front",
     "locate_item",
     "plan_no_contact_item_approach",

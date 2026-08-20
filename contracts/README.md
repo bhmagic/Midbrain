@@ -53,6 +53,12 @@ Implementation acceptance and remaining live qualification are tracked
 separately in
 [Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
 
+`contracts/python` contains the provider-neutral Windows `BufferRef` consumer.
+It only dereferences caller-supplied Fabric references under generation checks;
+it cannot select camera slots or call a camera Provider. Providers and Skills
+install this library into their own private environments instead of installing
+one another's implementation packages.
+
 ## How to use the set
 
 - A new Provider starts with contracts 00–05 and adds the applicable spatial,

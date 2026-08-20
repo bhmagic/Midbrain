@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain://schemas/providers/sam2/segment_image_result.v1",
+  "type": "object",
+  "required": ["status", "request_id", "mask_artifact", "quality", "provenance"],
+  "properties": {
+    "status": {"const": "SEGMENTED"},
+    "request_id": {"type": "string"},
+    "mask_artifact": {
+      "type": "object",
+      "required": ["path", "sha256", "width", "height", "nonzero_pixels"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "nonzero_pixels": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "required": ["sam2_score"],
+      "properties": {"sam2_score": {"type": "number"}},
+      "additionalProperties": false
+    },
+    "provenance": {"type": "object"}
+  },
+  "additionalProperties": false
+}

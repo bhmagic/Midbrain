@@ -1,0 +1,17 @@
+{
+  "schema": "midbrain.skill.locate_arm_base.reference_image",
+  "schema_version": 1,
+  "filename": "Arm_axis_reference_no_effector_4views.png",
+  "sha256": "1c267f485f92b34dce2d66598f01137b3e7093e7cd9567b5540be13ab0f61afb",
+  "width_px": 2480,
+  "height_px": 2110,
+  "source": "USER_SUPPLIED_REFERENCE",
+  "role": "FULL_ARM_AXIS_ORIENTATION_REFERENCE_NO_EFFECTOR",
+  "effector_presence": "INTENTIONALLY_ABSENT",
+  "axis_colors": {
+    "x": "red",
+    "y": "green",
+    "z": "blue"
+  },
+  "description": "Four axis-labeled full-arm views for base-joint identification and bounded 90-degree orientation selection. The interchangeable end effector is intentionally absent."
+}

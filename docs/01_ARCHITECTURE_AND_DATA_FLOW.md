@@ -58,6 +58,13 @@ Observation sequence must remain monotonic for a Provider boot. A VIO reset chan
 
 RGB, depth, IR, aligned depth, and point cloud payloads stay in Windows named shared memory. Fabric observations contain BufferRefs with mapping, slot, generation, offset, length, format, shape, and timestamps. Consumers must treat references as disposable because a ring-buffer slot can be recycled. A recycled BufferRef is a dropped frame, not a permanent map failure.
 
+The provider-neutral `contracts/python` client is the shared consumption
+boundary for the rebuilt FoundationPose flow. It opens only the mapping and
+exact offsets named by Fabric-issued references and rechecks the committed
+generation before and after each copy. FoundationPose, SAM2, and
+`locate_arm_base` each install it into a different local `.venv`; the Skill
+does not install or import either Provider implementation.
+
 A future milestone should add explicit BufferRef leases or pinning for consumers that require longer retention.
 
 ## Transform graph
@@ -68,33 +75,62 @@ The Fabric owns the framework-neutral timestamped transform graph. Current relev
 - Depth and IR frames.
 - Body base.
 - Session-specific Local VIO world frame: `local_vio/<session_epoch>`.
-- Observed Base frame: `observed_object/rebot_b601_dm/base`.
-- Observed Gripper frame: `observed_object/rebot_b601_dm/gripper_slider_support`.
+- Reviewed active arm-base frame, for example `rebot_arm_base`.
 
 Static camera/IMU extrinsics come from the camera Provider. Dynamic Local VIO body transforms come from the VIO Provider. A forced reinitialization creates a new world frame and invalidates old map points because their coordinates belong to the previous epoch.
 
-The finite FoundationPose Object Localization Skill produces camera-relative
-Base and Gripper measurements for a bounded parent operation. It does not claim
-a world-frame transform. Stationary Alignment owns sampling, transient
-rejection, CAD-symmetry resolution, camera-to-world solving, and publication
-under its own authority. The legacy Provider can still publish equivalent
-dynamic measurement edges for compatibility comparisons.
+The finite `locate_arm_base` Skill produces one reviewed candidate for a
+world-to-arm-base transform. FoundationPose itself produces only a
+camera-relative centered-mesh measurement and never claims a world-frame or
+robot-semantic transform. The Skill owns CAD/reference assets, segmentation
+prompt policy, bounded CAD-axis ambiguity resolution, composition, and
+candidate evidence. Manager alone activates the reviewed transform.
 
 ## FoundationPose object-pose flow
 
-1. Manager, Fabric, the RGB-D camera Provider, Local VIO, and the parent
-   Stationary Alignment Skill are available.
-2. The parent holds motion inhibit and captures synchronized RGB-D evidence
-   while the arm and camera remain stationary.
-3. Reviewed regions are converted into explicit Base/Gripper masks.
-4. The parent invokes `foundation_pose_object_localization` for one bounded
-   attempt and passes the current VIO epoch with its evidence.
-5. The nested Skill loads the FoundationPose runtime, registers the prepared
-   CAD asset, and returns camera-relative samples.
-6. The nested Skill closes estimator sessions, prepared-model caches, model
-   objects, and the CUDA raster context before returning.
-7. Stationary Alignment validates and aggregates the samples, then publishes
-   only its own reviewed alignment result.
+1. Manager, Fabric, the aligned RGB-D camera, a timestamped world axis, the
+   SAM2 Provider, and the FoundationPose Provider are available.
+2. `locate_arm_base` copies one synchronized RGB-D bundle and queries
+   `world_from_camera` at the exact capture timestamp.
+3. The Skill independently gives its base CAD atlas, full-arm no-effector
+   reference, and current RGB image to the configured number of VLM calls. Each
+   call returns one positive base-geometry point, one tight box, and one
+   negative point on the excluded support. The initial qualification
+   configuration uses two Gemini Robotics-ER 2.0 calls. Agent-owned runs pass
+   the operator's run-scoped visual-model selection into the Skill; standalone
+   developer runs use the same ER 2.0 default. The Skill retains prompt,
+   structured-output, and evidence ownership in its separate environment.
+4. The Skill invokes `perception.image.sam2.segment` once for every independent
+   VLM prompt. The SAM2 Provider returns one scored mask artifact per call
+   without owning robot semantics, ensemble review, or voting policy.
+5. The Skill renders every independent mask and asks a review VLM to remove bad
+   masks. A coded pixel vote retains pixels present in at least half of the
+   survivors, using `ceil(survivor_count / 2)`, and the Skill dilates that one
+   voted mask exactly once.
+6. The Skill independently invokes `perception.known_object_pose.estimate` the
+   configured number of times with that one voted and dilated mask, renders every
+   returned pose as projected CAD on the current RGB image, and asks the VLM
+   to select the best geometric fit. Before selection, it applies one fixed
+   local-X 180-degree half-turn to the known upside-down pose family and excludes
+   any fit that still lacks the configured semantic arm-base +Z/world +Z
+   alignment, while retaining every raw render as evidence. Mask-attempt and fit
+   counts are independent per-run Skill developer controls rather than Provider
+   contracts. A below-threshold two-call disagreement permits one final VLM tie
+   break; a consensus selection requires a unique candidate with at least two
+   above-floor votes.
+   FoundationPose's raw ranking score is retained as audit provenance, is
+   withheld from the fit-selection VLM, and is not treated as calibrated
+   confidence or a selection threshold.
+7. The Skill renders only profile-defined 0/90/180/270-degree local-Z
+   candidates and asks the VLM to select one against the reference atlas. A
+   separate final overlay preserves the selected measured CAD projection and
+   renders the corrected semantic axes for developer and Agent inspection.
+8. The Skill queries the same capture-time transform again, requires its frame,
+   epoch, and historical matrix to remain identical, composes in the exact active
+   `local_vio/<session_epoch>` frame, and emits an immutable,
+   non-motion-usable review candidate. Manager verifies exact review,
+   provenance, spatial conventions, and current camera identity before
+   publishing `transform.world.arm_base`.
 
 ## VLM arm-root translation-refinement flow
 
@@ -213,7 +249,7 @@ channel. The initial pointing and general scene Skills publish RGB only.
 
 An operator-selected image follows a separate SDK-neutral attachment route.
 The browser uploads one validated still image into a bounded Midbrain store and
-receives an opaque attachment ID. Requests from either Agent view contain
+receives an opaque attachment ID. Developer Agent requests contain
 that ID rather than image bytes. Immediately before Agent execution, the active
 runtime adapter resolves it into the model's native text-plus-image input
 shape. Text-only runs preserve the legacy string path.
@@ -225,9 +261,9 @@ to obtain exact evidence from the robot camera through their existing route.
 
 ## Agent conversation projection
 
-The regular page and developer view are presentation variants over one
-autonomous `PrototypeAgentDriver`, one process-scoped model session, and one
-run/approval/streaming implementation. Both pages submit only to the canonical
+The Developer Agent is the browser projection over one autonomous
+`PrototypeAgentDriver`, one process-scoped model session, and one
+run/approval/streaming implementation. It submits only to the canonical
 `/api/streaming-runs` contract; there is no synchronous execution route or
 developer execution alias. Developer diagnostics do not change the Agent's
 eligible tools, lifecycle policy, retries, or authorization behavior.
@@ -273,11 +309,13 @@ so it cannot be changed between preview and commit.
 
 Spatial direction resolution similarly prioritizes Manager's active reviewed
 world-from-arm transform. Under
-`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2`, a temporary Local VIO
+the exact `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` or
+`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3` policy, a temporary Local VIO
 `DEGRADED` state does not invalidate the stationary-camera calibration and
-does not trigger the upright-mount fallback. The host binds the activation and
-transform revision into the preview and verifies the same identity again at
-commit.
+does not trigger the upright-mount fallback. Locate Arm Base emits V3; V2
+remains readable for existing activations, and unknown future versions fail
+closed. The host binds the activation and transform revision into the preview
+and verifies the same identity again at commit.
 
 When an absolute world XYZ point is already known, the reference Agent instead
 uses one `move_effector_to_world_point` call. The host verifies any supplied
@@ -361,7 +399,7 @@ The local developer service supplies that durable observation view at
 their Agent runs, and a selected run's normalized envelopes. The left pane adds
 the session parent above the existing run cards. The right pane groups
 envelopes behind category and per-event disclosures. It adds no command,
-resume, approval, or deletion path. Both Agent views link to the viewer, and
+resume, approval, or deletion path. The Developer Agent links to the viewer, and
 the Manager portal exposes the same loopback surface.
 
 ## Bounded multi-Skill graph flow

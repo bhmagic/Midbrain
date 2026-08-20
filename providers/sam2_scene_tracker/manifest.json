@@ -1,6 +1,6 @@
 {
   "provider_type": "perception.sam2_scene_tracker",
-  "version": "0.2.1",
+  "version": "0.3.2",
   "display_name": "HOT SAM2 User-Described Scene Tracker",
   "manager_ids": ["perception.sam2_scene_tracker"],
   "ui": {
@@ -18,11 +18,13 @@
   "residency_modes": ["HOT", "WARM", "COLD"],
   "capabilities": [
     "perception.scene.sam2.track",
+    "perception.image.sam2.segment",
     "perception.scene.semantic_obstacles",
     "perception.scene.arm_self_mask"
   ],
   "required_capabilities": [
-    "camera.rgbd.aligned",
+    "camera.rgbd.bundle",
+    "camera.rgbd_geometry",
     "robot_arm.transforms.local"
   ],
   "optional_capabilities": [

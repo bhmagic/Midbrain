@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.rebot_dm",
-  "version": "0.1.21",
+  "version": "0.1.24",
   "display_name": "reBot Arm DM Basic Controller",
   "manager_ids": ["robot_arm.rebot_dm"],
   "ui": {
@@ -139,5 +139,5 @@
     "provider_local_fencing": true,
     "full_physical_control_contract": false
   },
-  "notes": "0.1.21 requires per-motor feedback generations and receive ages, retains a bounded 40 ms fresh-batch scheduling margin, supports explicit Manager HOT recovery into gravity float with prior authority fenced, publishes joint/FK observations at measured acquisition time, and isolates Manager, joint-state, and transform publication workers."
+  "notes": "0.1.24 routes the full-arm no-effector reference to both seed localization and orientation review while preserving the Provider-local arm-profile registry and flexible namespaced Skill appendices."
 }

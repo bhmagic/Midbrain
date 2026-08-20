@@ -1,7 +1,7 @@
 {
   "policy_stream": "robot_arm.scene.segmentation_policy",
   "output_stream": "robot_arm.scene.tracked_semantic_assertions",
-  "sam2_checkpoint": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/sam2/checkpoints/sam2.1_hiera_base_plus.pt",
+  "sam2_checkpoint": "${PHYSICAL_AGENT_ROOT}/providers/sam2_scene_tracker/upstream/sam2/checkpoints/sam2.1_hiera_base_plus.pt",
   "vlm_candidates": [
     {
       "backend": "google.gemini",

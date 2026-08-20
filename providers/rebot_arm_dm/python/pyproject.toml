@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "physical-ai-rebot-arm-dm-provider"
-version = "0.1.21"
+version = "0.1.24"
 description = "reBot Arm DM Basic Controller and calibration utility"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.26"]

@@ -20,20 +20,26 @@ def _normalized_yx(value: tuple[int, int], shape: tuple[int, int]) -> tuple[floa
 def _prompt_arrays(
     prompt: VisualPrompt,
     shape: tuple[int, int],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     y0, x0 = _normalized_yx(prompt.box_yxyx[:2], shape)
     y1, x1 = _normalized_yx(prompt.box_yxyx[2:], shape)
+    normalized_points = prompt.positive_points_yx + prompt.negative_points_yx
     points = np.asarray(
         [
             [x, y]
             for y, x in (
                 _normalized_yx(value, shape)
-                for value in prompt.positive_points_yx
+                for value in normalized_points
             )
         ],
         dtype=np.float32,
     )
-    return points, np.asarray([x0, y0, x1, y1], dtype=np.float32)
+    labels = np.asarray(
+        [1] * len(prompt.positive_points_yx)
+        + [0] * len(prompt.negative_points_yx),
+        dtype=np.int32,
+    )
+    return points, labels, np.asarray([x0, y0, x1, y1], dtype=np.float32)
 
 
 def prompt_from_mask(
@@ -122,10 +128,10 @@ class Sam2ImageTracker:
         combined = np.zeros(self.current_shape, dtype=bool)
         scores: list[float] = []
         for prompt in prompts:
-            points, box = _prompt_arrays(prompt, self.current_shape)
+            points, point_labels, box = _prompt_arrays(prompt, self.current_shape)
             masks, raw_scores, _ = self.predictor.predict(
                 point_coords=points,
-                point_labels=np.ones(len(points), dtype=np.int32),
+                point_labels=point_labels,
                 box=box,
                 multimask_output=True,
             )
@@ -135,13 +141,21 @@ class Sam2ImageTracker:
             score_values = np.asarray(raw_scores, dtype=float).reshape(-1)
             ranked: list[tuple[int, float, int]] = []
             for index, candidate in enumerate(candidates):
-                inside = sum(
+                positive_count = len(prompt.positive_points_yx)
+                inside_positive = sum(
                     int(candidate[int(round(y)), int(round(x))])
-                    for x, y in points
+                    for x, y in points[:positive_count]
+                )
+                inside_negative = sum(
+                    int(candidate[int(round(y)), int(round(x))])
+                    for x, y in points[positive_count:]
                 )
                 area_fraction = float(candidate.mean())
                 plausible = 0.0001 <= area_fraction <= 0.95
-                ranked.append((inside + int(plausible), score_values[index], index))
+                prompt_agreement = inside_positive - inside_negative
+                ranked.append(
+                    (prompt_agreement + int(plausible), score_values[index], index)
+                )
             _, score, selected = max(ranked)
             combined |= candidates[selected]
             scores.append(float(score))

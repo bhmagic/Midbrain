@@ -630,6 +630,10 @@ async fn main() -> Result<()> {
         .route("/shutdown", get(ui::shutdown_page))
         .route("/v1/ui/overview", get(ui::overview))
         .route(
+            "/v1/ui/robot-assembly/arms",
+            get(ui::arm_profiles).post(ui::select_arm),
+        )
+        .route(
             "/v1/ui/robot-assembly/effectors",
             get(ui::effector_profiles).post(ui::select_effector),
         )
@@ -1205,6 +1209,94 @@ async fn revoke_workcell_calibration(
     Ok(Json(record))
 }
 
+fn validate_bounded_vlm_selection(
+    selected_id: &str,
+    confidence: f64,
+    minimum_confidence: f64,
+    minimum_consensus_confidence: f64,
+    decision_basis: &str,
+    attempts: &Value,
+    scope: &str,
+) -> Result<()> {
+    if !confidence.is_finite()
+        || !minimum_confidence.is_finite()
+        || !minimum_consensus_confidence.is_finite()
+        || !(0.0..=1.0).contains(&confidence)
+        || !(0.0..=1.0).contains(&minimum_confidence)
+        || !(0.0..=minimum_confidence).contains(&minimum_consensus_confidence)
+    {
+        return Err(anyhow!("{scope} confidence policy is invalid"));
+    }
+    let attempt_values = attempts
+        .as_array()
+        .ok_or_else(|| anyhow!("{scope} attempts are required"))?;
+    if attempt_values.is_empty() {
+        return Err(anyhow!("{scope} attempts cannot be empty"));
+    }
+    let selected_attempt_exists = attempt_values.iter().any(|attempt| {
+        attempt["candidate_id"].as_str() == Some(selected_id)
+            && attempt["confidence"]
+                .as_f64()
+                .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+    });
+    if !selected_attempt_exists {
+        return Err(anyhow!(
+            "{scope} selected candidate is absent from its attempts"
+        ));
+    }
+    let accepted = match decision_basis {
+        "FIRST_ATTEMPT_CONFIDENCE" | "RETRY_CONFIDENCE" => confidence >= minimum_confidence,
+        "REPEATED_CANDIDATE_CONSENSUS" => {
+            attempt_values.len() >= 2
+                && confidence >= minimum_consensus_confidence
+                && attempt_values.iter().all(|attempt| {
+                    attempt["candidate_id"].as_str() == Some(selected_id)
+                        && attempt["confidence"].as_f64().is_some_and(|value| {
+                            value.is_finite()
+                                && value >= minimum_consensus_confidence
+                                && value <= 1.0
+                        })
+                })
+        }
+        "QUALIFIED_MAJORITY_CANDIDATE_CONSENSUS" => {
+            let mut qualified_counts = HashMap::<String, usize>::new();
+            for attempt in attempt_values {
+                let Some(candidate_id) = attempt["candidate_id"].as_str() else {
+                    continue;
+                };
+                let Some(attempt_confidence) = attempt["confidence"].as_f64() else {
+                    continue;
+                };
+                if attempt_confidence.is_finite()
+                    && attempt_confidence >= minimum_consensus_confidence
+                    && attempt_confidence <= 1.0
+                {
+                    *qualified_counts
+                        .entry(candidate_id.to_string())
+                        .or_default() += 1;
+                }
+            }
+            let selected_count = qualified_counts.get(selected_id).copied().unwrap_or(0);
+            let runner_up_count = qualified_counts
+                .iter()
+                .filter(|(candidate_id, _)| candidate_id.as_str() != selected_id)
+                .map(|(_, count)| *count)
+                .max()
+                .unwrap_or(0);
+            confidence >= minimum_consensus_confidence
+                && selected_count >= 2
+                && selected_count > runner_up_count
+        }
+        _ => false,
+    };
+    if !accepted {
+        return Err(anyhow!(
+            "{scope} confidence or consensus proof is insufficient"
+        ));
+    }
+    Ok(())
+}
+
 fn build_workcell_activation_record(
     request: &WorkcellCalibrationActivationRequest,
     request_sha256: String,
@@ -1219,15 +1311,14 @@ fn build_workcell_activation_record(
         .candidate
         .as_object()
         .ok_or_else(|| anyhow!("candidate must be an object"))?;
-    require_json_string(&request.candidate, "schema", "candidate")?;
-    if request.candidate["schema"]
-        != "midbrain.skill.stationary_world_arm_alignment.calibration_candidate"
-        || request.candidate["schema_version"] != 3
-        || request.candidate["review_state"] != "CANDIDATE_REVIEW_REQUIRED"
+    if request.candidate["schema"] != "midbrain.skill.locate_arm_base.calibration_candidate"
+        || request.candidate["schema_version"] != 1
+        || request.candidate["review_state"] != "PENDING_REVIEW"
         || request.candidate["motion_usable"] != false
+        || request.candidate["activation_owner"] != "RESOURCE_PROVIDER_MANAGER"
     {
         return Err(anyhow!(
-            "candidate must be an immutable version-3 review-required, non-motion-usable calibration"
+            "candidate must be an immutable locate_arm_base v1 review candidate"
         ));
     }
     let candidate_id = require_json_string(&request.candidate, "candidate_id", "candidate")?;
@@ -1245,185 +1336,369 @@ fn build_workcell_activation_record(
         .as_u64()
         .ok_or_else(|| anyhow!("candidate.expires_at_us must be a positive integer"))?;
     let now_us = now.timestamp_micros().max(0) as u64;
-    let semantic_alignment = &request.candidate["quality_provenance"]["semantic_alignment"];
-    let semantic_status = semantic_alignment["status"]
-        .as_str()
-        .ok_or_else(|| anyhow!("candidate semantic alignment status is required"))?;
-    let base_x_relation_to_gripper = semantic_alignment["base_x_relation_to_gripper"]
-        .as_str()
-        .ok_or_else(|| anyhow!("candidate base-X relation to the gripper is required"))?;
-    let selected_base_yaw_flip_deg = semantic_alignment["selected_base_yaw_flip_deg"]
+
+    let orientation = &request.candidate["quality_provenance"]["orientation_resolution"];
+    if !matches!(
+        orientation["status"].as_str(),
+        Some("PASSED") | Some("PASSED_WITH_WARNINGS")
+    ) || orientation["method"] != "BOUNDED_REFERENCE_IMAGE_VLM"
+        || orientation["application_origin"] != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
+        || orientation["application_order"]
+            != "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base"
+        || orientation["mesh_center_translation_preserved"] != true
+    {
+        return Err(anyhow!(
+            "candidate orientation proof does not satisfy the bounded reference-image contract"
+        ));
+    }
+    for field in [
+        "profile_sha256",
+        "reference_set_sha256",
+        "source_evidence_sha256",
+    ] {
+        let hash = require_json_string(orientation, field, "candidate orientation proof")?;
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(anyhow!(
+                "candidate orientation proof {field} is not SHA-256"
+            ));
+        }
+    }
+    let selected_id = require_json_string(
+        orientation,
+        "selected_candidate_id",
+        "candidate orientation proof",
+    )?;
+    let selected_axis =
+        require_json_string(orientation, "selected_axis", "candidate orientation proof")?;
+    let selected_degrees = orientation["selected_degrees"]
         .as_i64()
-        .ok_or_else(|| anyhow!("candidate selected base-yaw flip is required"))?;
-    let fitted_base_yaw_deg = semantic_alignment["fitted_base_yaw_deg"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate fitted base yaw is required"))?;
-    let yaw_correction_translation_norm_m = semantic_alignment["yaw_correction_translation_norm_m"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate yaw-correction translation norm is required"))?;
-    let world_up_available = semantic_alignment["world_up_available"]
-        .as_bool()
-        .ok_or_else(|| anyhow!("candidate world-up availability is required"))?;
-    let raw_base_z_dot_world_up = semantic_alignment["raw_base_z_dot_world_up"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate raw base-Z/world-up dot is required"))?;
-    let corrected_base_z_dot_world_up = semantic_alignment["corrected_base_z_dot_world_up"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate corrected base-Z/world-up dot is required"))?;
-    let upright_hemisphere_flip_required = semantic_alignment["upright_hemisphere_flip_required"]
-        .as_bool()
-        .ok_or_else(|| anyhow!("candidate upright-hemisphere decision is required"))?;
-    let selected_orientation_correction_axis = semantic_alignment
-        ["selected_orientation_correction_axis"]
-        .as_str()
-        .ok_or_else(|| anyhow!("candidate orientation-correction axis is required"))?;
-    let selected_orientation_correction_deg = semantic_alignment
-        ["selected_orientation_correction_deg"]
+        .ok_or_else(|| anyhow!("candidate selected orientation degrees are required"))?;
+    let allowed = orientation["allowed_candidates"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate allowed orientation set is required"))?;
+    let selected = allowed
+        .iter()
+        .find(|entry| entry["candidate_id"] == selected_id)
+        .ok_or_else(|| anyhow!("selected orientation is outside the model profile"))?;
+    if selected["axis"] != selected_axis
+        || selected["degrees"] != selected_degrees
+        || selected["rotation_xyzw"] != orientation["selected_rotation_xyzw"]
+        || selected_axis != "Z"
+        || !matches!(selected_degrees, 0 | 90 | 180 | 270)
+    {
+        return Err(anyhow!(
+            "selected orientation does not exactly match its allowed candidate"
+        ));
+    }
+    validate_transform_payload(
+        &json!({
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": orientation["selected_rotation_xyzw"].clone()
+        }),
+        "candidate.orientation_resolution.selected_rotation",
+    )?;
+    let world_up_normalization = &orientation["world_up_normalization"];
+    if world_up_normalization["method"] != "WORLD_UP_BOUNDED_LOCAL_X_HALF_TURN"
+        || world_up_normalization["axis"] != "X"
+    {
+        return Err(anyhow!(
+            "candidate orientation proof lacks bounded world-up normalization"
+        ));
+    }
+    let normalization_degrees = world_up_normalization["degrees"]
         .as_i64()
-        .ok_or_else(|| anyhow!("candidate orientation-correction angle is required"))?;
-    let orientation_correction_count = semantic_alignment["orientation_correction_count"]
+        .ok_or_else(|| anyhow!("candidate world-up normalization degrees are required"))?;
+    let expected_normalization_status = match normalization_degrees {
+        0 => "NOT_REQUIRED",
+        180 => "APPLIED_LOCAL_X_180",
+        _ => {
+            return Err(anyhow!(
+                "candidate world-up normalization must be 0 or local-X 180 degrees"
+            ))
+        }
+    };
+    if world_up_normalization["status"] != expected_normalization_status {
+        return Err(anyhow!(
+            "candidate world-up normalization status does not match its half-turn"
+        ));
+    }
+    let raw_up_dot = world_up_normalization["raw_arm_base_positive_z_dot_world"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate raw arm-base world-up dot is required"))?;
+    let corrected_up_dot = world_up_normalization["corrected_arm_base_positive_z_dot_world"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate corrected arm-base world-up dot is required"))?;
+    let minimum_up_dot = world_up_normalization["minimum_arm_base_up_dot_world"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate minimum arm-base world-up dot is required"))?;
+    if !raw_up_dot.is_finite()
+        || !corrected_up_dot.is_finite()
+        || !minimum_up_dot.is_finite()
+        || !(-1.0..=1.0).contains(&raw_up_dot)
+        || !(-1.0..=1.0).contains(&corrected_up_dot)
+        || !(0.0..=1.0).contains(&minimum_up_dot)
+        || corrected_up_dot < minimum_up_dot
+    {
+        return Err(anyhow!(
+            "candidate world-up normalization alignment proof is invalid"
+        ));
+    }
+    let correction = &world_up_normalization["correction"];
+    validate_transform_payload(correction, "candidate.world_up_normalization.correction")?;
+    let correction_translation = correction["translation_m"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate world-up correction translation is required"))?;
+    if correction_translation.len() != 3
+        || correction_translation.iter().any(|value| {
+            value
+                .as_f64()
+                .is_none_or(|component| component.abs() > 1e-9)
+        })
+    {
+        return Err(anyhow!(
+            "candidate world-up normalization must preserve mesh-center translation"
+        ));
+    }
+    let correction_rotation = correction["rotation_xyzw"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate world-up correction rotation is required"))?;
+    let expected_rotation = if normalization_degrees == 0 {
+        [0.0, 0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0, 0.0]
+    };
+    if correction_rotation.len() != 4
+        || correction_rotation
+            .iter()
+            .zip(expected_rotation)
+            .any(|(value, expected)| {
+                value
+                    .as_f64()
+                    .is_none_or(|component| (component - expected).abs() > 1e-6)
+            })
+    {
+        return Err(anyhow!(
+            "candidate world-up normalization is not the declared local-X half-turn"
+        ));
+    }
+    let expected_corrected_up_dot = if normalization_degrees == 0 {
+        raw_up_dot
+    } else {
+        -raw_up_dot
+    };
+    if (corrected_up_dot - expected_corrected_up_dot).abs() > 1e-6
+        || (normalization_degrees == 0 && raw_up_dot < 0.0)
+        || (normalization_degrees == 180 && raw_up_dot >= 0.0)
+    {
+        return Err(anyhow!(
+            "candidate world-up normalization does not match the observed pose family"
+        ));
+    }
+    let confidence = orientation["vlm"]["confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate VLM confidence is required"))?;
+    let minimum_confidence = orientation["vlm"]["minimum_confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate VLM minimum confidence is required"))?;
+    let orientation_consensus_confidence = orientation["minimum_consensus_confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate VLM orientation consensus floor is required"))?;
+    let orientation_decision_basis = require_json_string(
+        orientation,
+        "selection_decision_basis",
+        "candidate orientation proof",
+    )?;
+    validate_bounded_vlm_selection(
+        &selected_id,
+        confidence,
+        minimum_confidence,
+        orientation_consensus_confidence,
+        &orientation_decision_basis,
+        &orientation["selection_attempts"],
+        "candidate VLM orientation",
+    )?;
+    let world_axis = &request.candidate["quality_provenance"]["world_axis"];
+    if !matches!(
+        world_axis["status"].as_str(),
+        Some("PASSED") | Some("PASSED_WITH_REPLAY_OVERRIDE")
+    ) {
+        return Err(anyhow!(
+            "candidate lacks a valid timestamped world-axis proof"
+        ));
+    }
+    let world_axis_frame =
+        require_json_string(world_axis, "world_frame", "candidate world-axis proof")?;
+    let world_axis_session_epoch =
+        require_json_string(world_axis, "session_epoch", "candidate world-axis proof")?;
+    let world_axis_convention =
+        require_json_string(world_axis, "convention_id", "candidate world-axis proof")?;
+    let foundation_pose = &request.candidate["quality_provenance"]["foundation_pose"];
+    let score_semantics = foundation_pose["score_semantics"].as_str();
+    if foundation_pose["fit_policy"] != "REPEATED_INDEPENDENT_FITS_ON_VOTED_DILATED_MASK"
+        || !matches!(
+            score_semantics,
+            Some("RAW_MODEL_RANKING_ONLY") | Some("AUDIT_ONLY_NOT_SELECTION_INPUT")
+        )
+    {
+        return Err(anyhow!(
+            "candidate FoundationPose proof does not use the bounded repeated-fit policy"
+        ));
+    }
+    let pose_score = foundation_pose["ranking_score_raw"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate FoundationPose raw ranking score is required"))?;
+    if !pose_score.is_finite() {
+        return Err(anyhow!(
+            "candidate FoundationPose raw ranking score is invalid"
+        ));
+    }
+    let selected_fit_id = require_json_string(
+        foundation_pose,
+        "selected_fit_candidate_id",
+        "candidate FoundationPose proof",
+    )?;
+    let selected_mask_id = require_json_string(
+        foundation_pose,
+        "selected_mask_candidate_id",
+        "candidate FoundationPose proof",
+    )?;
+    let mask_review = &request.candidate["quality_provenance"]["mask_review"];
+    if mask_review["accepted"] != true {
+        return Err(anyhow!("candidate mask review was not accepted"));
+    }
+    let mask_review_confidence = mask_review["confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate mask-review confidence is required"))?;
+    let mask_review_minimum = mask_review["minimum_confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate mask-review minimum confidence is required"))?;
+    if !mask_review_confidence.is_finite()
+        || !mask_review_minimum.is_finite()
+        || mask_review_confidence < mask_review_minimum
+    {
+        return Err(anyhow!("candidate mask review confidence is insufficient"));
+    }
+    let accepted_masks = mask_review["accepted_candidate_ids"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate accepted mask IDs are required"))?;
+    if accepted_masks.is_empty() || accepted_masks.iter().any(|value| value.as_str().is_none()) {
+        return Err(anyhow!("candidate accepted mask IDs are invalid"));
+    }
+    let accepted_mask_ids = accepted_masks
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<std::collections::HashSet<_>>();
+    if accepted_mask_ids.len() != accepted_masks.len() {
+        return Err(anyhow!("candidate accepted mask IDs contain duplicates"));
+    }
+    let mask_vote = &request.candidate["quality_provenance"]["mask_vote"];
+    let vote_survivors = mask_vote["survivor_count"]
         .as_u64()
-        .ok_or_else(|| anyhow!("candidate orientation-correction count is required"))?;
-    let orientation_correction_translation_norm_m = semantic_alignment
-        ["orientation_correction_translation_norm_m"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate orientation-correction translation is required"))?;
-    let orientation_application_origin = semantic_alignment["orientation_application_origin"]
-        .as_str()
-        .ok_or_else(|| anyhow!("candidate orientation-application origin is required"))?;
-    let orientation_application_order = semantic_alignment["orientation_application_order"]
-        .as_str()
-        .ok_or_else(|| anyhow!("candidate orientation-application order is required"))?;
-    let mesh_hypothesis_correction_translation_norm_m = semantic_alignment
-        ["mesh_hypothesis_correction_translation_norm_m"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate mesh-hypothesis translation norm is required"))?;
-    let mesh_center_translation_preserved = semantic_alignment["mesh_center_translation_preserved"]
-        .as_bool()
-        .ok_or_else(|| anyhow!("candidate mesh-center preservation result is required"))?;
-    let semantic_root_translation_adjustment_norm_m = semantic_alignment
-        ["semantic_root_translation_adjustment_norm_m"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate semantic-root adjustment norm is required"))?;
-    let expected_yaw_flip_deg = match base_x_relation_to_gripper {
-        "TOWARD_GRIPPER" | "UNCLEAR" => Some(0),
-        "AWAY_FROM_GRIPPER" => Some(180),
-        _ => None,
-    };
-    let expected_upright_flip = raw_base_z_dot_world_up < 0.0;
-    let expected_x_flip = base_x_relation_to_gripper == "AWAY_FROM_GRIPPER";
-    let expected_orientation_axis = match (expected_upright_flip, expected_x_flip) {
-        (false, false) => "NONE",
-        (false, true) => "Z",
-        (true, false) => "X",
-        (true, true) => "Y",
-    };
-    let expected_orientation_count = if expected_orientation_axis == "NONE" {
-        0
-    } else {
-        1
-    };
-    let expected_orientation_deg = if expected_orientation_count == 0 {
-        0
-    } else {
-        180
-    };
-    if !matches!(semantic_status, "PASSED" | "PASSED_WITH_WARNINGS")
-        || expected_yaw_flip_deg != Some(selected_base_yaw_flip_deg)
-        || (fitted_base_yaw_deg - selected_base_yaw_flip_deg as f64).abs() > 1e-9
-        || !fitted_base_yaw_deg.is_finite()
-        || yaw_correction_translation_norm_m.abs() > 1e-9
-        || !yaw_correction_translation_norm_m.is_finite()
-        || !world_up_available
-        || !raw_base_z_dot_world_up.is_finite()
-        || !corrected_base_z_dot_world_up.is_finite()
-        || corrected_base_z_dot_world_up < -1e-9
-        || upright_hemisphere_flip_required != expected_upright_flip
-        || selected_orientation_correction_axis != expected_orientation_axis
-        || selected_orientation_correction_deg != expected_orientation_deg
-        || orientation_correction_count != expected_orientation_count
-        || !orientation_correction_translation_norm_m.is_finite()
-        || orientation_correction_translation_norm_m.abs() > 1e-9
-        || orientation_application_origin != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
-        || orientation_application_order
-            != "parent_from_mesh @ mesh_hypothesis_correction @ mesh_from_semantic"
-        || !mesh_hypothesis_correction_translation_norm_m.is_finite()
-        || mesh_hypothesis_correction_translation_norm_m.abs() > 1e-9
-        || !mesh_center_translation_preserved
-        || !semantic_root_translation_adjustment_norm_m.is_finite()
-        || semantic_root_translation_adjustment_norm_m < 0.0
+        .ok_or_else(|| anyhow!("candidate mask-vote survivor count is required"))?;
+    let vote_threshold = mask_vote["vote_threshold"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("candidate mask-vote threshold is required"))?;
+    let vote_accepted = mask_vote["accepted_candidate_ids"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate mask-vote accepted IDs are required"))?;
+    let vote_accepted_ids = vote_accepted
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let expected_vote_threshold = (accepted_masks.len() as u64 + 1) / 2;
+    let dilation_radius = mask_vote["dilation_radius_px"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("candidate final-mask dilation radius is required"))?;
+    if mask_vote["mask_id"].as_str() != Some(selected_mask_id.as_str())
+        || mask_vote["vote_policy"] != "AT_LEAST_HALF_OF_VLM_ACCEPTED_MASKS"
+        || vote_survivors != accepted_masks.len() as u64
+        || vote_threshold != expected_vote_threshold
+        || vote_accepted_ids != accepted_mask_ids
+        || vote_accepted.len() != accepted_masks.len()
+        || dilation_radius > 64
     {
         return Err(anyhow!(
-            "candidate does not satisfy exact base-yaw review invariants or single base-orientation invariants"
+            "candidate mask-vote proof does not match the accepted mask ensemble"
+        ));
+    }
+    let pose_candidates = foundation_pose["candidates"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate FoundationPose fits are required"))?;
+    let pose_candidate_count = foundation_pose["candidate_count"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("candidate FoundationPose fit count is required"))?;
+    if pose_candidates.is_empty()
+        || pose_candidate_count != pose_candidates.len() as u64
+        || !pose_candidates.iter().any(|fit| {
+            fit["candidate_id"].as_str() == Some(selected_fit_id.as_str())
+                && fit["ranking_score_raw"]
+                    .as_f64()
+                    .is_some_and(|value| value.is_finite())
+        })
+        || !pose_candidates
+            .iter()
+            .all(|fit| fit["source_mask_candidate_id"].as_str() == Some(selected_mask_id.as_str()))
+    {
+        return Err(anyhow!(
+            "candidate FoundationPose fits do not match the selected fit and mask"
+        ));
+    }
+    let fit_selection = &request.candidate["quality_provenance"]["fit_selection"];
+    if fit_selection["accepted"] != true
+        || fit_selection["candidate_id"].as_str() != Some(selected_fit_id.as_str())
+    {
+        return Err(anyhow!(
+            "candidate FoundationPose fit selection was not accepted"
+        ));
+    }
+    let fit_confidence = fit_selection["confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate fit-selection confidence is required"))?;
+    let fit_minimum = fit_selection["minimum_confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate fit-selection minimum confidence is required"))?;
+    let fit_consensus_minimum = fit_selection["minimum_consensus_confidence"]
+        .as_f64()
+        .ok_or_else(|| anyhow!("candidate fit-selection consensus floor is required"))?;
+    let fit_decision_basis =
+        require_json_string(fit_selection, "decision_basis", "candidate fit selection")?;
+    validate_bounded_vlm_selection(
+        &selected_fit_id,
+        fit_confidence,
+        fit_minimum,
+        fit_consensus_minimum,
+        &fit_decision_basis,
+        &fit_selection["attempts"],
+        "candidate FoundationPose fit selection",
+    )?;
+    validate_transform_payload(
+        &request.candidate["world_from_arm_base"],
+        "candidate.world_from_arm_base",
+    )?;
+    let final_arm_base_up_dot = transform_z_dot_parent_z(
+        &request.candidate["world_from_arm_base"],
+        "candidate.world_from_arm_base",
+    )?;
+    if final_arm_base_up_dot < -1e-9 {
+        return Err(anyhow!("candidate arm-base +Z points below world +Z"));
+    }
+    if (final_arm_base_up_dot - corrected_up_dot).abs() > 1e-5 {
+        return Err(anyhow!(
+            "candidate world-up normalization does not match world_from_arm_base"
         ));
     }
 
-    let frame_contract = &request.candidate["frame_contract"];
-    let world_frame =
-        require_json_string(frame_contract, "world_frame", "candidate.frame_contract")?;
-    let vio_world_frame = require_json_string(
-        frame_contract,
-        "vio_world_frame",
-        "candidate.frame_contract",
-    )?;
-    let camera_frame =
-        require_json_string(frame_contract, "camera_frame", "candidate.frame_contract")?;
-    let arm_base_frame =
-        require_json_string(frame_contract, "arm_base_frame", "candidate.frame_contract")?;
-    let convention_id =
-        require_json_string(frame_contract, "convention_id", "candidate.frame_contract")?;
-    let camera_optical_convention_id = require_json_string(
-        frame_contract,
-        "camera_optical_convention_id",
-        "candidate.frame_contract",
-    )?;
-    if convention_id != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
-        || camera_optical_convention_id != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
-        || frame_contract["legacy_candidate_compatibility"] != "REJECT"
-    {
+    let mut hash_payload = request.candidate.clone();
+    if let Some(object) = hash_payload.as_object_mut() {
+        object.remove("candidate_sha256");
+        object.remove("candidate_path");
+    }
+    let candidate_sha256 = canonical_json_sha256(&hash_payload);
+    if request.candidate["candidate_sha256"] != candidate_sha256 {
         return Err(anyhow!(
-            "candidate uses an unsupported or legacy spatial convention"
+            "candidate SHA-256 does not match its immutable payload"
         ));
     }
-    if frame_contract["transform_semantics"] != "PARENT_FROM_CHILD" {
-        return Err(anyhow!(
-            "candidate frame transform semantics must be PARENT_FROM_CHILD"
-        ));
-    }
-    let vio = &request.candidate["vio_provenance"];
-    let vio_provider_id = require_json_string(vio, "provider_id", "candidate.vio_provenance")?;
-    let vio_provider_instance_id =
-        require_json_string(vio, "provider_instance_id", "candidate.vio_provenance")?;
-    let vio_boot_id = require_json_string(vio, "boot_id", "candidate.vio_provenance")?;
-    let session_epoch = require_json_string(vio, "session_epoch", "candidate.vio_provenance")?;
-    if require_json_string(vio, "world_frame", "candidate.vio_provenance")? != vio_world_frame {
-        return Err(anyhow!("candidate VIO frame contract is inconsistent"));
-    }
-    validate_transform_payload(
-        &request.candidate["transforms"]["world_from_camera"],
-        "candidate.transforms.world_from_camera",
-    )?;
-    validate_transform_payload(
-        &request.candidate["transforms"]["world_from_vio"],
-        "candidate.transforms.world_from_vio",
-    )?;
-    validate_transform_payload(
-        &request.candidate["transforms"]["world_from_base"],
-        "candidate.transforms.world_from_base",
-    )?;
-    let documented_base_z_dot_world_up = transform_z_dot_parent_z(
-        &request.candidate["transforms"]["world_from_base"],
-        "candidate.transforms.world_from_base",
-    )?;
-    if documented_base_z_dot_world_up < -1e-9
-        || (documented_base_z_dot_world_up - corrected_base_z_dot_world_up).abs() > 1e-6
-    {
-        return Err(anyhow!(
-            "documented world_from_base +Z does not match the reviewed world-up orientation"
-        ));
-    }
-
-    let candidate_sha256 = canonical_json_sha256(&request.candidate);
     let identity = verify_review_identity_assertion(
         &request.review_identity_assertion,
         review_auth_secret,
@@ -1436,7 +1711,7 @@ fn build_workcell_activation_record(
         .as_object()
         .ok_or_else(|| anyhow!("review_decision must be an object"))?;
     if request.review_decision["schema"]
-        != "midbrain.skill.stationary_world_arm_alignment.candidate_review_decision"
+        != "midbrain.skill.locate_arm_base.candidate_review_decision"
         || request.review_decision["decision"] != "APPROVE"
         || request.review_decision["decision_state"] != "APPROVED_FOR_ACTIVATION"
         || request.review_decision["activation_state"] != "NOT_ACTIVATED"
@@ -1454,9 +1729,7 @@ fn build_workcell_activation_record(
         .as_u64()
         .ok_or_else(|| anyhow!("review_decision.decided_at_us must be a positive integer"))?;
     if review_decided_at_us > candidate_expires_at_us {
-        return Err(anyhow!(
-            "calibration candidate was not reviewed before its review deadline"
-        ));
+        return Err(anyhow!("candidate was not reviewed before its deadline"));
     }
     let reviewer = &request.review_decision["reviewer"];
     for field in ["issuer", "reviewer_id", "assertion_nonce"] {
@@ -1470,16 +1743,40 @@ fn build_workcell_activation_record(
         return Err(anyhow!("candidate and review decision cannot be empty"));
     }
 
+    let frame_contract = &request.candidate["frame_contract"];
+    let world_frame =
+        require_json_string(frame_contract, "world_frame", "candidate.frame_contract")?;
+    let camera_frame =
+        require_json_string(frame_contract, "camera_frame", "candidate.frame_contract")?;
+    let arm_base_frame =
+        require_json_string(frame_contract, "arm_base_frame", "candidate.frame_contract")?;
+    let convention_id =
+        require_json_string(frame_contract, "convention_id", "candidate.frame_contract")?;
+    let camera_optical_convention_id = require_json_string(
+        frame_contract,
+        "camera_optical_convention_id",
+        "candidate.frame_contract",
+    )?;
+    if convention_id != "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+        || camera_optical_convention_id != "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
+        || frame_contract["transform_semantics"] != "PARENT_FROM_CHILD"
+        || frame_contract["legacy_candidate_compatibility"] != "REJECT"
+    {
+        return Err(anyhow!(
+            "candidate uses an unsupported spatial frame contract"
+        ));
+    }
+    if world_axis_frame != world_frame
+        || world_axis_convention != convention_id
+        || request.candidate["parent_frame"] != world_frame
+    {
+        return Err(anyhow!(
+            "candidate world-axis epoch identity does not match its frame contract"
+        ));
+    }
     let camera = &request.candidate["camera_provenance"];
     let camera_provider_id =
         require_json_string(camera, "provider_id", "candidate.camera_provenance")?;
-    let _candidate_camera_provider_instance_id = require_json_string(
-        camera,
-        "provider_instance_id",
-        "candidate.camera_provenance",
-    )?;
-    let _candidate_camera_boot_id =
-        require_json_string(camera, "boot_id", "candidate.camera_provenance")?;
     let camera_canonical_device_id =
         require_json_string(camera, "canonical_device_id", "candidate.camera_provenance")?;
     let camera_calibration_revision = require_json_string(
@@ -1497,7 +1794,7 @@ fn build_workcell_activation_record(
         .ok_or_else(|| anyhow!("current camera report lacks a canonical device identity"))?;
     if current_camera_canonical_device_id != camera_canonical_device_id {
         return Err(anyhow!(
-            "current mounted camera canonical device does not match the candidate"
+            "current mounted camera does not match the candidate"
         ));
     }
     let current_camera_calibration_revision = require_json_string(
@@ -1507,9 +1804,17 @@ fn build_workcell_activation_record(
     )?;
     if current_camera_calibration_revision != camera_calibration_revision {
         return Err(anyhow!(
-            "current camera calibration provenance does not match the candidate"
+            "current camera calibration does not match the candidate"
         ));
     }
+    let transforms = json!({
+        "world_from_camera": request.candidate["composition"]["world_from_camera"].clone(),
+        "world_from_vio": {
+            "translation_m": [0.0, 0.0, 0.0],
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+        },
+        "world_from_base": request.candidate["world_from_arm_base"].clone()
+    });
     Ok(WorkcellCalibrationActivationRecord {
         activation_id: Uuid::new_v4().to_string(),
         request_id: request.request_id.trim().to_string(),
@@ -1522,7 +1827,7 @@ fn build_workcell_activation_record(
         activated_at: now,
         expires_at: None,
         expires_at_us: None,
-        validity_policy: "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2".to_string(),
+        validity_policy: "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3".to_string(),
         invalidation_conditions: vec![
             "EXPLICIT_REVOCATION".to_string(),
             "SUPERSEDED_BY_NEW_REVIEWED_ACTIVATION".to_string(),
@@ -1532,9 +1837,9 @@ fn build_workcell_activation_record(
         state: "ACTIVE".to_string(),
         enforcement: "ENFORCED".to_string(),
         motion_usable: true,
-        session_epoch,
-        world_frame,
-        vio_world_frame,
+        session_epoch: world_axis_session_epoch,
+        world_frame: world_frame.clone(),
+        vio_world_frame: world_frame,
         camera_frame,
         arm_base_frame,
         convention_id,
@@ -1544,15 +1849,15 @@ fn build_workcell_activation_record(
         camera_provider_instance_id: camera_report.instance_id.clone(),
         camera_boot_id: camera_report.boot_id.clone(),
         camera_calibration_revision,
-        vio_provider_id,
-        vio_provider_instance_id,
-        vio_boot_id,
-        transforms: request.candidate["transforms"].clone(),
+        vio_provider_id: "world_state_fabric.transform_graph".to_string(),
+        vio_provider_instance_id: "CAPTURE_PROVENANCE".to_string(),
+        vio_boot_id: "CAPTURE_PROVENANCE".to_string(),
+        transforms,
         reviewer: reviewer.clone(),
         translation_refinement_revision: 0,
         last_translation_refinement: None,
         translation_refinement_journal: Vec::new(),
-        last_transition_reason: "reviewed mounted calibration activated without a wall-clock expiry; VIO process freshness is historical provenance, not a mounted-transform gate".to_string(),
+        last_transition_reason: "bounded reference-image orientation and timestamped world-axis candidate activated after exact review".to_string(),
     })
 }
 
@@ -2045,22 +2350,10 @@ fn workcell_calibration_observations(
     };
     vec![
         transform(
-            "transform.stationary_world.camera",
-            &record.camera_frame,
-            &record.transforms["world_from_camera"],
-            0,
-        ),
-        transform(
-            "transform.stationary_world.vio",
-            &record.vio_world_frame,
-            &record.transforms["world_from_vio"],
-            1,
-        ),
-        transform(
-            "transform.stationary_world.arm_base",
+            "transform.world.arm_base",
             &record.arm_base_frame,
             &record.transforms["world_from_base"],
-            2,
+            0,
         ),
         json!({
             "schema": "physical_agent.workcell_calibration_activation",
@@ -2069,7 +2362,7 @@ fn workcell_calibration_observations(
             "provider_id": "manager.workcell_calibration",
             "provider_instance_id": manager_instance_id,
             "boot_id": manager_boot_id,
-            "sequence": sequence_base.saturating_add(3),
+            "sequence": sequence_base.saturating_add(1),
             "observed_at_us": observed_at_us,
             "coordinate_frame": record.world_frame,
             "calibration_revision": record.calibration_revision,
@@ -4583,107 +4876,185 @@ mod tests {
         output
     }
 
-    fn activation_fixture(
+    fn locate_arm_base_activation_fixture(
         now: DateTime<Utc>,
-        semantic_status: &str,
     ) -> (
         WorkcellCalibrationActivationRequest,
         HashMap<String, ProviderReport>,
     ) {
         let now_us = now.timestamp_micros() as u64;
         let secret = b"test-review-auth-secret-with-at-least-32-bytes";
-        let candidate = json!({
-            "schema": "midbrain.skill.stationary_world_arm_alignment.calibration_candidate",
-            "schema_version": 3,
-            "candidate_id": "alignment-1",
-            "workcell_calibration_revision": "alignment-1",
-            "created_at_us": now_us - 1_000_000,
+        let mut candidate = json!({
+            "schema": "midbrain.skill.locate_arm_base.calibration_candidate",
+            "schema_version": 1,
+            "candidate_id": "arm-base-1",
+            "workcell_calibration_revision": "arm-base-1",
+            "run_id": "run-1",
+            "created_at": now.to_rfc3339(),
             "expires_at_us": now_us + 60_000_000,
-            "review_state": "CANDIDATE_REVIEW_REQUIRED",
-            "review_mode": "ENFORCED",
+            "observed_at_us": now_us - 2_000_000,
+            "parent_frame": "local_vio/epoch-7",
+            "child_frame": "rebot_arm_base",
+            "camera_frame": "femto_bolt_color_optical_frame",
             "motion_usable": false,
-            "method": {"skill_version": "0.8.5"},
+            "review_state": "PENDING_REVIEW",
+            "activation_owner": "RESOURCE_PROVIDER_MANAGER",
+            "world_from_arm_base": {
+                "translation_m": [0.1, 0.2, 0.3],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+            },
+            "composition": {
+                "world_from_camera": {
+                    "translation_m": [0.4, 0.5, 0.6],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+                },
+                "camera_from_centered_mesh": {
+                    "translation_m": [0.1, 0.2, 0.3],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+                },
+                "orientation_correction": {
+                    "translation_m": [0.0, 0.0, 0.0],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+                },
+                "centered_mesh_from_arm_base": {
+                    "translation_m": [0.0, 0.0, -0.0446249945],
+                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
+                }
+            },
+            "quality_provenance": {
+                "foundation_pose": {
+                    "selected_fit_candidate_id": "fit_1",
+                    "selected_mask_candidate_id": "voted_mask_dilated_r4",
+                    "fit_policy": "REPEATED_INDEPENDENT_FITS_ON_VOTED_DILATED_MASK",
+                    "ranking_score_raw": -11.75,
+                    "score_semantics": "AUDIT_ONLY_NOT_SELECTION_INPUT",
+                    "candidate_count": 2,
+                    "candidates": [
+                        {
+                            "candidate_id": "fit_1",
+                            "source_mask_candidate_id": "voted_mask_dilated_r4",
+                            "ranking_score_raw": -11.75
+                        },
+                        {
+                            "candidate_id": "fit_2",
+                            "source_mask_candidate_id": "voted_mask_dilated_r4",
+                            "ranking_score_raw": -12.1
+                        }
+                    ]
+                },
+                "mask_review": {
+                    "accepted_candidate_ids": ["mask_1", "mask_3", "mask_4"],
+                    "rejected_candidate_ids": ["mask_2"],
+                    "confidence": 0.84,
+                    "minimum_confidence": 0.60,
+                    "accepted": true
+                },
+                "mask_vote": {
+                    "mask_id": "voted_mask_dilated_r4",
+                    "accepted_candidate_ids": ["mask_1", "mask_3", "mask_4"],
+                    "rejected_candidate_ids": ["mask_2"],
+                    "survivor_count": 3,
+                    "vote_threshold": 2,
+                    "vote_policy": "AT_LEAST_HALF_OF_VLM_ACCEPTED_MASKS",
+                    "dilation_radius_px": 4
+                },
+                "fit_selection": {
+                    "candidate_id": "fit_1",
+                    "confidence": 0.81,
+                    "minimum_confidence": 0.60,
+                    "minimum_consensus_confidence": 0.45,
+                    "accepted": true,
+                    "decision_basis": "FIRST_ATTEMPT_CONFIDENCE",
+                    "attempts": [
+                        {"candidate_id": "fit_1", "confidence": 0.81}
+                    ]
+                },
+                "orientation_resolution": {
+                    "status": "PASSED_WITH_WARNINGS",
+                    "method": "BOUNDED_REFERENCE_IMAGE_VLM",
+                    "profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "reference_set_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "source_evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "allowed_candidates": [
+                        {"candidate_id": "z0", "axis": "Z", "degrees": 0, "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+                        {"candidate_id": "z90", "axis": "Z", "degrees": 90, "rotation_xyzw": [0.0, 0.0, 0.7071067811865475, 0.7071067811865476]},
+                        {"candidate_id": "z180", "axis": "Z", "degrees": 180, "rotation_xyzw": [0.0, 0.0, 1.0, 0.0]},
+                        {"candidate_id": "z270", "axis": "Z", "degrees": 270, "rotation_xyzw": [0.0, 0.0, 0.7071067811865476, -0.7071067811865475]}
+                    ],
+                    "selected_candidate_id": "z0",
+                    "selected_axis": "Z",
+                    "selected_degrees": 0,
+                    "selected_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                    "vlm": {
+                        "confidence": 0.62,
+                        "minimum_confidence": 0.72
+                    },
+                    "minimum_consensus_confidence": 0.55,
+                    "selection_decision_basis": "REPEATED_CANDIDATE_CONSENSUS",
+                    "selection_attempts": [
+                        {"candidate_id": "z0", "confidence": 0.60},
+                        {"candidate_id": "z0", "confidence": 0.62}
+                    ],
+                    "application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
+                    "application_order": "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base",
+                    "mesh_center_translation_preserved": true
+                },
+                "world_axis": {
+                    "status": "PASSED",
+                    "source": "WORLD_STATE_FABRIC_TIMESTAMPED_TRANSFORM_GRAPH",
+                    "at_us": now_us - 2_000_000,
+                    "world_frame": "local_vio/epoch-7",
+                    "session_epoch": "epoch-7",
+                    "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                }
+            },
             "frame_contract": {
-                "world_frame": "world/stationary_camera/alignment-1",
-                "vio_world_frame": "local_vio/epoch-1",
+                "world_frame": "local_vio/epoch-7",
                 "camera_frame": "femto_bolt_color_optical_frame",
                 "arm_base_frame": "rebot_arm_base",
                 "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
                 "camera_optical_convention_id": "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1",
-                "legacy_candidate_compatibility": "REJECT",
-                "transform_semantics": "PARENT_FROM_CHILD"
-            },
-            "confidence": 0.0,
-            "bounded_error_estimate": {
-                "translation_m": 99.0,
-                "rotation_rad": 99.0
-            },
-            "quality_provenance": {
-                "semantic_alignment": {
-                    "status": semantic_status,
-                    "source": "CURRENT_FOUNDATIONPOSE_VLM_BASE_X_REVIEW",
-                    "base_x_relation_to_gripper": "AWAY_FROM_GRIPPER",
-                    "selected_base_yaw_flip_deg": 180,
-                    "fitted_base_yaw_deg": 180.0,
-                    "yaw_correction_translation_norm_m": 0.0,
-                    "world_up_available": true,
-                    "raw_base_z_dot_world_up": -1.0,
-                    "corrected_base_z_dot_world_up": 1.0,
-                    "upright_hemisphere_flip_required": true,
-                    "selected_orientation_correction_axis": "Y",
-                    "selected_orientation_correction_deg": 180,
-                    "orientation_correction_count": 1,
-                    "orientation_correction_translation_norm_m": 0.0,
-                    "orientation_application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
-                    "orientation_application_order": "parent_from_mesh @ mesh_hypothesis_correction @ mesh_from_semantic",
-                    "mesh_hypothesis_correction_translation_norm_m": 0.0,
-                    "mesh_center_translation_preserved": true,
-                    "semantic_root_translation_adjustment_norm_m": 0.089249989
-                }
+                "transform_semantics": "PARENT_FROM_CHILD",
+                "legacy_candidate_compatibility": "REJECT"
             },
             "camera_provenance": {
                 "provider_id": "camera.femto_bolt",
                 "provider_instance_id": "camera.femto_bolt-instance",
                 "boot_id": "camera.femto_bolt-boot",
                 "canonical_device_id": "orbbec:femto-bolt:test-camera",
-                "route_id": "camera.rgbd.shared_memory.flexible.v1",
-                "calibration_revision": "camera-calibration",
-                "reference_timestamp_us": now_us - 2_000_000,
-                "source_buffer_refs": {}
-            },
-            "vio_provenance": {
-                "provider_id": "localization.local_vio",
-                "provider_instance_id": "localization.local_vio-instance",
-                "boot_id": "localization.local_vio-boot",
-                "world_frame": "local_vio/epoch-1",
-                "session_epoch": "epoch-1",
-                "reference_timestamp_us": now_us - 100_000
-            },
-            "transforms": {
-                "world_from_camera": {
-                    "translation_m": [0.4, 0.5, 0.6],
-                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
-                },
-                "world_from_vio": {
-                    "translation_m": [0.0, 0.0, 0.0],
-                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
-                },
-                "world_from_base": {
-                    "translation_m": [0.1, 0.2, 0.3],
-                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]
-                }
+                "calibration_revision": "camera-calibration"
+            }
+        });
+        candidate["quality_provenance"]["orientation_resolution"]["world_up_normalization"] = json!({
+            "status": "NOT_REQUIRED",
+            "method": "WORLD_UP_BOUNDED_LOCAL_X_HALF_TURN",
+            "axis": "X",
+            "degrees": 0,
+            "minimum_arm_base_up_dot_world": 0.5,
+            "raw_arm_base_positive_z_dot_world": 1.0,
+            "corrected_arm_base_positive_z_dot_world": 1.0,
+            "correction": {
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "matrix": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]
+                ]
             }
         });
         let candidate_sha256 = canonical_json_sha256(&candidate);
+        candidate["candidate_sha256"] = json!(candidate_sha256);
         let identity_payload = json!({
             "issuer": "test.identity",
             "reviewer_id": "operator@example.test",
-            "candidate_id": "alignment-1",
+            "candidate_id": "arm-base-1",
             "candidate_sha256": candidate_sha256,
             "decision": "APPROVE",
             "issued_at_us": now_us - 100_000,
             "expires_at_us": now_us + 300_000_000,
-            "nonce": "nonce-1"
+            "nonce": "nonce-locate-arm-base-1"
         });
         let identity_bytes = serde_json::to_vec(&identity_payload).unwrap();
         let signature = hmac_sha256(secret, &identity_bytes);
@@ -4693,11 +5064,10 @@ mod tests {
             base64url_encode(&signature)
         );
         let review_decision = json!({
-            "schema": "midbrain.skill.stationary_world_arm_alignment.candidate_review_decision",
+            "schema": "midbrain.skill.locate_arm_base.candidate_review_decision",
             "schema_version": 1,
-            "decision_id": "decision-1",
-            "alignment_id": "alignment-1",
-            "candidate_id": "alignment-1",
+            "decision_id": "decision-locate-arm-base-1",
+            "candidate_id": "arm-base-1",
             "candidate_sha256": candidate_sha256,
             "decision": "APPROVE",
             "decision_state": "APPROVED_FOR_ACTIVATION",
@@ -4707,13 +5077,11 @@ mod tests {
             "reviewer": {
                 "issuer": "test.identity",
                 "reviewer_id": "operator@example.test",
-                "assurance": "TEST_VERIFIED",
-                "assertion_nonce": "nonce-1",
-                "assertion_expires_at_us": now_us + 300_000_000
+                "assertion_nonce": "nonce-locate-arm-base-1"
             }
         });
         let request = WorkcellCalibrationActivationRequest {
-            request_id: "activate-1".to_string(),
+            request_id: "activate-locate-arm-base-1".to_string(),
             activated_by: "test-agent".to_string(),
             candidate,
             review_decision,
@@ -4723,22 +5091,177 @@ mod tests {
             provider_report("camera.femto_bolt", "camera.rgbd.bundle", true, true, "HOT");
         camera_report.details["calibration_revision"] = json!("camera-calibration");
         camera_report.details["canonical_device_id"] = json!("orbbec:femto-bolt:test-camera");
-        let mut vio_report = provider_report(
-            "localization.local_vio",
-            "localization.vio.tracking_status",
-            true,
-            true,
-            "HOT",
-        );
-        vio_report.details["session_epoch"] = json!("epoch-1");
-        vio_report.details["world_frame"] = json!("local_vio/epoch-1");
-        vio_report.details["convention_id"] = json!("MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2");
-        vio_report.details["tracking_state"] = json!("TRACKING");
-        let reports = HashMap::from([
-            ("camera.femto_bolt".to_string(), camera_report),
-            ("localization.local_vio".to_string(), vio_report),
+        (
+            request,
+            HashMap::from([("camera.femto_bolt".to_string(), camera_report)]),
+        )
+    }
+
+    #[test]
+    fn locate_arm_base_candidate_activates_only_through_manager_review() {
+        let now = Utc::now();
+        let (request, reports) = locate_arm_base_activation_fixture(now);
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        let record = super::build_workcell_activation_record(
+            &request,
+            request_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect("bounded locate_arm_base candidate should activate");
+        assert_eq!(record.candidate_id, "arm-base-1");
+        assert_eq!(record.world_frame, "local_vio/epoch-7");
+        assert_eq!(record.session_epoch, "epoch-7");
+        assert_eq!(record.arm_base_frame, "rebot_arm_base");
+        assert!(record.motion_usable);
+        assert_eq!(record.state, "ACTIVE");
+    }
+
+    #[test]
+    fn locate_arm_base_accepts_qualified_majority_selection_proof() {
+        let attempts = json!([
+            {"candidate_id": "z90", "confidence": 0.56},
+            {"candidate_id": "z0", "confidence": 0.68},
+            {"candidate_id": "z0", "confidence": 0.64}
         ]);
-        (request, reports)
+        super::validate_bounded_vlm_selection(
+            "z0",
+            0.68,
+            0.72,
+            0.55,
+            "QUALIFIED_MAJORITY_CANDIDATE_CONSENSUS",
+            &attempts,
+            "test orientation selection",
+        )
+        .expect("two qualified votes must resolve a three-call tie break");
+    }
+
+    #[test]
+    fn locate_arm_base_activation_accepts_bounded_upside_down_normalization() {
+        let now = Utc::now();
+        let now_us = now.timestamp_micros() as u64;
+        let secret = b"test-review-auth-secret-with-at-least-32-bytes";
+        let (mut request, reports) = locate_arm_base_activation_fixture(now);
+        request.candidate["quality_provenance"]["orientation_resolution"]
+            ["world_up_normalization"] = json!({
+            "status": "APPLIED_LOCAL_X_180",
+            "method": "WORLD_UP_BOUNDED_LOCAL_X_HALF_TURN",
+            "axis": "X",
+            "degrees": 180,
+            "minimum_arm_base_up_dot_world": 0.5,
+            "raw_arm_base_positive_z_dot_world": -1.0,
+            "corrected_arm_base_positive_z_dot_world": 1.0,
+            "correction": {
+                "translation_m": [0.0, 0.0, 0.0],
+                "rotation_xyzw": [1.0, 0.0, 0.0, 0.0],
+                "matrix": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0, 0.0],
+                    [0.0, 0.0, -1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0]
+                ]
+            }
+        });
+        request
+            .candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_sha256");
+        let candidate_sha = canonical_json_sha256(&request.candidate);
+        request.candidate["candidate_sha256"] = json!(candidate_sha);
+        request.review_decision["candidate_sha256"] = json!(candidate_sha);
+        let identity_payload = json!({
+            "issuer": "test.identity",
+            "reviewer_id": "operator@example.test",
+            "candidate_id": "arm-base-1",
+            "candidate_sha256": candidate_sha,
+            "decision": "APPROVE",
+            "issued_at_us": now_us - 100_000,
+            "expires_at_us": now_us + 300_000_000,
+            "nonce": "nonce-locate-arm-base-1"
+        });
+        let identity_bytes = serde_json::to_vec(&identity_payload).unwrap();
+        request.review_identity_assertion = format!(
+            "{}.{}",
+            base64url_encode(&identity_bytes),
+            base64url_encode(&hmac_sha256(secret, &identity_bytes))
+        );
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        super::build_workcell_activation_record(&request, request_sha, &reports, secret, now)
+            .expect("one exact local-X half-turn should normalize an upside-down fit");
+    }
+
+    #[test]
+    fn locate_arm_base_activation_accepts_review_completed_before_deadline() {
+        let now = Utc::now();
+        let (mut request, reports) = locate_arm_base_activation_fixture(now);
+        request.candidate["expires_at_us"] = json!((now.timestamp_micros() - 1) as u64);
+        request.review_decision["decided_at_us"] = json!((now.timestamp_micros() - 2) as u64);
+        let mut hash_payload = request.candidate.clone();
+        hash_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_sha256");
+        let candidate_sha = canonical_json_sha256(&hash_payload);
+        request.candidate["candidate_sha256"] = json!(candidate_sha);
+        request.review_decision["candidate_sha256"] = json!(candidate_sha);
+
+        let secret = b"test-review-auth-secret-with-at-least-32-bytes";
+        let identity_payload = json!({
+            "issuer": "test.identity",
+            "reviewer_id": "operator@example.test",
+            "candidate_id": "arm-base-1",
+            "candidate_sha256": candidate_sha,
+            "decision": "APPROVE",
+            "issued_at_us": (now.timestamp_micros() - 100_000) as u64,
+            "expires_at_us": (now.timestamp_micros() + 300_000_000) as u64,
+            "nonce": "nonce-locate-arm-base-1"
+        });
+        let identity_bytes = serde_json::to_vec(&identity_payload).unwrap();
+        request.review_identity_assertion = format!(
+            "{}.{}",
+            base64url_encode(&identity_bytes),
+            base64url_encode(&hmac_sha256(secret, &identity_bytes))
+        );
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        super::build_workcell_activation_record(&request, request_sha, &reports, secret, now)
+            .expect("a timely review should remain activatable after its review deadline");
+    }
+
+    #[test]
+    fn locate_arm_base_activation_rejects_unprofiled_orientation() {
+        let now = Utc::now();
+        let (mut request, reports) = locate_arm_base_activation_fixture(now);
+        request.candidate["quality_provenance"]["orientation_resolution"]
+            ["selected_candidate_id"] = json!("arbitrary-vlm-rotation");
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        let error = super::build_workcell_activation_record(
+            &request,
+            request_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("an unprofiled orientation must fail closed");
+        assert!(error.to_string().contains("outside the model profile"));
+    }
+
+    #[test]
+    fn locate_arm_base_activation_rejects_invalid_mask_vote_threshold() {
+        let now = Utc::now();
+        let (mut request, reports) = locate_arm_base_activation_fixture(now);
+        request.candidate["quality_provenance"]["mask_vote"]["vote_threshold"] = json!(1);
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        let error = super::build_workcell_activation_record(
+            &request,
+            request_sha,
+            &reports,
+            b"test-review-auth-secret-with-at-least-32-bytes",
+            now,
+        )
+        .expect_err("an invalid mask-vote threshold must fail closed");
+        assert!(error.to_string().contains("mask-vote proof does not match"));
     }
 
     fn translation_refinement_request(
@@ -4831,10 +5354,10 @@ mod tests {
     #[test]
     fn compact_translation_refinement_locks_rotation_and_bounds_journal() {
         let now = Utc::now();
-        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let (activation, mut reports) = locate_arm_base_activation_fixture(now);
         let activation_sha =
             canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
-        let mut record = build_workcell_activation_record(
+        let mut record = super::build_workcell_activation_record(
             &activation,
             activation_sha,
             &reports,
@@ -4888,10 +5411,10 @@ mod tests {
     #[test]
     fn compact_translation_refinement_rejects_rotation_change() {
         let now = Utc::now();
-        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let (activation, mut reports) = locate_arm_base_activation_fixture(now);
         let activation_sha =
             canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
-        let record = build_workcell_activation_record(
+        let record = super::build_workcell_activation_record(
             &activation,
             activation_sha,
             &reports,
@@ -4920,10 +5443,10 @@ mod tests {
     #[test]
     fn compact_translation_refinement_accepts_skill_owned_policy_decision() {
         let now = Utc::now();
-        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let (activation, mut reports) = locate_arm_base_activation_fixture(now);
         let activation_sha =
             canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
-        let record = build_workcell_activation_record(
+        let record = super::build_workcell_activation_record(
             &activation,
             activation_sha,
             &reports,
@@ -4969,10 +5492,10 @@ mod tests {
     #[test]
     fn compact_translation_refinement_rejects_inconsistent_adopted_delta() {
         let now = Utc::now();
-        let (activation, mut reports) = activation_fixture(now, "PASSED");
+        let (activation, mut reports) = locate_arm_base_activation_fixture(now);
         let activation_sha =
             canonical_json_sha256(&serde_json::to_value(&activation).expect("activation JSON"));
-        let record = build_workcell_activation_record(
+        let record = super::build_workcell_activation_record(
             &activation,
             activation_sha,
             &reports,
@@ -5101,401 +5624,6 @@ mod tests {
             canonical_json_sha256(&value),
             "2e4412aebeb711d1661955413a91572446af6ac4a2ecd3807f19dd82ee5f82f9"
         );
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_requires_current_exact_provenance() {
-        let now = Utc::now();
-        let (request, reports) = activation_fixture(now, "PASSED");
-        let record = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("exact reviewed candidate should activate");
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-        assert_eq!(record.camera_frame, "femto_bolt_color_optical_frame");
-        assert_eq!(record.arm_base_frame, "rebot_arm_base");
-        assert_eq!(record.convention_id, "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2");
-        assert_eq!(record.expires_at_us, None);
-        assert_eq!(
-            record.validity_policy,
-            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
-        );
-
-        let mut changed_calibration_reports = reports.clone();
-        changed_calibration_reports
-            .get_mut("camera.femto_bolt")
-            .expect("camera report must exist")
-            .details["calibration_revision"] = json!("different-calibration");
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &changed_calibration_reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("camera calibration change must invalidate the candidate");
-        assert!(error.to_string().contains("camera calibration provenance"));
-
-        let camera_only_reports = HashMap::from([(
-            "camera.femto_bolt".to_string(),
-            reports
-                .get("camera.femto_bolt")
-                .expect("camera report must exist")
-                .clone(),
-        )]);
-        build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &camera_only_reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("a mounted activation must not require the historical VIO process");
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_accepts_warning_semantics_without_retired_geometry_gates() {
-        let now = Utc::now();
-        let (request, reports) = activation_fixture(now, "PASSED_WITH_WARNINGS");
-        let record = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("warning-only semantics and retired quality bounds must not block activation");
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-    }
-
-    #[test]
-    fn newer_reviewed_workcell_activation_supersedes_the_current_one() {
-        let now = Utc::now();
-        let (request, reports) = activation_fixture(now, "PASSED");
-        let replacement = build_workcell_activation_record(
-            &request,
-            "replacement-request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("replacement fixture should activate");
-        let mut active = replacement.clone();
-        active.activation_id = "active-before-recalibration".to_string();
-        active.candidate_id = "candidate-before-recalibration".to_string();
-        active.motion_usable = true;
-        let mut second_active = replacement.clone();
-        second_active.activation_id = "second-active-before-recalibration".to_string();
-        second_active.candidate_id = "second-candidate-before-recalibration".to_string();
-        second_active.motion_usable = true;
-        let records = HashMap::from([
-            (active.activation_id.clone(), active),
-            (second_active.activation_id.clone(), second_active),
-        ]);
-
-        let superseded = superseded_active_workcell_calibrations(&records, &replacement);
-
-        let first = superseded
-            .iter()
-            .find(|record| record.activation_id == "active-before-recalibration")
-            .expect("the prior active record should remain auditable");
-        assert_eq!(first.state, "SUPERSEDED");
-        assert!(!first.motion_usable);
-        assert!(first
-            .last_transition_reason
-            .contains(&replacement.activation_id));
-        let second = superseded
-            .iter()
-            .find(|record| record.activation_id == "second-active-before-recalibration")
-            .expect("the second prior record should remain auditable");
-        assert_eq!(second.state, "SUPERSEDED");
-        assert!(!second.motion_usable);
-
-        for record in &superseded {
-            let observations = workcell_calibration_observations(
-                record,
-                false,
-                "manager-instance",
-                "manager-boot",
-                1_000_000,
-                1_000_000,
-            );
-            let transforms = observations
-                .iter()
-                .filter(|observation| observation["schema"] == "physical_agent.transform")
-                .collect::<Vec<_>>();
-            assert_eq!(transforms.len(), 3);
-            assert!(transforms.iter().all(|observation| {
-                observation["data"]["review_state"] == "REVOKED"
-                    && observation["data"]["activation_state"] == "REVOKED"
-                    && observation["data"]["motion_usable"] == false
-                    && observation["data"]["activation_id"].as_str()
-                        == Some(record.activation_id.as_str())
-            }));
-        }
-
-        let replacement_observations = workcell_calibration_observations(
-            &replacement,
-            true,
-            "manager-instance",
-            "manager-boot",
-            1_000_000,
-            1_000_008,
-        );
-        assert!(replacement_observations
-            .iter()
-            .filter(|observation| observation["schema"] == "physical_agent.transform")
-            .all(|observation| {
-                observation["data"]["review_state"] == "ACCEPTED"
-                    && observation["data"]["activation_state"] == "ACTIVE"
-                    && observation["data"]["motion_usable"] == true
-                    && observation["data"]["activation_id"].as_str()
-                        == Some(replacement.activation_id.as_str())
-            }));
-
-        let mut transitions = superseded
-            .iter()
-            .map(|record| (record, false))
-            .collect::<Vec<_>>();
-        transitions.push((&replacement, true));
-        let batch = workcell_calibration_transition_observations(
-            &transitions,
-            "manager-instance",
-            "manager-boot",
-            1_000_000,
-        );
-        assert_eq!(batch.len(), 12);
-        let sequences = batch
-            .iter()
-            .map(|observation| {
-                observation["sequence"]
-                    .as_u64()
-                    .expect("every calibration envelope needs a sequence")
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(sequences.len(), batch.len());
-        assert!(batch[batch.len() - 4..].iter().all(|observation| {
-            observation["related_skill_id"].as_str() == Some(replacement.candidate_id.as_str())
-        }));
-    }
-
-    #[test]
-    fn mounted_activation_ignores_process_restarts_and_gates_on_stable_camera_identity() {
-        let now = Utc::now();
-        let (request, reports) = activation_fixture(now, "PASSED");
-        let mut record = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("fixture should activate");
-
-        let mut degraded = reports.clone();
-        degraded
-            .get_mut("localization.local_vio")
-            .expect("VIO report must exist")
-            .details["tracking_state"] = json!("DEGRADED");
-        refresh_workcell_motion_usability(&mut record, &degraded);
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-
-        refresh_workcell_motion_usability(&mut record, &reports);
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-
-        let mut restarted = reports.clone();
-        let camera = restarted
-            .get_mut("camera.femto_bolt")
-            .expect("camera report must exist");
-        camera.instance_id = "new-camera-instance".to_string();
-        camera.boot_id = "new-camera-boot".to_string();
-        refresh_workcell_motion_usability(&mut record, &restarted);
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-
-        restarted
-            .get_mut("camera.femto_bolt")
-            .expect("camera report must exist")
-            .details["canonical_device_id"] = json!("different-camera");
-        refresh_workcell_motion_usability(&mut record, &restarted);
-        assert_eq!(record.state, "INVALIDATED");
-        assert!(!record.motion_usable);
-    }
-
-    #[test]
-    fn reviewed_mounted_candidate_can_activate_after_its_review_deadline() {
-        let reviewed_at = Utc::now();
-        let (request, reports) = activation_fixture(reviewed_at, "PASSED");
-        let activation_time = reviewed_at + chrono::Duration::seconds(61);
-
-        let record = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            activation_time,
-        )
-        .expect("reviewed mounted evidence must not acquire a wall-clock expiry");
-
-        assert_eq!(record.state, "ACTIVE");
-        assert!(record.motion_usable);
-        assert_eq!(record.expires_at_us, None);
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_continuous_base_yaw_correction() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["selected_base_yaw_flip_deg"] = json!(34);
-        request.candidate["quality_provenance"]["semantic_alignment"]["fitted_base_yaw_deg"] =
-            json!(34.0);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("a continuous post-fit base yaw correction must fail closed");
-        assert!(error
-            .to_string()
-            .contains("exact base-yaw review invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_direction_flip_mismatch() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["base_x_relation_to_gripper"] = json!("TOWARD_GRIPPER");
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("the selected yaw must match the reviewed base-X direction");
-        assert!(error
-            .to_string()
-            .contains("exact base-yaw review invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_translated_yaw_correction() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["yaw_correction_translation_norm_m"] = json!(0.001);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("a base-root yaw decision must never translate the base origin");
-        assert!(error
-            .to_string()
-            .contains("exact base-yaw review invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_accepts_one_upside_down_away_hypothesis() {
-        let now = Utc::now();
-        let (request, reports) = activation_fixture(now, "PASSED_WITH_WARNINGS");
-
-        build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect("one mesh-centered Y-180 hypothesis must be activation-eligible");
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_duplicate_orientation_corrections() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["orientation_correction_count"] = json!(2);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("a duplicated orientation correction must fail closed");
-        assert!(error
-            .to_string()
-            .contains("single base-orientation invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_downward_corrected_base_z() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["corrected_base_z_dot_world_up"] = json!(-0.998);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("a downward corrected base +Z must fail closed");
-        assert!(error
-            .to_string()
-            .contains("single base-orientation invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_moved_mesh_center() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["quality_provenance"]["semantic_alignment"]
-            ["mesh_center_translation_preserved"] = json!(false);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("moving the observed CAD center must fail closed");
-        assert!(error
-            .to_string()
-            .contains("single base-orientation invariants"));
-    }
-
-    #[test]
-    fn reviewed_workcell_activation_rejects_documented_downward_base_z() {
-        let now = Utc::now();
-        let (mut request, reports) = activation_fixture(now, "PASSED");
-        request.candidate["transforms"]["world_from_base"]["rotation_xyzw"] =
-            json!([1.0, 0.0, 0.0, 0.0]);
-        let error = build_workcell_activation_record(
-            &request,
-            "request-digest".to_string(),
-            &reports,
-            b"test-review-auth-secret-with-at-least-32-bytes",
-            now,
-        )
-        .expect_err("a serialized downward base +Z must fail closed");
-        assert!(error.to_string().contains("documented world_from_base +Z"));
     }
 
     #[test]

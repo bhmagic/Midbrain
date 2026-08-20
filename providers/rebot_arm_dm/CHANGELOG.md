@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.24 - 2026-08-19
+
+- Route the profiled full-arm no-effector reference to both arm-base seed
+  localization and bounded orientation review so the Skill can distinguish
+  the base joint from external support hardware.
+
+## 0.1.23 - 2026-08-18
+
+- Seed and preserve a Provider-local `config/arm_profiles` registry, migrate
+  the ignored central assembly selection from the legacy mutable arm-model
+  path, and serialize JSON as UTF-8 without a BOM for strict consumers.
+- Allow Resource Provider Manager to present guarded physical-arm selection
+  parallel to mounted-effector selection without moving profile ownership into
+  Manager or a Skill.
+
+## 0.1.22 - 2026-08-18
+
+- Preserve the selected arm model's flexible `appendix` object and publish it
+  in `robot_arm.assembly_state` so namespaced Skills can bind configuration to
+  the active arm profile without importing the arm Provider.
+
 ## 0.1.21 - 2026-08-07
 
 - Requires a fresh feedback generation from every motor after each batch request;

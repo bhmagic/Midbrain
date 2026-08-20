@@ -22,6 +22,8 @@ complete manifest inventory.
 - Host-domain global timestamps when supported
 - Device identity, firmware, connection, USB identifiers, stream layout, and dropped-frame counters
 - Provider RGB-D and IMU bundles
+- Canonical physical-device identity on device, calibration, and synchronized
+  RGB-D observations for downstream activation binding
 
 Large payloads remain in Windows named shared memory. The Fabric carries generation-validated `BufferRef` metadata only.
 

@@ -52,6 +52,12 @@ class AssemblyConfigurationTests(unittest.TestCase):
         state = assembly.public_state()
         self.assertEqual(state['schema'], 'midbrain.robot_assembly_state')
         self.assertEqual(state['arm_model_identity']['model_id'], 'rebot_arm_b601_dm')
+        self.assertEqual(
+            state['arm_model_appendix'][
+                'midbrain.skill.locate_arm_base.v1'
+            ]['mesh']['path'],
+            'skills/locate_arm_base/assets/rebot_b601_dm/models/Base_clean_centered.obj',
+        )
         groups = {item['group_id']: item for item in state['resource_groups']}
         self.assertEqual(groups['arm']['joint_names'], [
             'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'

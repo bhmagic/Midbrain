@@ -10,7 +10,7 @@
   },
   "profiles": {
     "arm_model": {
-      "relative_path": "config/arm_model.json",
+      "relative_path": "config/arm_profiles/rebot_arm_b601_dm.v1.json",
       "expected_schema": "physical_agent.robot_arm_model",
       "expected_id": "rebot_arm_b601_dm",
       "expected_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",

@@ -302,7 +302,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(route["route"], "WORLD_AXIS_ONLY")
         self.assertNotIn(
-            "calibrate_stationary_workcell",
+            "locate_arm_base",
             route["allowed_tools"],
         )
         self.assertIn("inspect_midbrain_runtime", route["allowed_tools"])
@@ -743,12 +743,12 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             [descriptor.tool_name for descriptor in descriptors],
             [
                 "analyze_visual_scene",
-                "calibrate_stationary_workcell",
                 "derive_fabric_world_point",
                 "establish_world_axis",
                 "execute_reviewed_observation_motion",
                 "identify_pointed_object",
                 "inspect_arm_semantic_scene",
+                "locate_arm_base",
                 "locate_effector_front",
                 "locate_item",
                 "move_effector_to_world_point",
@@ -796,9 +796,18 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "missing_visual_depth_may_veto_ik_preview"
             ]
         )
+        arm_base = next(
+            descriptor
+            for descriptor in descriptors
+            if descriptor.tool_name == "locate_arm_base"
+        )
         self.assertEqual(
-            descriptors[1].required_capabilities[0],
-            "camera.rgb",
+            arm_base.required_capabilities[0],
+            "camera.rgbd.bundle",
+        )
+        self.assertIn(
+            "robot_arm.assembly_state",
+            arm_base.required_capabilities,
         )
         pointing = next(
             descriptor
@@ -843,7 +852,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 schema=discovery_schema,
             )
 
-        self.assertEqual(len(descriptors), 23)
+        self.assertEqual(len(descriptors), 22)
         self.assertTrue(all(item.schema_version == 3 for item in descriptors))
         self.assertTrue(
             all(item.output_schema["type"] == "object" for item in descriptors)
@@ -918,11 +927,11 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         observation = by_name["locate_item"]
         self.assertTrue(observation.discoverable)
         self.assertIsNone(observation.disabled_reason)
-        foundation = by_name["localize_known_cad_object"]
-        self.assertFalse(foundation.discoverable)
+        arm_base = by_name["locate_arm_base"]
+        self.assertTrue(arm_base.discoverable)
         self.assertEqual(
-            foundation.execution_adapter_kind,
-            "MANUAL_LOCAL_ONLY",
+            arm_base.execution_adapter_kind,
+            "IN_PROCESS_BOUND_INSTANCE",
         )
 
     def test_rgbd_skills_bind_geometry_without_making_generic_route_mandatory(

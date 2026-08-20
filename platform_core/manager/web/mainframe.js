@@ -1,6 +1,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+let armCatalog = null;
+let armSelectionDirty = false;
 let effectorCatalog = null;
 let effectorSelectionDirty = false;
 
@@ -120,6 +122,122 @@ function summarizeSkills(items) {
   const running = items.filter((item) => item.status === "RUNNING").length;
   const unavailable = items.filter((item) => item.status === "UNAVAILABLE").length;
   return `${running} running · ${unavailable} unavailable`;
+}
+
+function selectedArmProfile() {
+  if (!armCatalog) {
+    return null;
+  }
+  const key = $("armSelect").value;
+  return (armCatalog.profiles || []).find((profile) => profile.provider_relative_path === key) || null;
+}
+
+function renderArmDetails(profile) {
+  if (!profile) {
+    $("armActiveProfile").textContent = "Unavailable";
+    $("armModelRevision").textContent = "Unavailable";
+    $("armRootFrame").textContent = "Unavailable";
+    $("armJointCount").textContent = "Unavailable";
+    $("armLocateBaseCad").textContent = "Unavailable";
+    $("armReferenceCount").textContent = "Unavailable";
+    $("armProfileFile").textContent = "Unavailable";
+    return;
+  }
+  $("armActiveProfile").textContent = `${profile.display_name} · ${profile.model_id}`;
+  $("armModelRevision").textContent = profile.model_revision;
+  $("armRootFrame").textContent = profile.root_frame || "unknown";
+  $("armJointCount").textContent = `${profile.joint_count || 0} joints`;
+  $("armLocateBaseCad").textContent = profile.locate_arm_base?.cad_path || "not configured";
+  $("armReferenceCount").textContent = `${profile.locate_arm_base?.reference_image_count || 0} configured`;
+  $("armProfileFile").textContent = profile.profile_file || "unknown";
+}
+
+function updateArmActionState() {
+  const profile = selectedArmProfile();
+  const confirmed = $("armPhysicalConfirmation").checked;
+  $("selectArmButton").disabled = !profile || !confirmed || Boolean(profile.active);
+  renderArmDetails(profile);
+}
+
+function renderArmCatalog(data) {
+  armCatalog = data;
+  const select = $("armSelect");
+  const previousValue = select.value;
+  select.replaceChildren();
+  for (const profile of data.profiles || []) {
+    const option = document.createElement("option");
+    option.value = profile.provider_relative_path;
+    option.textContent = `${profile.display_name} · ${profile.model_revision}${profile.active ? " · ACTIVE" : ""}`;
+    select.append(option);
+  }
+  select.disabled = select.options.length === 0;
+  if (armSelectionDirty && [...select.options].some((option) => option.value === previousValue)) {
+    select.value = previousValue;
+  } else {
+    const active = (data.profiles || []).find((profile) => profile.active);
+    if (active) {
+      select.value = active.provider_relative_path;
+    }
+  }
+  const active = (data.profiles || []).find((profile) => profile.active);
+  renderArmDetails(armSelectionDirty ? selectedArmProfile() : active);
+  $("armActionStatus").textContent = data.status === "SELECTED_RESTART_REQUIRED"
+    ? "Arm selection saved. Restart the arm Provider and its dependents to load this profile."
+    : "Arm-profile edits and selections take effect after the affected Providers restart.";
+  $("armActionStatus").className = data.status === "SELECTED_RESTART_REQUIRED"
+    ? "activation-status warning-text"
+    : "activation-status";
+  updateArmActionState();
+}
+
+async function refreshArmCatalog() {
+  try {
+    const response = await fetch("/v1/ui/robot-assembly/arms", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `Arm catalog returned ${response.status}`);
+    }
+    renderArmCatalog(data);
+  } catch (error) {
+    $("armActionStatus").textContent = error.message;
+    $("armActionStatus").className = "activation-status danger-text";
+    renderArmDetails(null);
+  }
+}
+
+async function selectArm() {
+  const profile = selectedArmProfile();
+  if (!profile || !$("armPhysicalConfirmation").checked) {
+    return;
+  }
+  $("selectArmButton").disabled = true;
+  $("armActionStatus").textContent = "Saving static arm-profile selection...";
+  $("armActionStatus").className = "activation-status warning-text";
+  try {
+    const response = await fetch("/v1/ui/robot-assembly/arms", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        profile_file: profile.provider_relative_path,
+        physical_arm_confirmed: true,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const blockers = (data.blocking_providers || [])
+        .map((item) => item.provider_id)
+        .join(", ");
+      throw new Error(`${data.error || `Selection returned ${response.status}`}${blockers ? `: ${blockers}` : ""}`);
+    }
+    armSelectionDirty = false;
+    $("armPhysicalConfirmation").checked = false;
+    renderArmCatalog(data);
+    await refreshEffectorCatalog();
+  } catch (error) {
+    $("armActionStatus").textContent = error.message;
+    $("armActionStatus").className = "activation-status danger-text";
+    updateArmActionState();
+  }
 }
 
 function effectorKey(profile) {
@@ -277,20 +395,19 @@ async function refresh() {
 
     const agents = data.agents || {};
     $("agentState").textContent = agents.online
-      ? "Agent runtime is online. Regular, developer, and journal views share one autonomous Agent backend."
-      : "Agent runtime is offline by design. Start it explicitly when either agent surface is needed.";
-    $("regularAgentLink").href = agents.regular_url || "http://127.0.0.1:8000/";
+      ? "Agent runtime is online. The developer view and run journal share one autonomous Agent backend."
+      : "Agent runtime is offline by design. Start it explicitly when the Developer Agent is needed.";
     $("developerAgentLink").href = agents.developer_url || "http://127.0.0.1:8000/dev";
-    const agentBaseUrl = agents.regular_url || "http://127.0.0.1:8000/";
+    const agentBaseUrl = agents.developer_url || agents.regular_url ||
+      "http://127.0.0.1:8000/dev";
     $("runJournalLink").href = agents.journal_url ||
       new URL("/dev/run-journal", agentBaseUrl).toString();
-    $("regularAgentLink").dataset.online = String(Boolean(agents.online));
     $("developerAgentLink").dataset.online = String(Boolean(agents.online));
     $("runJournalLink").dataset.online = String(Boolean(agents.online));
 
     renderProviders(providers);
     renderSkills(skills);
-    await refreshEffectorCatalog();
+    await Promise.all([refreshArmCatalog(), refreshEffectorCatalog()]);
     $("observedAt").textContent = `Observed ${new Date(data.observed_at).toLocaleString()}`;
     $("refreshState").textContent = "Live";
   } catch (error) {
@@ -302,6 +419,13 @@ async function refresh() {
 }
 
 $("refreshButton").addEventListener("click", refresh);
+$("armSelect").addEventListener("change", () => {
+  armSelectionDirty = true;
+  $("armPhysicalConfirmation").checked = false;
+  updateArmActionState();
+});
+$("armPhysicalConfirmation").addEventListener("change", updateArmActionState);
+$("selectArmButton").addEventListener("click", selectArm);
 $("effectorSelect").addEventListener("change", () => {
   effectorSelectionDirty = true;
   $("effectorPhysicalConfirmation").checked = false;

@@ -194,6 +194,24 @@ allowlist, verifies that every offered descriptor has a registered adapter,
 and then constructs an Agents SDK `FunctionTool` using the manifest's name,
 description, and strict input schema.
 
+At Reference Agent UI startup, every installed discoverable Skill that is
+absent from both the configured Agent eligibility list and the current runtime
+tool list requires one local operator decision before Agent tasks may begin.
+The operator either adds the Skill to the Agent list or disables it for that
+Agent. This reconciliation is Agent-owned configuration: it must not edit the
+Skill manifest, import the Skill during discovery, start a Provider, invoke the
+Skill, or grant authority.
+
+The Reference Agent persists those decisions in the ignored machine-local
+`config/agent_skill_installation.json` file by default. Disable takes effect
+immediately for later Agent launches and suppresses the startup prompt. Add
+extends the effective eligibility list on the next Agent process launch; the
+UI keeps Agent tasks blocked and requires a restart so adapter validation and
+tool construction occur at the normal process boundary. A configured path may
+be supplied through `AGENT_SKILL_INSTALLATION_STATE_PATH`. An unknown future
+decision schema, unknown action, missing execution adapter, or unreviewed Skill
+fails closed.
+
 Selecting a tool resolves its adapter ID; it does not resolve a provider.
 The adapter invokes the finite Skill, which requests a capability binding from
 Manager. A configured explicit provider ID remains a compatibility fallback

@@ -1,30 +1,8 @@
-# Provider-local runtime
 .venv/
-nvlabs/
-sam2/
-debug/
-logs/
-*.log
-*.pid
+native/build*/
+runtime/engines/
+runtime/models/
+run/
+*.pyc
+__pycache__/
 
-# Python generated files
-**/__pycache__/
-*.py[cod]
-.pytest_cache/
-*.egg-info/
-dist/
-build/
-
-# Local/native build products
-*.pyd
-*.dll
-*.lib
-*.exp
-*.obj
-!defaults/**/*.obj
-!models/**/*.obj
-
-# Runtime/user artifacts belong under workspace config/
-captures/
-backups/
-installations/

@@ -18,23 +18,23 @@ function Invoke-ComponentSetup {
 
     $setupPath = Join-Path $workspace $RelativePath
     if (Test-Path -LiteralPath $setupPath) {
-        Write-Host "[$Step/10] $Label"
+        Write-Host "[$Step/11] $Label"
         & $setupPath -PythonLauncher $PythonLauncher
         if ($LASTEXITCODE -ne 0) {
             throw "$Label failed with exit code $LASTEXITCODE."
         }
     }
     else {
-        Write-Host "[$Step/10] $Label package not present; skipped" -ForegroundColor Yellow
+        Write-Host "[$Step/11] $Label package not present; skipped" -ForegroundColor Yellow
     }
 }
 
-Write-Host "[1/10] Setting up Manager and Fabric"
+Write-Host "[1/11] Setting up Manager and Fabric"
 & (Join-Path $PSScriptRoot "setup.ps1")
 
 $providerSetup = Join-Path $workspace "providers\orbbec_femto_bolt\scripts\setup.ps1"
 if (Test-Path $providerSetup) {
-    Write-Host "[2/10] Setting up Orbbec Femto Bolt Provider"
+    Write-Host "[2/11] Setting up Orbbec Femto Bolt Provider"
     & $providerSetup `
         -PythonLauncher $PythonLauncher `
         -SkipNativeBuild:$SkipCameraBuild `
@@ -43,7 +43,7 @@ if (Test-Path $providerSetup) {
         -OrbbecBinDir $OrbbecBinDir
 }
 else {
-    Write-Host "[2/10] Orbbec Provider package not present; skipped" -ForegroundColor Yellow
+    Write-Host "[2/11] Orbbec Provider package not present; skipped" -ForegroundColor Yellow
 }
 
 Invoke-ComponentSetup 3 "Setting up Local VIO Provider" `
@@ -52,15 +52,17 @@ Invoke-ComponentSetup 4 "Setting up Arm Scene Compiler Provider" `
     "providers\arm_scene_compiler\scripts\setup.ps1"
 Invoke-ComponentSetup 5 "Setting up HOT SAM2 Scene Tracker Provider" `
     "providers\sam2_scene_tracker\scripts\setup.ps1"
-Invoke-ComponentSetup 6 "Setting up Spatial Registration Skill" `
+Invoke-ComponentSetup 6 "Setting up FoundationPose Known-Object Pose Provider" `
+    "providers\foundation_pose\scripts\setup.ps1"
+Invoke-ComponentSetup 7 "Setting up Spatial Registration Skill" `
     "skills\spatial_registration_rgbd\scripts\setup.ps1"
-Invoke-ComponentSetup 7 "Setting up Tool Registration Skill" `
+Invoke-ComponentSetup 8 "Setting up Tool Registration Skill" `
     "skills\register_tool_to_control_frame\scripts\setup.ps1"
-Invoke-ComponentSetup 8 "Setting up Effector-Front Skill" `
+Invoke-ComponentSetup 9 "Setting up Effector-Front Skill" `
     "skills\locate-effector-front\scripts\setup.ps1"
-Invoke-ComponentSetup 9 "Setting up Stationary Alignment Skill" `
-    "skills\stationary_world_arm_alignment\scripts\setup.ps1"
-Invoke-ComponentSetup 10 "Setting up Test Agent/OpenAI Agents SDK" `
+Invoke-ComponentSetup 10 "Setting up Locate Arm Base Skill" `
+    "skills\locate_arm_base\scripts\setup.ps1"
+Invoke-ComponentSetup 11 "Setting up Test Agent/OpenAI Agents SDK" `
     "test_agent\scripts\setup.ps1"
 
 Write-Host "Workspace setup complete with component-local Python environments. Existing config files were preserved."

@@ -14,6 +14,7 @@ from physical_agent_test.integrated_motion_adapter import (
 from physical_agent_test.authorization import AuthorizationStore
 from physical_agent_test.spatial_frames import (
     CANONICAL_CAMERA_CALIBRATION_POLICY,
+    CANONICAL_CAMERA_CALIBRATION_POLICY_V2,
     SpatialFrameResolver,
     SpatialResolutionRequired,
     WORLD_CONVENTION_ID,
@@ -64,6 +65,7 @@ def _canonical_workcell_activation(
     *,
     translation_m: list[float] | None = None,
     rotation_xyzw: list[float] | None = None,
+    validity_policy: str = CANONICAL_CAMERA_CALIBRATION_POLICY,
 ) -> dict:
     return {
         "valid": True,
@@ -80,7 +82,7 @@ def _canonical_workcell_activation(
             "convention_id": WORLD_CONVENTION_ID,
             "activation_id": "activation-1",
             "calibration_revision": "calibration-4",
-            "validity_policy": CANONICAL_CAMERA_CALIBRATION_POLICY,
+            "validity_policy": validity_policy,
             "world_frame": "world/stationary_camera/alignment-4",
             "arm_base_frame": "rebot_arm_base",
             "session_epoch": "epoch-1",
@@ -698,6 +700,35 @@ class IntegratedRelativeMotionAdapterTests(
         self.assertEqual(
             resolution.provenance["workcell_activation"]["validity_policy"],
             CANONICAL_CAMERA_CALIBRATION_POLICY,
+        )
+
+    async def test_absolute_world_point_retains_v2_compatibility_when_vio_degraded(
+        self,
+    ):
+        fabric = _SpatialFabric()
+        fabric.tracking_state = "DEGRADED"
+        fabric.workcell_activation = _canonical_workcell_activation(
+            validity_policy=CANONICAL_CAMERA_CALIBRATION_POLICY_V2
+        )
+        resolver = SpatialFrameResolver(
+            fabric,
+            arm_base_frame="rebot_arm_base",
+        )
+
+        resolution = await resolver.resolve_world_point(
+            target_position_world_m=[0.7, 0.0, 0.4],
+            expected_world_frame="world/stationary_camera/alignment-4",
+            expected_session_epoch="epoch-1",
+        )
+
+        np.testing.assert_allclose(
+            resolution.target_position_arm_base_m,
+            [0.3, 0.2, 0.3],
+            atol=1e-9,
+        )
+        self.assertEqual(
+            resolution.provenance["workcell_activation"]["validity_policy"],
+            CANONICAL_CAMERA_CALIBRATION_POLICY_V2,
         )
 
     async def test_absolute_world_point_preserves_orientation_and_executes(self):
@@ -2100,7 +2131,7 @@ class IntegratedRelativeMotionAdapterTests(
         fabric = _SpatialFabric()
         fabric.transform_error = RuntimeError("no transform path")
         continuation = {
-            "name": "review_and_activate_stationary_calibration",
+            "name": "review_and_activate_arm_base",
             "arguments": {
                 "alignment_id": "alignment-1",
                 "candidate_sha256": "a" * 64,
@@ -2351,6 +2382,25 @@ class IntegratedRelativeMotionAdapterTests(
         )
 
         self.assertEqual(result["status"], "MOTION_COMPLETED")
+
+    async def test_degraded_vio_rejects_unknown_canonical_policy(self) -> None:
+        fabric = _SpatialFabric()
+        fabric.tracking_state = "DEGRADED"
+        fabric.workcell_activation = _canonical_workcell_activation(
+            validity_policy="MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V4"
+        )
+        adapter = _adapter(
+            _IntegratedClient(),
+            fabric,
+            require_upright_mount_confirmation=True,
+        )
+
+        result = await adapter.preview(direction="UP", distance_m=0.2)
+
+        self.assertEqual(
+            result["status"],
+            "ARM_MOUNT_CONFIRMATION_REQUIRED",
+        )
 
     async def test_visual_workflow_orders_confirmations_and_uses_two_pictures(
         self,

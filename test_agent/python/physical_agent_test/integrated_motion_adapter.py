@@ -719,14 +719,8 @@ class IntegratedRelativeMotionAdapter:
                             continuation = None
                     if continuation is None:
                         continuation = {
-                            "name": "calibrate_stationary_workcell",
-                            "arguments": {
-                                "request": (
-                                    "Create a current stationary world-to-arm "
-                                    "calibration candidate for this explicit "
-                                    "world-axis motion."
-                                ),
-                            },
+                            "name": "locate_arm_base",
+                            "arguments": {},
                         }
                     payload["required_next_tool"] = continuation
                     payload["agent_instruction"] = (

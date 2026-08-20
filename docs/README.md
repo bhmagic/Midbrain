@@ -60,13 +60,12 @@ trying to do rather than by the order in which documents were created.
 | [Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md) | Current reference-implementation acceptance boundary, unchanged duties, operational interpretation, and open qualification. |
 
 The VIO implementation design belongs to
-[`providers/local_vio`](../providers/local_vio/README.md). FoundationPose setup
-and compatibility details belong to
-[`providers/foundation_pose`](../providers/foundation_pose/README.md) and the
-finite
-[`foundation_pose_object_localization`](../skills/foundation_pose_object_localization/README.md)
-Skill. Component-specific controller and camera details remain beside those
-components.
+[`providers/local_vio`](../providers/local_vio/README.md). Generic native
+FoundationPose details belong to
+[`providers/foundation_pose`](../providers/foundation_pose/README.md); the
+robot-specific finite workflow belongs to
+[`locate_arm_base`](../skills/locate_arm_base/README.md). Component-specific
+controller and camera details remain beside those components.
 
 ## Documentation source-of-truth rules
 
@@ -109,8 +108,8 @@ is folded into the owning contract and component documentation, then retired.
 - [reBot Arm Integrated Provider](../providers/rebot_arm_integrated/README.md)
 - [reBot Arm Contact Work Provider](../providers/rebot_arm_contact/README.md)
 - [Contact Work Skill Authoring](../providers/rebot_arm_contact/docs/CONTACT_SKILL_AUTHORING.md)
-- [FoundationPose Compatibility Provider](../providers/foundation_pose/README.md)
-- [Stationary World-Space Arm Alignment Skill](../skills/stationary_world_arm_alignment/README.md)
+- [FoundationPose Native Known-Object Pose Provider](../providers/foundation_pose/README.md)
+- [Locate Arm Base Skill](../skills/locate_arm_base/README.md)
 - [Refine Arm-Root Translation Skill](../skills/refine-arm-root-translation/SKILL.md)
 - [Reference Agent](../test_agent/README.md)
 - [Limited Graph Skill](../skills/limited-graph/SKILL.md)

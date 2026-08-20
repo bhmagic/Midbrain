@@ -20,11 +20,11 @@ OpenAI events into the Midbrain event subset. Later OpenAI SDK versions, other
 agent frameworks, deterministic workflows, and Google or local model runtimes
 may implement additional adapters without changing ordinary browser behavior.
 
-The regular and developer pages use only the canonical streaming-run family.
-It starts a backend-owned run and returns a run ID plus a separate replayable
-event URL. Losing the browser connection does not cancel or restart the run.
-Both surfaces use the same observer event contract; their presentation differs
-but their tool catalog and authorization policy do not.
+The Developer Agent uses only the canonical streaming-run family. It starts a
+backend-owned run and returns a run ID plus a separate replayable event URL.
+Losing the browser connection does not cancel or restart the run. The read-only
+run journal projects the same observer event contract without adding a tool
+catalog or authorization path.
 
 Model transport and observer transport are separate choices. A model adapter
 may stream through Responses, a provider's Chat Completions-compatible API, or

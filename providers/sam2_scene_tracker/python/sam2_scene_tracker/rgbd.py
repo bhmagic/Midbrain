@@ -6,6 +6,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from midbrain_bufferref import WindowsBufferRefReader
 
 from .clients import FabricClient
 
@@ -77,8 +78,6 @@ class RgbdCapture:
         return values.reshape(height, width).astype(np.float32) * scale_mm / 1000.0
 
     def capture(self, *, attempts: int = 6) -> RgbdFrame:
-        from orbbec_femto_provider.shared_memory_access import CameraSharedMemory
-
         calibration_observation = self.fabric.latest_optional("camera.calibration")
         if not calibration_observation:
             raise RuntimeError("camera calibration is unavailable")
@@ -96,7 +95,7 @@ class RgbdCapture:
             mapping_name = str(rgb_ref.get("mapping_name") or "").strip()
             if not mapping_name:
                 raise RuntimeError("RGB BufferRef has no mapping_name")
-            reader = CameraSharedMemory(mapping_name).open()
+            reader = WindowsBufferRefReader(mapping_name).open([rgb_ref, depth_ref])
             try:
                 rgb = self._read_rgb(reader, rgb_ref)
                 depth = self._read_depth(reader, depth_ref)

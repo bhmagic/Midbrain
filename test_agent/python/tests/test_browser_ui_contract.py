@@ -74,13 +74,6 @@ class BrowserUiContractTests(unittest.TestCase):
             / "web"
             / "developer.css",
             root
-            / "skills"
-            / "stationary_world_arm_alignment"
-            / "python"
-            / "stationary_world_arm_alignment"
-            / "web"
-            / "style.css",
-            root
             / "test_agent"
             / "python"
             / "physical_agent_test"
@@ -115,13 +108,6 @@ class BrowserUiContractTests(unittest.TestCase):
             / "rebot_arm_integrated"
             / "web"
             / "styles.css",
-            root
-            / "skills"
-            / "stationary_world_arm_alignment"
-            / "python"
-            / "stationary_world_arm_alignment"
-            / "web"
-            / "style.css",
             root
             / "test_agent"
             / "python"
@@ -194,59 +180,52 @@ class BrowserUiContractTests(unittest.TestCase):
         ):
             self.assertNotIn(retired_path, app)
 
-    def test_legacy_foundation_debug_ui_uses_neutral_chrome(self) -> None:
-        root = Path(__file__).resolve().parents[3]
-        gui = (
-            root
-            / "providers"
-            / "foundation_pose"
-            / "python"
-            / "foundation_pose_provider"
-            / "gui_app.py"
-        ).read_text(encoding="utf-8")
-
-        for color in ("#090909", "#131313", "#f2f2f2", "#3b3b3b"):
-            self.assertIn(color, gui)
-        for color in ("#07111b", "#081019", "#0a0f14", "#47b7e8"):
-            self.assertNotIn(color, gui)
-
-    def test_foundation_pose_browser_ui_matches_provider_duty(self) -> None:
+    def test_foundation_pose_has_generic_runtime_ui_without_workflow_policy(self) -> None:
         root = Path(__file__).resolve().parents[3]
         provider_root = root / "providers" / "foundation_pose"
         manifest = json.loads(
             (provider_root / "manifest.json").read_text(encoding="utf-8")
         )
-        html = (provider_root / "web" / "developer.html").read_text(
-            encoding="utf-8"
-        )
-        script = (provider_root / "web" / "developer.js").read_text(
-            encoding="utf-8"
-        )
         provider = (provider_root / "provider.py").read_text(encoding="utf-8")
+        page = (provider_root / "web" / "developer.html").read_text(encoding="utf-8")
+        styles = (provider_root / "web" / "developer.css").read_text(encoding="utf-8")
+        self.assertEqual(manifest["ui"]["developer"]["url_from_control"], "/dev")
+        self.assertTrue((provider_root / "web").exists())
+        self.assertIn('path == "/dev"', provider)
+        self.assertIn("Robot profile selection, segmentation, VLM reasoning", page)
+        self.assertIn('id="meshFilename"', page)
+        self.assertIn("--background: #090909", styles)
+        self.assertNotIn("#080d18", styles)
 
-        self.assertEqual(
-            manifest["ui"]["developer"]["url_from_control"],
-            "/dev",
+    def test_locate_arm_base_ui_is_one_finite_request_surface(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root
+            / "skills"
+            / "locate_arm_base"
+            / "python"
+            / "locate_arm_base"
+            / "app.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Run limited visual test", app)
+        self.assertIn('"diagnostic_only":true', app)
+        self.assertIn("without requiring a world axis or publishing calibration", app)
+        self.assertIn("/v1/run", app)
+        self.assertIn("/v1/profile", app)
+        self.assertIn("Exact visual pipeline inputs", app)
+        self.assertIn("Configured visual references", app)
+        self.assertIn("CAD filename sent", app)
+        for retired in ("session", "tracker", "gripper", "teleop"):
+            self.assertNotIn(retired, app.lower())
+        manifest = json.loads(
+            (
+                root / "skills" / "locate_arm_base" / "manifest.json"
+            ).read_text(encoding="utf-8")
         )
         self.assertEqual(
-            manifest["ui"]["developer"]["availability"],
-            "PROVIDER_RUNNING",
+            manifest["ui"]["developer"]["launch_command"],
+            ".\\skills\\locate_arm_base\\scripts\\run_ui.ps1",
         )
-        for expected in (
-            "Latest camera-relative poses",
-            "Installed CAD models",
-            "Release unused GPU resources",
-        ):
-            self.assertIn(expected, html)
-        for retired_workflow in (
-            "Start Midbrain + Providers",
-            "Ask VLM",
-            "Make SAM2 Masks",
-        ):
-            self.assertNotIn(retired_workflow, html)
-            self.assertNotIn(retired_workflow, script)
-        self.assertIn('path in {"/dev", "/dev/"}', provider)
-        self.assertIn('"latest_measurements"', provider)
 
     def test_authorization_popup_states_approval_does_not_execute(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -297,7 +276,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertNotIn("method: 'POST'", component)
         self.assertIn('cache: "no-store"', component)
 
-    def test_mainframe_exposes_agent_profiles_and_run_journal(self) -> None:
+    def test_mainframe_exposes_developer_agent_and_run_journal(self) -> None:
         root = Path(__file__).resolve().parents[3]
         mainframe = (
             root
@@ -306,12 +285,33 @@ class BrowserUiContractTests(unittest.TestCase):
             / "web"
             / "index.html"
         ).read_text(encoding="utf-8")
+        mainframe_script = (
+            root
+            / "platform_core"
+            / "manager"
+            / "web"
+            / "mainframe.js"
+        ).read_text(encoding="utf-8")
+        manager_css = (
+            root
+            / "platform_core"
+            / "manager"
+            / "web"
+            / "manager.css"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn('id="regularAgentLink"', mainframe)
+        self.assertNotIn('id="regularAgentLink"', mainframe)
+        self.assertNotIn('$("regularAgentLink")', mainframe_script)
         self.assertIn('id="developerAgentLink"', mainframe)
         self.assertIn('id="runJournalLink"', mainframe)
+        self.assertIn(
+            ".agent-link.developer {\n  border-style: solid;\n}",
+            manager_css,
+        )
         self.assertIn('id="providerRows"', mainframe)
         self.assertIn('id="skillRows"', mainframe)
+        self.assertIn('id="armSelect"', mainframe)
+        self.assertIn('id="armPhysicalConfirmation"', mainframe)
 
     def test_run_journal_is_read_only_and_two_level_expandable(self) -> None:
         root = Path(__file__).resolve().parents[3]
@@ -379,6 +379,35 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('className = "chat-event-details"', history)
         self.assertIn('className = "chat-event-record"', history)
 
+    def test_developer_agent_owns_startup_skill_reconciliation(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        app = (
+            root / "test_agent" / "python" / "physical_agent_test" / "app.py"
+        ).read_text(encoding="utf-8")
+        journal = (
+            root
+            / "test_agent"
+            / "python"
+            / "physical_agent_test"
+            / "web"
+            / "run_journal.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="skillInstallationDialog"', app)
+        self.assertIn("New Skill installation detected", app)
+        self.assertIn("Add to Agent list", app)
+        self.assertIn("Disable for Agent", app)
+        self.assertIn('@app.get("/api/agent-skill-installation")', app)
+        self.assertIn(
+            '@app.post("/api/agent-skill-installation/{tool_name}")',
+            app,
+        )
+        self.assertIn("skillInstallationBlocked", app)
+        self.assertIn("installation[\"restart_required\"]", app)
+        self.assertIn('@app.get("/", response_class=RedirectResponse)', app)
+        self.assertNotIn('>Regular agent</a>', app)
+        self.assertIn('href="/dev">Developer Agent</a>', journal)
+
     def test_world_viewer_exposes_semantic_annotation_layer(self) -> None:
         root = Path(__file__).resolve().parents[3]
         app = (
@@ -444,6 +473,8 @@ class BrowserUiContractTests(unittest.TestCase):
             self.assertIn('id="agentModel"', surface)
             self.assertIn('id="reasoningEffort"', surface)
             self.assertIn('id="vlmModel"', surface)
+            self.assertIn("gemini-robotics-er-2-preview", surface)
+            self.assertIn("vlm_model_default", surface)
             self.assertIn("reasoning_effort", surface)
             self.assertIn("vlm_model", surface)
             self.assertLess(
@@ -687,7 +718,7 @@ class BrowserUiContractTests(unittest.TestCase):
 
         self.assertIn('id="autoApproveProviders"', regular)
         self.assertIn('id="autoApproveMoves"', regular)
-        self.assertIn('id="autoApproveCalibration"', regular)
+        self.assertIn('id="autoApproveArmBaseActivation"', regular)
         self.assertIn('id="autoApproveProviderStop"', regular)
         self.assertIn('id="autoApproveSafeHome"', regular)
         self.assertIn('id="autoApproveSpaceReinitialization"', regular)
@@ -699,10 +730,6 @@ class BrowserUiContractTests(unittest.TestCase):
         )
         self.assertIn(
             'id="autoApproveMoves" type="checkbox" checked',
-            regular,
-        )
-        self.assertIn(
-            'id="autoApproveCalibration" type="checkbox" checked',
             regular,
         )
         self.assertIn(
@@ -750,7 +777,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn('/assets/agent_chat_history.js', regular)
         self.assertIn("turn.appendReasoning", regular)
         self.assertIn(
-            'id="autoApproveCalibrationActivation" '
+            'id="autoApproveArmBaseActivation" '
             'type="checkbox" checked',
             regular,
         )
@@ -765,12 +792,11 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("auto_authorize_provider_activation", regular)
         self.assertIn("auto_authorize_relative_motion", regular)
         self.assertIn("max_auto_speed_m_s", regular)
-        self.assertIn("auto_authorize_stationary_calibration", regular)
-        self.assertIn("auto_authorize_stationary_activation", regular)
-        self.assertIn("autoApproveCalibrationActivation", regular)
+        self.assertIn("auto_authorize_arm_base_activation", regular)
+        self.assertIn("autoApproveArmBaseActivation", regular)
         self.assertIn("AUTO_PROVIDER_ACTIVATION", regular)
         self.assertIn("AUTO_BOUNDED_RELATIVE_MOTION", regular)
-        self.assertIn("AUTO_STATIONARY_CALIBRATION", regular)
+        self.assertIn("AUTO_ARM_BASE_ACTIVATION", regular)
         self.assertIn("NEW_RELATIVE_POSE_MOVE", regular)
         self.assertIn("NEW_RELATIVE_ROTATION", regular)
         self.assertIn("APPLY_CONTROLLED_FRAME_YAW_DELTA", regular)
@@ -809,11 +835,7 @@ class BrowserUiContractTests(unittest.TestCase):
             app,
         )
         self.assertIn(
-            'id="autoApproveCalibration" type="checkbox" checked',
-            app,
-        )
-        self.assertIn(
-            'id="autoApproveCalibrationActivation" '
+            'id="autoApproveArmBaseActivation" '
             'type="checkbox" checked',
             app,
         )
@@ -836,8 +858,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("automaticDeveloperApprovalDecision", app)
         self.assertIn("AUTO_PROVIDER_ACTIVATION", app)
         self.assertIn("AUTO_BOUNDED_RELATIVE_MOTION", app)
-        self.assertIn("AUTO_STATIONARY_CALIBRATION", app)
-        self.assertIn("AUTO_STATIONARY_ACTIVATION", app)
+        self.assertIn("AUTO_ARM_BASE_ACTIVATION", app)
         self.assertIn("AUTO_PROVIDER_STOP", app)
         self.assertIn("AUTO_SAFE_HOME", app)
         self.assertIn("AUTO_SPACE_REINITIALIZATION", app)
@@ -850,8 +871,7 @@ class BrowserUiContractTests(unittest.TestCase):
         self.assertIn("auto_authorize_relative_motion", app)
         self.assertIn("max_auto_move_cm", app)
         self.assertIn("max_auto_speed_m_s", app)
-        self.assertIn("auto_authorize_stationary_calibration", app)
-        self.assertIn("auto_authorize_stationary_activation", app)
+        self.assertIn("auto_authorize_arm_base_activation", app)
         self.assertIn("auto_authorize_safe_home", app)
         self.assertIn("auto_authorize_space_reinitialization", app)
         self.assertIn("Provider stop AUTO", app)

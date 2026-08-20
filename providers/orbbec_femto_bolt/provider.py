@@ -942,6 +942,12 @@ class FemtoBoltProvider:
                 "translation_units": "millimeters",
             }
             calibration_data["revision"] = self.calibration_revision
+            calibration_data["calibration_revision"] = self.calibration_revision
+            calibration_data["canonical_device_id"] = (
+                self.accelerometer_calibration.canonical_device_id
+                if self.accelerometer_calibration is not None
+                else None
+            )
             now_us = int(time.time() * 1_000_000)
             observations.append(
                 self._observation(
@@ -1142,6 +1148,11 @@ class FemtoBoltProvider:
             "synchronized": abs(delta) <= self.args.rgbd_max_delta_us,
             "frame_sync_requested": not self.args.disable_frame_sync,
             "calibration_revision": self.calibration_revision,
+            "canonical_device_id": (
+                self.accelerometer_calibration.canonical_device_id
+                if self.accelerometer_calibration is not None
+                else None
+            ),
             "coordinate_frames": {
                 "rgb": COLOR_FRAME,
                 "depth": DEPTH_FRAME,
@@ -1182,7 +1193,7 @@ class FemtoBoltProvider:
             except RuntimeError:
                 header = self.reader.header
         return {
-            "provider_version": "0.4.1",
+            "provider_version": "0.4.2",
             "device_name": header.device_name if header else None,
             "serial_number": header.device_serial if header else None,
             "sdk_version": header.sdk_version if header else None,
@@ -1484,7 +1495,7 @@ class FemtoBoltProvider:
             "ready": self.ready,
             "pid": os.getpid(),
             "details": {
-                "provider_version": "0.4.1",
+                "provider_version": "0.4.2",
                 "native_pid": native_pid,
                 "mapping_name": self.args.mapping_name,
                 "last_error": self.last_error,

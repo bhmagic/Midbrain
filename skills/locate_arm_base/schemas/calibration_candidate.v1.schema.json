@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain://schemas/skills/locate_arm_base/calibration_candidate.v1",
+  "type": "object",
+  "required": ["schema", "schema_version", "candidate_id", "run_id", "parent_frame", "child_frame", "motion_usable", "review_state", "world_from_arm_base", "quality_provenance", "candidate_sha256"],
+  "properties": {
+    "schema": {"const": "midbrain.skill.locate_arm_base.calibration_candidate"},
+    "schema_version": {"const": 1},
+    "motion_usable": {"const": false},
+    "review_state": {"const": "PENDING_REVIEW"},
+    "candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": true
+}
+

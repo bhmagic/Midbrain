@@ -1,395 +1,220 @@
-"""Backend adapters for FoundationPose-compatible pose estimation."""
-
 from __future__ import annotations
 
-import hashlib
-import importlib
-import json
-import os
-import sys
-import threading
-import time
-import gc
-from abc import ABC, abstractmethod
+import ctypes
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
 
-from .math3d import as_transform
-from .model_registry import ObjectModel
-from .nvlabs_compat import verify_windows_temp_path
+from .tensorrt_runtime import TensorRtPair
 
 
 @dataclass(frozen=True)
-class BackendResult:
-    """A camera-from-mesh pose returned by a backend."""
-
-    camera_from_mesh: np.ndarray
-    score: float | None
-    latency_ms: float
-    backend_details: dict[str, Any]
-
-
-class FoundationPoseBackend(ABC):
-    """Minimal backend interface kept separate from Midbrain contracts."""
-
-    name = "abstract"
-
-    @abstractmethod
-    def initialize(
-        self,
-        session_id: str,
-        model: ObjectModel,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-        mask: np.ndarray,
-    ) -> BackendResult:
-        raise NotImplementedError
-
-    @abstractmethod
-    def track(
-        self,
-        session_id: str,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-    ) -> BackendResult:
-        raise NotImplementedError
-
-    @abstractmethod
-    def reset(self, session_id: str) -> None:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        """Release optional backend resources."""
-
-    def diagnostics(self) -> dict[str, Any]:
-        return {"backend": self.name}
+class EstimateInput:
+    rgb: np.ndarray
+    depth_m: np.ndarray
+    mask: np.ndarray
+    intrinsics: tuple[float, ...]
+    mesh_path: Path
+    mesh_scale_to_m: float
 
 
-class MockFoundationPoseBackend(FoundationPoseBackend):
-    """Deterministic backend for Provider integration tests without CUDA."""
-
-    name = "mock"
-
-    def __init__(self, translation_m: tuple[float, float, float] = (0.0, 0.0, 0.75)):
-        self.translation_m = translation_m
-        self.initialized: set[str] = set()
-
-    def initialize(
-        self,
-        session_id: str,
-        model: ObjectModel,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-        mask: np.ndarray,
-    ) -> BackendResult:
-        del model, rgb, camera_matrix
-        if mask.shape != depth_m.shape:
-            raise ValueError("mask and depth dimensions must match")
-        if not np.any(mask):
-            raise ValueError("initialization mask is empty")
-        start = time.perf_counter()
-        pose = np.eye(4, dtype=np.float64)
-        valid = depth_m[(mask > 0) & np.isfinite(depth_m) & (depth_m > 0.0)]
-        z = float(np.median(valid)) if valid.size else self.translation_m[2]
-        pose[:3, 3] = [self.translation_m[0], self.translation_m[1], z]
-        self.initialized.add(session_id)
-        return BackendResult(
-            camera_from_mesh=pose,
-            score=1.0,
-            latency_ms=(time.perf_counter() - start) * 1000.0,
-            backend_details={"mock": True},
-        )
-
-    def track(
-        self,
-        session_id: str,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-    ) -> BackendResult:
-        del rgb, depth_m, camera_matrix
-        if session_id not in self.initialized:
-            raise RuntimeError("session has not been initialized")
-        start = time.perf_counter()
-        pose = np.eye(4, dtype=np.float64)
-        pose[:3, 3] = self.translation_m
-        return BackendResult(
-            camera_from_mesh=pose,
-            score=1.0,
-            latency_ms=(time.perf_counter() - start) * 1000.0,
-            backend_details={"mock": True},
-        )
-
-    def reset(self, session_id: str) -> None:
-        self.initialized.discard(session_id)
-
-    def close(self) -> None:
-        self.initialized.clear()
+@dataclass(frozen=True)
+class EstimateOutput:
+    camera_from_centered_mesh: list[list[float]]
+    score: float
+    hypothesis_count: int
+    elapsed_ms: float
 
 
-class NvLabsFoundationPoseBackend(FoundationPoseBackend):
-    """Thin adapter around the official NVLabs FoundationPose Python API.
+InferenceCallback = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    ctypes.POINTER(ctypes.c_char),
+    ctypes.c_size_t,
+)
 
-    The adapter intentionally imports the NVIDIA repository at runtime so the
-    Midbrain package does not redistribute or silently install its dependencies.
-    Native Windows compatibility depends on the user's local CUDA build of those
-    dependencies and is verified by the supplied backend smoke test.
-    """
 
-    name = "nvlabs"
+class CreateConfig(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("max_hypotheses", ctypes.c_uint32),
+        ("refine_iterations", ctypes.c_uint32),
+        ("resized_height", ctypes.c_uint32),
+        ("resized_width", ctypes.c_uint32),
+        ("min_depth_m", ctypes.c_float),
+        ("max_depth_m", ctypes.c_float),
+        ("refine_crop_ratio", ctypes.c_float),
+        ("score_crop_ratio", ctypes.c_float),
+        ("rotation_normalizer", ctypes.c_float),
+        ("inference_callback", InferenceCallback),
+        ("inference_user_data", ctypes.c_void_p),
+    ]
 
-    def __init__(
-        self,
-        foundationpose_root: Path,
-        *,
-        estimate_iterations: int = 5,
-        track_iterations: int = 2,
-        debug_level: int = 0,
-        debug_dir: Path | None = None,
-        prepared_model_cache_size: int = 4,
-    ):
-        self.foundationpose_root = foundationpose_root.resolve()
-        self.estimate_iterations = estimate_iterations
-        self.track_iterations = track_iterations
-        self.debug_level = debug_level
-        if prepared_model_cache_size < 0:
-            raise ValueError("prepared_model_cache_size cannot be negative")
-        self.prepared_model_cache_size = prepared_model_cache_size
-        self.debug_dir = (debug_dir or Path("debug/foundation_pose")).resolve()
-        self.lock = threading.RLock()
-        self._loaded = False
-        self._torch: Any = None
-        self._trimesh: Any = None
-        self._dr: Any = None
-        self._FoundationPose: Any = None
-        self._ScorePredictor: Any = None
-        self._PoseRefinePredictor: Any = None
-        self._scorer: Any = None
-        self._refiner: Any = None
-        self._glctx: Any = None
-        self._estimators: dict[str, Any] = {}
-        self._model_ids: dict[str, str] = {}
-        self._model_cache_keys: dict[str, str] = {}
-        self._idle_estimators: dict[str, list[Any]] = {}
 
-    def _load_runtime(self) -> None:
-        if self._loaded:
-            return
-        if not self.foundationpose_root.is_dir():
-            raise FileNotFoundError(
-                f"FOUNDATIONPOSE_ROOT does not exist: {self.foundationpose_root}"
-            )
+class EstimateRequest(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("rgb_host", ctypes.POINTER(ctypes.c_uint8)),
+        ("depth_m_host", ctypes.POINTER(ctypes.c_float)),
+        ("mask_host", ctypes.POINTER(ctypes.c_uint8)),
+        ("height", ctypes.c_uint32),
+        ("width", ctypes.c_uint32),
+        ("camera_intrinsics_row_major", ctypes.c_float * 9),
+        ("mesh_path_utf8", ctypes.c_char_p),
+        ("mesh_scale_to_m", ctypes.c_float),
+    ]
+
+
+class EstimateResult(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("camera_from_centered_mesh_column_major", ctypes.c_float * 16),
+        ("score", ctypes.c_float),
+        ("hypothesis_count", ctypes.c_uint32),
+        ("elapsed_ms", ctypes.c_float),
+    ]
+
+
+class NativeFoundationPoseBackend:
+    def __init__(self, config: dict[str, Any], root: Path) -> None:
+        self.lock = threading.Lock()
+        self.root = root
+        self.library_path = self._resolve(config["native_library"])
+        self.refine_engine_path = self._resolve(config["refine_engine"])
+        self.score_engine_path = self._resolve(config["score_engine"])
+        for path in (self.library_path, self.refine_engine_path, self.score_engine_path):
+            if not path.is_file():
+                raise RuntimeError(f"FoundationPose runtime artifact is unavailable: {path}")
+        self.dll_directories: list[Any] = []
         if os.name == "nt":
-            verify_windows_temp_path(self.foundationpose_root)
-        root_text = str(self.foundationpose_root)
-        if root_text not in sys.path:
-            sys.path.insert(0, root_text)
-        estimater = importlib.import_module("estimater")
-        self._torch = importlib.import_module("torch")
-        self._trimesh = importlib.import_module("trimesh")
-        self._dr = importlib.import_module("nvdiffrast.torch")
-        self._FoundationPose = getattr(estimater, "FoundationPose")
-        self._ScorePredictor = getattr(estimater, "ScorePredictor")
-        self._PoseRefinePredictor = getattr(estimater, "PoseRefinePredictor")
-        if not bool(self._torch.cuda.is_available()):
-            raise RuntimeError("PyTorch CUDA is not available")
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
-        self._scorer = self._ScorePredictor()
-        self._refiner = self._PoseRefinePredictor()
-        self._glctx = self._dr.RasterizeCudaContext()
-        self._loaded = True
-
-    def _model_cache_key(self, model: ObjectModel) -> str:
-        mesh_path = model.mesh_path.resolve()
-        digest = hashlib.sha256()
-        with mesh_path.open("rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(block)
-        mesh_digest = digest.hexdigest()
-        descriptor = json.dumps(
-            {
-                "mesh_sha256": mesh_digest,
-                "scale_to_m": model.scale_to_m,
-                "revision": model.revision,
-                "symmetry": model.symmetry,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+            self.dll_directories.append(os.add_dll_directory(str(self.library_path.parent)))
+            cuda_root = str(os.environ.get("CUDA_PATH") or r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8")
+            cuda_bin = Path(cuda_root) / "bin"
+            if cuda_bin.is_dir():
+                self.dll_directories.append(os.add_dll_directory(str(cuda_bin)))
+        self.tensorrt = TensorRtPair(self.refine_engine_path, self.score_engine_path)
+        self.callback = InferenceCallback(self._inference_callback)
+        self.library = ctypes.CDLL(str(self.library_path))
+        self.library.midbrain_foundation_pose_create.argtypes = [
+            ctypes.POINTER(CreateConfig), ctypes.POINTER(ctypes.c_char), ctypes.c_size_t
+        ]
+        self.library.midbrain_foundation_pose_create.restype = ctypes.c_void_p
+        self.library.midbrain_foundation_pose_estimate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(EstimateRequest),
+            ctypes.POINTER(EstimateResult),
+            ctypes.POINTER(ctypes.c_char),
+            ctypes.c_size_t,
+        ]
+        self.library.midbrain_foundation_pose_estimate.restype = ctypes.c_int
+        self.library.midbrain_foundation_pose_destroy.argtypes = [ctypes.c_void_p]
+        create = CreateConfig(
+            struct_size=ctypes.sizeof(CreateConfig),
+            max_hypotheses=int(config.get("max_hypotheses", 252)),
+            refine_iterations=int(config.get("refine_iterations", 2)),
+            resized_height=int(config.get("network_height", 160)),
+            resized_width=int(config.get("network_width", 160)),
+            min_depth_m=float(config.get("min_depth_m", 0.1)),
+            max_depth_m=float(config.get("max_depth_m", 4.0)),
+            refine_crop_ratio=float(config.get("refine_crop_ratio", 1.2)),
+            score_crop_ratio=float(config.get("score_crop_ratio", 1.4)),
+            rotation_normalizer=float(config.get("rotation_normalizer", 0.3490658504)),
+            inference_callback=self.callback,
+            inference_user_data=None,
         )
-        return hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _clear_estimator_session_state(estimator: Any) -> None:
-        for attribute in (
-            "pose_last",
-            "gt_pose",
-            "H",
-            "W",
-            "K",
-            "ob_id",
-            "ob_mask",
-            "poses",
-            "scores",
-            "best_id",
-        ):
-            if hasattr(estimator, attribute):
-                setattr(estimator, attribute, None)
-
-    def _build_estimator(
-        self, session_id: str, model: ObjectModel
-    ) -> tuple[Any, bool]:
-        cache_key = self._model_cache_key(model)
-        idle = self._idle_estimators.get(cache_key)
-        if idle:
-            estimator = idle.pop()
-            if not idle:
-                self._idle_estimators.pop(cache_key, None)
-            self._clear_estimator_session_state(estimator)
-            estimator.debug_dir = str(self.debug_dir / session_id)
-            Path(estimator.debug_dir).mkdir(parents=True, exist_ok=True)
-            cache_hit = True
-        else:
-            estimator = self._create_estimator(session_id, model)
-            cache_hit = False
-        self._estimators[session_id] = estimator
-        self._model_ids[session_id] = model.model_id
-        self._model_cache_keys[session_id] = cache_key
-        return estimator, cache_hit
-
-    def _create_estimator(self, session_id: str, model: ObjectModel) -> Any:
-        mesh = self._trimesh.load(str(model.mesh_path), force="mesh", process=False)
-        if model.scale_to_m != 1.0:
-            mesh.apply_scale(model.scale_to_m)
-        if getattr(mesh, "vertices", None) is None or len(mesh.vertices) == 0:
-            raise ValueError(f"mesh has no vertices: {model.mesh_path}")
-        estimator = self._FoundationPose(
-            model_pts=np.asarray(mesh.vertices),
-            model_normals=np.asarray(mesh.vertex_normals),
-            mesh=mesh,
-            scorer=self._scorer,
-            refiner=self._refiner,
-            debug_dir=str(self.debug_dir / session_id),
-            debug=self.debug_level,
-            glctx=self._glctx,
+        error = ctypes.create_string_buffer(2048)
+        self.handle = self.library.midbrain_foundation_pose_create(
+            ctypes.byref(create), error, len(error)
         )
-        return estimator
+        if not self.handle:
+            raise RuntimeError(error.value.decode("utf-8", errors="replace"))
 
-    def initialize(
+    def _resolve(self, value: str) -> Path:
+        path = Path(value)
+        return (self.root / path).resolve() if not path.is_absolute() else path.resolve()
+
+    def _inference_callback(
         self,
-        session_id: str,
-        model: ObjectModel,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-        mask: np.ndarray,
-    ) -> BackendResult:
-        with self.lock:
-            self._load_runtime()
-            estimator = self._estimators.get(session_id)
-            cache_hit = False
-            if estimator is None or self._model_ids.get(session_id) != model.model_id:
-                estimator, cache_hit = self._build_estimator(session_id, model)
-            start = time.perf_counter()
-            pose = estimator.register(
-                K=np.ascontiguousarray(camera_matrix.astype(np.float64)),
-                rgb=np.ascontiguousarray(rgb.astype(np.uint8)),
-                depth=np.ascontiguousarray(depth_m.astype(np.float32)),
-                ob_mask=np.ascontiguousarray(mask.astype(bool)),
-                iteration=self.estimate_iterations,
+        _user_data: int,
+        kind: int,
+        batch: int,
+        height: int,
+        width: int,
+        channels: int,
+        rendered: int,
+        observed: int,
+        primary: int,
+        secondary: int,
+        stream: int,
+        error_message: Any,
+        error_capacity: int,
+    ) -> int:
+        try:
+            self.tensorrt.execute(
+                kind, batch, height, width, channels, rendered, observed,
+                primary, secondary, stream
             )
-            latency_ms = (time.perf_counter() - start) * 1000.0
-            return BackendResult(
-                camera_from_mesh=as_transform(pose, field_name="FoundationPose register result"),
-                score=None,
-                latency_ms=latency_ms,
-                backend_details={
-                    "operation": "register",
-                    "prepared_model_cache_hit": cache_hit,
-                },
-            )
+            return 0
+        except Exception as exc:
+            encoded = str(exc).encode("utf-8")[: max(0, error_capacity - 1)]
+            if error_capacity:
+                ctypes.memset(error_message, 0, error_capacity)
+                ctypes.memmove(error_message, encoded, len(encoded))
+            return 1
 
-    def track(
-        self,
-        session_id: str,
-        rgb: np.ndarray,
-        depth_m: np.ndarray,
-        camera_matrix: np.ndarray,
-    ) -> BackendResult:
+    def estimate(self, inputs: EstimateInput) -> EstimateOutput:
+        rgb = np.ascontiguousarray(inputs.rgb, dtype=np.uint8)
+        depth = np.ascontiguousarray(inputs.depth_m, dtype=np.float32)
+        mask = np.ascontiguousarray(inputs.mask, dtype=np.uint8)
+        if len(inputs.intrinsics) != 9:
+            raise ValueError("camera intrinsics must contain nine row-major values")
+        encoded_mesh = str(inputs.mesh_path.resolve()).encode("utf-8")
+        request = EstimateRequest(
+            struct_size=ctypes.sizeof(EstimateRequest),
+            rgb_host=rgb.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            depth_m_host=depth.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            mask_host=mask.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            height=rgb.shape[0],
+            width=rgb.shape[1],
+            camera_intrinsics_row_major=(ctypes.c_float * 9)(*inputs.intrinsics),
+            mesh_path_utf8=encoded_mesh,
+            mesh_scale_to_m=float(inputs.mesh_scale_to_m),
+        )
+        result = EstimateResult(struct_size=ctypes.sizeof(EstimateResult))
+        error = ctypes.create_string_buffer(2048)
         with self.lock:
-            self._load_runtime()
-            estimator = self._estimators.get(session_id)
-            if estimator is None:
-                raise RuntimeError("session has not been initialized")
-            start = time.perf_counter()
-            pose = estimator.track_one(
-                rgb=np.ascontiguousarray(rgb.astype(np.uint8)),
-                depth=np.ascontiguousarray(depth_m.astype(np.float32)),
-                K=np.ascontiguousarray(camera_matrix.astype(np.float64)),
-                iteration=self.track_iterations,
+            status = self.library.midbrain_foundation_pose_estimate(
+                self.handle, ctypes.byref(request), ctypes.byref(result), error, len(error)
             )
-            latency_ms = (time.perf_counter() - start) * 1000.0
-            return BackendResult(
-                camera_from_mesh=as_transform(pose, field_name="FoundationPose track result"),
-                score=None,
-                latency_ms=latency_ms,
-                backend_details={"operation": "track_one"},
-            )
-
-    def reset(self, session_id: str) -> None:
-        with self.lock:
-            estimator = self._estimators.pop(session_id, None)
-            self._model_ids.pop(session_id, None)
-            cache_key = self._model_cache_keys.pop(session_id, None)
-            if estimator is not None and cache_key is not None:
-                self._clear_estimator_session_state(estimator)
-                if self.prepared_model_cache_size > 0 and cache_key not in self._idle_estimators:
-                    while len(self._idle_estimators) >= self.prepared_model_cache_size:
-                        oldest_key = next(iter(self._idle_estimators))
-                        self._idle_estimators.pop(oldest_key, None)
-                    self._idle_estimators[cache_key] = [estimator]
+        if status != 0:
+            raise RuntimeError(error.value.decode("utf-8", errors="replace"))
+        flat = list(result.camera_from_centered_mesh_column_major)
+        matrix = [[float(flat[column * 4 + row]) for column in range(4)] for row in range(4)]
+        return EstimateOutput(
+            camera_from_centered_mesh=matrix,
+            score=float(result.score),
+            hypothesis_count=int(result.hypothesis_count),
+            elapsed_ms=float(result.elapsed_ms),
+        )
 
     def close(self) -> None:
-        with self.lock:
-            self._estimators.clear()
-            self._model_ids.clear()
-            self._model_cache_keys.clear()
-            self._idle_estimators.clear()
-            torch_module = self._torch
-            self._scorer = None
-            self._refiner = None
-            self._glctx = None
-            self._FoundationPose = None
-            self._ScorePredictor = None
-            self._PoseRefinePredictor = None
-            self._trimesh = None
-            self._dr = None
-            self._torch = None
-            self._loaded = False
-        # Drop Python references before asking PyTorch to return unused CUDA
-        # allocations. This makes close() a reusable, explicit resource
-        # boundary rather than relying on process exit or eventual GC.
-        gc.collect()
-        if torch_module is not None and bool(torch_module.cuda.is_available()):
-            torch_module.cuda.empty_cache()
-            ipc_collect = getattr(torch_module.cuda, "ipc_collect", None)
-            if callable(ipc_collect):
-                ipc_collect()
-
-    def diagnostics(self) -> dict[str, Any]:
-        return {
-            "backend": self.name,
-            "foundationpose_root": str(self.foundationpose_root),
-            "runtime_loaded": self._loaded,
-            "active_estimators": len(self._estimators),
-            "cached_prepared_estimators": sum(
-                len(estimators) for estimators in self._idle_estimators.values()
-            ),
-            "prepared_model_cache_size": self.prepared_model_cache_size,
-            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-        }
+        if getattr(self, "handle", None):
+            self.library.midbrain_foundation_pose_destroy(self.handle)
+            self.handle = None
+        for directory in getattr(self, "dll_directories", []):
+            directory.close()
+        self.dll_directories = []

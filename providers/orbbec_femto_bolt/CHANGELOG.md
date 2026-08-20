@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 - 2026-08-19
+
+- Publish the canonical physical-device identity with camera calibration and
+  synchronized RGB-D observations so downstream calibration candidates can be
+  activated without substituting a replay identity.
+
 ## 0.4.1 - 2026-08-07
 
 - Republished calibration and static camera transforms while HOT so a restarted

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Remove the Regular Agent entry point from the Manager portal, keep the
+  Developer Agent and run journal, and use the ordinary solid portal-card
+  border for the Developer Agent.
 - Document Manager's regulated complete Agent runtime catalog, explicit
   sanitized Provider-detail boundary, and the rule that Limited Graph Provider
   handover continues through ordinary lifecycle policy rather than the detail

@@ -1,0 +1,184 @@
+{
+  "skill_type": "locate_arm_base",
+  "version": "1.8.1",
+  "display_name": "Locate Arm Base",
+  "description": "Locate a profiled robot arm base from CAD and current RGB-D evidence, resolve only model-profile orientation candidates with reference-image VLM evidence, and emit a review-only world transform candidate.",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "locate_arm_base",
+    "description": "Locate the stationary robot arm base in the current world frame. The Skill owns the base CAD and reference images, creates configurable independent VLM-to-SAM2 masks, removes bad masks with VLM review, pixel-votes and dilates the survivors once, repeats independent fits of that final mask through the generic FoundationPose Provider, normalizes only the known upside-down pose family with a world-verified local-X half-turn, and asks the VLM to select only a profiled local-Z rotation. It creates a non-motion-usable candidate that must be reviewed and activated by Manager. When used in a Limited Graph, allocate at least 180 seconds.",
+    "when_to_use": [
+      "The current stationary camera rig needs a reviewed world-to-arm-base transform.",
+      "The arm base is visible in current aligned RGB-D evidence and the current world axis is established.",
+      "A replaceable end effector makes gripper-dependent arm-base orientation assumptions invalid."
+    ],
+    "when_not_to_use": [
+      "Only the VIO world axis or world origin is requested.",
+      "The arm base or camera rig is moving during capture.",
+      "The requested robot base has no immutable Skill-owned model profile."
+    ],
+    "side_effects": [
+      "Captures one current aligned RGB-D snapshot and invokes independent VLM seed prompts, independent SAM2 masks, VLM bad-mask review, a coded half-survivor pixel vote, fit-candidate selection, and orientation selection.",
+      "Requests HOT residency for the assembly-selected arm Provider through Manager and waits for its profile-binding state.",
+      "Temporarily activates the generic SAM2 segmentation and FoundationPose pose Providers through Manager and performs the configured number of independent fits on the voted and once-dilated mask.",
+      "Persists and publishes one immutable review-only calibration candidate; it does not move hardware or activate the transform."
+    ],
+    "safety_class": "STATEFUL_NO_MOTION",
+    "expected_latency": "MEDIUM",
+    "required_permissions": [
+      "camera.read",
+      "world.transforms.read",
+      "vlm.invoke",
+      "calibration.candidate.write"
+    ],
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "schema": {
+          "enum": [
+            "midbrain.skill.locate_arm_base.calibration_candidate",
+            "midbrain.skill.locate_arm_base.failed_result"
+          ]
+        },
+        "schema_version": {"const": 1},
+        "status": {"type": "string"},
+        "run_id": {"type": ["string", "null"]},
+        "failed_stage": {"type": ["string", "null"]},
+        "error": {"type": "string"},
+        "candidate_id": {"type": "string"},
+        "candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "candidate_path": {"type": "string"},
+        "review_state": {"const": "PENDING_REVIEW"},
+        "motion_usable": {"const": false},
+        "activation_owner": {"const": "RESOURCE_PROVIDER_MANAGER"},
+        "world_from_arm_base": {"type": "object"},
+        "quality_provenance": {"type": "object"},
+        "timing": {"type": "object"},
+        "workflow_complete": {"type": "boolean"},
+        "terminal_failure": {"type": "boolean"},
+        "retry_allowed": {"type": "boolean"},
+        "physical_motion_submitted": {"type": "boolean"},
+        "candidate_published": {"type": "boolean"},
+        "required_next_tool": {"type": "object"},
+        "agent_instruction": {"type": "string"},
+        "visual_evidence": {"type": "array"}
+      },
+      "required": [
+        "schema",
+        "schema_version",
+        "motion_usable"
+      ],
+      "additionalProperties": true,
+      "oneOf": [
+        {
+          "properties": {
+            "schema": {"const": "midbrain.skill.locate_arm_base.calibration_candidate"}
+          },
+          "required": [
+            "candidate_id",
+            "candidate_sha256",
+            "candidate_path",
+            "review_state",
+            "activation_owner",
+            "world_from_arm_base",
+            "quality_provenance",
+            "timing"
+          ]
+        },
+        {
+          "properties": {
+            "schema": {"const": "midbrain.skill.locate_arm_base.failed_result"},
+            "status": {"const": "FAILED"},
+            "workflow_complete": {"const": true},
+            "terminal_failure": {"const": true},
+            "retry_allowed": {"const": false},
+            "candidate_published": {"const": false},
+            "physical_motion_submitted": {"const": false}
+          },
+          "required": [
+            "status",
+            "run_id",
+            "failed_stage",
+            "error",
+            "workflow_complete",
+            "terminal_failure",
+            "retry_allowed",
+            "candidate_published",
+            "physical_motion_submitted"
+          ]
+        }
+      ],
+      "x-midbrain-result-tiers": {
+        "schema_version": 1,
+        "compact_pointers": [
+          "/schema",
+          "/schema_version",
+          "/status",
+          "/run_id",
+          "/failed_stage",
+          "/error",
+          "/candidate_id",
+          "/candidate_sha256",
+          "/candidate_path",
+          "/review_state",
+          "/motion_usable",
+          "/activation_owner",
+          "/world_from_arm_base",
+          "/quality_provenance",
+          "/timing",
+          "/workflow_complete",
+          "/terminal_failure",
+          "/retry_allowed",
+          "/physical_motion_submitted",
+          "/candidate_published",
+          "/required_next_tool",
+          "/agent_instruction",
+          "/visual_evidence"
+        ],
+        "detail_policy": "HOST_SANITIZED_REFERENCE",
+        "max_compact_bytes": 32768
+      }
+    },
+    "execution_adapter": {
+      "adapter_id": "skill.locate_arm_base.v1",
+      "kind": "IN_PROCESS_BOUND_INSTANCE",
+      "invocation_requires_approval": false
+    }
+  },
+  "required_capabilities": [
+    "camera.rgbd.bundle",
+    "robot_arm.assembly_state",
+    "camera.rgbd_geometry",
+    "world.transforms.timestamped",
+    "perception.image.sam2.segment",
+    "perception.known_object_pose.estimate",
+    "perception.vision_language"
+  ],
+  "optional_capabilities": [],
+  "published_streams": [
+    "calibration.arm_base.candidate"
+  ],
+  "activation_owner": "RESOURCE_PROVIDER_MANAGER",
+  "motion_usable_output": false,
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    },
+    "developer": {
+      "label": "Locate Arm Base",
+      "url": "http://127.0.0.1:7114/",
+      "launch_command": ".\\skills\\locate_arm_base\\scripts\\run_ui.ps1",
+      "availability": "SEPARATE_LOCAL_PROCESS"
+    }
+  }
+}

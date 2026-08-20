@@ -26,7 +26,7 @@ from physical_agent_test.spatial_registration_adapter import (
     CAMERA_CAPABILITIES,
     SpatialRegistrationSkillAdapter,
 )
-from stationary_world_arm_alignment.camera import RgbdCapture
+from physical_agent_test.rgbd_frame_capture import RgbdFrameCapture
 
 
 pytestmark = pytest.mark.skipif(
@@ -870,7 +870,7 @@ class Phase5SpatialReplayTests(unittest.IsolatedAsyncioTestCase):
                 materialization = bundle.materialize()
                 fabric = _ReplaySpatialFabric(materialization)
                 adapter = SpatialRegistrationSkillAdapter(
-                    RgbdCapture(fabric, "replay-camera-frame"),
+                    RgbdFrameCapture(fabric, "replay-camera-frame"),
                     fabric,
                     manager=_ReplayBindingManager(),
                     fallback_camera_provider_id="camera.replay",

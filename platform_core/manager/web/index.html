@@ -47,22 +47,51 @@
     <section class="agent-panel" aria-labelledby="agentHeading">
       <div>
         <p class="eyebrow">AGENT SURFACES</p>
-        <h2 id="agentHeading">Choose an Agent interaction surface</h2>
+        <h2 id="agentHeading">Developer Agent</h2>
         <p id="agentState" class="section-note">Checking whether the Agent service is available.</p>
       </div>
       <div class="agent-links">
-        <a id="regularAgentLink" class="agent-link" href="http://127.0.0.1:8000/" target="_blank" rel="noreferrer">
-          <span>Regular agent</span>
-          <small>Curated Skills, approved Provider lifecycle, relative IK, and safe-home</small>
-        </a>
         <a id="developerAgentLink" class="agent-link developer" href="http://127.0.0.1:8000/dev" target="_blank" rel="noreferrer">
           <span>Developer view</span>
-          <small>The same autonomous Agent with bindings, point-cloud, replay, and event diagnostics</small>
+          <small>Autonomous Agent controls with bindings, point-cloud, replay, and event diagnostics</small>
         </a>
         <a id="runJournalLink" class="agent-link developer" href="http://127.0.0.1:8000/dev/run-journal" target="_blank" rel="noreferrer">
           <span>Run journal</span>
           <small>Read-only retained Agent runs with complete normalized event detail</small>
         </a>
+      </div>
+    </section>
+
+    <section class="effector-panel arm-panel" aria-labelledby="armHeading">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">STATIC ROBOT ASSEMBLY</p>
+          <h2 id="armHeading">Arm model</h2>
+        </div>
+        <p class="section-note">Select the profile for the physically installed arm. The selected file owns the arm model and its flexible Skill appendices, including Locate Arm Base CAD and reference images.</p>
+      </div>
+      <div class="effector-grid">
+        <div class="effector-control">
+          <label for="armSelect">Installed arm profile</label>
+          <select id="armSelect" disabled>
+            <option>Loading arm profiles...</option>
+          </select>
+          <label class="confirm-check effector-confirm" for="armPhysicalConfirmation">
+            <input id="armPhysicalConfirmation" type="checkbox">
+            <span>I confirm this profile matches the arm physically installed in this workcell.</span>
+          </label>
+          <button id="selectArmButton" class="secondary-button" type="button" disabled>Select arm</button>
+          <p id="armActionStatus" class="activation-status">Reading the active assembly selection.</p>
+        </div>
+        <dl class="effector-details">
+          <div><dt>Active profile</dt><dd id="armActiveProfile">Checking</dd></div>
+          <div><dt>Model revision</dt><dd id="armModelRevision">Checking</dd></div>
+          <div><dt>Root frame</dt><dd id="armRootFrame">Checking</dd></div>
+          <div><dt>Joints</dt><dd id="armJointCount">Checking</dd></div>
+          <div><dt>Locate-base CAD</dt><dd id="armLocateBaseCad">Checking</dd></div>
+          <div><dt>Reference images</dt><dd id="armReferenceCount">Checking</dd></div>
+          <div><dt>Profile file</dt><dd id="armProfileFile">Checking</dd></div>
+        </dl>
       </div>
     </section>
 

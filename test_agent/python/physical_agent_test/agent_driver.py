@@ -85,7 +85,7 @@ from .skill_execution import (
 )
 from .skill_result_details import SkillResultDetailStore
 from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
-from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
+from .arm_base_localization_adapter import ArmBaseLocalizationSkillAdapter
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
 from .vlm_router import (
     reset_vlm_model_selection,
@@ -107,8 +107,7 @@ class AgentSessionAuthorization:
     auto_authorize_relative_motion: bool = False
     max_auto_move_cm: float = 5.0
     max_auto_speed_m_s: float = DEFAULT_RELATIVE_NOMINAL_SPEED_M_S
-    auto_authorize_stationary_calibration: bool = False
-    auto_authorize_stationary_activation: bool = False
+    auto_authorize_arm_base_activation: bool = False
     auto_authorize_safe_home: bool = False
     auto_authorize_space_reinitialization: bool = False
 
@@ -390,7 +389,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             },
             "instruction": (
                 "The current request explicitly excludes arm-base location. "
-                "Never call calibrate_stationary_workcell or any arm-base pose "
+                "Never call locate_arm_base or any arm-base pose "
                 "locator. Call establish_world_axis so camera/VIO activation, "
                 "the stationary initialization gate, and TRACKING body-pose "
                 "verification remain one bounded operation. Report the returned "
@@ -823,8 +822,8 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "set_provider_residency",
                 "plan_no_contact_item_approach",
                 "execute_no_contact_approach_step",
-                "calibrate_stationary_workcell",
-                "review_and_activate_stationary_calibration",
+                "locate_arm_base",
+                "review_and_activate_arm_base",
                 "tool_search",
             },
             "instruction": (
@@ -1252,22 +1251,13 @@ def relative_motion_within_authorization(
     return False
 
 
-async def stationary_calibration_needs_approval(
+async def arm_base_activation_needs_approval(
     context_wrapper: Any,
     _arguments: dict[str, Any],
     _call_id: str,
 ) -> bool:
     authorization = _session_authorization(context_wrapper)
-    return not authorization.auto_authorize_stationary_calibration
-
-
-async def stationary_activation_needs_approval(
-    context_wrapper: Any,
-    _arguments: dict[str, Any],
-    _call_id: str,
-) -> bool:
-    authorization = _session_authorization(context_wrapper)
-    return not authorization.auto_authorize_stationary_activation
+    return not authorization.auto_authorize_arm_base_activation
 
 
 async def safe_home_needs_approval(
@@ -1462,8 +1452,8 @@ class PrototypeAgentDriver:
         external_skill_adapters: (
             dict[str, SkillExecutionAdapter] | None
         ) = None,
-        stationary_calibration_skill: (
-            StationaryCalibrationSkillAdapter | None
+        arm_base_localization_skill: (
+            ArmBaseLocalizationSkillAdapter | None
         ) = None,
         reviewed_observation_execution_skill: (
             ReviewedObservationExecutionAdapter | None
@@ -1482,7 +1472,7 @@ class PrototypeAgentDriver:
         session: Any | None = None,
         defer_loading: bool = False,
         adapter_timeout_s: float = 60.0,
-        stationary_calibration_timeout_s: float = 600.0,
+        arm_base_localization_timeout_s: float = 600.0,
         provider_hot_readiness_timeout_s: float = 45.0,
         provider_hot_readiness_timeout_overrides_s: (
             Mapping[str, float] | None
@@ -1837,19 +1827,19 @@ class PrototypeAgentDriver:
             adapters[
                 "skill.register_tool_to_control_frame.v1"
             ] = BoundMethodSkillAdapter(tool_registration_adapter)
-        if stationary_calibration_skill is not None:
-            async def stationary_calibration_adapter(
+        if arm_base_localization_skill is not None:
+            async def arm_base_localization_adapter(
                 arguments: dict[str, Any],
             ) -> str:
-                result = await stationary_calibration_skill.run(
+                result = await arm_base_localization_skill.run(
                     request=arguments.get("request"),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
-            adapters[
-                "skill.stationary_world_arm_alignment.cli.v1"
-            ] = BoundMethodSkillAdapter(stationary_calibration_adapter)
-            eligible.add("calibrate_stationary_workcell")
+            adapters["skill.locate_arm_base.v1"] = BoundMethodSkillAdapter(
+                arm_base_localization_adapter
+            )
+            eligible.add("locate_arm_base")
         if reviewed_observation_execution_skill is not None:
             async def reviewed_observation_execution_adapter(
                 arguments: dict[str, Any],
@@ -1942,10 +1932,6 @@ class PrototypeAgentDriver:
             str,
             bool | Callable[..., Awaitable[bool]],
         ] = {}
-        if stationary_calibration_skill is not None:
-            approval_overrides["calibrate_stationary_workcell"] = (
-                stationary_calibration_needs_approval
-            )
         if (
             space_cognition_reinitializer is not None
             and "reinitialize_space_cognition" in eligible
@@ -1963,11 +1949,11 @@ class PrototypeAgentDriver:
             adapter_timeout_s=adapter_timeout_s,
             adapter_timeout_overrides_s=(
                 {
-                    "calibrate_stationary_workcell": float(
-                        stationary_calibration_timeout_s
+                    "locate_arm_base": float(
+                        arm_base_localization_timeout_s
                     )
                 }
-                if stationary_calibration_skill is not None
+                if arm_base_localization_skill is not None
                 else None
             ),
             approval_overrides=approval_overrides or None,
@@ -2091,8 +2077,8 @@ class PrototypeAgentDriver:
                     needs_approval=False,
                 )
             )
-        if stationary_calibration_skill is not None:
-            async def review_and_activate_stationary_calibration(
+        if arm_base_localization_skill is not None:
+            async def review_and_activate_arm_base(
                 _context,
                 raw_arguments: str,
             ) -> str:
@@ -2100,39 +2086,38 @@ class PrototypeAgentDriver:
                     arguments = json.loads(raw_arguments)
                 except json.JSONDecodeError:
                     continuation = (
-                        stationary_calibration_skill
+                        arm_base_localization_skill
                         .latest_activation_continuation()
                     )
                     if continuation is None:
                         raise
                     arguments = dict(continuation["arguments"])
-                result = await stationary_calibration_skill.review_and_activate(
-                    alignment_id=arguments.get("alignment_id"),
+                result = await arm_base_localization_skill.review_and_activate(
+                    candidate_id=arguments.get("candidate_id"),
                     candidate_sha256=arguments.get("candidate_sha256"),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
             offered_tools.append(
                 FunctionTool(
-                    name="review_and_activate_stationary_calibration",
+                    name="review_and_activate_arm_base",
                     description=(
-                        "Review and activate one exact persisted stationary "
-                        "world-to-arm calibration candidate. Copy alignment_id "
+                        "Review and activate one exact persisted arm-base "
+                        "localization candidate. Copy candidate_id "
                         "and candidate_sha256 unchanged only from the current "
                         "run's calibration tool required_next_tool; never "
                         "replay activation arguments from an earlier user turn "
                         "or service boot. This submits no arm motion. "
                         "Manager independently revalidates candidate quality, "
-                        "provenance, current VIO tracking, and expiration, then "
+                        "bounded orientation evidence, world-axis proof, and current camera identity, then "
                         "publishes a persistent mounted-workcell transform. "
                         "Its motion usability is gated by current camera, "
-                        "calibration, and VIO tracking identities rather than "
-                        "a wall-clock expiry."
+                        "calibration identity rather than a wall-clock expiry."
                     ),
                     params_json_schema={
                         "type": "object",
                         "properties": {
-                            "alignment_id": {
+                            "candidate_id": {
                                 "type": "string",
                                 "pattern": "^[0-9A-Za-z-]+$",
                             },
@@ -2142,16 +2127,16 @@ class PrototypeAgentDriver:
                             },
                         },
                         "required": [
-                            "alignment_id",
+                            "candidate_id",
                             "candidate_sha256",
                         ],
                         "additionalProperties": False,
                     },
                     on_invoke_tool=(
-                        review_and_activate_stationary_calibration
+                        review_and_activate_arm_base
                     ),
                     strict_json_schema=True,
-                    needs_approval=stationary_activation_needs_approval,
+                    needs_approval=arm_base_activation_needs_approval,
                 )
             )
         lifecycle_control = developer_mode or provider_lifecycle_control
@@ -3091,53 +3076,32 @@ class PrototypeAgentDriver:
                     "and configured endpoint limits. Do not infer an axis "
                     "mistake from joint travel alone."
                 )
-            if stationary_calibration_skill is not None:
+            if arm_base_localization_skill is not None:
                 instructions += (
-                    " FoundationPose is retained as a slow explicitly named "
-                    "initializer, not as the default world-to-arm alignment "
-                    "route. Call calibrate_stationary_workcell whenever the "
-                    "operator's request mentions FoundationPose by name. The "
-                    "name match is case-insensitive and accepts spacing, "
-                    "hyphenation, and minor spelling errors. Pass the complete "
-                    "operator request unchanged as the request argument. For "
-                    "every other establish, calibrate, "
-                    "or validate request, do not call FoundationPose; use the "
-                    "movement-based gripper alignment workflow when it is "
-                    "available and otherwise report that it is not yet "
-                    "implemented. Do not ask for "
-                    "conversational permission first; the tool authorization "
-                    "boundary may be satisfied before execution by active "
-                    "browser-session calibration authorization, otherwise it "
-                    "creates an SDK interruption. VIO "
-                    "establishes its local "
-                    "world epoch, while this Skill observes the stationary "
-                    "robot base and publishes the world-to-arm-base transform; "
-                    "do not claim that VIO alone measures the arm-base "
-                    "extrinsic. A calibration candidate is incomplete: call "
-                    "its required_next_tool immediately with unchanged exact "
-                    "alignment ID and digest. Report the relationship as "
-                    "established only after that tool returns "
-                    "motion_usable=true. Candidate review and mounted-rig "
-                    "activation have their own authorization policy. The "
-                    "activation has no wall-clock expiry; Manager gates it "
-                    "using exact camera/VIO identity, calibration revision, "
-                    "VIO epoch and convention, and current tracking health. "
-                    "If an explicitly requested FoundationPose activation "
-                    "returns FRESH_CALIBRATION_REQUIRED, never "
-                    "retry that alignment. When the current user request is "
-                    "another explicit FoundationPose request, call "
-                    "calibrate_stationary_workcell again with the current "
-                    "request and activate only its new candidate. "
-                    "The Skill acquires "
-                    "global motion inhibit, so "
-                    "a later Integrated motion requires a fresh explicit "
-                    "approved HOT transition before preview."
+                    " Use locate_arm_base when the current stationary camera "
+                    "rig needs a world-to-arm-base transform and the arm base "
+                    "is visible. The Skill owns the CAD and reference images, "
+                    "uses the generic FoundationPose Provider for one pose, "
+                    "and lets a VLM select only one profiled local-Z rotation; "
+                    "it never infers orientation from a fixed gripper or "
+                    "effector. VIO establishes the world axis but does not "
+                    "measure the arm-base extrinsic. The returned candidate is "
+                    "not motion-usable: immediately call its required_next_tool "
+                    "with the unchanged candidate ID and digest. Report the "
+                    "relationship as established only after Manager returns "
+                    "motion_usable=true. Do not invent a candidate, rotation, "
+                    "mask path, CAD path, or activation digest. A result with "
+                    "terminal_failure=true or retry_allowed=false terminates the "
+                    "current Agent task: report it and never automatically call "
+                    "locate_arm_base again. If activation "
+                    "returns FRESH_LOCALIZATION_REQUIRED, run locate_arm_base "
+                    "again and activate only the new candidate."
                 )
             instructions += (
                 " A request for only the world axis, world frame, or world "
                 "origin that says not the arm base is not a stationary "
                 "workcell-calibration request. Use establish_world_axis and "
-                "never run calibrate_stationary_workcell for that wording. "
+                "never run locate_arm_base for that wording. "
                 "establish_world_axis may transiently inhibit robot motion to "
                 "collect stationary IMU samples, but it never resets the VIO "
                 "epoch or locates the arm base. A request to "
@@ -3657,30 +3621,30 @@ class PrototypeAgentDriver:
                     "value": str(arguments.get("preview_id") or "unknown"),
                 },
             ]
-        elif tool_name == "review_and_activate_stationary_calibration":
-            alignment_id = str(arguments.get("alignment_id") or "unknown")
+        elif tool_name == "review_and_activate_arm_base":
+            candidate_id = str(arguments.get("candidate_id") or "unknown")
             candidate_sha256 = str(
                 arguments.get("candidate_sha256") or "unknown"
             )
             title = "Activate this exact world-to-arm calibration?"
             summary = (
-                "The stationary calibration candidate will be recorded as "
-                "reviewed and submitted to Manager as a mounted-rig "
-                "identity- and tracking-gated activation."
+                "The arm-base localization candidate will be recorded as "
+                "reviewed and submitted to Manager as a camera-identity- and "
+                "calibration-gated activation."
             )
             warning = (
                 "No arm motion is submitted. If Manager accepts the current "
-                "quality, provenance, provider identity, VIO epoch, and "
-                "tracking checks, this exact transform remains usable until "
+                "quality, bounded orientation, world-axis, and camera identity "
+                "checks, this exact transform remains usable until "
                 "revoked, superseded, or its evidence identity changes."
             )
             confirm_label = "Approve exact calibration"
             details = [
-                {"label": "Alignment", "value": alignment_id},
+                {"label": "Candidate", "value": candidate_id},
                 {"label": "Candidate SHA-256", "value": candidate_sha256},
                 {
                     "label": "Activation",
-                    "value": "No timer; identity and tracking gated",
+                    "value": "No timer; camera identity and calibration gated",
                 },
                 {"label": "Physical motion", "value": "None"},
             ]

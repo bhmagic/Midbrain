@@ -571,7 +571,7 @@ class ArmProviderService:
     def _handler_type(self):
         service=self
         class Handler(BaseHTTPRequestHandler):
-            server_version="RebotArmProvider/0.1.21"
+            server_version="RebotArmProvider/0.1.24"
             def log_message(self,format,*args):
                 # HTTP access lines are suppressed. Meaningful lifecycle and lease
                 # events are emitted explicitly by the controller/service.

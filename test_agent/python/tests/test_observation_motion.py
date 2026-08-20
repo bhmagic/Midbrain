@@ -359,6 +359,21 @@ class ObservationMotionTests(unittest.TestCase):
             proposal["controller_preview_validation_issues"],
         )
 
+    def test_v3_workcell_validity_policy_is_accepted(self) -> None:
+        proposal = self._proposal()
+        proposal["controller_plan_request"]["request_context"][
+            "workcell_transform_validity_policy"
+        ] = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+        preview = self._accepted_preview(proposal)
+
+        proposal = attach_controller_preview(proposal, preview)
+
+        self.assertTrue(proposal["controller_preview_valid"])
+        self.assertNotIn(
+            "PREVIEW_CONTEXT_WORKCELL_VALIDITY_POLICY_INVALID",
+            proposal["controller_preview_validation_issues"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

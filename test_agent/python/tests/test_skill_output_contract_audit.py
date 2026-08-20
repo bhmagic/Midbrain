@@ -42,12 +42,6 @@ OUTPUT_AUDIT = {
         "declares": ["decision_id", "reviewed_scene_refreshed", "integrated_controller"],
         "excludes": ["controller_result", "physical_motion_submitted"],
     },
-    "localize_known_cad_object": {
-        "sources": ["skills/foundation_pose_object_localization/python/foundation_pose_object_localization/runtime.py"],
-        "tokens": ["FiniteFoundationPoseRuntime", "diagnostics"],
-        "declares": [],
-        "empty_direct_contract": True,
-    },
     "identify_pointed_object": {
         "sources": ["test_agent/python/physical_agent_test/gemini_pointing_skill.py"],
         "tokens": ["PROVIDER_ACTIVATION_REQUIRED", "CAMERA_FRAME_UNAVAILABLE"],
@@ -160,17 +154,19 @@ OUTPUT_AUDIT = {
         "declares": ["rgb_pixel_yx", "camera_system_point_m", "target_point_m", "input_temporal_evidence"],
         "excludes": ["pixel_yx", "target_point", "point_m", "transform_path"],
     },
-    "calibrate_stationary_workcell": {
+    "locate_arm_base": {
         "sources": [
-            "test_agent/python/physical_agent_test/stationary_calibration_adapter.py",
-            "skills/stationary_world_arm_alignment/python/stationary_world_arm_alignment/skill.py",
+            "test_agent/python/physical_agent_test/arm_base_localization_adapter.py",
+            "skills/locate_arm_base/python/locate_arm_base/skill.py",
         ],
-        "tokens": ["FOUNDATIONPOSE_EXPLICIT_INVOCATION_REQUIRED", "candidate_sha256"],
+        "tokens": ["review_and_activate_arm_base", "candidate_sha256"],
         "declares": [
-            "world_from_base",
-            "candidate",
+            "world_from_arm_base",
             "candidate_sha256",
-            "agent_adapter",
+            "quality_provenance",
+            "timing",
+            "failed_stage",
+            "error",
             "visual_evidence",
         ],
         "excludes": ["activation_id", "calibration_revision"],

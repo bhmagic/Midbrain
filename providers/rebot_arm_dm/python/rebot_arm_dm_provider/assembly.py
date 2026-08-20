@@ -267,6 +267,9 @@ class RobotAssemblyConfiguration:
         collision = self.profiles["collision_geometry"]
         model_id = str(model["model_id"])
         model_revision = str(model["model_revision"])
+        appendix = model.get("appendix", {})
+        if not isinstance(appendix, dict):
+            raise AssemblyConfigurationError("arm model appendix must be an object")
         if str(calibration.get("model_id")) != model_id:
             raise AssemblyConfigurationError("calibration model_id does not match the arm model")
         effector_robot = effector.get("robot_compatibility", {})
@@ -624,6 +627,9 @@ class RobotAssemblyConfiguration:
                 "model_revision": self.profiles["arm_model"]["model_revision"],
                 "calibration_revision": self.profiles["calibration"]["calibration_revision"],
             },
+            "arm_model_appendix": copy.deepcopy(
+                self.profiles["arm_model"].get("appendix", {})
+            ),
             "mounted_effector": copy.deepcopy(self.profiles["mounted_effector"]),
             "collision_geometry": copy.deepcopy(self.profiles["collision_geometry"]),
             "resource_groups": self.resource_groups(),

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orbbec-femto-provider"
-version = "0.4.1"
+version = "0.4.2"
 description = "Orbbec Femto Bolt Resource Provider with device calibration GUI and transform publication"
 requires-python = ">=3.11"
 dependencies = [

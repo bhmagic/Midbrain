@@ -348,7 +348,6 @@ Write-Host "Manager: http://127.0.0.1:7001"
 Write-Host "Fabric:  http://127.0.0.1:7002"
 Write-Host "Main UI: http://127.0.0.1:7001/"
 if ($null -ne $uiProcess) {
-    Write-Host "Regular agent UI:   http://127.0.0.1:8000/"
     Write-Host "Developer agent UI: http://127.0.0.1:8000/dev"
 }
 else {

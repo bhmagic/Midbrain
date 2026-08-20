@@ -87,6 +87,7 @@ $requiredFiles = @(
     "providers/sam2_scene_tracker/config_templates/provider_entry.json",
     "providers/sam2_scene_tracker/config_templates/tracker.default.json",
     "providers/foundation_pose/config_templates/provider_entry.json",
+    "providers/foundation_pose/config_templates/provider.default.json",
     "providers/rebot_arm_dm/config_templates/provider_entry.json",
     "providers/rebot_arm_dm/config_templates/arm_model.factory.json",
     "providers/rebot_arm_dm/config_templates/arm_calibration.initial.json",
@@ -96,16 +97,15 @@ $requiredFiles = @(
     "providers/rebot_arm_contact/config_templates/provider_entry.json",
     "providers/rebot_arm_contact/config_templates/controller.default.json",
     "skills/slicing/config_templates/motion_profiles.default.json",
-    "skills/stationary_world_arm_alignment/config_templates/alignment.default.json",
-    "config/foundation_pose/models.json",
+    "skills/locate_arm_base/config_templates/skill.default.json",
     "providers/rebot_arm_dm/scripts/setup.ps1",
     "providers/rebot_arm_integrated/scripts/setup.ps1",
     "providers/rebot_arm_contact/scripts/setup.ps1",
     "skills/slicing/scripts/setup.ps1",
     "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py",
-    "providers/foundation_pose/scripts/seed_default_models.ps1",
+    "providers/foundation_pose/scripts/setup.ps1",
     "providers/orbbec_femto_bolt/python/orbbec_femto_provider/device_calibration.py",
-    "skills/stationary_world_arm_alignment/python/stationary_world_arm_alignment/config.py",
+    "skills/locate_arm_base/scripts/setup.ps1",
     "test_agent/scripts/setup.ps1"
 )
 
@@ -130,14 +130,14 @@ $jsonFiles = @(
     "providers/sam2_scene_tracker/config_templates/provider_entry.json",
     "providers/sam2_scene_tracker/config_templates/tracker.default.json",
     "providers/foundation_pose/config_templates/provider_entry.json",
+    "providers/foundation_pose/config_templates/provider.default.json",
     "providers/rebot_arm_dm/config_templates/provider_entry.json",
     "providers/rebot_arm_dm/config_templates/arm_model.factory.json",
     "providers/rebot_arm_dm/config_templates/arm_calibration.initial.json",
     "providers/rebot_arm_dm/config_templates/calibration_collision_model.json",
     "providers/rebot_arm_integrated/config_templates/provider_entry.json",
     "providers/rebot_arm_integrated/config_templates/controller.default.json",
-    "skills/stationary_world_arm_alignment/config_templates/alignment.default.json",
-    "config/foundation_pose/models.json"
+    "skills/locate_arm_base/config_templates/skill.default.json"
 )
 foreach ($relativePath in $jsonFiles) {
     try {
@@ -202,9 +202,15 @@ $allProviderTemplates = @(
     "providers/rebot_arm_contact/config_templates/provider_entry.json"
 )
 $allProviderIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+$allProviderControlUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($relativePath in $allProviderTemplates) {
     $entry = Get-Content -LiteralPath (Join-Path $workspace $relativePath) -Raw | ConvertFrom-Json
     Assert-True -Condition $allProviderIds.Add([string]$entry.id) -Message "Duplicate Provider id in package templates: $($entry.id)"
+    if ($entry.control_url) {
+        Assert-True `
+            -Condition $allProviderControlUrls.Add([string]$entry.control_url) `
+            -Message "Duplicate Provider control URL in package templates: $($entry.control_url)"
+    }
     $arguments = @($entry.args)
     Assert-True -Condition ($arguments -contains '${MANAGER_URL}') -Message "$relativePath does not inherit MANAGER_URL from system.env"
     Assert-True -Condition ($arguments -contains '${FABRIC_URL}') -Message "$relativePath does not inherit FABRIC_URL from system.env"
@@ -295,30 +301,22 @@ Assert-True `
     -Condition ($slicingMotionProfiles.default_profile_number -eq 1 -and @($slicingMotionProfiles.profiles).Count -ge 1 -and $slicingMotionProfiles.profiles[0].profile_number -eq 1) `
     -Message "Slicing motion-profile template must ship protected default profile #1"
 
-$alignmentConfig = Get-Content -LiteralPath (Join-Path $workspace "skills/stationary_world_arm_alignment/config_templates/alignment.default.json") -Raw | ConvertFrom-Json
+$locateArmBaseConfig = Get-Content -LiteralPath (Join-Path $workspace "skills/locate_arm_base/config_templates/skill.default.json") -Raw | ConvertFrom-Json
 Assert-True `
-    -Condition ($alignmentConfig.schema -eq "midbrain.skill.stationary_world_arm_alignment.config") `
-    -Message "Stationary alignment default has the wrong schema"
-
-$foundationRoot = Join-Path $workspace "config/foundation_pose"
-$foundationRegistry = Get-Content -LiteralPath (Join-Path $foundationRoot "models.json") -Raw | ConvertFrom-Json
-Assert-True -Condition (@($foundationRegistry.models).Count -gt 0) -Message "FoundationPose runtime registry contains no models"
-foreach ($model in @($foundationRegistry.models)) {
-    $meshPath = Join-Path $foundationRoot ([string]$model.mesh_path)
-    Assert-True -Condition (Test-Path -LiteralPath $meshPath -PathType Leaf) -Message "FoundationPose model $($model.model_id) references missing mesh $($model.mesh_path)"
-}
-foreach ($relativePath in @(
-    "references/Base_reference_atlas.json",
-    "references/Base_reference_atlas.png",
-    "references/Gripper_reference_atlas.json",
-    "references/Gripper_reference_atlas.png"
-)) {
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $foundationRoot $relativePath) -PathType Leaf) -Message "FoundationPose restore profile is missing $relativePath"
-}
+    -Condition ($locateArmBaseConfig.foundation_pose_provider_id -eq "perception.foundation_pose" -and $locateArmBaseConfig.sam2_provider_id -eq "perception.sam2_scene_tracker") `
+    -Message "Locate Arm Base must route segmentation and pose through separate Providers"
+$armModelTemplate = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_dm/config_templates/arm_model.factory.json") -Raw | ConvertFrom-Json
+$locateArmBaseProfile = $armModelTemplate.appendix."midbrain.skill.locate_arm_base.v1"
+Assert-True `
+    -Condition ($locateArmBaseProfile.semantic_frame -eq "rebot_arm_base" -and @($locateArmBaseProfile.orientation_candidates).Count -eq 4) `
+    -Message "The arm profile appendix must select one semantic base frame and four bounded rotations"
+Assert-True `
+    -Condition ($locateArmBaseConfig.arm_profile_selection.appendix_key -eq "midbrain.skill.locate_arm_base.v1") `
+    -Message "Locate Arm Base must select CAD through the active arm-profile appendix"
 
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_dm/scripts/setup.ps1" `
-    -Tokens @("arm_model.factory.json", "arm_calibration.initial.json", "calibration_collision_model.json")
+    -Tokens @("arm_model.factory.json", "arm_profiles", "Write-JsonUtf8NoBom", "arm_calibration.initial.json", "calibration_collision_model.json")
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/scripts/setup.ps1" `
     -Tokens @("controller.default.json", "controller.json")
@@ -332,14 +330,14 @@ Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py" `
     -Tokens @("controller.default.json", "active_path.parent.mkdir", "active_path.write_text")
 Assert-FileContains `
-    -RelativePath "providers/foundation_pose/scripts/seed_default_models.ps1" `
-    -Tokens @("config\foundation_pose", "models.json", "Copy-IfMissing", "references", "CERN-OHL-W-2.0.txt", "UPSTREAM.md", "MODIFICATIONS.md")
+    -RelativePath "providers/foundation_pose/scripts/setup.ps1" `
+    -Tokens @("refine_model.onnx", "score_model.onnx", "build_engines.py", "CMAKE_CUDA_ARCHITECTURES")
 Assert-FileContains `
     -RelativePath "providers/orbbec_femto_bolt/python/orbbec_femto_provider/device_calibration.py" `
     -Tokens @("_identity_document", "_atomic_json_write", "path.parent.mkdir")
 Assert-FileContains `
-    -RelativePath "skills/stationary_world_arm_alignment/python/stationary_world_arm_alignment/config.py" `
-    -Tokens @("alignment.default.json", "path.mkdir(parents=True, exist_ok=True)")
+    -RelativePath "skills/locate_arm_base/scripts/setup.ps1" `
+    -Tokens @(".venv", "Locate Arm Base", "pytest")
 Assert-FileContains `
     -RelativePath "test_agent/scripts/setup.ps1" `
     -Tokens @("api_keys.env.example", "system.env.example", "Test-Path -LiteralPath")
@@ -357,7 +355,7 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             "providers/rebot_arm_integrated/config/controller.json",
             "providers/rebot_arm_contact/config/controller.json",
             "skills/slicing/config/motion_profiles.json",
-            "skills/stationary_world_arm_alignment/config/alignment.json"
+            "skills/locate_arm_base/config/calibrations/example.json"
         )) {
             & git check-ignore -q --no-index -- $activePath
             Assert-True -Condition ($LASTEXITCODE -eq 0) -Message "Machine-local path is not ignored: $activePath"

@@ -103,38 +103,8 @@ desktop.ini
 *.tmp
 *~
 
-# External source checkouts installed into the local runtime
-providers/foundation_pose/nvlabs/FoundationPose/
-providers/foundation_pose/sam2/
+# External source checkouts installed into component-local runtime environments
+providers/sam2_scene_tracker/upstream/sam2/
 
-# Sanitized FoundationPose runtime/restore profile
-!config/foundation_pose/
-config/foundation_pose/*
-!config/foundation_pose/FILE_MANIFEST.sha256
-!config/foundation_pose/MODIFICATIONS.md
-!config/foundation_pose/UPSTREAM.md
-!config/foundation_pose/models.json
-!config/foundation_pose/licenses/
-config/foundation_pose/licenses/*
-!config/foundation_pose/licenses/CERN-OHL-W-2.0.txt
-!config/foundation_pose/models/
-config/foundation_pose/models/*
-!config/foundation_pose/models/Base_clean_centered.obj
-!config/foundation_pose/models/Base_clean_original_frame.obj
-!config/foundation_pose/models/Base_mesh_metadata.json
-!config/foundation_pose/models/Gripper_clean_centered.obj
-!config/foundation_pose/models/Gripper_clean_original_frame.obj
-!config/foundation_pose/models/Gripper_mesh_metadata.json
-!config/foundation_pose/references/
-config/foundation_pose/references/*
-!config/foundation_pose/references/Base_reference_atlas.json
-!config/foundation_pose/references/Base_reference_atlas.png
-!config/foundation_pose/references/Gripper_reference_atlas.json
-!config/foundation_pose/references/Gripper_reference_atlas.png
-!config/foundation_pose/source/
-config/foundation_pose/source/*
-!config/foundation_pose/source/01_BASE_Link.step
-!config/foundation_pose/source/01_BASE_Plate.step
-!config/foundation_pose/source/01_Rail_Bracket.step
-!config/foundation_pose/source/Base.obj
-!config/foundation_pose/source/Gripper.obj
+# Skill-owned immutable CAD geometry is source, not native build output.
+!skills/locate_arm_base/assets/rebot_b601_dm/models/Base_clean_centered.obj

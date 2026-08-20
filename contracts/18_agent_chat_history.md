@@ -8,7 +8,7 @@ This contract defines the operator-facing projection of Agent runs into a
 scrollable conversation. It does not make a browser tab a robot event store, a
 model-session authority, or a command channel.
 
-Each run started from the regular page or developer view creates one user
+Each run started from the Developer Agent creates one user
 message and one Agent message. The Agent message may contain the final answer,
 visual evidence, and an expandable execution summary derived from the stable
 Midbrain Agent event contract.
@@ -45,9 +45,9 @@ Validated visual-evidence references and annotations remain subject to their
 separate backend artifact retention.
 
 `GET /api/chat-session` projects at most the latest 40 runs from the active
-Manager boot into `midbrain.agent_chat_turn.v1` records. Both the regular and
-developer pages hydrate from this same endpoint when opened and poll it while
-open. Closing or reopening either tab therefore does not create or erase a
+Manager boot into `midbrain.agent_chat_turn.v1` records. Developer Agent tabs
+hydrate from this same endpoint when opened and poll it while open. Closing or
+reopening a tab therefore does not create or erase a
 conversation. A tab that owns a live SSE run keeps its local active turn while
 other tabs observe the journaled progress. Once the run is terminal, every tab
 converges on the same server projection.

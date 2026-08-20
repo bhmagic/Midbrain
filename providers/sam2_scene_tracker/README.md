@@ -7,6 +7,21 @@ publish a non-empty description for every semantic object before obstacle
 tracking can become ready. In particular, material, color, and location do not
 silently make a black mat part of a table or any other blocking object.
 
+The same resident model exposes the generic
+`perception.image.sam2.segment` capability for bounded one-shot segmentation.
+A calling Skill supplies immutable RGB evidence, a normalized box, one to four
+positive seed points, and optional negative background points; the Provider
+returns a scored mask artifact and source identity. It does not call a VLM,
+choose an object, own CAD/reference images,
+or decide how the mask will be used. One-shot requests share the loaded model
+under the Provider's inference lock; the regular scene loop resets its current
+image on the next tick and retains its own temporal policy state.
+
+The SAM2 runtime remains in `providers/sam2_scene_tracker/.venv`. Its only
+shared camera-data dependency is the provider-neutral BufferRef consumer under
+`contracts/python`; it does not install FoundationPose, the camera Provider,
+or the calling Skill.
+
 The configured VLM model pool currently prefers Gemini Robotics-ER 2.0 and
 falls back to the configured OpenAI vision model. Candidate model IDs are read
 from `GEMINI_ROBOTICS_MODEL` and `OPENAI_VISION_MODEL`, with checked-in defaults,

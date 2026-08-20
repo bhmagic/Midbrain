@@ -1,34 +1,26 @@
 {
-  "id": "perception.object_pose.foundation_pose",
-  "display_name": "FoundationPose CAD Object Pose Provider",
-  "dependencies": ["camera.femto_bolt"],
+  "id": "perception.foundation_pose",
+  "display_name": "FoundationPose Native Known-Object Pose",
+  "dependencies": [],
   "command": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/.venv/Scripts/python.exe",
   "args": [
     "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/config_templates/provider.default.json",
     "--manager-url",
     "${MANAGER_URL}",
     "--fabric-url",
     "${FABRIC_URL}",
     "--control-port",
-    "7103",
-    "--backend",
-    "nvlabs",
-    "--foundationpose-root",
-    "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/nvlabs/FoundationPose",
-    "--model-registry",
-    "${PHYSICAL_AGENT_ROOT}/config/foundation_pose/models.json",
-    "--default-update-hz",
-    "3",
-    "--poll-interval",
-    "0.01"
+    "7103"
   ],
   "cwd": "${PHYSICAL_AGENT_ROOT}",
   "control_url": "http://127.0.0.1:7103",
   "auto_start": false,
   "graceful_stop_timeout_ms": 10000,
-  "heartbeat_timeout_ms": 180000,
+  "force_kill_on_stop_timeout": true,
+  "heartbeat_timeout_ms": 15000,
   "env": {
-    "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}",
-    "FOUNDATIONPOSE_ROOT": "${PHYSICAL_AGENT_ROOT}/providers/foundation_pose/nvlabs/FoundationPose"
+    "PHYSICAL_AGENT_ROOT": "${PHYSICAL_AGENT_ROOT}"
   }
 }

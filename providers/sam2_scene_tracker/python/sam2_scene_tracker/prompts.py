@@ -12,8 +12,9 @@ class VisualPrompt:
     object_id: str
     region_id: str
     box_yxyx: tuple[int, int, int, int]
-    positive_points_yx: tuple[tuple[int, int], tuple[int, int]]
+    positive_points_yx: tuple[tuple[int, int], ...]
     confidence: float
+    negative_points_yx: tuple[tuple[int, int], ...] = ()
 
 
 def parse_visual_prompts(
@@ -33,21 +34,35 @@ def parse_visual_prompts(
             raise ValueError(f"unexpected scene detection object_id {object_id!r}")
         box = value.get("box_2d")
         points = value.get("positive_points_2d")
+        negative_points = value.get("negative_points_2d") or []
         if (
             not isinstance(box, list)
             or len(box) != 4
             or not isinstance(points, list)
-            or len(points) != 2
+            or not 1 <= len(points) <= 4
             or any(not isinstance(point, list) or len(point) != 2 for point in points)
+            or not isinstance(negative_points, list)
+            or len(negative_points) > 4
+            or any(
+                not isinstance(point, list) or len(point) != 2
+                for point in negative_points
+            )
         ):
-            raise ValueError("scene detection box/positive points are invalid")
+            raise ValueError("scene detection box/points are invalid")
         normalized_box = tuple(int(item) for item in box)
         normalized_points = tuple(
             (int(point[0]), int(point[1])) for point in points
         )
+        normalized_negative_points = tuple(
+            (int(point[0]), int(point[1])) for point in negative_points
+        )
         if any(item < 0 or item > 1000 for item in normalized_box) or any(
             item < 0 or item > 1000
             for point in normalized_points
+            for item in point
+        ) or any(
+            item < 0 or item > 1000
+            for point in normalized_negative_points
             for item in point
         ):
             raise ValueError("scene detection coordinates must be in [0, 1000]")
@@ -63,8 +78,9 @@ def parse_visual_prompts(
                 object_id=object_id,
                 region_id=region_id,
                 box_yxyx=normalized_box,
-                positive_points_yx=normalized_points,  # type: ignore[arg-type]
+                positive_points_yx=normalized_points,
                 confidence=confidence,
+                negative_points_yx=normalized_negative_points,
             )
         )
     return grouped

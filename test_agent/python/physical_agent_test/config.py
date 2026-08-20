@@ -153,8 +153,8 @@ class Settings:
     phase4_agent_run_timeout_s: float = float(
         os.getenv("PHASE4_AGENT_RUN_TIMEOUT_S", "300")
     )
-    stationary_calibration_timeout_s: float = float(
-        os.getenv("STATIONARY_CALIBRATION_TIMEOUT_S", "600")
+    arm_base_localization_timeout_s: float = float(
+        os.getenv("ARM_BASE_LOCALIZATION_TIMEOUT_S", "180")
     )
     phase5_spatial_binding_mode: str = os.getenv(
         "PHASE5_SPATIAL_BINDING_MODE",
@@ -244,4 +244,18 @@ class Settings:
             / "test_agent"
             / "run"
             / "skill_result_details.v1.sqlite3"
+        )
+
+    @property
+    def agent_skill_installation_state_path(self) -> Path:
+        configured = os.getenv(
+            "AGENT_SKILL_INSTALLATION_STATE_PATH",
+            "",
+        ).strip()
+        if configured:
+            return Path(configured).resolve()
+        return (
+            self.workspace_root
+            / "config"
+            / "agent_skill_installation.json"
         )

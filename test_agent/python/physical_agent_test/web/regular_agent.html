@@ -285,7 +285,7 @@
       <div class="model-controls" aria-label="Model selection">
         <label>Agent model<select id="agentModel"><option value="gemini-3.7-flash">Gemini 3.7 Flash</option></select></label>
         <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
-        <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
+        <label>Visual model<select id="vlmModel"><option value="gemini-robotics-er-2-preview">Gemini Robotics-ER 2.0</option></select></label>
       </div>
       <div class="attachment-picker">
         <label class="attachment-button" for="agentImageInput">Attach image</label>
@@ -327,12 +327,8 @@
           controlled-frame yaw up to 45°
         </label>
         <label class="authorization-toggle">
-          <input id="autoApproveCalibration" type="checkbox" checked>
-          Auto-authorize stationary world-to-arm calibration
-        </label>
-        <label class="authorization-toggle">
-          <input id="autoApproveCalibrationActivation" type="checkbox" checked>
-          Auto-authorize exact qualified calibration candidate activation
+          <input id="autoApproveArmBaseActivation" type="checkbox" checked>
+          Auto-authorize exact qualified arm-base candidate activation
         </label>
         <label class="authorization-toggle">
           <input id="autoApproveSafeHome" type="checkbox" checked>
@@ -463,13 +459,9 @@
         typeof saved.autoApproveMoves === "boolean"
           ? saved.autoApproveMoves
           : true;
-      byId("autoApproveCalibration").checked =
-        typeof saved.autoApproveCalibration === "boolean"
-          ? saved.autoApproveCalibration
-          : true;
-      byId("autoApproveCalibrationActivation").checked =
-        typeof saved.autoApproveCalibrationActivation === "boolean"
-          ? saved.autoApproveCalibrationActivation
+      byId("autoApproveArmBaseActivation").checked =
+        typeof saved.autoApproveArmBaseActivation === "boolean"
+          ? saved.autoApproveArmBaseActivation
           : true;
       byId("autoApproveSafeHome").checked =
         typeof saved.autoApproveSafeHome === "boolean"
@@ -500,10 +492,8 @@
         autoApproveProviderStop:
           byId("autoApproveProviderStop").checked,
         autoApproveMoves: byId("autoApproveMoves").checked,
-        autoApproveCalibration:
-          byId("autoApproveCalibration").checked,
-        autoApproveCalibrationActivation:
-          byId("autoApproveCalibrationActivation").checked,
+        autoApproveArmBaseActivation:
+          byId("autoApproveArmBaseActivation").checked,
         autoApproveSafeHome: byId("autoApproveSafeHome").checked,
         autoApproveSpaceReinitialization:
           byId("autoApproveSpaceReinitialization").checked,
@@ -533,12 +523,9 @@
           "joint speed asks >10 rad/s and hard-stops >=20 rad/s; " +
           "controlled-frame yaw AUTO <= 45°"
         : "physical motion asks";
-      const calibrationState = preferences.autoApproveCalibration
-        ? "world-arm calibration AUTO"
-        : "world-arm calibration asks";
-      const activationState = preferences.autoApproveCalibrationActivation
-        ? "exact calibration activation AUTO"
-        : "exact calibration activation asks";
+      const activationState = preferences.autoApproveArmBaseActivation
+        ? "exact arm-base activation AUTO"
+        : "exact arm-base activation asks";
       const safeHomeState = preferences.autoApproveSafeHome
         ? "safe-home AUTO"
         : "safe-home asks";
@@ -548,7 +535,7 @@
           : "spatial reinitialization asks";
       byId("authorizationTicker").textContent =
         `${providerState} | ${providerStopState} | ${motionState} | ` +
-        `${calibrationState} | ${activationState} | ${safeHomeState} | ` +
+        `${activationState} | ${safeHomeState} | ` +
         `${reinitializationState}. Provider and controller safety checks ` +
         "remain active.";
       byId("authorizationSummary").textContent =
@@ -633,8 +620,8 @@
         populateSelect(
           "vlmModel",
           status.vlm_model_options || ["auto"],
-          "auto",
-          (value) => value === "auto" ? "Auto routing" : value
+          status.vlm_model_default || "gemini-robotics-er-2-preview",
+          (value) => value === "auto" ? "Auto routing" : value === "gemini-robotics-er-2-preview" ? "Gemini Robotics-ER 2.0" : value
         );
         byId("lastUpdated").textContent = new Date().toLocaleTimeString();
       } catch (error) {
@@ -773,37 +760,21 @@
             "Session authorization automatically approved the bounded exact motion preview."
         };
       }
-      const calibrationEligible =
-        preferences.autoApproveCalibration &&
-        approvals.every(
-          (approval) =>
-            approval.tool_name === "calibrate_stationary_workcell"
-        );
-      if (calibrationEligible) {
-        return {
-          approve: true,
-          approval_mode: "AUTO_STATIONARY_CALIBRATION",
-          max_auto_move_cm: null,
-          max_auto_speed_m_s: null,
-          label:
-            "Session authorization automatically approved stationary world-to-arm calibration."
-        };
-      }
       const activationEligible =
-        preferences.autoApproveCalibrationActivation &&
+        preferences.autoApproveArmBaseActivation &&
         approvals.every(
           (approval) =>
             approval.tool_name ===
-            "review_and_activate_stationary_calibration"
+            "review_and_activate_arm_base"
         );
       if (activationEligible) {
         return {
           approve: true,
-          approval_mode: "AUTO_STATIONARY_ACTIVATION",
+          approval_mode: "AUTO_ARM_BASE_ACTIVATION",
           max_auto_move_cm: null,
           max_auto_speed_m_s: null,
           label:
-            "Session authorization automatically approved exact stationary calibration activation."
+            "Session authorization automatically approved exact arm-base activation."
         };
       }
       const safeHomeEligible =
@@ -873,10 +844,8 @@
         auto_authorize_relative_motion: authorization.autoApproveMoves,
         max_auto_move_cm: authorization.maxAutoMoveCm,
         max_auto_speed_m_s: authorization.maxAutoSpeedMps,
-        auto_authorize_stationary_calibration:
-          authorization.autoApproveCalibration,
-        auto_authorize_stationary_activation:
-          authorization.autoApproveCalibrationActivation,
+        auto_authorize_arm_base_activation:
+          authorization.autoApproveArmBaseActivation,
         auto_authorize_safe_home: authorization.autoApproveSafeHome,
         auto_authorize_space_reinitialization:
           authorization.autoApproveSpaceReinitialization
@@ -1137,8 +1106,7 @@
       "autoApproveProviders",
       "autoApproveProviderStop",
       "autoApproveMoves",
-      "autoApproveCalibration",
-      "autoApproveCalibrationActivation",
+      "autoApproveArmBaseActivation",
       "autoApproveSafeHome",
       "autoApproveSpaceReinitialization",
       "maxAutoMoveCm",
