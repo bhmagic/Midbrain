@@ -1,0 +1,40 @@
+{
+  "schema": "midbrain.skill.locate_arm_base.cad_preview",
+  "schema_version": 1,
+  "renderer": "Blender Workbench",
+  "blender_version": "5.0.1",
+  "label": "reBot B601-DM Arm Base",
+  "input_file": "Base_clean_centered.obj",
+  "input_sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+  "output_file": "Base_cad_preview.png",
+  "output_sha256": "371a56157399f9fe50a2f10bb9bdf3a3af71090abba46c137cc617991073a10e",
+  "scale_to_m": 0.001,
+  "resolution": [
+    1600,
+    1000
+  ],
+  "vertex_count": 238980,
+  "face_count": 475717,
+  "views": [
+    {
+      "name": "front-right",
+      "azimuth_deg": 45.0,
+      "elevation_deg": 28.0
+    },
+    {
+      "name": "rear-right",
+      "azimuth_deg": 135.0,
+      "elevation_deg": 28.0
+    },
+    {
+      "name": "rear-left",
+      "azimuth_deg": 225.0,
+      "elevation_deg": 28.0
+    },
+    {
+      "name": "front-left",
+      "azimuth_deg": 315.0,
+      "elevation_deg": 28.0
+    }
+  ]
+}

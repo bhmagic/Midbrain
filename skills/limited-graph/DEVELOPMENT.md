@@ -310,7 +310,7 @@ current code reached that contract and where to investigate regressions.
 - Graph run `c0d27e5690314560b431a09e5330b6aa` showed the same defect for a
   non-motion child. FoundationPose returned
   `CANDIDATE_REVIEW_REQUIRED`, `workflow_complete=false`, and an exact
-  `review_and_activate_stationary_calibration` continuation; the graph
+  `review_and_activate_arm_base` continuation; the graph
   nevertheless entered its success terminal.
 - The compound mapping, corner-motion, and cutting prompt selected a routed
   surface that exposed only the scene/corner prefix. Retained message 9318

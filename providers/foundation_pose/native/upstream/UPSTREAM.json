@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_pose_estimation",
+  "commit": "ab389aea93376402cfd9bb093dd3dd38d12574b6",
+  "package": "isaac_ros_foundationpose",
+  "retained_components": [
+    "foundationpose_impl",
+    "nvdiffrast CUDA rasterizer"
+  ],
+  "excluded_components": [
+    "ROS 2 nodes and messages",
+    "ament and colcon build logic",
+    "NITROS transport",
+    "CV-CUDA"
+  ],
+  "license": "Apache-2.0",
+  "windows_changes": [
+    "Replaced CV-CUDA conversion, flip, and perspective warp with local CUDA kernels.",
+    "Replaced Assimp/OpenCV mesh loading with a geometry-only OBJ loader.",
+    "Replaced ROS TensorRT nodes with a narrow inference callback owned by the Provider environment.",
+    "Excluded ROS-specific decoding and transport code."
+  ]
+}

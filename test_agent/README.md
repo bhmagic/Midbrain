@@ -7,9 +7,9 @@ definition of a Midbrain Agent.
 
 ## Surfaces
 
-- `http://127.0.0.1:8000/` provides the regular Agent view.
-- `http://127.0.0.1:8000/dev` shows the same Agent with additional read-only
-  Provider, Skill, point-cloud, replay, and event diagnostics.
+- `http://127.0.0.1:8000/` redirects to the Developer Agent.
+- `http://127.0.0.1:8000/dev` provides the autonomous Agent controls together
+  with read-only Provider, Skill, point-cloud, replay, and event diagnostics.
 - `http://127.0.0.1:8000/dev/run-journal` provides a read-only view of retained
   normalized run events.
 - `http://127.0.0.1:8000/dev/skills/slicing` provides a numeric, non-language
@@ -18,15 +18,15 @@ definition of a Midbrain Agent.
   physical Stage 1 and Contact Stage 2 controls. It also manages numbered
   blade-use and load/retract/timing profiles without invoking a language Agent.
 
-Both Agent pages use one backend-owned run path, tool policy, model session,
-chat projection, approval store, and event stream. The developer Agent view
-does not add tools, authority, or an approval bypass. The separately labeled
+The Developer Agent uses one backend-owned run path, tool policy, model
+session, chat projection, approval store, and event stream. Its diagnostic
+panes do not add tools, authority, or an approval bypass. The separately labeled
 Slicing test surface does not invoke a language Agent; it calls only the
 Skill-owned staged adapter, which retains Manager lifecycle, exact Integrated
 signed-preview execution, workcell binding, explicit Integrated `WARM` lease
 relinquishment, Contact signing, and terminal relax boundaries.
 
-Both Agent pages expose **Stop task** for one active backend run. It cancels
+The Developer Agent exposes **Stop task** for one active backend run. It cancels
 that run and its owned asynchronous subtasks without stopping background
 Providers. It cannot retract an already accepted controller command or prove a
 physical outcome.
@@ -96,6 +96,14 @@ Discovery reads concise manifest metadata without importing or starting Skill
 implementations. After selection, the host binds the required adapter and
 loads the detailed input schema.
 
+When the Developer Agent opens, an installed discoverable Skill outside both
+the configured and current runtime Agent lists triggers a blocking startup
+dialog. **Add to Agent list** records Agent-owned eligibility and requires an
+Agent restart before tasks can run; **Disable for Agent** records an immediate
+local exclusion. Decisions are stored in ignored machine-local configuration,
+never in the Skill manifest. This keeps installation, Agent eligibility, Skill
+execution, and Provider lifecycle as separate responsibilities.
+
 An `EXTERNAL_SKILL_ENTRYPOINT` manifest may also declare a Skill-owned host
 adapter factory and setup entrypoint. The Reference Agent loads that factory
 through a generic service bundle; Skill-specific RGB-D, FK, VLM, profile, and
@@ -149,10 +157,13 @@ collision scene or authorize motion.
 
 World-direction and absolute workcell-world resolution give priority to the
 active reviewed transform. A
-`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` activation remains usable when
+Exact `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2` and
+`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3` activations remain usable when
 Local VIO is temporarily `DEGRADED`, consistent with Manager's invalidation
-policy; it is re-read before commit. The upright arm-mount question is only a
-bounded development fallback when no reviewed motion-usable transform exists.
+policy; the current Locate Arm Base path emits V3, while V2 remains compatible
+for existing records. Unknown future versions fail closed. The activation is
+re-read before commit. The upright arm-mount question is only a bounded
+development fallback when no reviewed motion-usable transform exists.
 
 Provider dependencies are made `HOT` through Manager. The host waits for a
 fresh Manager report showing the required capability ready; process creation
@@ -201,10 +212,9 @@ unrestricted raw tool payloads.
 
 ## Chat and journal
 
-One conversation session is associated with the current Manager boot. The
-regular and developer views read the same robot-local projection, so opening a
-second page or closing a tab does not create a separate physical authority or
-erase the transcript.
+One conversation session is associated with the current Manager boot. Opening
+another Developer Agent tab or closing a tab does not create a separate
+physical authority or erase the robot-local transcript.
 
 The normalized SQLite run journal survives process restarts and marks
 nonresumable prior-process runs interrupted. It is diagnostic observation
@@ -258,6 +268,13 @@ resolved through Google's OpenAI-compatible endpoint and requires
 requires `OPENAI_API_KEY`. Both browser views obtain the allowed reasoning
 levels for the selected model from `/api/status` rather than assuming every
 provider supports the same set.
+
+The separate **Visual model** selector defaults to Gemini Robotics-ER 2.0 when
+that configured backend is available. Its run-scoped selection governs the
+shared VLM router and is also passed explicitly to finite Skills such as
+`locate_arm_base` that own structured visual judgments internally. This keeps
+one operator-visible model choice without moving VLM semantics out of the
+Skill's private environment or changing Provider responsibilities.
 
 Both choices still execute through `Runner.run_streamed` and the sole
 `/api/streaming-runs` family. Every `gpt-*` model retains the original deferred

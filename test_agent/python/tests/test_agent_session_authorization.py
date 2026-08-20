@@ -34,8 +34,7 @@ from physical_agent_test.agent_driver import (
     relative_motion_needs_approval,
     safe_home_needs_approval,
     space_reinitialization_needs_approval,
-    stationary_activation_needs_approval,
-    stationary_calibration_needs_approval,
+    arm_base_activation_needs_approval,
 )
 
 
@@ -506,43 +505,19 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
                 decision,
             )
 
-    def test_calibration_auto_authorization_is_exact_tool_only(self) -> None:
-        decision = DeveloperApprovalDecision(
-            approve=True,
-            approval_mode="AUTO_STATIONARY_CALIBRATION",
-        )
-        _validate_automatic_agent_approval(
-            [
-                _interruption(
-                    "calibrate_stationary_workcell",
-                    '{"request":"establish world and arm-base coordinates"}',
-                )
-            ],
-            decision,
-        )
-
-        with self.assertRaisesRegex(
-            HTTPException,
-            "permits only calibrate_stationary_workcell",
-        ):
-            _validate_automatic_agent_approval(
-                [_interruption("execute_basic_safe_home", "{}")],
-                decision,
-            )
-
     def test_calibration_activation_auto_authorization_is_exact_tool_only(
         self,
     ) -> None:
         decision = DeveloperApprovalDecision(
             approve=True,
-            approval_mode="AUTO_STATIONARY_ACTIVATION",
+            approval_mode="AUTO_ARM_BASE_ACTIVATION",
         )
         _validate_automatic_agent_approval(
             [
                 _interruption(
-                    "review_and_activate_stationary_calibration",
+                    "review_and_activate_arm_base",
                     (
-                        '{"alignment_id":"alignment-1",'
+                        '{"candidate_id":"candidate-1",'
                         '"candidate_sha256":"'
                         + "a" * 64
                         + '"}'
@@ -554,7 +529,7 @@ class AgentSessionAuthorizationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             HTTPException,
-            "permits only exact stationary candidate",
+            "permits only exact candidate",
         ):
             _validate_automatic_agent_approval(
                 [_interruption("execute_basic_safe_home", "{}")],
@@ -573,8 +548,7 @@ class DynamicAgentApprovalPredicateTests(
                 auto_authorize_relative_motion=True,
                 max_auto_move_cm=35.0,
                 max_auto_speed_m_s=0.2,
-                auto_authorize_stationary_calibration=True,
-                auto_authorize_stationary_activation=True,
+                auto_authorize_arm_base_activation=True,
                 auto_authorize_safe_home=True,
                 auto_authorize_space_reinitialization=True,
             )
@@ -624,14 +598,7 @@ class DynamicAgentApprovalPredicateTests(
             )
         )
         self.assertFalse(
-            await stationary_calibration_needs_approval(
-                context,
-                {"request": "establish frames"},
-                "calibration-call",
-            )
-        )
-        self.assertFalse(
-            await stationary_activation_needs_approval(
+            await arm_base_activation_needs_approval(
                 context,
                 {
                     "alignment_id": "alignment-1",
@@ -658,8 +625,7 @@ class DynamicAgentApprovalPredicateTests(
                 auto_authorize_relative_motion=True,
                 max_auto_move_cm=5.0,
                 max_auto_speed_m_s=0.1,
-                auto_authorize_stationary_calibration=False,
-                auto_authorize_stationary_activation=False,
+                auto_authorize_arm_base_activation=False,
                 auto_authorize_safe_home=False,
                 auto_authorize_space_reinitialization=False,
             )
@@ -693,14 +659,7 @@ class DynamicAgentApprovalPredicateTests(
             )
         )
         self.assertTrue(
-            await stationary_calibration_needs_approval(
-                context,
-                {},
-                "calibration-call",
-            )
-        )
-        self.assertTrue(
-            await stationary_activation_needs_approval(
+            await arm_base_activation_needs_approval(
                 context,
                 {},
                 "activation-call",
@@ -771,8 +730,7 @@ class AutonomousRouteAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             auto_authorize_relative_motion=True,
             max_auto_move_cm=35.0,
             max_auto_speed_m_s=0.5,
-            auto_authorize_stationary_calibration=True,
-            auto_authorize_stationary_activation=True,
+            auto_authorize_arm_base_activation=True,
             auto_authorize_safe_home=True,
             auto_authorize_space_reinitialization=True,
         )
@@ -782,8 +740,7 @@ class AutonomousRouteAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(authorization.auto_authorize_relative_motion)
         self.assertEqual(authorization.max_auto_move_cm, 35.0)
         self.assertEqual(authorization.max_auto_speed_m_s, 0.5)
-        self.assertTrue(authorization.auto_authorize_stationary_calibration)
-        self.assertTrue(authorization.auto_authorize_stationary_activation)
+        self.assertTrue(authorization.auto_authorize_arm_base_activation)
         self.assertTrue(authorization.auto_authorize_safe_home)
         self.assertTrue(
             authorization.auto_authorize_space_reinitialization

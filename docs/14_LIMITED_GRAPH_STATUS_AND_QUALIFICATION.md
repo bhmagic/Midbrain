@@ -80,7 +80,7 @@ The near-stable checkpoint does not yet claim retained live qualification for:
 - a purpose-built success/failure branch, switch, retry, or model-selected
   route covering each supported routing form;
 - multiple child visuals arriving close together and remaining independently
-  inspectable in both Agent pages;
+  inspectable in the Developer Agent and run journal;
 - task-level sensing that proves material was physically cut rather than only
   proving that the Slicing motion plan completed;
 - a strict byte or token bound for the complete projected Agent session; or
@@ -94,7 +94,7 @@ Limited Graph as fully qualified.
 
 ## Operator interpretation
 
-The regular and developer Agent pages observe the same backend run. Child
+The Developer Agent and run journal observe the same backend run. Child
 visuals should appear when produced and remain associated with their exact
 run and child call. Closing a page does not stop the run. **Stop task** cancels
 the selected Agent run and its owned subtasks while leaving background

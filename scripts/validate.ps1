@@ -113,10 +113,12 @@ if (-not $SkipPython) {
         "python-dotenv", "openai-agents", "google-genai>=1.0,<2"
     )
     foreach ($package in @(
+        "contracts\python",
         "providers\orbbec_femto_bolt\python",
         "providers\local_vio\python",
         "providers\arm_scene_compiler\python",
         "providers\sam2_scene_tracker\python",
+        "providers\foundation_pose\python",
         "providers\rebot_arm_dm\python",
         "providers\rebot_arm_integrated\python",
         "providers\rebot_arm_contact\python",
@@ -128,7 +130,7 @@ if (-not $SkipPython) {
         "skills\observe_pointed_object",
         "skills\refine-arm-root-translation",
         "skills\register_tool_to_control_frame",
-        "skills\stationary_world_arm_alignment",
+        "skills\locate_arm_base",
         "test_agent\python"
     )) {
         Invoke-Checked -FilePath $python -Arguments @(
@@ -137,12 +139,14 @@ if (-not $SkipPython) {
     }
 
     $pythonPathEntries = @(
+        (Join-Path $workspace "contracts\python"),
         (Join-Path $workspace "providers\local_vio"),
         (Join-Path $workspace "providers\local_vio\python"),
         (Join-Path $workspace "providers\orbbec_femto_bolt"),
         (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
         (Join-Path $workspace "providers\arm_scene_compiler\python"),
         (Join-Path $workspace "providers\sam2_scene_tracker\python"),
+        (Join-Path $workspace "providers\foundation_pose\python"),
         (Join-Path $workspace "providers\rebot_arm_dm\python"),
         (Join-Path $workspace "providers\rebot_arm_integrated\python"),
         (Join-Path $workspace "providers\rebot_arm_contact\python"),
@@ -154,7 +158,7 @@ if (-not $SkipPython) {
         (Join-Path $workspace "skills\refine-arm-root-translation\python"),
         (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
         (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
-        (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
+        (Join-Path $workspace "skills\locate_arm_base\python"),
         (Join-Path $workspace "test_agent\python")
     )
     $previousPythonPath = $env:PYTHONPATH
@@ -162,10 +166,12 @@ if (-not $SkipPython) {
     try {
         Invoke-Checked -FilePath $python -Arguments @(
             "-m", "compileall", "-q",
+            (Join-Path $workspace "contracts\python"),
             (Join-Path $workspace "providers\orbbec_femto_bolt\python"),
             (Join-Path $workspace "providers\local_vio\python"),
             (Join-Path $workspace "providers\arm_scene_compiler\python"),
             (Join-Path $workspace "providers\sam2_scene_tracker\python"),
+            (Join-Path $workspace "providers\foundation_pose\python"),
             (Join-Path $workspace "providers\rebot_arm_dm\python"),
             (Join-Path $workspace "providers\rebot_arm_integrated\python"),
             (Join-Path $workspace "providers\rebot_arm_contact\python"),
@@ -177,15 +183,17 @@ if (-not $SkipPython) {
             (Join-Path $workspace "skills\refine-arm-root-translation\python"),
             (Join-Path $workspace "skills\register_tool_to_control_frame\python"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python"),
-            (Join-Path $workspace "skills\stationary_world_arm_alignment\python"),
+            (Join-Path $workspace "skills\locate_arm_base\python"),
             (Join-Path $workspace "test_agent\python")
         )
         Invoke-Checked -FilePath $python -Arguments @(
             "-m", "pytest", "-q", "--import-mode=importlib",
+            (Join-Path $workspace "contracts\python\tests"),
             (Join-Path $workspace "providers\orbbec_femto_bolt\python\tests"),
             (Join-Path $workspace "providers\local_vio\python\tests"),
             (Join-Path $workspace "providers\arm_scene_compiler\python\tests"),
             (Join-Path $workspace "providers\sam2_scene_tracker\python\tests"),
+            (Join-Path $workspace "providers\foundation_pose\python\tests"),
             (Join-Path $workspace "providers\rebot_arm_dm\python\tests"),
             (Join-Path $workspace "providers\rebot_arm_integrated\python\tests"),
             (Join-Path $workspace "providers\rebot_arm_contact\python\tests"),
@@ -197,7 +205,7 @@ if (-not $SkipPython) {
             (Join-Path $workspace "skills\refine-arm-root-translation\python\tests"),
             (Join-Path $workspace "skills\register_tool_to_control_frame\python\tests"),
             (Join-Path $workspace "skills\spatial_registration_rgbd\python\tests"),
-            (Join-Path $workspace "skills\stationary_world_arm_alignment\python\tests"),
+            (Join-Path $workspace "skills\locate_arm_base\python\tests"),
             (Join-Path $workspace "test_agent\python\tests")
         )
     }
@@ -211,10 +219,12 @@ if (-not $SkipPython) {
     }
     New-Item -ItemType Directory -Force -Path $wheelRoot | Out-Null
     foreach ($package in @(
+        "contracts\python",
         "providers\orbbec_femto_bolt\python",
         "providers\local_vio\python",
         "providers\arm_scene_compiler\python",
         "providers\sam2_scene_tracker\python",
+        "providers\foundation_pose\python",
         "providers\rebot_arm_dm\python",
         "providers\rebot_arm_integrated\python",
         "providers\rebot_arm_contact\python",
@@ -226,11 +236,16 @@ if (-not $SkipPython) {
         "skills\observe_pointed_object",
         "skills\refine-arm-root-translation",
         "skills\register_tool_to_control_frame",
-        "skills\stationary_world_arm_alignment",
+        "skills\locate_arm_base",
         "test_agent\python"
     )) {
+        $packageRoot = Join-Path $workspace $package
+        $packageBuildRoot = Join-Path $packageRoot "build"
+        if (Test-Path -LiteralPath $packageBuildRoot -PathType Container) {
+            Remove-Item -LiteralPath $packageBuildRoot -Recurse -Force
+        }
         Invoke-Checked -FilePath $python -Arguments @(
-            "-m", "build", "--wheel", "--outdir", $wheelRoot, (Join-Path $workspace $package)
+            "-m", "build", "--wheel", "--outdir", $wheelRoot, $packageRoot
         )
     }
 }

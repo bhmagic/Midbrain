@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "midbrain-sam2-scene-tracker"
-version = "0.2.1"
+version = "0.3.2"
 description = "HOT SAM2 semantic mask tracker for Midbrain arm scenes"
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "httpx>=0.27,<1",
+  "midbrain-bufferref-client>=0.1,<0.2",
   "numpy>=1.26,<3",
   "opencv-python-headless>=4.10,<5",
   "Pillow>=10,<12",

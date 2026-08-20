@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+- Accept Locate Arm Base's exact V3 canonical mounted-camera calibration policy
+  across Agent spatial, point-cloud, observation, no-contact, and Integrated
+  commit consumers while preserving exact V2 compatibility and V1 epoch gates.
+- Add Developer Agent startup reconciliation for every installed discoverable
+  Skill outside the configured/runtime Agent lists. Persist Agent-owned
+  add/disable choices without editing Skill manifests, require restart for an
+  add, and block tasks until the choice is resolved.
+- Remove Regular Agent links from the Manager, Developer Agent, run journal,
+  and launcher output; redirect the Agent root to the Developer Agent and make
+  the Manager Developer Agent card border solid.
+- Replace the preliminary same-mask dilation experiment with independently
+  tunable VLM→SAM2 mask attempts and FoundationPose fit attempts. Ask the mask
+  VLM to remove bad independent masks, retain pixels present in at least half
+  of the survivors, apply one post-vote dilation, and use that exact mask for
+  every repeated native fit. Show every seed, SAM2 mask, review decision, vote,
+  final mask, and pose rendering in the Skill and Agent windows; retain
+  structured failure timing; and keep native score-network output as raw
+  ranking rather than calibrated confidence.
+- Repair the Locate Arm Base seed-component filter, which had attempted to
+  flood-fill a read-only Pillow image and therefore always retained the bounded
+  fallback mask. Constrain VLM seed prompts to CAD-defined base geometry and
+  exclude touching support structures. For low-confidence finite fit or
+  orientation selection, require a second independent VLM call and accept only
+  normal-threshold confidence or repeated same-candidate consensus above a
+  configured floor.
+- Bind `locate_arm_base` CAD/reference/orientation selection to the active
+  assembly-selected arm model through the flexible namespaced
+  `appendix.midbrain.skill.locate_arm_base.v1` entry. Publish the arm appendix
+  in assembly state, add a guarded main-portal arm-profile selector parallel to
+  mounted-effector selection, reject stale local/active digests, snapshot every
+  exact run input, repair the Skill developer launcher, add guarded profile
+  editing and a complete visual evidence gallery, add a theme-matched generic
+  FoundationPose status UI, and replace the stale legacy FoundationPose
+  Provider registration.
+- Replace the prior Linux-derived, multi-purpose FoundationPose package and
+  stationary calibration Skill with a Windows-native, single-function
+  FoundationPose Provider and the finite `locate_arm_base` Skill. The Provider
+  owns generic CAD pose inference only; the Skill owns robot CAD/reference
+  assets, VLM seed prompts, SAM2 invocation, bounded 0/90/180/270-degree
+  reference-image orientation, world-frame composition, and review-only
+  candidate publication. Remove fixed-effector orientation assumptions,
+  session/tracking Provider APIs, duplicate developer UI paths, and the
+  retired Manager candidate validator.
+- Extend the existing SAM2 Provider with a caller-prompted one-shot image
+  segmentation capability. VLM prompting remains at Skill level, while SAM2
+  validates the immutable RGB digest and returns a mask artifact with Provider
+  provenance. Pin its audited upstream checkout and keep its environment
+  separate from both FoundationPose and the Skill.
+- Make the replacement setup Windows-portable, including Python launcher and
+  single-Visual-Studio-installation resolution; rebuild the CUDA 12.8 native
+  DLL and FP32 TensorRT engines from NVIDIA's 1.0.1 ONNX models. Add a labeled
+  synthetic execution benchmark and preserve physical accuracy qualification
+  as an explicit remaining gate.
+- Add the provider-neutral `midbrain-bufferref-client` contract package for
+  generation-checked Windows named-memory reads. FoundationPose, SAM2, and
+  `locate_arm_base` install that client into their own private environments;
+  neither Provider imports the camera Provider, and the Skill imports no
+  Provider implementation or ML runtime. Extend repository validation with
+  source/setup boundary checks and an independently isolated import audit.
+- Clean every generated package build directory before wheel construction so
+  removed legacy modules, tests, and bytecode cannot survive in release wheels.
+  Restrict the `locate_arm_base` wheel to its runtime package.
+
 - Qualify the generalized Agent discovery milestone as near stable after live
   Gemini run `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` completed one exact client
   Tool Search round, stationary world/arm calibration and activation, one

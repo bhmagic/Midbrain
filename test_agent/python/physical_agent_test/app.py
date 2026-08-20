@@ -14,7 +14,12 @@ import httpx
 import uvicorn
 from agents import RunState, SessionSettings, SQLiteSession
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 
 from .agent_attachments import (
@@ -36,6 +41,7 @@ from .agent_event_stream import (
     stream_sse,
 )
 from .agent_run_journal import AgentRunJournal
+from .agent_skill_installation import AgentSkillInstallationRegistry
 from .agent_models import supported_agent_reasoning_efforts
 from .authorization import AuthorizationStore
 from .basic_client import BasicControllerClient
@@ -85,19 +91,14 @@ from .spatial_registration_adapter import SpatialRegistrationSkillAdapter
 from .skill_execution import SkillInvocationBrokerHandle
 from .skill_result_details import SkillResultDetailStore
 from .spatial_frames import SpatialFrameResolver, rotation_matrix
-from .stationary_calibration_adapter import StationaryCalibrationSkillAdapter
-from .stationary_calibration_activation import (
-    StationaryCalibrationActivationService,
-)
+from .arm_base_activation import ArmBaseActivationService
+from .arm_base_localization_adapter import ArmBaseLocalizationSkillAdapter
 from .tool_registration_adapter import ToolControlFrameSkillAdapter
 from .visual_evidence import VisualEvidenceStore
 from .world_point_cloud import WorldPointCloudAccumulator
 from .vlm_router import build_default_vlm_router
-from stationary_world_arm_alignment.camera import RgbdCapture
-from stationary_world_arm_alignment.config import (
-    Settings as StationaryAlignmentSettings,
-)
-from stationary_world_arm_alignment.skill import AlignmentSkill
+from locate_arm_base.skill import LocateArmBaseSkill
+from .rgbd_frame_capture import RgbdFrameCapture
 
 settings = Settings()
 phase4_policy = Phase4Policy.from_environment()
@@ -191,7 +192,7 @@ async def _ensure_current_world_tracking() -> dict[str, Any]:
 
 
 spatial_registration_skill = SpatialRegistrationSkillAdapter(
-    RgbdCapture(fabric, settings.head_camera_frame),
+    RgbdFrameCapture(fabric, settings.head_camera_frame),
     fabric,
     manager=manager,
     fallback_camera_provider_id=settings.head_camera_provider_id,
@@ -203,6 +204,13 @@ spatial_registration_skill = SpatialRegistrationSkillAdapter(
 agent_skill_catalog = discover_agent_skills(
     settings.workspace_root,
     include_disabled=True,
+)
+agent_skill_installation_registry = AgentSkillInstallationRegistry(
+    settings.agent_skill_installation_state_path,
+    configured_enabled_tool_names=settings.phase4_eligible_tools,
+)
+agent_enabled_tool_names = (
+    agent_skill_installation_registry.effective_enabled_tool_names()
 )
 semantic_assertion_publisher = SemanticAssertionPublisher(fabric)
 scene_segmentation_policy_publisher = SceneSegmentationPolicyPublisher(
@@ -254,19 +262,43 @@ tool_registration_skill = ToolControlFrameSkillAdapter(
     arm_tool_frame=settings.arm_tool_frame,
     binding_mode=settings.phase5_spatial_binding_mode,
 )
-stationary_alignment_settings = StationaryAlignmentSettings()
-stationary_calibration_activation = StationaryCalibrationActivationService(
+locate_arm_base_config = json.loads(
+    (
+        settings.workspace_root
+        / "skills"
+        / "locate_arm_base"
+        / "config_templates"
+        / "skill.default.json"
+    ).read_text(encoding="utf-8")
+)
+locate_arm_base_skill = LocateArmBaseSkill(
+    locate_arm_base_config,
+    settings.workspace_root,
+)
+arm_base_activation = ArmBaseActivationService(
     manager,
     review_auth_secret=settings.review_auth_secret,
-    calibration_root=stationary_alignment_settings.calibration_root,
-    review_root=stationary_alignment_settings.review_root,
+    candidate_root=(
+        settings.workspace_root
+        / "skills"
+        / "locate_arm_base"
+        / "config"
+        / "calibrations"
+    ),
+    review_root=(
+        settings.workspace_root
+        / "skills"
+        / "locate_arm_base"
+        / "config"
+        / "reviews"
+    ),
 )
-stationary_calibration_agent_adapter = StationaryCalibrationSkillAdapter(
-    AlignmentSkill,
-    operation_hard_timeout_s=settings.stationary_calibration_timeout_s,
-    activation_service=stationary_calibration_activation,
+arm_base_localization_agent_adapter = ArmBaseLocalizationSkillAdapter(
+    locate_arm_base_skill,
+    operation_hard_timeout_s=settings.arm_base_localization_timeout_s,
+    activation_service=arm_base_activation,
+    readiness_ensurer=_ensure_current_world_tracking,
     visual_evidence_store=visual_evidence_store,
-    artifact_run_root=stationary_alignment_settings.run_root,
 )
 reviewed_observation_execution_skill = ReviewedObservationExecutionAdapter(
     authorization_store,
@@ -349,7 +381,7 @@ integrated_motion_agent_adapter = IntegratedRelativeMotionAdapter(
     attempt_visual_verification=True,
     require_upright_mount_confirmation=True,
     calibration_activation_continuation=(
-        stationary_calibration_agent_adapter.latest_activation_continuation
+        arm_base_localization_agent_adapter.latest_activation_continuation
     ),
     authorization_store=authorization_store,
 )
@@ -370,7 +402,7 @@ limited_graph_model_route_profiles = build_limited_graph_model_route_profiles(
 )
 external_skill_adapters = load_external_skill_host_adapters(
     agent_skill_catalog,
-    eligible_tool_names=set(settings.phase4_eligible_tools),
+    eligible_tool_names=agent_enabled_tool_names,
     services=ExternalSkillHostServices(
         manager=manager,
         fabric=fabric,
@@ -441,7 +473,7 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         pointing_skill,
         settings.openai_model,
         tool_choice=settings.openai_agent_tool_choice,
-        eligible_tool_names=set(settings.phase4_eligible_tools),
+        eligible_tool_names=agent_enabled_tool_names,
         visual_scene_skill=visual_scene_skill,
         rgbd_alignment_skill=rgbd_alignment_skill,
         spatial_registration_skill=spatial_registration_skill,
@@ -454,7 +486,10 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         scene_policy_publisher=scene_segmentation_policy_publisher,
         tool_registration_skill=tool_registration_skill,
         external_skill_adapters=external_skill_adapters,
-        stationary_calibration_skill=stationary_calibration_agent_adapter,
+        arm_base_localization_skill=arm_base_localization_agent_adapter,
+        reviewed_observation_execution_skill=(
+            reviewed_observation_execution_skill
+        ),
         manager=manager,
         provider_lifecycle_control=True,
         integrated_motion_skill=integrated_motion_agent_adapter,
@@ -471,8 +506,8 @@ def _build_autonomous_agent_driver() -> PrototypeAgentDriver:
         ),
         defer_loading=settings.agent_skill_defer_loading,
         adapter_timeout_s=phase4_policy.skill_adapter_timeout_s,
-        stationary_calibration_timeout_s=(
-            settings.stationary_calibration_timeout_s
+        arm_base_localization_timeout_s=(
+            settings.arm_base_localization_timeout_s
         ),
         provider_hot_readiness_timeout_s=(
             settings.provider_hot_readiness_timeout_s
@@ -514,6 +549,20 @@ reviewed_observation_agent_driver = PrototypeAgentDriver(
 )
 
 
+def _runtime_agent_skill_tool_names() -> set[str]:
+    return {
+        descriptor.tool_name
+        for descriptor in driver.offered_skill_descriptors
+    }
+
+
+def _agent_skill_installation_status() -> dict[str, Any]:
+    return agent_skill_installation_registry.snapshot(
+        agent_skill_catalog,
+        runtime_tool_names=_runtime_agent_skill_tool_names(),
+    )
+
+
 @dataclass
 class PendingAgentRun:
     state: RunState[Any]
@@ -541,6 +590,11 @@ agent_reasoning_options = tuple(
 )
 vlm_model_options = tuple(
     dict.fromkeys(backend.model_id for backend in agent_vlm_router.backends)
+)
+default_vlm_model = (
+    settings.gemini_model
+    if settings.gemini_model in vlm_model_options
+    else vlm_model_options[0]
 )
 pending_agent_runs: dict[str, PendingAgentRun] = {}
 pending_agent_runs_lock = asyncio.Lock()
@@ -624,7 +678,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Physical Agent Test Scaffold",
-    version="0.4.9",
+    version="0.4.15",
     lifespan=lifespan,
 )
 
@@ -643,7 +697,7 @@ class PromptRequest(BaseModel):
         min_length=1,
         max_length=20,
     )
-    vlm_model: str = Field(default="auto", min_length=1, max_length=100)
+    vlm_model: str = Field(default=default_vlm_model, min_length=1, max_length=100)
     attachment_ids: list[str] = Field(
         default_factory=list,
         max_length=1,
@@ -656,8 +710,7 @@ class PromptRequest(BaseModel):
         default=DEFAULT_SESSION_AUTO_SPEED_M_S,
         gt=0.0,
     )
-    auto_authorize_stationary_calibration: bool = False
-    auto_authorize_stationary_activation: bool = False
+    auto_authorize_arm_base_activation: bool = False
     auto_authorize_safe_home: bool = False
     auto_authorize_space_reinitialization: bool = False
 
@@ -844,8 +897,7 @@ class DeveloperApprovalDecision(BaseModel):
             r"^(MANUAL|AUTO_PROVIDER_ACTIVATION|"
             r"AUTO_PROVIDER_STOP|"
             r"AUTO_BOUNDED_RELATIVE_MOTION|"
-            r"AUTO_STATIONARY_CALIBRATION|"
-            r"AUTO_STATIONARY_ACTIVATION|"
+            r"AUTO_ARM_BASE_ACTIVATION|"
             r"AUTO_SAFE_HOME|AUTO_SPACE_REINITIALIZATION)$"
         ),
     )
@@ -858,6 +910,10 @@ class DeveloperApprovalDecision(BaseModel):
         default=None,
         gt=0.0,
     )
+
+
+class AgentSkillInstallationDecision(BaseModel):
+    action: str = Field(pattern=r"^(ADD|DISABLE)$")
 
 
 def _approval_arguments(approval: dict[str, Any]) -> dict[str, Any]:
@@ -1030,33 +1086,18 @@ def _validate_automatic_agent_approval(
                 ),
             )
         return
-    if decision.approval_mode == "AUTO_STATIONARY_CALIBRATION":
-        eligible = all(
-            approval.get("tool_name") == "calibrate_stationary_workcell"
-            for approval in approvals
-        )
-        if not eligible:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "The session calibration authorization permits only "
-                    "calibrate_stationary_workcell; physical motion and other "
-                    "protected operations still require their own decision."
-                ),
-            )
-        return
-    if decision.approval_mode == "AUTO_STATIONARY_ACTIVATION":
+    if decision.approval_mode == "AUTO_ARM_BASE_ACTIVATION":
         eligible = all(
             approval.get("tool_name")
-            == "review_and_activate_stationary_calibration"
+            == "review_and_activate_arm_base"
             for approval in approvals
         )
         if not eligible:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "The session calibration-activation authorization "
-                    "permits only exact stationary candidate review and "
+                    "The session arm-base activation authorization "
+                    "permits only exact candidate review and "
                     "mounted-rig activation; physical motion and protected "
                     "operations still require their own decision."
                 ),
@@ -1096,9 +1137,6 @@ def _validate_automatic_agent_approval(
     )
 
 
-REGULAR_PAGE = (
-    Path(__file__).resolve().parent / "web" / "regular_agent.html"
-).read_text(encoding="utf-8")
 VISUAL_EVIDENCE_SCRIPT = (
     Path(__file__).resolve().parent / "web" / "visual_evidence.js"
 ).read_text(encoding="utf-8")
@@ -1126,9 +1164,9 @@ SLICING_DEVELOPER_PAGE = (
 ).read_text(encoding="utf-8")
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return REGULAR_PAGE
+@app.get("/", response_class=RedirectResponse)
+async def index() -> RedirectResponse:
+    return RedirectResponse(url="/dev", status_code=307)
 
 
 @app.get("/assets/visual_evidence.js")
@@ -1497,11 +1535,12 @@ async def status() -> dict[str, Any]:
             "result": scene_policy_restore_result,
             "error": scene_policy_restore_error,
         },
-        "stationary_calibration_timeout_s": (
-            settings.stationary_calibration_timeout_s
+        "arm_base_localization_timeout_s": (
+            settings.arm_base_localization_timeout_s
         ),
         "gemini_model": settings.gemini_model,
         "vlm_model_options": ["auto", *vlm_model_options],
+        "vlm_model_default": default_vlm_model,
         "capability_binding": pointing_skill.last_binding,
         "rgbd_alignment_binding": rgbd_alignment_skill.last_binding,
         "rgbd_alignment_validation": rgbd_alignment_skill.last_result,
@@ -1513,6 +1552,7 @@ async def status() -> dict[str, Any]:
         "agent_skill_catalog": [
             descriptor.as_dict() for descriptor in agent_skill_catalog
         ],
+        "agent_skill_installation": _agent_skill_installation_status(),
         "authorization_ui": {
             "pending_count": len(authorization_store.list(status="PENDING")),
             "approval_executes_action": False,
@@ -2247,6 +2287,34 @@ async def skills(include_disabled: bool = False) -> dict[str, Any]:
         "provider_binding": "MANAGER_ADVISORY",
         "skills": [descriptor.as_dict() for descriptor in descriptors],
     }
+
+
+@app.get("/api/agent-skill-installation")
+async def agent_skill_installation_status() -> dict[str, Any]:
+    return _agent_skill_installation_status()
+
+
+@app.post("/api/agent-skill-installation/{tool_name}")
+async def decide_agent_skill_installation(
+    tool_name: str,
+    request: AgentSkillInstallationDecision,
+) -> dict[str, Any]:
+    try:
+        return agent_skill_installation_registry.decide(
+            tool_name,
+            action=request.action,
+            descriptors=agent_skill_catalog,
+            runtime_tool_names=_runtime_agent_skill_tool_names(),
+        )
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="discoverable Skill was not found",
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/api/authorizations")
@@ -3027,11 +3095,8 @@ def _session_authorization(
         auto_authorize_relative_motion=request.auto_authorize_relative_motion,
         max_auto_move_cm=request.max_auto_move_cm,
         max_auto_speed_m_s=request.max_auto_speed_m_s,
-        auto_authorize_stationary_calibration=(
-            request.auto_authorize_stationary_calibration
-        ),
-        auto_authorize_stationary_activation=(
-            request.auto_authorize_stationary_activation
+        auto_authorize_arm_base_activation=(
+            request.auto_authorize_arm_base_activation
         ),
         auto_authorize_safe_home=request.auto_authorize_safe_home,
         auto_authorize_space_reinitialization=(
@@ -3044,6 +3109,15 @@ def _session_authorization(
 async def start_streaming_run(request: PromptRequest) -> dict[str, Any]:
     """Start a backend-owned run and return an independently replayable SSE URL."""
 
+    installation = _agent_skill_installation_status()
+    if installation["prompt_required"] or installation["restart_required"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Resolve the startup Skill installation choices and restart "
+                "the Agent if an added Skill is pending before running a task."
+            ),
+        )
     await _refresh_midbrain_session_identity()
     run_id = str(uuid.uuid4())
     agent_model, reasoning_effort, vlm_model = _model_selection(request)
@@ -3816,6 +3890,21 @@ PAGE = r"""
     .decision-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 0 20px 20px; }
     .decision-actions button { margin: 0; }
     .decision-note { color: var(--mb-warning); font-size: 12px; }
+    .skill-installation-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(82vh, 900px); overflow: hidden; border: 1px solid var(--mb-border); border-radius: 14px; padding: 0; background: var(--mb-surface); color: var(--mb-text); }
+    .skill-installation-dialog::backdrop { background: rgba(0,0,0,.88); backdrop-filter: blur(5px); }
+    .skill-installation-head { padding: 20px 22px 15px; border-bottom: 1px solid var(--mb-border); }
+    .skill-installation-head h2 { margin-bottom: 7px; }
+    .skill-installation-body { display: grid; gap: 12px; max-height: 58vh; overflow-y: auto; padding: 17px 22px 22px; scrollbar-gutter: stable; }
+    #skillInstallationList { display: grid; gap: 12px; }
+    .skill-installation-card { border: 1px solid var(--mb-border); border-radius: 10px; padding: 14px; background: var(--mb-surface-raised); }
+    .skill-installation-card h3 { margin: 0 0 5px; font-size: 15px; }
+    .skill-installation-card code { color: var(--mb-accent); }
+    .skill-installation-card p { margin: 7px 0; color: var(--mb-secondary); font-size: 12px; line-height: 1.5; }
+    .skill-installation-meta { color: var(--mb-muted) !important; font-size: 11px !important; }
+    .skill-installation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: 12px; }
+    .skill-installation-actions button { margin: 0; }
+    .skill-installation-restart { border: 1px solid var(--mb-warning); border-radius: 9px; padding: 12px; color: var(--mb-warning); font-size: 12px; line-height: 1.5; }
+    .skill-installation-error { color: var(--mb-danger); font-size: 12px; }
     @media (max-width: 980px) {
       body.developer-workspace { height: auto; min-height: 100dvh; overflow: auto; }
       body.developer-workspace main { height: auto; min-height: 100dvh; }
@@ -3833,12 +3922,12 @@ PAGE = r"""
     <a href="http://127.0.0.1:7001/" style="color:var(--mb-muted);text-decoration:none">← Midbrain</a>
     <span style="display:flex;gap:16px">
       <a href="/dev/run-journal" style="color:var(--mb-muted);text-decoration:none">Run journal</a>
-      <a id="secondaryNav" href="/" style="color:var(--mb-warning);text-decoration:none">Regular agent</a>
+      <a id="secondaryNav" href="/dev" style="color:var(--mb-warning);text-decoration:none" hidden>Developer view</a>
     </span>
   </nav>
   <div class="role-kicker">Developer view</div>
   <h1 id="pageTitle">Autonomous Agent · Developer view</h1>
-  <p class="sub" id="pageSubtitle">The same autonomous Agent as the regular page, with additional Provider, Skill, replay, point-cloud, and normalized-event diagnostics.</p>
+  <p class="sub" id="pageSubtitle">Autonomous Agent controls with Provider, Skill, replay, point-cloud, and normalized-event diagnostics.</p>
   <div class="grid">
     <div>
       <section class="card" id="spaceCognitionPanel">
@@ -3867,7 +3956,7 @@ PAGE = r"""
         <div class="model-controls">
           <label>Agent model<select id="agentModel"><option value="gemini-3.7-flash">Gemini 3.7 Flash</option></select></label>
           <label>Reasoning<select id="reasoningEffort"><option value="medium">Medium</option></select></label>
-          <label>Visual model<select id="vlmModel"><option value="auto">Auto routing</option></select></label>
+          <label>Visual model<select id="vlmModel"><option value="gemini-robotics-er-2-preview">Gemini Robotics-ER 2.0</option></select></label>
         </div>
         <div class="agent-attachment-picker">
           <label class="agent-attachment-button" for="developerAgentImageInput">Attach image</label>
@@ -3907,12 +3996,8 @@ PAGE = r"""
             controlled-frame yaw up to 45°
           </label>
           <label class="authorization-toggle">
-            <input id="autoApproveCalibration" type="checkbox" checked>
-            Auto-authorize stationary world-to-arm calibration
-          </label>
-          <label class="authorization-toggle">
-            <input id="autoApproveCalibrationActivation" type="checkbox" checked>
-            Auto-authorize exact qualified calibration candidate activation
+            <input id="autoApproveArmBaseActivation" type="checkbox" checked>
+            Auto-authorize exact qualified arm-base candidate activation
           </label>
           <label class="authorization-toggle">
             <input id="autoApproveSafeHome" type="checkbox" checked>
@@ -4018,6 +4103,18 @@ PAGE = r"""
     </div>
   </div>
 </main>
+<dialog id="skillInstallationDialog" class="skill-installation-dialog" aria-labelledby="skillInstallationTitle">
+  <div class="skill-installation-head">
+    <div class="role-kicker">Agent startup review</div>
+    <h2 id="skillInstallationTitle">New Skill installation detected</h2>
+    <p class="sub">Every installed, discoverable Skill must be explicitly added to this Agent or disabled for this Agent. Skill manifests are never changed by this decision.</p>
+  </div>
+  <div class="skill-installation-body">
+    <div id="skillInstallationRestart" class="skill-installation-restart" hidden></div>
+    <div id="skillInstallationList"></div>
+    <div id="skillInstallationError" class="skill-installation-error" hidden></div>
+  </div>
+</dialog>
 <dialog id="authorizationDialog" aria-labelledby="authorizationTitle">
   <div class="decision-head">
     <div class="role-kicker">Authorization required</div>
@@ -4058,6 +4155,7 @@ if (dedicatedSpaceCognition) {
     'Initialize or deliberately re-establish the local spatial epoch, inspect VIO state, and review the accumulated world model.';
   secondaryNav.href = '/dev';
   secondaryNav.textContent = 'Developer view';
+  secondaryNav.hidden = false;
   spaceCognitionLinkPanel.hidden = true;
   agentPromptPanel.hidden = true;
   replayPanel.hidden = true;
@@ -4070,6 +4168,7 @@ if (dedicatedSpaceCognition) {
     'Inspect the live point cloud together with world, robot, camera, joint, object, and explicit 2D screen coordinate frames.';
   secondaryNav.href = '/dev';
   secondaryNav.textContent = 'Developer view';
+  secondaryNav.hidden = false;
   spaceCognitionPanel.hidden = true;
   agentPromptPanel.hidden = true;
   replayPanel.hidden = true;
@@ -4196,6 +4295,18 @@ const showGripper = document.getElementById('showGripper');
 const frameLabels = document.getElementById('frameLabels');
 const screenAxisOverlay = document.getElementById('screenAxisOverlay');
 const authorizationDialog = document.getElementById('authorizationDialog');
+const skillInstallationDialog = document.getElementById(
+  'skillInstallationDialog'
+);
+const skillInstallationRestart = document.getElementById(
+  'skillInstallationRestart'
+);
+const skillInstallationList = document.getElementById(
+  'skillInstallationList'
+);
+const skillInstallationError = document.getElementById(
+  'skillInstallationError'
+);
 const authorizationTitle = document.getElementById('authorizationTitle');
 const authorizationSummary = document.getElementById('authorizationSummary');
 const authorizationDetails = document.getElementById('authorizationDetails');
@@ -4237,8 +4348,9 @@ const autoApproveProviderStop = document.getElementById(
   'autoApproveProviderStop'
 );
 const autoApproveMoves = document.getElementById('autoApproveMoves');
-const autoApproveCalibration = document.getElementById('autoApproveCalibration');
-const autoApproveCalibrationActivation = document.getElementById('autoApproveCalibrationActivation');
+const autoApproveArmBaseActivation = document.getElementById(
+  'autoApproveArmBaseActivation'
+);
 const autoApproveSafeHome = document.getElementById('autoApproveSafeHome');
 const autoApproveSpaceReinitialization = document.getElementById(
   'autoApproveSpaceReinitialization'
@@ -4274,6 +4386,153 @@ let developerSelectedImage = null;
 let developerSelectedImageUrl = null;
 let activeDeveloperRun = null;
 let activeDeveloperTurn = null;
+let skillInstallationBlocked = !focusedUtilityPage;
+
+function syncRunButtonState() {
+  runButton.disabled = skillInstallationBlocked || Boolean(activeDeveloperRun);
+}
+
+function skillInstallationCard(skill) {
+  const card = document.createElement('article');
+  card.className = 'skill-installation-card';
+  const heading = document.createElement('h3');
+  heading.textContent = skill.display_name || skill.tool_name;
+  const identifier = document.createElement('code');
+  identifier.textContent = skill.tool_name;
+  const description = document.createElement('p');
+  description.textContent = skill.description || 'No Skill description provided.';
+  const metadata = document.createElement('p');
+  metadata.className = 'skill-installation-meta';
+  metadata.textContent = [
+    'Version ' + (skill.skill_version || 'unknown'),
+    skill.safety_class || 'UNKNOWN safety',
+    skill.expected_latency || 'UNKNOWN latency'
+  ].join(' · ');
+  const sideEffects = document.createElement('p');
+  const declaredSideEffects = Array.isArray(skill.side_effects)
+    ? skill.side_effects
+    : [];
+  sideEffects.textContent = declaredSideEffects.length
+    ? 'Declared side effects: ' + declaredSideEffects.join('; ')
+    : 'Declared side effects: none';
+  const actions = document.createElement('div');
+  actions.className = 'skill-installation-actions';
+  const disableButton = document.createElement('button');
+  disableButton.type = 'button';
+  disableButton.className = 'secondary';
+  disableButton.textContent = 'Disable for Agent';
+  const addButton = document.createElement('button');
+  addButton.type = 'button';
+  addButton.className = 'primary';
+  addButton.textContent = 'Add to Agent list';
+  for (const [button, action] of [
+    [disableButton, 'DISABLE'],
+    [addButton, 'ADD']
+  ]) {
+    button.addEventListener('click', async () => {
+      for (const control of actions.querySelectorAll('button')) {
+        control.disabled = true;
+      }
+      skillInstallationError.hidden = true;
+      try {
+        const response = await fetch(
+          '/api/agent-skill-installation/' +
+            encodeURIComponent(skill.tool_name),
+          {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action})
+          }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Skill decision was rejected');
+        }
+        renderSkillInstallationStatus(data);
+      } catch (error) {
+        skillInstallationError.textContent = error.message;
+        skillInstallationError.hidden = false;
+        for (const control of actions.querySelectorAll('button')) {
+          control.disabled = false;
+        }
+      }
+    });
+  }
+  actions.append(disableButton, addButton);
+  card.append(
+    heading,
+    identifier,
+    description,
+    metadata,
+    sideEffects,
+    actions
+  );
+  return card;
+}
+
+function renderSkillInstallationStatus(status) {
+  const unresolved = Array.isArray(status.unresolved)
+    ? status.unresolved
+    : [];
+  const pendingRestart = Array.isArray(status.pending_restart)
+    ? status.pending_restart
+    : [];
+  skillInstallationBlocked = Boolean(
+    status.prompt_required || status.restart_required
+  );
+  skillInstallationList.replaceChildren(
+    ...unresolved.map(skillInstallationCard)
+  );
+  if (pendingRestart.length) {
+    skillInstallationRestart.textContent =
+      'Restart the Agent runtime to load: ' +
+      pendingRestart.map(skill => skill.display_name || skill.tool_name).join(', ') +
+      '. Agent tasks remain blocked until the restart completes.';
+    skillInstallationRestart.hidden = false;
+  } else {
+    skillInstallationRestart.hidden = true;
+    skillInstallationRestart.textContent = '';
+  }
+  skillInstallationError.hidden = true;
+  syncRunButtonState();
+  if (skillInstallationBlocked) {
+    if (!skillInstallationDialog.open) skillInstallationDialog.showModal();
+  } else if (skillInstallationDialog.open) {
+    skillInstallationDialog.close();
+  }
+}
+
+async function loadSkillInstallationStatus() {
+  if (focusedUtilityPage) {
+    skillInstallationBlocked = false;
+    syncRunButtonState();
+    return;
+  }
+  syncRunButtonState();
+  try {
+    const response = await fetch(
+      '/api/agent-skill-installation',
+      {cache: 'no-store'}
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || 'Skill installation status is unavailable');
+    }
+    renderSkillInstallationStatus(data);
+  } catch (error) {
+    skillInstallationBlocked = true;
+    skillInstallationList.replaceChildren();
+    skillInstallationError.textContent =
+      'Agent startup is blocked: ' + error.message;
+    skillInstallationError.hidden = false;
+    syncRunButtonState();
+    if (!skillInstallationDialog.open) skillInstallationDialog.showModal();
+  }
+}
+
+skillInstallationDialog.addEventListener('cancel', (event) => {
+  if (skillInstallationBlocked) event.preventDefault();
+});
 
 function clearDeveloperSelectedImage() {
   if (developerSelectedImageUrl) {
@@ -4368,13 +4627,9 @@ function loadAgentAuthorizationPreferences() {
     typeof saved.autoApproveMoves === 'boolean'
       ? saved.autoApproveMoves
       : true;
-  autoApproveCalibration.checked =
-    typeof saved.autoApproveCalibration === 'boolean'
-      ? saved.autoApproveCalibration
-      : true;
-  autoApproveCalibrationActivation.checked =
-    typeof saved.autoApproveCalibrationActivation === 'boolean'
-      ? saved.autoApproveCalibrationActivation
+  autoApproveArmBaseActivation.checked =
+    typeof saved.autoApproveArmBaseActivation === 'boolean'
+      ? saved.autoApproveArmBaseActivation
       : true;
   autoApproveSafeHome.checked =
     typeof saved.autoApproveSafeHome === 'boolean'
@@ -4404,9 +4659,7 @@ function agentAuthorizationPreferences() {
     autoApproveProviders: autoApproveProviders.checked,
     autoApproveProviderStop: autoApproveProviderStop.checked,
     autoApproveMoves: autoApproveMoves.checked,
-    autoApproveCalibration: autoApproveCalibration.checked,
-    autoApproveCalibrationActivation:
-      autoApproveCalibrationActivation.checked,
+    autoApproveArmBaseActivation: autoApproveArmBaseActivation.checked,
     autoApproveSafeHome: autoApproveSafeHome.checked,
     autoApproveSpaceReinitialization:
       autoApproveSpaceReinitialization.checked,
@@ -4436,12 +4689,9 @@ function updateAgentAuthorizationTicker() {
       'joint speed asks >10 rad/s and hard-stops >=20 rad/s; ' +
       'controlled-frame yaw AUTO <= 45°'
     : 'physical motion asks';
-  const calibrationState = preferences.autoApproveCalibration
-    ? 'world-arm calibration AUTO'
-    : 'world-arm calibration asks';
-  const activationState = preferences.autoApproveCalibrationActivation
-    ? 'exact calibration activation AUTO'
-    : 'exact calibration activation asks';
+  const activationState = preferences.autoApproveArmBaseActivation
+    ? 'exact arm-base activation AUTO'
+    : 'exact arm-base activation asks';
   const safeHomeState = preferences.autoApproveSafeHome
     ? 'safe-home AUTO'
     : 'safe-home asks';
@@ -4450,7 +4700,7 @@ function updateAgentAuthorizationTicker() {
     : 'spatial reinitialization asks';
   authorizationTicker.textContent =
     providerState + ' | ' + providerStopState + ' | ' + motionState + ' | ' +
-    calibrationState + ' | ' + activationState + ' | ' + safeHomeState +
+    activationState + ' | ' + safeHomeState +
     ' | ' + reinitializationState + '. Provider and controller safety ' +
     'checks remain active.';
   try {
@@ -4561,33 +4811,19 @@ function automaticDeveloperApprovalDecision(approvals) {
         'Session authorization automatically approved the bounded exact motion preview.'
     };
   }
-  const calibrationEligible =
-    preferences.autoApproveCalibration &&
-    approvals.every(
-      (approval) => approval.tool_name === 'calibrate_stationary_workcell'
-    );
-  if (calibrationEligible) {
-    return {
-      approval_mode: 'AUTO_STATIONARY_CALIBRATION',
-      max_auto_move_cm: null,
-      max_auto_speed_m_s: null,
-      label:
-        'Session authorization automatically approved stationary world-to-arm calibration.'
-    };
-  }
   const activationEligible =
-    preferences.autoApproveCalibrationActivation &&
+    preferences.autoApproveArmBaseActivation &&
     approvals.every(
       (approval) =>
-        approval.tool_name === 'review_and_activate_stationary_calibration'
+        approval.tool_name === 'review_and_activate_arm_base'
     );
   if (activationEligible) {
     return {
-      approval_mode: 'AUTO_STATIONARY_ACTIVATION',
+      approval_mode: 'AUTO_ARM_BASE_ACTIVATION',
       max_auto_move_cm: null,
       max_auto_speed_m_s: null,
       label:
-        'Session authorization automatically approved exact stationary calibration activation.'
+        'Session authorization automatically approved exact arm-base activation.'
     };
   }
   const safeHomeEligible =
@@ -4796,8 +5032,8 @@ async function refreshStatus() {
     populateModelSelect(
       vlmModel,
       data.vlm_model_options || ['auto'],
-      'auto',
-      (value) => value === 'auto' ? 'Auto routing' : value
+      data.vlm_model_default || 'gemini-robotics-er-2-preview',
+      (value) => value === 'auto' ? 'Auto routing' : value === 'gemini-robotics-er-2-preview' ? 'Gemini Robotics-ER 2.0' : value
     );
     const initializationData = (data.space_cognition && data.space_cognition.data) || {};
     const vioData = (data.vio && data.vio.data) || {};
@@ -5076,10 +5312,8 @@ function developerRunRequest(attachmentIds) {
     auto_authorize_relative_motion: authorization.autoApproveMoves,
     max_auto_move_cm: authorization.maxAutoMoveCm,
     max_auto_speed_m_s: authorization.maxAutoSpeedMps,
-    auto_authorize_stationary_calibration:
-      authorization.autoApproveCalibration,
-    auto_authorize_stationary_activation:
-      authorization.autoApproveCalibrationActivation,
+    auto_authorize_arm_base_activation:
+      authorization.autoApproveArmBaseActivation,
     auto_authorize_safe_home: authorization.autoApproveSafeHome,
     auto_authorize_space_reinitialization:
       authorization.autoApproveSpaceReinitialization
@@ -5238,6 +5472,7 @@ function consumeStreamingDeveloperRun(started, turn) {
 }
 
 runButton.addEventListener('click', async () => {
+  if (skillInstallationBlocked) return;
   const prompt = promptBox.value.trim();
   if (!prompt) return;
   const turn = developerChatHistory.startTurn({
@@ -5276,7 +5511,7 @@ runButton.addEventListener('click', async () => {
       activeDeveloperTurn = null;
       stopRunButton.disabled = true;
     }
-    runButton.disabled = false;
+    syncRunButtonState();
   }
 });
 stopRunButton.addEventListener('click', async () => {
@@ -5335,8 +5570,7 @@ for (const control of [
   autoApproveProviders,
   autoApproveProviderStop,
   autoApproveMoves,
-  autoApproveCalibration,
-  autoApproveCalibrationActivation,
+  autoApproveArmBaseActivation,
   autoApproveSafeHome,
   autoApproveSpaceReinitialization,
   maxAutoMoveCm,
@@ -6221,6 +6455,7 @@ for (const control of Object.values(annotationVisibilityControls)) {
 }
 updateAnnotationVisibility();
 
+loadSkillInstallationStatus();
 loadChatSession();
 refreshStatus();
 if (!focusedUtilityPage) refreshReplayProvenance();

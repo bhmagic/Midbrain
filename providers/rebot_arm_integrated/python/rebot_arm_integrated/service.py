@@ -24,9 +24,14 @@ from .platform import PlatformPublisher
 
 MOUNTED_WORKCELL_POLICY_V1 = "MOUNTED_IDENTITY_TRACKING_GATED_V1"
 MOUNTED_WORKCELL_POLICY_V2 = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+MOUNTED_WORKCELL_POLICY_V3 = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+MOUNTED_CANONICAL_WORKCELL_POLICIES = {
+    MOUNTED_WORKCELL_POLICY_V2,
+    MOUNTED_WORKCELL_POLICY_V3,
+}
 SUPPORTED_MOUNTED_WORKCELL_POLICIES = {
     MOUNTED_WORKCELL_POLICY_V1,
-    MOUNTED_WORKCELL_POLICY_V2,
+    *MOUNTED_CANONICAL_WORKCELL_POLICIES,
 }
 SUPPORTED_TRANSIT_FINAL_STATES = {"FLOAT", "FIXED", "WAIT_FOR_NEXT"}
 
@@ -816,7 +821,7 @@ class IntegratedService:
         if (
             not autonomous_free_space_context
             and
-            workcell_policy == MOUNTED_WORKCELL_POLICY_V2
+            workcell_policy in MOUNTED_CANONICAL_WORKCELL_POLICIES
             and not str(
                 request_context.get("camera_calibration_revision") or ""
             ).strip()
@@ -981,7 +986,7 @@ class IntegratedService:
                     "vio_session_epoch": "session_epoch",
                 }
             )
-        elif policy == MOUNTED_WORKCELL_POLICY_V2:
+        elif policy in MOUNTED_CANONICAL_WORKCELL_POLICIES:
             expected_fields["camera_calibration_revision"] = (
                 "camera_calibration_revision"
             )

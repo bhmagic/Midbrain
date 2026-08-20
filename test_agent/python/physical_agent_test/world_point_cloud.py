@@ -23,6 +23,17 @@ CALIBRATION_ACTIVATION_STREAM = "manager.workcell_calibration.activation"
 LIVE_VIO_CAMERA_AUTHORITY = "LIVE_VIO_CAMERA_POSE"
 REVIEWED_STATIONARY_CAMERA_AUTHORITY = "REVIEWED_STATIONARY_CAMERA"
 UNRESOLVED_TRANSFORM_AUTHORITY = "UNRESOLVED"
+MOUNTED_WORKCELL_POLICY_V1 = "MOUNTED_IDENTITY_TRACKING_GATED_V1"
+MOUNTED_WORKCELL_POLICY_V2 = (
+    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+)
+MOUNTED_WORKCELL_POLICY_V3 = (
+    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+)
+MOUNTED_CANONICAL_WORKCELL_POLICIES = {
+    MOUNTED_WORKCELL_POLICY_V2,
+    MOUNTED_WORKCELL_POLICY_V3,
+}
 
 
 @dataclass
@@ -607,11 +618,13 @@ def _reviewed_stationary_camera_transform(
         return None
     if data.get("state") != "ACTIVE" or data.get("motion_usable") is not True:
         return None
-    if data.get("validity_policy") != "MOUNTED_IDENTITY_TRACKING_GATED_V1":
-        return None
-    if str(data.get("session_epoch") or "") != session_epoch:
-        return None
-    if str(data.get("vio_world_frame") or "") != vio_world_frame:
+    validity_policy = str(data.get("validity_policy") or "")
+    if validity_policy == MOUNTED_WORKCELL_POLICY_V1:
+        if str(data.get("session_epoch") or "") != session_epoch:
+            return None
+        if str(data.get("vio_world_frame") or "") != vio_world_frame:
+            return None
+    elif validity_policy not in MOUNTED_CANONICAL_WORKCELL_POLICIES:
         return None
     if data.get("camera_frame") != COLOR_FRAME:
         return None

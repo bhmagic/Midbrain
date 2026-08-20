@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain://schemas/providers/sam2/segment_image_request.v1",
+  "type": "object",
+  "required": [
+    "request_id",
+    "rgb_path",
+    "rgb_sha256",
+    "box_yxyx",
+    "positive_points_yx",
+    "prompt_confidence"
+  ],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "rgb_path": {"type": "string", "minLength": 1},
+    "rgb_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "box_yxyx": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0, "maximum": 1000},
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "positive_points_yx": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "negative_points_yx": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "maxItems": 4
+    },
+    "prompt_confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "additionalProperties": false
+}

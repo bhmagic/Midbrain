@@ -1,13 +1,6 @@
-"""Midbrain FoundationPose Resource Provider support package."""
+"""Midbrain native Windows FoundationPose provider."""
 
-from .backend import BackendResult, FoundationPoseBackend, MockFoundationPoseBackend, NvLabsFoundationPoseBackend
-from .model_registry import ObjectModel, ObjectModelRegistry
+from .backend import EstimateInput, EstimateOutput, NativeFoundationPoseBackend
 
-__all__ = [
-    "BackendResult",
-    "FoundationPoseBackend",
-    "MockFoundationPoseBackend",
-    "NvLabsFoundationPoseBackend",
-    "ObjectModel",
-    "ObjectModelRegistry",
-]
+__all__ = ["EstimateInput", "EstimateOutput", "NativeFoundationPoseBackend"]
+__version__ = "1.1.2"

@@ -3,155 +3,60 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FoundationPose Provider Development | Midbrain</title>
-  <link rel="stylesheet" href="/dev/developer.css">
+  <title>FoundationPose Provider</title>
+  <link rel="stylesheet" href="/dev/assets/developer.css">
 </head>
 <body>
-  <main>
-    <nav>
-      <a href="http://127.0.0.1:7001/">← Midbrain</a>
-      <span>Provider control · localhost only</span>
-    </nav>
-
-    <header>
+  <main class="shell">
+    <header class="topbar">
       <div>
-        <p class="kicker">Provider development UI</p>
-        <h1>FoundationPose Object Pose</h1>
-        <p class="subtitle">Generic CAD-conditioned, camera-relative pose measurements. World alignment and robot-specific interpretation belong to consuming Skills.</p>
+        <p class="eyebrow">MIDBRAIN · PROVIDER DEVELOPMENT</p>
+        <h1>FoundationPose</h1>
+        <p class="subtitle">Windows-native CUDA and TensorRT known-object pose estimation. Robot profile selection, segmentation, VLM reasoning, and orientation policy remain in the calling Skill.</p>
       </div>
-      <div class="header-actions">
-        <button id="refreshButton" class="secondary">Refresh</button>
-        <button id="hotButton">Set HOT</button>
-        <button id="warmButton" class="warning">Release GPU · WARM</button>
+      <div class="actions">
+        <span id="observedAt" class="quiet-status">Connecting</span>
+        <button id="refreshButton" type="button">Refresh now</button>
       </div>
     </header>
 
-    <section class="status-grid" aria-label="Provider status">
-      <article class="metric">
-        <span>Provider</span>
-        <strong id="providerState">Loading…</strong>
-        <small id="providerIdentity">Waiting for control status</small>
-      </article>
-      <article class="metric">
-        <span>Backend runtime</span>
-        <strong id="backendState">Unknown</strong>
-        <small id="backendDetail">No diagnostics yet</small>
-      </article>
-      <article class="metric">
-        <span>Estimator resources</span>
-        <strong id="resourceState">Unknown</strong>
-        <small id="resourceDetail">No diagnostics yet</small>
-      </article>
-      <article class="metric">
-        <span>Camera input</span>
-        <strong id="cameraState">Unknown</strong>
-        <small id="cameraDetail">No frame observed</small>
-      </article>
+    <section class="metrics" aria-label="Provider runtime status">
+      <article><span>Residency</span><strong id="residency">Checking</strong></article>
+      <article><span>Health</span><strong id="health">Checking</strong></article>
+      <article><span>Capability</span><strong id="capability">Checking</strong></article>
+      <article><span>Native backend</span><strong id="backend">Checking</strong></article>
     </section>
 
-    <div class="layout">
-      <div>
-        <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="kicker">Generic diagnostic request</p>
-              <h2>Estimate or track a registered CAD model</h2>
-            </div>
-          </div>
-          <p class="notice">This sends perception requests only. It does not move the robot, create a world calibration, choose Base/Gripper roles, or start other Providers.</p>
-          <div class="form-grid">
-            <label>Operation
-              <select id="operation">
-                <option value="estimate">One estimate</option>
-                <option value="track">Bounded tracking</option>
-              </select>
-            </label>
-            <label>Model
-              <select id="modelId"></select>
-            </label>
-            <label>Session ID
-              <input id="sessionId" placeholder="generated when empty">
-            </label>
-            <label>Target ID
-              <input id="targetId" placeholder="defaults to model ID">
-            </label>
-            <label>Parent camera frame
-              <input id="parentFrame" value="femto_bolt_color_optical_frame">
-            </label>
-            <label>Child observation frame
-              <input id="childFrame" placeholder="observed_object/custom">
-            </label>
-            <label>Maximum duration (s)
-              <input id="duration" type="number" min="1" max="3600" step="1" value="30">
-            </label>
-            <label>Maximum update rate (Hz)
-              <input id="updateRate" type="number" min="0.1" max="60" step="0.1" value="3">
-            </label>
-          </div>
-          <fieldset>
-            <legend>Initialization region</legend>
-            <label>Reviewed mask path
-              <input id="maskPath" placeholder="C:\path\object_mask.png">
-            </label>
-            <p class="or">or normalized bounding box · ymin, xmin, ymax, xmax</p>
-            <div class="box-grid">
-              <input id="boxYMin" type="number" min="0" max="1000" value="200" aria-label="Bounding box minimum Y">
-              <input id="boxXMin" type="number" min="0" max="1000" value="200" aria-label="Bounding box minimum X">
-              <input id="boxYMax" type="number" min="0" max="1000" value="800" aria-label="Bounding box maximum Y">
-              <input id="boxXMax" type="number" min="0" max="1000" value="800" aria-label="Bounding box maximum X">
-            </div>
-          </fieldset>
-          <div class="actions">
-            <button id="startButton">Submit pose session</button>
-            <button id="relocalizeButton" class="secondary">Relocalize selected</button>
-            <button id="stopButton" class="danger">Stop selected</button>
-            <button id="releaseButton" class="warning">Release unused GPU resources</button>
-          </div>
-          <p id="actionStatus" class="action-status">No development action submitted.</p>
-        </section>
-
-        <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="kicker">Provider-owned state</p>
-              <h2>Sessions</h2>
-            </div>
-            <span id="sessionCount" class="count">0</span>
-          </div>
-          <div id="sessions" class="list empty">No sessions recorded.</div>
-        </section>
+    <section class="panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">LAST CALL</p><h2>Latest generic estimate</h2></div>
+        <span id="estimateState" class="status-chip">No estimate</span>
       </div>
+      <dl class="details">
+        <div><dt>Measurement</dt><dd id="measurement">—</dd></div>
+        <div><dt>CAD file</dt><dd id="meshFilename">—</dd></div>
+        <div><dt>CAD path</dt><dd id="meshPath">—</dd></div>
+        <div><dt>CAD SHA-256</dt><dd id="meshSha">—</dd></div>
+        <div><dt>Pose score</dt><dd id="score">—</dd></div>
+        <div><dt>Native elapsed</dt><dd id="elapsed">—</dd></div>
+        <div><dt>RGB evidence</dt><dd id="rgbEvidence">—</dd></div>
+        <div><dt>Depth evidence</dt><dd id="depthEvidence">—</dd></div>
+        <div><dt>Mask evidence</dt><dd id="maskEvidence">—</dd></div>
+      </dl>
+    </section>
 
-      <div>
-        <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="kicker">Raw measurement output</p>
-              <h2>Latest camera-relative poses</h2>
-            </div>
-            <span id="measurementCount" class="count">0</span>
-          </div>
-          <div id="measurements" class="list empty">No pose result published.</div>
-        </section>
-
-        <section class="card">
-          <div class="section-heading">
-            <div>
-              <p class="kicker">Model registry</p>
-              <h2>Installed CAD models</h2>
-            </div>
-            <span id="modelCount" class="count">0</span>
-          </div>
-          <div id="models" class="list empty">Loading model registry…</div>
-        </section>
-
-        <details class="card">
-          <summary>Raw Provider diagnostics</summary>
-          <pre id="rawStatus">Loading…</pre>
-        </details>
-      </div>
-    </div>
+    <section class="panel diagnostics">
+      <div><p class="eyebrow">DIAGNOSTICS</p><h2>Connections and errors</h2></div>
+      <dl class="details">
+        <div><dt>Provider version</dt><dd id="version">—</dd></div>
+        <div><dt>Process</dt><dd id="process">—</dd></div>
+        <div><dt>Manager</dt><dd id="managerError">Healthy</dd></div>
+        <div><dt>Fabric</dt><dd id="fabricError">Healthy</dd></div>
+        <div><dt>Provider</dt><dd id="providerError">Healthy</dd></div>
+      </dl>
+      <details><summary>Raw status payload</summary><pre id="rawStatus">Loading…</pre></details>
+    </section>
   </main>
-  <script src="/dev/developer.js"></script>
+  <script src="/dev/assets/developer.js"></script>
 </body>
 </html>

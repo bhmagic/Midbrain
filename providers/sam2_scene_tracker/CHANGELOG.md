@@ -1,6 +1,27 @@
 # Changelog
 
+## 0.3.2 - 2026-08-19
+
+- Generalize the one-shot prompt contract from exactly two positive points to
+  one through four, allowing each independent Skill-level VLM judgment to
+  seed its own SAM2 mask without duplicating a point.
+- Keep mask review, voting, dilation, and robot semantics outside the Provider.
+
+## 0.3.1 - 2026-08-19
+
+- Accept optional negative point prompts in the generic single-image SAM2
+  capability, pass them to the native predictor with background labels, and
+  prefer multi-mask candidates that exclude those points.
+- Preserve negative-point prompt provenance without moving semantic target
+  selection out of the calling Skill.
+
 ## Unreleased
+
+- Add the single-image `perception.image.sam2.segment` Provider capability.
+- Keep VLM seed-box and point selection outside the Provider so Skills own
+  semantic prompt intent and this Provider remains a prompted segmenter.
+- Pin clean setup to the audited upstream SAM2 revision and preserve RGB/mask
+  artifact digests in the one-shot result contract.
 
 - Replace the two-tier semantic collision output with a bounded hand-centric
   4 pi projection using 4,096 near-uniform spherical Fibonacci directions by

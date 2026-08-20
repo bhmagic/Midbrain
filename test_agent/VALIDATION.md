@@ -77,7 +77,7 @@ The suite is expected to validate:
   run-local relays, and duplicate suppression when the final graph result is
   translated;
 - ordered multi-evidence chat projection, legacy single-evidence hydration,
-  and independent visual cards on both Agent pages;
+  and independent visual cards in the Developer Agent;
 - exact slice-point to typed-offset to absolute-world-motion schema preflight,
   with Fabric frame identity preserved and no model coordinate arithmetic;
 - standalone and compound trailing Safe Home routing, including a typed Basic

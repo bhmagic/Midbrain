@@ -1,0 +1,36 @@
+{
+  "arm_profile_selection": {
+    "selection_path": "config/robot_assemblies/primary_manipulator.json",
+    "assembly_stream": "robot_arm.assembly_state",
+    "appendix_key": "midbrain.skill.locate_arm_base.v1"
+  },
+  "manager_url": "http://127.0.0.1:7001",
+  "fabric_url": "http://127.0.0.1:7002",
+  "foundation_pose_provider_id": "perception.foundation_pose",
+  "sam2_provider_id": "perception.sam2_scene_tracker",
+  "arm_provider_readiness_timeout_s": 15.0,
+  "arm_provider_readiness_poll_interval_s": 0.1,
+  "world_axis_stream": "localization.vio.status",
+  "required_world_convention": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2",
+  "maximum_transform_extrapolation_us": 250000,
+  "minimum_arm_base_up_dot_world": 0.5,
+  "minimum_sam2_score": 0.0,
+  "mask_ensemble": {
+    "attempt_count": 2,
+    "minimum_review_confidence": 0.60,
+    "final_dilation_radius_px": 4
+  },
+  "fit_candidates": {
+    "candidate_count": 2,
+    "minimum_selection_confidence": 0.55,
+    "minimum_consensus_confidence": 0.40
+  },
+  "minimum_vlm_confidence": 0.72,
+  "minimum_vlm_consensus_confidence": 0.55,
+  "vlm": {
+    "backend": "google.gemini",
+    "model": "gemini-robotics-er-2-preview",
+    "timeout_s": 60.0,
+    "reasoning_effort": "low"
+  }
+}

@@ -12,7 +12,7 @@ SOURCE_ROOTS = (
     "skills/observe_pointed_object/python",
     "skills/register_tool_to_control_frame/python",
     "skills/spatial_registration_rgbd/python",
-    "skills/stationary_world_arm_alignment/python",
+    "skills/locate_arm_base/python",
 )
 
 for relative_path in reversed(SOURCE_ROOTS):

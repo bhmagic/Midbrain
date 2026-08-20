@@ -1,6 +1,6 @@
 {
   "provider_type": "camera.femto_bolt",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "display_name": "Orbbec Femto Bolt Full-Capability RGB-D Camera Provider",
   "manager_ids": ["camera.femto_bolt"],
   "ui": {

@@ -420,6 +420,39 @@ class NoContactPlanTests(unittest.TestCase):
             ],
         )
 
+    def test_preview_context_accepts_v3_without_vio_epoch(self):
+        now_us = time.time_ns() // 1000
+        calibrations = current_calibrations()
+        activation = calibrations["activations"][0]
+        activation["validity_policy"] = (
+            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+        )
+        item_location = preview_item(observed_at_us=now_us - 20_000)
+        effector_location = preview_effector(
+            observed_at_us=now_us - 10_000
+        )
+        item_location["camera_capture"].pop("session_epoch")
+        effector_location["camera_capture"].pop("session_epoch")
+
+        context = build_no_contact_preview_context(
+            item_location=item_location,
+            effector_location=effector_location,
+            scene=current_scene(now_us=now_us),
+            workcell_calibrations=calibrations,
+        )
+
+        self.assertIsNone(context["vio_session_epoch"])
+        self.assertEqual(
+            context["vio_session_epoch_policy"],
+            "ADVISORY_FOR_MOUNTED_V3",
+        )
+        self.assertEqual(
+            context["context_advisories"],
+            [
+                "VIO_SESSION_EPOCH_UNAVAILABLE_NOT_REQUIRED_FOR_MOUNTED_V3"
+            ],
+        )
+
     def test_preview_context_still_requires_vio_epoch_for_v1(self):
         now_us = time.time_ns() // 1000
         item_location = preview_item(observed_at_us=now_us - 20_000)
@@ -798,7 +831,7 @@ class NoContactAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             result["required_next_tool"]["name"],
-            "calibrate_stationary_workcell",
+            "locate_arm_base",
         )
         self.assertEqual(
             result["retry_after_prerequisite"]["name"],

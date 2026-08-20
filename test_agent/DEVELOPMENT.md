@@ -45,7 +45,8 @@ Markdown files, the configuration baseline and environment-isolation checks,
 Live qualification run `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` then exercised
 the generalized boundary with `gemini-3.7-flash` at Medium reasoning. It
 published one matching `tool.search.called` and `tool.search.completed` pair,
-loaded the exact `establish_world_axis`, `calibrate_stationary_workcell`, and
+loaded the then-current `establish_world_axis`, legacy
+`calibrate_stationary_workcell`, and
 `refine_arm_root_translation` definitions, completed stationary calibration
 and activation, and submitted one three-child Limited Graph for the upward
 motion, five-sample refinement, and arm-forward motion. Both physical motions
@@ -132,7 +133,7 @@ configuration keys even though the catalog is now multi-provider.
 The clean configuration default and this workstation's ignored active model
 selection are `gemini-3.7-flash` with `medium` reasoning. The model list keeps
 GPT-5.6 Terra, Sol, and Luna as fallbacks. Status now publishes reasoning
-choices per model; both Agent pages update the reasoning selector when the
+choices per model; the Developer Agent updates the reasoning selector when the
 model changes. Server-side validation independently rejects a reasoning level
 outside the selected model's published set.
 
@@ -583,7 +584,7 @@ down background Providers.
 The authoritative SQLite run journal retained run
 `9cd2f18e-fd15-4155-b738-0b879723cca7`. It started at
 `2026-08-16T02:33:27.757717Z`. The first
-`calibrate_stationary_workcell` call ran from `02:33:42.938797Z` to
+legacy `calibrate_stationary_workcell` call ran from `02:33:42.938797Z` to
 `02:37:51.193334Z` and completed with candidate
 `20260816T023343Z-188c7353`. Activation then returned
 `CANDIDATE_ORIENTATION_SUPERSEDED` and instructed the Agent to run a fresh
@@ -621,9 +622,8 @@ fresh-calibration continuation, which created the apparent loop.
    arm-control, and other background Providers remain available. A physical
    command already accepted by a controller has an explicitly unknown outcome
    and is not represented as retracted.
-5. Regular and developer Agent pages now expose a disabled-by-default
-   `Stop task` control while a run is active. Both surfaces consume the same
-   cancellation event and retain it in shared chat history.
+5. The Developer Agent exposes a disabled-by-default `Stop task` control while
+   a run is active. The same cancellation event remains in shared chat history.
 
 ### Regression validation
 
@@ -632,7 +632,7 @@ passed (`65 passed`). The stationary adapter, activation, journal, operation
 registry, and complete stationary-world-arm Skill tests also passed
 (`128 passed, 9 subtests passed`). The complete Test Agent suite passed
 (`436 passed, 27 subtests passed`). A live local browser render confirmed that
-both Agent pages expose an idle-disabled `Stop task` beside `Run prompt`, with
+the Developer Agent exposes an idle-disabled `Stop task` beside `Run prompt`, with
 no page-console errors. The developer diagnostics correctly reported its
 expected unavailable-Fabric state while the isolated UI test server ran
 without background Providers. Documentation, configuration, environment
@@ -1006,7 +1006,7 @@ authorization.
 | `register_tool_to_control_frame` | `ToolControlFrameSkillAdapter.run` plus registration candidate builder | Replaced invented candidate/control-frame fields with the exact review-only transform, landmarks, quality, bindings, provenance, and route fields. |
 | `slice_with_blade` | `SlicingHostAdapter.invoke` and `SlicingPlan.as_dict` | Restricted the Agent result to the exact completed command-handling envelope and fully declared the nested path and measured-start deltas. |
 | `register_rgbd_pixel_to_world` | `SpatialRegistrationSkillAdapter.run` plus `register_rgbd_point` | Replaced generic aliases with RGB/depth pixels, camera-system XYZ, `target_point_m`, selection, binding, transform, and temporal evidence. |
-| `calibrate_stationary_workcell` | `StationaryCalibrationSkillAdapter.run` plus `AlignmentSkill.run` | Declared explicit-name rejection, unobservable-pose recovery, candidate result, activation continuation, and adapter provenance. |
+| `locate_arm_base` | `ArmBaseLocalizationSkillAdapter.run` plus `LocateArmBaseSkill.run` | Declares Skill-owned VLM seed prompts, SAM2 Provider segmentation, FoundationPose measurement, bounded reference-image orientation, a review-only candidate, and the exact Manager activation continuation. |
 | `translate_fabric_direction_to_world` | `FabricSpatialTranslator.translate_direction` | Removed nonexistent root transform path; declared exact framed direction and typed frame-authority failures. |
 | `translate_fabric_pose_to_world` | `FabricSpatialTranslator.translate_pose` | Removed nonexistent root transform path; declared exact framed pose and typed frame-authority failures. |
 | `verify_rgbd_image_alignment` | `RgbdAlignmentValidationSkill.run` | Replaced a different review vocabulary with actual numeric quality, VLM review/route, geometry, timing, binding, and artifacts. |
@@ -1108,7 +1108,7 @@ The chat API now projects an ordered, unique `visual_evidences` list for each
 turn, bounded to the newest 32 objects. It also preserves the last object in
 the original `visual_evidence` field for older clients. The shared browser
 component keeps a map of viewer instances keyed by evidence identity and
-renders one card per object on both regular and developer Agent pages. Server
+renders one card per object in the Developer Agent. Server
 hydration accepts both the new list and historical single-object sessions.
 
 The presentation relay is deliberately downstream of Skill result validation

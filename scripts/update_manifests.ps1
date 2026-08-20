@@ -6,6 +6,28 @@ Set-StrictMode -Version Latest
 
 $workspace = Split-Path $PSScriptRoot -Parent
 
+function Write-Utf8TextWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content
+    )
+
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+            return
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -eq 10) {
+                throw
+            }
+            # Windows scanners can briefly memory-map a freshly hashed text file.
+            Start-Sleep -Milliseconds ([Math]::Min(1000, 100 * $attempt))
+        }
+    }
+}
+
 function Test-ManifestFileExcluded {
     param(
         [Parameter(Mandatory = $true)][string]$RelativePath,
@@ -25,27 +47,7 @@ function Test-ManifestFileExcluded {
             'config/api_keys.env.example',
             'config/providers.json.example',
             'config/robot_assemblies/primary_manipulator.example.json',
-            'config/system.env.example',
-            'config/foundation_pose/FILE_MANIFEST.sha256',
-            'config/foundation_pose/MODIFICATIONS.md',
-            'config/foundation_pose/UPSTREAM.md',
-            'config/foundation_pose/models.json',
-            'config/foundation_pose/licenses/CERN-OHL-W-2.0.txt',
-            'config/foundation_pose/models/Base_clean_centered.obj',
-            'config/foundation_pose/models/Base_clean_original_frame.obj',
-            'config/foundation_pose/models/Base_mesh_metadata.json',
-            'config/foundation_pose/models/Gripper_clean_centered.obj',
-            'config/foundation_pose/models/Gripper_clean_original_frame.obj',
-            'config/foundation_pose/models/Gripper_mesh_metadata.json',
-            'config/foundation_pose/references/Base_reference_atlas.json',
-            'config/foundation_pose/references/Base_reference_atlas.png',
-            'config/foundation_pose/references/Gripper_reference_atlas.json',
-            'config/foundation_pose/references/Gripper_reference_atlas.png',
-            'config/foundation_pose/source/01_BASE_Link.step',
-            'config/foundation_pose/source/01_BASE_Plate.step',
-            'config/foundation_pose/source/01_Rail_Bracket.step',
-            'config/foundation_pose/source/Base.obj',
-            'config/foundation_pose/source/Gripper.obj'
+            'config/system.env.example'
         )
         return -not ($safeConfigFiles -contains $normalized)
     }
@@ -222,13 +224,11 @@ function Write-Manifest {
     }
 
     $content = if ($lines.Count -gt 0) { ($lines -join "`n") + "`n" } else { "" }
-    [System.IO.File]::WriteAllText($manifestPath, $content, [System.Text.UTF8Encoding]::new($false))
+    Write-Utf8TextWithRetry -Path $manifestPath -Content $content
     if ($providerManifest) {
-        [System.IO.File]::WriteAllText(
-            (Join-Path $basePath 'SHA256SUMS.txt'),
-            $content,
-            [System.Text.UTF8Encoding]::new($false)
-        )
+        Write-Utf8TextWithRetry `
+            -Path (Join-Path $basePath 'SHA256SUMS.txt') `
+            -Content $content
     }
     Write-Host "Updated $manifestPath ($($lines.Count) files)"
 }

@@ -35,7 +35,8 @@ boundary may request Provider activation or start an advertised development UI.
 Normal core startup launches only Manager and Fabric. Manager serves Midbrain
 after its health gate succeeds. Provider autostart and the Agent UI remain
 separate launcher options; the normal desktop `Start Midbrain.cmd` entrypoint
-enables the idle Agent UI so both Agent links are available from the portal.
+enables the idle Agent UI so the Developer Agent and run journal are available
+from the portal.
 
 Midbrain shows:
 
@@ -44,7 +45,7 @@ Midbrain shows:
 - installed Skill availability, adapter readiness, current run, and last
   terminal run state;
 - a separate observation link next to each component's liveness;
-- regular Agent and developer-view entry points;
+- Developer Agent and read-only run-journal entry points;
 - a guarded whole-workspace shutdown entry point; and
 - aggregate counts that help identify cold, stale, unhealthy, running, or
   unavailable components.

@@ -18,7 +18,7 @@ actual format and dimensions, rejects animation, and returns a Midbrain-owned
 `attachment_id` plus bounded metadata. The current limits are 8 MiB and 40
 million decoded pixels.
 
-A run from either Agent view then supplies at most one ID in
+A Developer Agent run then supplies at most one ID in
 `attachment_ids`. Raw image bytes are not repeated in the run-creation
 request, SSE events, approval cards, or run-status payloads. A missing or
 expired reference is rejected before an Agent run starts.

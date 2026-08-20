@@ -15,9 +15,11 @@ DEFAULT_MAXIMUM_ARM_RADIUS_M = 1.2
 VERTICAL_POLICIES = {"NO_DESCENT", "PRESERVE_CURRENT_HEIGHT", "FREE_3D"}
 MOUNTED_WORKCELL_POLICY_V1 = "MOUNTED_IDENTITY_TRACKING_GATED_V1"
 MOUNTED_WORKCELL_POLICY_V2 = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
+MOUNTED_WORKCELL_POLICY_V3 = "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
 SUPPORTED_MOUNTED_WORKCELL_POLICIES = {
     MOUNTED_WORKCELL_POLICY_V1,
     MOUNTED_WORKCELL_POLICY_V2,
+    MOUNTED_WORKCELL_POLICY_V3,
 }
 
 
@@ -527,14 +529,21 @@ def build_no_contact_preview_context(
             )
         vio_session_epoch_policy = "REQUIRED_BY_MOUNTED_V1"
     else:
-        vio_session_epoch_policy = "ADVISORY_FOR_MOUNTED_V2"
+        canonical_policy_version = (
+            "V3" if workcell_policy == MOUNTED_WORKCELL_POLICY_V3 else "V2"
+        )
+        vio_session_epoch_policy = (
+            f"ADVISORY_FOR_MOUNTED_{canonical_policy_version}"
+        )
         if not session_epoch or not effector_session_epoch:
             context_advisories.append(
-                "VIO_SESSION_EPOCH_UNAVAILABLE_NOT_REQUIRED_FOR_MOUNTED_V2"
+                "VIO_SESSION_EPOCH_UNAVAILABLE_NOT_REQUIRED_FOR_MOUNTED_"
+                f"{canonical_policy_version}"
             )
         elif effector_session_epoch != session_epoch:
             context_advisories.append(
-                "VIO_SESSION_EPOCH_DIFFERED_NOT_USED_BY_MOUNTED_V2"
+                "VIO_SESSION_EPOCH_DIFFERED_NOT_USED_BY_MOUNTED_"
+                f"{canonical_policy_version}"
             )
     observation_timestamp_us = max(
         int(item_location.get("observed_at_us") or 0),
@@ -661,14 +670,8 @@ class NoContactItemApproachAdapter:
                         "available, but arm motion requires this relationship."
                     ),
                     "required_next_tool": {
-                        "name": "calibrate_stationary_workcell",
-                        "arguments": {
-                            "request": (
-                                "Establish the current world-to-arm-base "
-                                "relationship required to approach: "
-                                f"{question}"
-                            )
-                        },
+                        "name": "locate_arm_base",
+                        "arguments": {},
                     },
                     "retry_after_prerequisite": {
                         "name": "plan_no_contact_item_approach",

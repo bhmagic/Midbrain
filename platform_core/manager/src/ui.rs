@@ -225,8 +225,33 @@ struct EffectorCatalog {
     selection_path: PathBuf,
     selection: Value,
     arm_provider_id: String,
+    provider_root: PathBuf,
     profiles: Vec<EffectorProfileRecord>,
     warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ArmProfileRecord {
+    document: Value,
+    provider_relative_path: String,
+    workspace_relative_path: String,
+}
+
+#[derive(Debug)]
+struct ArmCatalog {
+    selection_path: PathBuf,
+    selection: Value,
+    arm_provider_id: String,
+    provider_root: PathBuf,
+    profiles: Vec<ArmProfileRecord>,
+    warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SelectArmRequest {
+    profile_file: String,
+    #[serde(default)]
+    physical_arm_confirmed: bool,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +260,144 @@ pub(super) struct SelectEffectorRequest {
     profile_revision: String,
     #[serde(default)]
     physical_effector_confirmed: bool,
+}
+
+pub(super) async fn arm_profiles(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let _selection_guard = state.assembly_selection_lock.lock().await;
+    let catalog = load_arm_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    Ok(Json(arm_catalog_payload(&state, &catalog, None)))
+}
+
+pub(super) async fn select_arm(
+    State(state): State<AppState>,
+    Json(request): Json<SelectArmRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !request.physical_arm_confirmed {
+        return Err(api_failure(
+            StatusCode::BAD_REQUEST,
+            "physical_arm_confirmed=true is required for a static assembly change",
+        ));
+    }
+    reject_if_shutdown_fenced(&state, "arm-model selection").await?;
+    let _selection_guard = state.assembly_selection_lock.lock().await;
+    let catalog = load_arm_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    let selected = catalog
+        .profiles
+        .iter()
+        .find(|profile| profile.provider_relative_path == request.profile_file)
+        .cloned()
+        .ok_or_else(|| {
+            api_failure(
+                StatusCode::BAD_REQUEST,
+                "the requested arm profile is not installed under the selected arm Provider",
+            )
+        })?;
+    let active_reference = catalog
+        .selection
+        .pointer("/profiles/arm_model")
+        .and_then(Value::as_object)
+        .ok_or_else(|| internal_ui_error("assembly selection is missing profiles.arm_model"))?;
+    let active_path = active_reference
+        .get("relative_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace('\\', "/");
+    if active_path == selected.provider_relative_path {
+        return Ok(Json(arm_catalog_payload(
+            &state,
+            &catalog,
+            Some("ALREADY_SELECTED"),
+        )));
+    }
+
+    validate_arm_profile_compatibility(
+        &catalog.provider_root,
+        &catalog.selection,
+        &selected.document,
+    )
+    .map_err(|error| api_failure(StatusCode::CONFLICT, error.to_string()))?;
+
+    let affected = affected_provider_ids(&state.configs, &catalog.arm_provider_id);
+    let provider_views = collect_provider_views(&state).await;
+    let blockers: Vec<Value> = provider_views
+        .iter()
+        .filter(|view| affected.contains(&view.config.id))
+        .filter(|view| {
+            view.process_state != "stopped"
+                || view.report.as_ref().is_some_and(|report| !report.expired)
+        })
+        .map(|view| {
+            json!({
+                "provider_id": view.config.id,
+                "process_state": view.process_state,
+                "residency": view.report.as_ref().map(|report| report.residency.as_str()),
+            })
+        })
+        .collect();
+    if !blockers.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "stop the arm Provider and its running dependents before changing the static arm profile",
+                "blocking_providers": blockers,
+                "restart_required": true,
+            })),
+        ));
+    }
+
+    let model_id = required_string(selected.document.get("model_id"), "model_id")
+        .map_err(internal_ui_error)?;
+    let model_revision = required_string(selected.document.get("model_revision"), "model_revision")
+        .map_err(internal_ui_error)?;
+    let mut updated = catalog.selection.clone();
+    let effector_revision = updated
+        .pointer("/profiles/mounted_effector/expected_revision")
+        .and_then(Value::as_str)
+        .unwrap_or("unselected")
+        .to_string();
+    let selection_object = updated
+        .as_object_mut()
+        .ok_or_else(|| internal_ui_error("assembly selection must be a JSON object"))?;
+    let assembly_id = selection_object
+        .get("assembly_id")
+        .and_then(Value::as_str)
+        .unwrap_or("primary_manipulator")
+        .to_string();
+    selection_object.insert(
+        "assembly_revision".to_string(),
+        Value::String(format!(
+            "{assembly_id}--{model_revision}--{effector_revision}"
+        )),
+    );
+    let profiles = selection_object
+        .get_mut("profiles")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| internal_ui_error("assembly selection profiles must be an object"))?;
+    profiles.insert(
+        "arm_model".to_string(),
+        json!({
+            "relative_path": selected.provider_relative_path,
+            "expected_schema": "physical_agent.robot_arm_model",
+            "expected_id": model_id,
+            "expected_revision": model_revision,
+            "sha256": null,
+        }),
+    );
+    write_assembly_selection(&catalog.selection_path, &updated).map_err(internal_ui_error)?;
+    info!(
+        model_id = %model_id,
+        model_revision = %model_revision,
+        profile_file = %request.profile_file,
+        "static arm-model selection changed"
+    );
+    let refreshed = load_arm_catalog(&state.workspace_root).map_err(internal_ui_error)?;
+    Ok(Json(arm_catalog_payload(
+        &state,
+        &refreshed,
+        Some("SELECTED_RESTART_REQUIRED"),
+    )))
 }
 
 pub(super) async fn effector_profiles(
@@ -380,6 +543,254 @@ pub(super) async fn select_effector(
     )))
 }
 
+fn load_arm_catalog(workspace_root: &FsPath) -> Result<ArmCatalog> {
+    let effector_catalog = load_effector_catalog(workspace_root)?;
+    let provider_root = effector_catalog.provider_root.clone();
+    let active_reference = effector_catalog
+        .selection
+        .pointer("/profiles/arm_model")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("assembly selection is missing profiles.arm_model"))?;
+    let active_relative = required_string(
+        active_reference.get("relative_path"),
+        "active arm profile path",
+    )?;
+    let mut paths = Vec::new();
+    let registry_root = provider_root.join("config").join("arm_profiles");
+    if registry_root.is_dir() {
+        let resolved_registry = fs::canonicalize(&registry_root)
+            .with_context(|| format!("resolving {}", registry_root.display()))?;
+        if !resolved_registry.starts_with(&provider_root) {
+            return Err(anyhow::anyhow!(
+                "arm profile registry resolves outside the arm Provider"
+            ));
+        }
+        paths.extend(
+            fs::read_dir(&resolved_registry)
+                .with_context(|| format!("reading {}", resolved_registry.display()))?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json")),
+        );
+    }
+    let active_path = provider_root.join(PathBuf::from(&active_relative));
+    if active_path.is_file() {
+        paths.push(active_path);
+    }
+    paths.sort();
+    paths.dedup();
+
+    let mut profiles = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen_paths = HashSet::new();
+    for path in paths {
+        match load_arm_profile(&effector_catalog.selection_path, &provider_root, &path) {
+            Ok(profile) => {
+                if seen_paths.insert(profile.provider_relative_path.clone()) {
+                    profiles.push(profile);
+                }
+            }
+            Err(error) => warnings.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if profiles.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no valid arm profiles are installed under config/arm_profiles"
+        ));
+    }
+    Ok(ArmCatalog {
+        selection_path: effector_catalog.selection_path,
+        selection: effector_catalog.selection,
+        arm_provider_id: effector_catalog.arm_provider_id,
+        provider_root,
+        profiles,
+        warnings,
+    })
+}
+
+fn load_arm_profile(
+    selection_path: &FsPath,
+    provider_root: &FsPath,
+    path: &FsPath,
+) -> Result<ArmProfileRecord> {
+    let resolved =
+        fs::canonicalize(path).with_context(|| format!("resolving profile {}", path.display()))?;
+    if !resolved.starts_with(provider_root) {
+        return Err(anyhow::anyhow!(
+            "arm profile resolves outside the selected arm Provider"
+        ));
+    }
+    let document: Value = serde_json::from_slice(
+        &fs::read(&resolved).with_context(|| format!("reading {}", resolved.display()))?,
+    )
+    .with_context(|| format!("parsing {}", resolved.display()))?;
+    if document.get("schema").and_then(Value::as_str) != Some("physical_agent.robot_arm_model")
+        || document.get("schema_version").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(anyhow::anyhow!("unsupported robot arm model schema"));
+    }
+    required_string(document.get("model_id"), "model_id")?;
+    required_string(document.get("model_revision"), "model_revision")?;
+    required_string(document.get("display_name"), "display_name")?;
+    if document
+        .get("joints")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return Err(anyhow::anyhow!(
+            "arm profile joints must be a non-empty array"
+        ));
+    }
+    if document
+        .get("links")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return Err(anyhow::anyhow!(
+            "arm profile links must be a non-empty array"
+        ));
+    }
+    if document
+        .get("appendix")
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(anyhow::anyhow!("arm profile appendix must be an object"));
+    }
+    let provider_relative_path = resolved
+        .strip_prefix(provider_root)
+        .map_err(|_| anyhow::anyhow!("arm profile is not Provider-relative"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let workspace_root = selection_path
+        .parent()
+        .and_then(FsPath::parent)
+        .and_then(FsPath::parent)
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve workspace root from assembly selection"))?;
+    Ok(ArmProfileRecord {
+        document,
+        provider_relative_path,
+        workspace_relative_path: ui_path(&resolved, workspace_root),
+    })
+}
+
+fn arm_catalog_payload(state: &AppState, catalog: &ArmCatalog, status: Option<&str>) -> Value {
+    let active_relative = catalog
+        .selection
+        .pointer("/profiles/arm_model/relative_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .replace('\\', "/");
+    let profiles: Vec<Value> = catalog
+        .profiles
+        .iter()
+        .map(|profile| {
+            let document = &profile.document;
+            let locate_profile = document.pointer("/appendix/midbrain.skill.locate_arm_base.v1");
+            let cad_path = locate_profile
+                .and_then(|value| value.pointer("/mesh/path"))
+                .and_then(Value::as_str);
+            let reference_count = locate_profile
+                .and_then(|value| value.get("reference_images"))
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            json!({
+                "model_id": document.get("model_id"),
+                "model_revision": document.get("model_revision"),
+                "display_name": document.get("display_name"),
+                "manufacturer": document.get("manufacturer"),
+                "active": profile.provider_relative_path == active_relative,
+                "profile_file": profile.workspace_relative_path,
+                "provider_relative_path": profile.provider_relative_path,
+                "root_frame": document.pointer("/coordinate_convention/root_frame"),
+                "joint_count": document.get("joints").and_then(Value::as_array).map_or(0, Vec::len),
+                "link_count": document.get("links").and_then(Value::as_array).map_or(0, Vec::len),
+                "locate_arm_base": {
+                    "configured": locate_profile.is_some(),
+                    "cad_path": cad_path,
+                    "reference_image_count": reference_count,
+                },
+            })
+        })
+        .collect();
+    json!({
+        "schema": "midbrain.arm_profile_catalog",
+        "schema_version": 1,
+        "status": status.unwrap_or("READY"),
+        "selection_file": ui_path(&catalog.selection_path, &state.workspace_root),
+        "assembly_id": catalog.selection.get("assembly_id"),
+        "assembly_revision": catalog.selection.get("assembly_revision"),
+        "arm_provider_id": catalog.arm_provider_id,
+        "active_profile_file": active_relative,
+        "profiles": profiles,
+        "warnings": catalog.warnings,
+        "selection_policy": {
+            "physical_arm_confirmation_required": true,
+            "affected_providers_must_be_stopped": true,
+            "restart_required": true,
+            "compatible_calibration_collision_and_effector_required": true,
+        },
+        "affected_provider_ids": affected_provider_ids(&state.configs, &catalog.arm_provider_id),
+    })
+}
+
+fn referenced_profile(
+    provider_root: &FsPath,
+    selection: &Value,
+    profile_key: &str,
+) -> Result<Value> {
+    let reference = selection
+        .pointer(&format!("/profiles/{profile_key}"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("assembly selection is missing profiles.{profile_key}"))?;
+    let relative = required_string(reference.get("relative_path"), "profile path")?;
+    let relative_path = PathBuf::from(&relative);
+    if relative_path.is_absolute() {
+        return Err(anyhow::anyhow!(
+            "profile path must remain Provider-relative"
+        ));
+    }
+    let resolved = fs::canonicalize(provider_root.join(relative_path))
+        .with_context(|| format!("resolving {profile_key} profile {relative}"))?;
+    if !resolved.starts_with(provider_root) {
+        return Err(anyhow::anyhow!(
+            "{profile_key} profile resolves outside the arm Provider"
+        ));
+    }
+    serde_json::from_slice(&fs::read(&resolved)?)
+        .with_context(|| format!("parsing {}", resolved.display()))
+}
+
+fn validate_arm_profile_compatibility(
+    provider_root: &FsPath,
+    selection: &Value,
+    selected: &Value,
+) -> Result<()> {
+    let model_id = required_string(selected.get("model_id"), "model_id")?;
+    let model_revision = required_string(selected.get("model_revision"), "model_revision")?;
+    let calibration = referenced_profile(provider_root, selection, "calibration")?;
+    if calibration.get("model_id").and_then(Value::as_str) != Some(model_id.as_str()) {
+        return Err(anyhow::anyhow!(
+            "the selected arm profile is incompatible with the active calibration"
+        ));
+    }
+    for key in ["collision_geometry", "mounted_effector"] {
+        let profile = referenced_profile(provider_root, selection, key)?;
+        let compatibility = profile
+            .get("robot_compatibility")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow::anyhow!("{key} lacks robot_compatibility"))?;
+        if compatibility.get("model_id").and_then(Value::as_str) != Some(model_id.as_str())
+            || compatibility.get("model_revision").and_then(Value::as_str)
+                != Some(model_revision.as_str())
+        {
+            return Err(anyhow::anyhow!(
+                "the selected arm profile is incompatible with the active {key} profile"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn load_effector_catalog(workspace_root: &FsPath) -> Result<EffectorCatalog> {
     let workspace_root = fs::canonicalize(workspace_root)
         .with_context(|| format!("resolving workspace root {}", workspace_root.display()))?;
@@ -503,6 +914,7 @@ fn load_effector_catalog(workspace_root: &FsPath) -> Result<EffectorCatalog> {
         selection_path,
         selection,
         arm_provider_id,
+        provider_root,
         profiles,
         warnings,
     })
@@ -1455,6 +1867,15 @@ mod tests {
         assert!(MAINFRAME_HTML.contains("id=\"effectorPhysicalConfirmation\""));
         assert!(MAINFRAME_JS.contains("physical_effector_confirmed: true"));
         assert!(MAINFRAME_JS.contains("/v1/ui/robot-assembly/effectors"));
+    }
+
+    #[test]
+    fn mainframe_exposes_guarded_arm_profile_selection() {
+        assert!(MAINFRAME_HTML.contains("id=\"armSelect\""));
+        assert!(MAINFRAME_HTML.contains("id=\"armPhysicalConfirmation\""));
+        assert!(MAINFRAME_JS.contains("physical_arm_confirmed: true"));
+        assert!(MAINFRAME_JS.contains("/v1/ui/robot-assembly/arms"));
+        assert!(MAINFRAME_JS.contains("profile_file: profile.provider_relative_path"));
     }
 
     #[test]

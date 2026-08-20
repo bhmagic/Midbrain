@@ -46,6 +46,10 @@ def reset_vlm_model_selection(token: Token) -> None:
     _selected_vlm_model.reset(token)
 
 
+def get_vlm_model_selection() -> str | None:
+    return _selected_vlm_model.get()
+
+
 @dataclass(frozen=True)
 class BackendInference:
     text: str

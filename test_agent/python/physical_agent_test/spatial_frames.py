@@ -10,9 +10,19 @@ WORLD_CONVENTION_ID = "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
 CAMERA_OPTICAL_CONVENTION_ID = (
     "CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1"
 )
-CANONICAL_CAMERA_CALIBRATION_POLICY = (
+CANONICAL_CAMERA_CALIBRATION_POLICY_V2 = (
     "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2"
 )
+CANONICAL_CAMERA_CALIBRATION_POLICY_V3 = (
+    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+)
+CANONICAL_CAMERA_CALIBRATION_POLICY = (
+    CANONICAL_CAMERA_CALIBRATION_POLICY_V3
+)
+SUPPORTED_CANONICAL_CAMERA_CALIBRATION_POLICIES = {
+    CANONICAL_CAMERA_CALIBRATION_POLICY_V2,
+    CANONICAL_CAMERA_CALIBRATION_POLICY_V3,
+}
 
 _SEMANTIC_VECTORS = {
     "FRONT": (1.0, 0.0, 0.0),
@@ -497,7 +507,7 @@ class SpatialFrameResolver:
             and (
                 vio is not None
                 or activation.get("validity_policy")
-                == CANONICAL_CAMERA_CALIBRATION_POLICY
+                in SUPPORTED_CANONICAL_CAMERA_CALIBRATION_POLICIES
             )
         )
         if vio is None and not use_workcell_activation:
@@ -766,10 +776,9 @@ class SpatialFrameResolver:
         activation = self._active_workcell_activation(observation)
         if activation is None:
             return None
-        if (
-            activation.get("validity_policy")
-            != CANONICAL_CAMERA_CALIBRATION_POLICY
-        ):
+        if activation.get(
+            "validity_policy"
+        ) not in SUPPORTED_CANONICAL_CAMERA_CALIBRATION_POLICIES:
             return None
         transforms = activation.get("transforms")
         transform = (

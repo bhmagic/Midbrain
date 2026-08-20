@@ -321,7 +321,7 @@ h2 {
 
 .agent-links {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -342,7 +342,7 @@ h2 {
 }
 
 .agent-link.developer {
-  border-style: dashed;
+  border-style: solid;
 }
 
 .agent-link span {

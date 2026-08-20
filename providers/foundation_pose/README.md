@@ -1,121 +1,91 @@
-# FoundationPose Compatibility Resource Provider
+# FoundationPose Native Known-Object Pose Provider
 
-This replaceable Provider exposes the legacy session-oriented FoundationPose
-interface for compatibility diagnostics and guarded route comparison. New
-bounded workflows should normally use the finite
-[`foundation_pose_object_localization` Skill](../../skills/foundation_pose_object_localization/README.md),
-which owns estimator resources for one parent operation instead of keeping this
-GPU Provider continuously resident.
+Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
 
-FoundationPose is a camera-relative measurement reporter. It estimates the
-pose of reviewed rigid CAD models and publishes timestamped observations with
-camera, calibration, model, session, and quality provenance. It does not
-define world space, resolve visual symmetry, activate a workcell calibration,
-or grant motion authority.
+This is a Windows-native Resource Provider for one generic domain function:
+`perception.known_object_pose.estimate`. It accepts immutable RGB, aligned
+depth, binary mask, camera intrinsics, and geometry-only OBJ evidence and
+returns `camera_from_centered_mesh`. It does not know robot semantics, choose
+objects, segment images, resolve 90/180-degree meaning, track sessions, own
+calibration policy, or activate transforms.
 
-## Spatial terminology
+The native CUDA path is extracted from NVIDIA Isaac ROS FoundationPose rather
+than running ROS, Docker, WSL, NVLabs Python rendering, or Linux compatibility
+layers. TensorRT inference stays in this Provider's private Python 3.11
+environment. The native library owns sampling, CUDA rendering, preprocessing,
+pose transforms, and decoding; it invokes the Provider-owned TensorRT contexts
+through a narrow callback on the same CUDA stream.
 
-- Native camera input and output use
-  `CAMERA_OPTICAL_X_RIGHT_Y_DOWN_Z_FORWARD_V1`, with components named
-  `camera_system_x`, `camera_system_y`, and `camera_system_z`.
-- `camera_from_mesh` is the backend result. A registry entry supplies
-  `mesh_from_semantic`, and the Provider reports
-  `camera_from_semantic = camera_from_mesh @ mesh_from_semantic`.
-- `robot/arm_root` is the semantic frame of the default visual Base reporter.
-  It is not the controller frame `rebot_arm_base`; only a separately reviewed
-  and activated alignment may bind those concepts.
-- The default Gripper reporter is the centered rigid Rail-Bracket mesh frame.
-  It is not a TCP, URDF end-effector frame, controlled frame, or task action
-  point.
-- A visually plausible symmetric orientation remains a raw measurement. A
-  finite alignment Skill must combine other evidence before using it in a
-  motion-relevant transform.
+## Supported host
 
-See [Midbrain integration](docs/MIDBRAIN_INTEGRATION.md) for the runtime
-boundary and [default reBot profile](docs/REBOT_B601_DM.md) for exact reporter
-frames.
+- Windows 11 x86-64.
+- Visual Studio 2022 C++ Build Tools and CMake.
+- CUDA Toolkit 12.8 or a compatible newer 12.x installation.
+- NVIDIA GPU with at least 8 GB VRAM. The current setup defaults to CUDA
+  architecture 120 and can be overridden with `-CudaArchitectures`.
+- Python 3.11. TensorRT engines are machine/runtime-specific generated output.
 
-## Install
+Official NVIDIA guidance for the current ONNX integration is retained in the
+setup: model version `1.0.1_onnx`, refine batch capacity 42, score batch
+capacity 252, and FP32 engine generation for current TensorRT releases. The
+generated engines and downloaded ONNX files remain untracked runtime data.
 
-From Developer PowerShell at the repository root:
+## Setup
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
 .\providers\foundation_pose\scripts\setup.ps1
 ```
 
-Setup creates the Provider-local environment, installs the Midbrain adapter,
-seeds missing default profile data, and registers the Provider. The native
-NVLabs/CUDA path has additional pinned dependencies and compatibility steps;
-follow [Installation policy](INSTALL_POLICY.md) and run the gates in
-[Validation](VALIDATION.md).
+Setup resolves Python and Visual Studio from the Windows installation,
+creates `providers/foundation_pose/.venv`, builds the native DLL, downloads the
+official NVIDIA NGC ONNX models when absent, builds FP32 TensorRT engines, and
+runs Provider tests. It installs only the provider-neutral BufferRef consumer
+from `contracts/python`; it does not install the camera, SAM2, or Skill package
+and never modifies another component's environment.
 
-Persistent robot CAD, registry, masks, captures, and calibration artifacts
-belong under `config/foundation_pose`. The Provider directory is replaceable;
-a clean Provider reinstall must preserve that machine-local configuration.
+The Provider is registered through
+`config_templates/provider_entry.json`. Manager owns process residency. `WARM`
+keeps the process but releases TensorRT/native state; `HOT` loads one resident
+pipeline. Requests are forwarded through Manager and use the Provider's single
+`estimate` action.
 
-## Default profile
+The Manager-guarded Provider development page resolves from the running
+control endpoint at `/dev`. It shows residency, readiness, errors, timing, and
+the exact CAD/evidence paths from the most recent generic estimate. Robot
+profile editing and VLM evidence inspection remain in the calling Skill UI.
 
-The supplied Seeed reBot B601-DM profile contains two independent rigid visual
-reporters:
+## Evidence and outputs
 
-| Role | Model ID | Stable observed frame |
-|---|---|---|
-| Robot base | `robot_arm_root` | `observed_object/rebot_b601_dm/base` |
-| Robot gripper bracket | `robot_gripper_slider_support` | `observed_object/rebot_b601_dm/gripper_slider_support` |
+Large RGB-D inputs are copied into Skill-owned run artifacts before this
+Provider is called. Every request validates image/depth/mask dimensions, finite
+intrinsics and depth, mesh existence and hash, and the bounded hypothesis
+count. The result includes measurement identity, timing, mesh/evidence hash
+provenance, the raw camera-from-centered-mesh transform, and the score-network
+output labeled `ranking_score_raw` with semantics
+`RAW_MODEL_RANKING_ONLY`. The Provider uses this value only to rank hypotheses
+inside one request. It defines no zero threshold or calibrated cross-request
+confidence scale. The compatibility `quality.score` field currently mirrors
+the same raw value. Robot-frame composition and independent acceptance policy
+belong to the calling Skill.
 
-The profile contains CAD source, prepared meshes, frame metadata, provenance,
-and modification records. It does not contain a reBot-specific fine-tuned
-network or assign either reporter operational control authority.
+## Validation boundary
 
-## Diagnostic surfaces
+The implementation has completed a clean native compile/probe and synthetic
+resident inference on the development RTX 5070 Ti. After one warmup, five
+full 640 x 480 runs with all 252 hypotheses measured 731, 731, 761, 842, and
+734 ms wall time (760 ms mean). Reproduce this execution-only check with
+`scripts/benchmark_synthetic.py`. It proves the Windows native/TensorRT path
+executes; it is not a matched real-scene accuracy qualification and is not an
+old-versus-new end-to-end comparison.
 
-The Manager-hosted `/dev` surface is the preferred model-generic Provider UI.
-It exposes backend residency, the model registry, sessions, raw
-camera-relative measurements, direct diagnostic requests, and explicit
-resource release.
+Before physical use, validate the exact camera, CAD scale/origin, lighting,
+mask route, depth range, and model profile against measured ground truth. A
+Provider measurement is never motion authority.
 
-A legacy VLM + SAM2 tracking GUI remains for compatibility and hardware
-diagnosis:
+## Provenance and licenses
 
-```powershell
-.\providers\foundation_pose\scripts\setup_sam2.ps1
-.\providers\foundation_pose\scripts\run_tracking_gui.ps1
-```
-
-That GUI crosses the desired component boundary by orchestrating workspace
-lifecycle, robot-specific Base/Gripper selection, VLM proposals, mask review,
-and multi-object tracking. Its proposals are not safety-certified, it requires
-human review of a frozen frame, and it never commands robot motion. New
-Provider integrations must not copy that orchestration into the generic
-measurement contract.
-
-## Documentation
-
-Human and installation-agent entry points:
-
-- [Installation policy](INSTALL_POLICY.md) — fast replacement, clean reinstall,
-  persistent data, and offline checkpoint cache.
-- [Validation](VALIDATION.md) — publication, native backend, Manager/Fabric,
-  and remaining deployment checks.
-- [Default reBot profile](docs/REBOT_B601_DM.md) — exact reporter roles,
-  geometry, transforms, symmetry, and observed frames.
-- [CAD preparation helper](tools/cad_prepare/README.md) — prepare another
-  rigid target without making the Provider robot-specific.
-
-Coder and coding-agent references:
-
-- [Midbrain integration](docs/MIDBRAIN_INTEGRATION.md) — Provider-versus-Skill
-  boundary, request actions, lifecycle, frames, and BufferRefs.
-- [`manifest.json`](manifest.json) — authoritative version, capabilities,
-  streams, route policy, and readiness metadata.
-
-History and compliance:
-
-- [Changelog](CHANGELOG.md) — release history; not current operating guidance.
-- [Third-party notices](THIRD_PARTY_NOTICES.md) — NVLabs, SAM2, and Seeed
-  licensing boundaries.
-- [NVLabs checkpoint provenance](third_party/nvlabs_foundationpose_weights/README.md)
-  and [Windows compatibility source](third_party/nvlabs_windows_compat/README.md).
-- [reBot CAD provenance](defaults/rebot_b601_dm/UPSTREAM.md) and
-  [modifications](defaults/rebot_b601_dm/MODIFICATIONS.md).
+Midbrain-authored code is covered by the repository MIT license. Retained
+NVIDIA Isaac ROS FoundationPose and nvdiffrast sources are Apache-2.0; their
+license and exact commit are under `native/upstream`. Eigen 3.4.0 is MPL-2.0;
+its license is under `native/third_party/eigen`. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

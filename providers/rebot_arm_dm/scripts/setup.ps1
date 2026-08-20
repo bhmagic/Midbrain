@@ -3,6 +3,20 @@ param(
     [switch]$WithMotorBridge
 )
 . (Join-Path $PSScriptRoot "common.ps1")
+
+function Write-JsonUtf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $payload = ($Value | ConvertTo-Json -Depth 30) + "`n"
+    [System.IO.File]::WriteAllText(
+        $Path,
+        $payload,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+
 $provider = Get-ProviderRoot
 $venv = Join-Path $provider ".venv"
 $python = Join-Path $venv "Scripts\python.exe"
@@ -60,6 +74,12 @@ if ($WithMotorBridge) {
 $config = Join-Path $provider "config"
 New-Item -ItemType Directory -Force -Path $config | Out-Null
 if (-not (Test-Path (Join-Path $config "arm_model.json"))) { Copy-Item (Join-Path $provider "config_templates\arm_model.factory.json") (Join-Path $config "arm_model.json") }
+$armProfiles = Join-Path $config "arm_profiles"
+New-Item -ItemType Directory -Force -Path $armProfiles | Out-Null
+$defaultArmProfile = Join-Path $armProfiles "rebot_arm_b601_dm.v1.json"
+if (-not (Test-Path -LiteralPath $defaultArmProfile)) {
+    Copy-Item -LiteralPath (Join-Path $config "arm_model.json") -Destination $defaultArmProfile
+}
 if (-not (Test-Path (Join-Path $config "arm_calibration.json"))) { Copy-Item (Join-Path $provider "config_templates\arm_calibration.initial.json") (Join-Path $config "arm_calibration.json") }
 if (-not (Test-Path (Join-Path $config "calibration_collision_model.json"))) { Copy-Item (Join-Path $provider "config_templates\calibration_collision_model.json") (Join-Path $config "calibration_collision_model.json") }
 $workspace = Get-WorkspaceRoot
@@ -72,8 +92,16 @@ if (Test-Path -LiteralPath $assemblyTemplate) {
         $selection = Get-Content -Raw -LiteralPath $assemblyTemplate | ConvertFrom-Json
         $calibration = Get-Content -Raw -LiteralPath (Join-Path $config "arm_calibration.json") | ConvertFrom-Json
         $selection.profiles.calibration.expected_revision = $calibration.calibration_revision
-        $selection | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $assemblyConfig -Encoding utf8
+        Write-JsonUtf8NoBom -Value $selection -Path $assemblyConfig
         Write-Host "Created active robot assembly selection: $assemblyConfig"
+    }
+    else {
+        $selection = Get-Content -Raw -LiteralPath $assemblyConfig | ConvertFrom-Json
+        if ($selection.profiles.arm_model.relative_path -eq "config/arm_model.json") {
+            $selection.profiles.arm_model.relative_path = "config/arm_profiles/rebot_arm_b601_dm.v1.json"
+            Write-Host "Migrated the active arm-model selection to the arm-profile registry: $assemblyConfig"
+        }
+        Write-JsonUtf8NoBom -Value $selection -Path $assemblyConfig
     }
 }
 Write-Host "Basic Controller setup complete."

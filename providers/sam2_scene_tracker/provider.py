@@ -25,17 +25,17 @@ for entry in (LOCAL_PYTHON, CAMERA_PYTHON):
         sys.path.insert(0, str(entry))
 
 import httpx
-
 from sam2_scene_tracker.annotator import build_scene_annotator
 from sam2_scene_tracker.clients import FabricClient
 from sam2_scene_tracker.engine import Sam2SceneTrackerEngine
 from sam2_scene_tracker.fusion import PersistentSemanticVoxelMap
 from sam2_scene_tracker.rgbd import RgbdCapture
 from sam2_scene_tracker.sam_backend import Sam2ImageTracker
+from sam2_scene_tracker.one_shot import segment_workspace_image
 
 
 PROVIDER_ID = "perception.sam2_scene_tracker"
-PROVIDER_VERSION = "0.2.1"
+PROVIDER_VERSION = "0.3.2"
 
 
 def _expand(value: Any) -> Any:
@@ -272,7 +272,23 @@ class Sam2SceneTrackerProvider:
                 "observation": self.tick_once(),
                 "diagnostics": self.engine.last_diagnostics,
             }
+        if action == "segment_image":
+            if self.residency != "HOT":
+                raise RuntimeError("segment_image requires HOT residency")
+            return self.segment_image(request.get("payload"))
         raise ValueError(f"unsupported SAM2 tracker action {action or 'empty'!r}")
+
+    def segment_image(self, payload: Any) -> dict[str, Any]:
+        return segment_workspace_image(
+            payload=payload,
+            tracker=self.engine.tracker,
+            tracker_lock=self.iteration_lock,
+            workspace_root=WORKSPACE_ROOT,
+            artifact_root=(PROVIDER_ROOT / "run" / "one_shot_segmentation"),
+            provider_id=self.provider_id,
+            provider_instance_id=self.instance_id,
+            boot_id=self.boot_id,
+        )
 
     def status_payload(self) -> dict[str, Any]:
         diagnostics = self.engine.last_diagnostics
@@ -295,6 +311,7 @@ class Sam2SceneTrackerProvider:
                 "diagnostics": diagnostics,
                 "capability_readiness": {
                     "perception.scene.sam2.track": self.residency == "HOT",
+                    "perception.image.sam2.segment": self.residency == "HOT",
                     "perception.scene.semantic_obstacles": self.ready,
                 },
                 "resource_profile": {

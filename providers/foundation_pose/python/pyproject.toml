@@ -1,24 +1,26 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "physical-ai-foundation-pose-provider"
-version = "0.4.0"
-description = "CAD-conditioned RGB-D object-pose Resource Provider for Midbrain"
-requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+name = "midbrain-foundation-pose-provider"
+version = "1.1.2"
+description = "Native Windows FoundationPose resource provider for Midbrain"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   "httpx>=0.27,<1",
-  "numpy>=2.0,<3",
-  "opencv-python-headless>=4.10,<5",
-  "orbbec-femto-provider>=0.4.0,<0.5"
+  "midbrain-bufferref-client>=0.1,<0.2",
+  "numpy>=2.1,<3",
+  "Pillow>=11,<12"
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
+runtime = ["tensorrt-cu12>=10.9,<11"]
+test = ["pytest>=8.3,<9"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["foundation_pose_provider*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

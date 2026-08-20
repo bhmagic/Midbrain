@@ -250,7 +250,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
                     "last_seen": "2026-07-31T12:00:01Z",
                 }
             ],
-            eligible_skill_tools=["calibrate_stationary_workcell"],
+            eligible_skill_tools=["locate_arm_base"],
         )
 
         provider = snapshot["providers"][0]
@@ -280,7 +280,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertNotIn("last_seen", snapshot["capabilities"][0])
         self.assertEqual(
             snapshot["eligible_skill_tools"],
-            ["calibrate_stationary_workcell"],
+            ["locate_arm_base"],
         )
 
     def test_developer_driver_adds_bounded_provider_tools(self) -> None:

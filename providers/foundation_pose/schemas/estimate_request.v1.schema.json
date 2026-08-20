@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "midbrain://schemas/providers/foundation_pose/estimate_request.v1",
+  "type": "object",
+  "required": ["action", "evidence", "camera_intrinsics", "mesh", "observed_at_us", "camera_frame"],
+  "properties": {
+    "action": {"const": "estimate"},
+    "request_id": {"type": "string"},
+    "observed_at_us": {"type": "integer", "minimum": 1},
+    "camera_frame": {"type": "string", "minLength": 1},
+    "camera_intrinsics": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "number"}, "minItems": 9, "maxItems": 9},
+        {"type": "object", "required": ["fx", "fy", "cx", "cy"]}
+      ]
+    },
+    "mesh": {
+      "type": "object",
+      "required": ["path", "sha256", "scale_to_m"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "scale_to_m": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "evidence": {"type": "object"}
+  },
+  "additionalProperties": true
+}
+

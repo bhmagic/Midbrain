@@ -1054,6 +1054,65 @@ class ControlAuditTests(unittest.TestCase):
 
             self.assertEqual(activation["activation_id"], "activation-1")
 
+    def test_v3_mounted_activation_survives_camera_and_vio_process_restart(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = IntegratedService(
+                _Controller(),  # type: ignore[arg-type]
+                {
+                    "provider_id": "robot_arm.primary.integrated",
+                    "listen_host": "127.0.0.1",
+                    "listen_port": 8793,
+                    "control_audit": {
+                        "path": str(root / "events.jsonl"),
+                        "cursor_path": str(root / "cursor.json"),
+                    },
+                },
+                None,
+                None,
+            )
+            context = {
+                "camera_provider_id": "camera.test",
+                "camera_provider_instance_id": "current-instance",
+                "camera_boot_id": "current-boot",
+                "camera_calibration_revision": "camera-calibration-1",
+                "workcell_transform_id": "transform-1",
+                "workcell_transform_revision": "transform-revision-1",
+                "workcell_transform_validity_policy": (
+                    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+                ),
+            }
+            service.platform.workcell_calibrations = lambda: {
+                "enforcement": "ENFORCED",
+                "activations": [
+                    {
+                        "activation_id": "activation-1",
+                        "candidate_id": "transform-1",
+                        "calibration_revision": "transform-revision-1",
+                        "state": "ACTIVE",
+                        "motion_usable": True,
+                        "expires_at_us": None,
+                        "validity_policy": (
+                            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3"
+                        ),
+                        "camera_provider_id": "camera.test",
+                        "camera_provider_instance_id": "prior-instance",
+                        "camera_boot_id": "prior-boot",
+                        "camera_calibration_revision": "camera-calibration-1",
+                        "session_epoch": "historical-vio-epoch",
+                    }
+                ],
+            }
+
+            activation = service._require_current_workcell_activation(
+                context,
+                now_us=time.time_ns() // 1000,
+            )
+
+            self.assertEqual(activation["activation_id"], "activation-1")
+
     def test_v2_transit_preview_does_not_require_vio_epoch(self) -> None:
         service = IntegratedService(
             _Controller(),  # type: ignore[arg-type]

@@ -21,11 +21,13 @@ the reviewed MotorBridge 0.5.1 freshness build installed by Basic's setup
 script. The Xbox-compatible controller is needed only for the
 manual Integrated development GUI.
 
-The optional FoundationPose route requires an NVIDIA/CUDA/PyTorch environment,
-the pinned upstream runtime, Git LFS checkpoints, and any separately installed
-initialization dependencies. Its third-party license restrictions apply.
+The arm-base localization route requires an NVIDIA GPU with at least 8 GB
+VRAM, CUDA 12.8, TensorRT, Visual Studio 2022 C++ Build Tools, the pinned SAM2
+source/checkpoint, and the official NVIDIA FoundationPose ONNX models. Each
+Provider installs these only in its own environment; third-party license terms
+apply.
 
-The Orbbec SDK, MotorBridge, upstream FoundationPose runtime, virtual
+The Orbbec SDK, MotorBridge, downloaded model weights, virtual
 environments, API keys, and measured device calibration are not distributed as
 ordinary repository source.
 
@@ -62,6 +64,21 @@ them to the Agent environment.
 
 There is no repository-root Python environment. Each Python process launches
 from the environment owned by its component.
+
+The active robot assembly's `arm_model` profile also selects arm-base CAD and
+reference evidence through `appendix.midbrain.skill.locate_arm_base.v1`.
+Changes made in the guarded Locate Arm Base developer UI are not live-bound:
+restart the arm Provider so it republishes the new profile digest before the
+Skill can run. This mirrors the existing fail-closed mounted-effector profile
+selection boundary.
+
+The Manager portal exposes an **Arm model** selector next to the existing
+**Mounted effector** selector. It discovers Provider-owned profiles from
+`providers/rebot_arm_dm/config/arm_profiles`, displays the selected CAD and
+reference-image count, requires explicit confirmation that the physical arm
+matches, and refuses changes while the arm Provider or any dependent is
+running. A successful selection updates only the ignored central assembly
+selection and takes effect after restart.
 
 Set up the arm Providers separately:
 
@@ -111,17 +128,22 @@ Retract is the signed negative-blade displacement resolved from measured
 effector position when Contact accepts the third move, so prior endpoint error
 does not redirect extraction.
 
-Set up the retained FoundationPose paths only when required:
+Set up the arm-base localization components directly when required:
 
 ```powershell
-git lfs pull
+.\providers\sam2_scene_tracker\scripts\setup.ps1
 .\providers\foundation_pose\scripts\setup.ps1
-.\skills\stationary_world_arm_alignment\scripts\setup.ps1
+.\skills\locate_arm_base\scripts\setup.ps1
 ```
 
-These commands make the explicit finite initializer and compatibility Provider
-available. They do not make FoundationPose the default alignment path or an
-automatic fallback.
+These commands build independent environments. `locate_arm_base` orchestrates
+VLM seed prompting, SAM2 segmentation, one generic FoundationPose estimate,
+bounded reference-image orientation selection, and a review-only candidate.
+Its guarded developer link starts the Skill-owned UI on port 7114; that page
+shows the selected arm-profile file, exact CAD filename/path/hash, all VLM and
+FoundationPose images, and the flexible appendix. The FoundationPose developer
+link activates the generic Provider through Manager and opens its read-only
+runtime diagnostics at `/dev` using the portal's grayscale theme.
 
 ## Start Midbrain
 
@@ -167,9 +189,10 @@ inspection host; they do not execute the Skill itself.
 
 ## Use the Agent
 
-The regular and developer pages are two projections of one backend-owned
-autonomous Agent runtime. The developer view adds diagnostics; it does not add
-authority or bypass controller checks.
+The Developer Agent is the single browser interaction surface for the
+backend-owned autonomous Agent runtime. Its diagnostic panes do not add
+authority or bypass controller checks. The root Agent URL redirects to this
+surface.
 
 For a supported physical action, the intended boundary is:
 
@@ -186,7 +209,7 @@ Closing an SSE connection or browser tab does not cancel a backend run or prove
 the outcome of a physical action. Reopen the Agent page or run journal to
 inspect retained state.
 
-Both Agent pages expose **Stop task** while a run is active. It cancels the
+The Developer Agent exposes **Stop task** while a run is active. It cancels the
 selected run and the asynchronous subtasks owned by that run while preserving
 Manager-controlled background Providers. Cancellation does not retract a
 physical command that a controller has already accepted and does not prove its
@@ -212,15 +235,12 @@ limits, child outcome fields, physical completion, and required post-action
 evidence. The current qualification boundary and known open tests are in
 [Limited Graph Status and Qualification](14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
 
-FoundationPose is available to the regular Agent only when the operator
-explicitly mentions it by name. Matching is case-insensitive and tolerates
-spacing, hyphenation, and minor spelling errors. A canonical request is:
-
-`Use FoundationPose to establish the stationary world-to-arm-base transform.`
-
-Generic alignment requests must not silently load it. The movement-based
-six-degree-of-freedom replacement is still an active design; see
-[Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
+Ask the Developer Agent to `Locate the arm base`. The finite Skill requires a
+stationary, visible profiled base and an established timestamped world axis.
+It does not depend on the installed gripper or end effector. Its first result
+is review-only; the Agent must submit the exact returned candidate ID and hash
+to the separate review-and-activate tool before the relationship is
+motion-usable.
 
 ### Refine an existing arm-base alignment without movement
 

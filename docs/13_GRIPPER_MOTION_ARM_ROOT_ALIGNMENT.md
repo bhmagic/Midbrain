@@ -15,7 +15,7 @@ gripper positions. It is intended to become the ordinary, reusable alignment
 path for a rigidly mounted camera and arm. It does not remove FoundationPose.
 
 FoundationPose remains a deliberately slow initializer and diagnostic route.
-The regular Agent may summon it only when the operator explicitly mentions
+The Developer Agent may summon it only when the operator explicitly mentions
 FoundationPose by name; matching is case-insensitive and tolerates spacing,
 hyphenation, and minor spelling errors. A canonical request is:
 

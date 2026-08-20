@@ -1,9 +1,14 @@
 {
-  "provider_type": "perception.object_pose.foundation_pose",
-  "version": "0.4.0",
-  "display_name": "FoundationPose Compatibility Provider",
-  "manager_ids": ["perception.object_pose.foundation_pose"],
-  "architectural_role": "LEGACY_COMPATIBILITY_BACKEND",
+  "provider_type": "perception.known_object_pose",
+  "version": "1.1.2",
+  "display_name": "FoundationPose Native Known-Object Pose",
+  "manager_ids": ["perception.foundation_pose"],
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": ["perception.known_object_pose.estimate"],
+  "required_capabilities": [],
+  "optional_capabilities": [],
+  "published_streams": ["perception.known_object_pose.measurement"],
+  "consumed_streams": [],
   "ui": {
     "observation": {
       "kind": "MANAGER_HOSTED",
@@ -11,93 +16,20 @@
       "read_only": true
     },
     "developer": {
-      "label": "FoundationPose Provider Development",
+      "label": "FoundationPose runtime",
       "url_from_control": "/dev",
       "availability": "PROVIDER_RUNNING"
     }
   },
-  "residency_modes": [
-    "HOT",
-    "WARM",
-    "COLD"
-  ],
-  "capabilities": [
-    "perception.object_pose",
-    "perception.object_pose.estimate",
-    "perception.object_pose.track",
-    "perception.object_pose.bounding_box_init",
-    "perception.object_pose.relocalize",
-    "perception.object_pose.stop",
-    "perception.object_pose.release_resources",
-    "perception.object_pose.status",
-    "perception.object_pose.model_registry"
-  ],
-  "required_capabilities": [
-    "camera.rgb",
-    "camera.depth_aligned_to_rgb",
-    "camera.rgbd_geometry"
-  ],
-  "optional_capabilities": [
-    "perception.object.mask",
-    "system.motion.inhibit"
-  ],
-  "published_streams": [
-    "perception.object.pose",
-    "perception.object_pose.status",
-    "transform.foundation_pose.object"
-  ],
-  "consumed_streams": [
-    "camera.rgbd.bundle",
-    "camera.calibration",
-    "perception.object.mask",
-    "system.motion.inhibit"
-  ],
-  "backend_contract": {
-    "default": "nvlabs",
-    "classification": "cad_conditioned_rgbd_six_dof_object_pose_estimation_and_tracking",
-    "input_policy": "latest_complete_rgbd_frame; no backlog",
-    "initialization_policy": "rgb_depth_intrinsics_and_one_of_local_mask_bounding_box_or_fabric_mask",
-    "tracking_policy": "previous_pose_rgbd_tracking_with_explicit_relocalization",
-    "output_policy": "raw_camera_system_x_y_z_optical_measurement_with_explicit_frame_and_convention_metadata; fusion_is_external",
-    "development_backend": "mock"
+  "implementation": {
+    "platform": "windows-x86_64",
+    "native_core": "CUDA_12_8_AND_TENSORRT",
+    "domain_function": "perception.known_object_pose.estimate",
+    "temporal_policy_owner": "CALLING_SKILL",
+    "robot_semantics": false
   },
   "compatible_core": {
     "resource_provider_manager": ">=0.3.0",
     "world_state_fabric": ">=0.3.0"
-  },
-  "request_envelope": {
-    "manager_compatible": true,
-    "shape": "{action, payload, request_id, related_skill_id}",
-    "compatibility": "also accepts legacy direct top-level action fields"
-  },
-  "resource_release": {
-    "explicit_action": "release_resources",
-    "warm_transition_releases_backend": true,
-    "manager_stop_releases_process": true,
-    "reject_while_sessions_active": true,
-    "postcondition": "all owned estimator sessions, prepared-model caches, CUDA model objects, and raster contexts are released"
-  },
-  "migration": {
-    "replacement_skill": "foundation_pose_object_localization",
-    "default_parent_route": "FOUNDATIONPOSE_SKILL",
-    "automatic_provider_fallback": false,
-    "compatibility_provider_retained": true
-  },
-  "default_profile": "rebot_b601_dm",
-  "model_registry": {
-    "persistent_path": "${PHYSICAL_AGENT_ROOT}/config/foundation_pose/models.json",
-    "default_seed": "defaults/rebot_b601_dm/models.json",
-    "roles": [
-      "robot_base",
-      "robot_gripper",
-      "generic_object"
-    ],
-    "role_semantics": "informational routing hint; does not grant transform authority"
-  },
-  "midbrain_contracts": {
-    "resource_provider": "contracts/01_resource_provider_contract.md",
-    "timestamped_transform_graph": "contracts/06_timestamped_transform_graph.md",
-    "spatial_frame_convention": "contracts/14_spatial_frame_convention_v2.md",
-    "fabric_transport": "contracts/03_world_state_fabric_transport_specification.md"
   }
 }

@@ -1,0 +1,6 @@
+.venv/
+run/
+config/calibrations/
+config/reviews/
+*.pyc
+__pycache__/

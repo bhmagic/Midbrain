@@ -167,6 +167,30 @@ class WorldPointCloudLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transform.calibration_revision, "alignment-1")
         self.assertEqual(transform.activation_id, "activation-1")
 
+    async def test_canonical_transforms_survive_vio_epoch_change(
+        self,
+    ) -> None:
+        for version in ("V2", "V3"):
+            with self.subTest(version=version):
+                activation = _activation_observation()
+                activation["data"]["validity_policy"] = (
+                    "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_" + version
+                )
+
+                transform = _reviewed_stationary_camera_transform(
+                    activation,
+                    session_epoch="new-epoch",
+                    vio_world_frame="local_vio/new-epoch",
+                    now_us=1_000_000,
+                )
+
+                self.assertIsNotNone(transform)
+                assert transform is not None
+                self.assertEqual(
+                    transform.calibration_revision,
+                    "alignment-1",
+                )
+
     async def test_reviewed_stationary_camera_transform_rejects_invalid_or_mismatched(
         self,
     ) -> None:
@@ -188,6 +212,19 @@ class WorldPointCloudLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             _reviewed_stationary_camera_transform(
                 mismatched_session,
+                session_epoch="epoch-1",
+                vio_world_frame="local_vio/epoch-1",
+                now_us=1_000_000,
+            )
+        )
+
+        unknown_policy = _activation_observation()
+        unknown_policy["data"]["validity_policy"] = (
+            "MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V4"
+        )
+        self.assertIsNone(
+            _reviewed_stationary_camera_transform(
+                unknown_policy,
                 session_epoch="epoch-1",
                 vio_world_frame="local_vio/epoch-1",
                 now_us=1_000_000,

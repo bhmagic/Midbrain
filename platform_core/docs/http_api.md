@@ -203,13 +203,16 @@ lifetime. Manager requires
 Projected-size, confidence, bounded-error, support-plane, and residual-tilt
 values remain review evidence but are not independent Manager geometry gates.
 
-Only one activation remains `ACTIVE`. Its `expires_at_us` is null and its
-`validity_policy` is `MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V2`. Temporary
+Only one activation remains `ACTIVE`. Its `expires_at_us` is null. The current
+Locate Arm Base candidate path writes
+`MOUNTED_CANONICAL_CAMERA_CALIBRATION_GATED_V3`; existing exact V2 activations
+retain the same canonical-camera/calibration invalidation semantics. Temporary
 camera unavailability suspends `motion_usable` without erasing the calibration;
 recovery of the same canonical camera and calibration restores it. Camera or
 VIO process instance/boot changes and a new VIO tracking epoch do not invalidate
 the mounted transform. A canonical camera-device or camera-calibration revision
-change does invalidate it. A successful newer activation publishes
+change does invalidate it. Consumers accept only the exact supported V2 and V3
+strings and fail closed on unknown future versions. A successful newer activation publishes
 its motion-usable static transforms and then marks the prior active record
 `SUPERSEDED` and non-motion-usable without publishing a transient empty
 calibration. Reusing a `request_id` is idempotent only for byte-equivalent

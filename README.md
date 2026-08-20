@@ -139,18 +139,22 @@ The repository currently contains:
 - Basic reBot/Damiao motor Provider, an Integrated free-space Cartesian
   controller, and an independent signed-plan Contact Work Provider.
 - Finite Skills for initialization, visual localization, spatial
-  registration, stationary alignment, profile-driven non-moving VLM
+  registration, effector-independent CAD arm-base localization,
+  profile-driven non-moving VLM
   arm-root translation refinement, relative and absolute-world free-space
   positioning, no-contact approach, guarded motion, and the development
   non-clamping slicing sequence.
 - A bounded Limited Graph Skill with concise Agent authoring, typed compact
   bindings, branching, retry and model-route primitives, child-declared
   Provider handover, per-child authorization, and incremental visual evidence.
-- One backend-owned autonomous Agent runtime with regular and developer views,
+- One backend-owned autonomous Agent runtime with a Developer Agent view,
   normalized events, visual evidence, chat projection, and a local diagnostic
   journal, plus an explicitly staged numeric Slicing test surface that does not
   require a language-Agent turn.
-- An explicit-only FoundationPose initialization and compatibility route.
+- A Windows-native generic FoundationPose Provider plus a finite
+  `locate_arm_base` Skill that orchestrates independent VLM-seeded SAM2 masks,
+  VLM rejection plus coded pixel voting, repeated final-mask fitting, bounded
+  reference-image orientation, and Manager-reviewed activation.
 
 Capability maturity is intentionally component-specific. Consult each
 Provider's README and validation document before using real hardware. A

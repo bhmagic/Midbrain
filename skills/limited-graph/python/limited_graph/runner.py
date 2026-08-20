@@ -811,6 +811,8 @@ def _explicit_incomplete_reason(
 ) -> str | None:
     if not isinstance(result, dict):
         return None
+    if result.get("terminal_failure") is True:
+        return "terminal_failure=true"
     if result.get("workflow_complete") is False:
         return "workflow_complete=false"
     if physical and result.get("physical_motion_completed") is False:

@@ -122,12 +122,46 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
         app_module.agent_run_journal.path = (
             Path(self._journal_temporary.name) / "agent_runs.sqlite3"
         )
+        self._installation_status_patcher = patch.object(
+            app_module,
+            "_agent_skill_installation_status",
+            return_value={
+                "prompt_required": False,
+                "restart_required": False,
+            },
+        )
+        self._installation_status_patcher.start()
 
     async def asyncTearDown(self) -> None:
+        self._installation_status_patcher.stop()
         await app_module.agent_run_stream_registry.shutdown()
         await app_module.agent_run_journal.close()
         app_module.agent_run_journal.path = self._original_journal_path
         self._journal_temporary.cleanup()
+
+    async def test_agent_run_is_blocked_until_skill_review_finishes(
+        self,
+    ) -> None:
+        transport = httpx.ASGITransport(app=app_module.app)
+        with patch.object(
+            app_module,
+            "_agent_skill_installation_status",
+            return_value={
+                "prompt_required": True,
+                "restart_required": False,
+            },
+        ):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/api/streaming-runs",
+                    json={"prompt": "do not start"},
+                )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("startup Skill installation", response.json()["detail"])
 
     async def test_uploaded_image_reaches_agent_as_multimodal_input(
         self,

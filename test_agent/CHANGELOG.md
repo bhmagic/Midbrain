@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.15 - 2026-08-19
+
+- Accept exact canonical mounted-camera calibration policies V2 and V3 across
+  spatial resolution, point-cloud projection, observation context, no-contact
+  approach, and Integrated commit validation while retaining V1 epoch binding
+  and rejecting unknown future versions.
+- Reconcile newly installed discoverable Skills when the Developer Agent opens.
+  Require an Agent-owned add/disable decision without changing Skill manifests;
+  apply disables immediately, require restart after adds, and block tasks until
+  reconciliation is complete.
+- Make the Developer Agent the only linked Agent interaction UI, redirect the
+  root Agent URL to it, and remove Regular Agent links from the Manager,
+  Developer Agent, run journal, and launcher output.
+
+## 0.4.14 - 2026-08-19
+
+- Default both Agent visual-model selectors and the prompt API to Gemini
+  Robotics-ER 2.0 when that configured backend is available, while retaining
+  explicit alternate-model and automatic-routing choices.
+- Carry the run-scoped Agent visual-model selection into Locate Arm Base and
+  show its distinct resolved 90/180-degree pose image in Agent visual evidence.
+
+## 0.4.13 - 2026-08-19
+
+- Keep one shielded Locate Arm Base task alive across Agent or Limited Graph
+  waiter cancellation and make later calls join that exact run rather than
+  racing a second observation.
+- Return localization failures as terminal, non-retryable Agent results while
+  retaining their failure-edge behavior inside Limited Graph.
+
+## 0.4.12 - 2026-08-19
+
+- Label every independent Locate Arm Base mask as VLM-retained or
+  VLM-rejected, and project both the half-survivor vote and the once-dilated
+  final mask into the Agent evidence window alongside every pose fit.
+
+## 0.4.11 - 2026-08-19
+
+- Pass the exact world-frame and session-epoch identity established by the
+  readiness Skill into Locate Arm Base, allowing the localization Skill to
+  detect a VIO reset instead of querying the obsolete literal `world` frame.
+- Accept structured arm-base failures in discovery output validation so the
+  Agent retains the real stage error and all available mask/fit images.
+
+## 0.4.10 - 2026-08-19
+
+- Show every Locate Arm Base mask overlay and FoundationPose fit rendering as
+  separate Agent visual evidence cards.
+- Preserve those visuals in a structured failed result when the Skill rejects
+  a mask, fit, or orientation decision.
+
 ## Unreleased
 
 - Qualify generalized non-GPT discovery as near stable after live Gemini run

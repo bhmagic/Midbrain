@@ -34,8 +34,10 @@ candidate activation, rollback, finite calibration motion, visualization, and
 negative tests specified in
 [Gripper-Motion Arm-Root Alignment](13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md).
 
-FoundationPose remains an explicit finite initializer and compatibility route;
-it must not become an automatic fallback for generic alignment.
+The new native FoundationPose Provider and `locate_arm_base` Skill still need
+matched physical ground-truth qualification across supported viewpoints,
+lighting, occlusion, depth quality, and base finishes. Synthetic execution and
+contract tests do not establish real-scene accuracy.
 
 ### Stabilize arm-FK and Fabric transform history
 
@@ -158,7 +160,7 @@ remaining qualification without changing existing duties or authorization:
 - exercise purpose-built success/failure branching, switch, bounded retry,
   and model-selected edge routing with retained evidence;
 - prove that multiple closely timed child visuals remain independently
-  inspectable on both Agent pages;
+  inspectable in the Developer Agent and run journal;
 - add task-level material-cut sensing instead of treating completed Slicing
   motion as proof that material was cut;
 - bound projected session context by serialized bytes or model tokens as well

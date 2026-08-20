@@ -829,5 +829,58 @@
     "friction": "UNMEASURED",
     "effective_inertia": "UNMEASURED",
     "torque_scale": "UNMEASURED"
+  },
+  "appendix": {
+    "midbrain.skill.locate_arm_base.v1": {
+      "schema": "midbrain.skill.locate_arm_base.model_profile",
+      "schema_version": 1,
+      "profile_id": "rebot_b601_dm.arm_base.v1",
+      "semantic_frame": "rebot_arm_base",
+      "vlm_seed_guidance": "We are annotating the base block of a robot arm. It contains the first motor and is colored black. It may be partially covered by the first joint (silver) and the connecting cables (black). Red or green indicator lights may be present and should not affect the selection.",
+      "mesh": {
+        "path": "skills/locate_arm_base/assets/rebot_b601_dm/models/Base_clean_centered.obj",
+        "sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+        "scale_to_m": 0.001,
+        "origin": "BOUNDING_BOX_CENTER",
+        "preview": {
+          "path": "skills/locate_arm_base/assets/rebot_b601_dm/references/Base_cad_preview.png",
+          "sha256": "371a56157399f9fe50a2f10bb9bdf3a3af71090abba46c137cc617991073a10e",
+          "mesh_sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+          "role": "EXACT_FOUNDATIONPOSE_CAD_PREVIEW"
+        }
+      },
+      "reference_images": [
+        {
+          "path": "skills/locate_arm_base/assets/rebot_b601_dm/references/Base_reference_atlas.png",
+          "sha256": "91bba16238a0fea89acd6623ec328d977e31aacdb7c43680a935c5bb1a031cbe",
+          "role": "CAD_ORIENTATION_ATLAS",
+          "consumers": ["VLM_SEED_LOCALIZATION", "VLM_ORIENTATION_SELECTION"]
+        },
+        {
+          "path": "skills/locate_arm_base/assets/rebot_b601_dm/references/Arm_axis_reference_no_effector_4views.png",
+          "sha256": "1c267f485f92b34dce2d66598f01137b3e7093e7cd9567b5540be13ab0f61afb",
+          "role": "FULL_ARM_AXIS_ORIENTATION_REFERENCE_NO_EFFECTOR",
+          "consumers": ["VLM_SEED_LOCALIZATION", "VLM_ORIENTATION_SELECTION"],
+          "description": "Four axis-labeled full-arm views. The interchangeable end effector is intentionally absent; use the full-arm geometry to distinguish the small CAD-defined base joint from external support hardware and use X-red, Y-green, Z-blue only for bounded orientation selection."
+        }
+      ],
+      "centered_mesh_from_arm_base": [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, -0.0446249945],
+        [0.0, 0.0, 0.0, 1.0]
+      ],
+      "orientation_candidates": [
+        {"candidate_id": "z0", "axis": "Z", "degrees": 0},
+        {"candidate_id": "z90", "axis": "Z", "degrees": 90},
+        {"candidate_id": "z180", "axis": "Z", "degrees": 180},
+        {"candidate_id": "z270", "axis": "Z", "degrees": 270}
+      ],
+      "orientation_application": {
+        "origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
+        "order": "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base",
+        "translation_policy": "PRESERVE_CENTER_TRANSLATION"
+      }
+    }
   }
 }

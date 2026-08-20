@@ -1,0 +1,15 @@
+{
+  "native_library": "providers/foundation_pose/native/build-win/Release/midbrain_foundation_pose_native.dll",
+  "refine_engine": "providers/foundation_pose/runtime/engines/refine.plan",
+  "score_engine": "providers/foundation_pose/runtime/engines/score.plan",
+  "max_hypotheses": 252,
+  "refine_iterations": 2,
+  "network_height": 160,
+  "network_width": 160,
+  "min_depth_m": 0.1,
+  "max_depth_m": 4.0,
+  "refine_crop_ratio": 1.2,
+  "score_crop_ratio": 1.4,
+  "rotation_normalizer": 0.3490658504
+}
+

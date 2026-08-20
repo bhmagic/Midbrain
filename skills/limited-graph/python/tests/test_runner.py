@@ -573,6 +573,16 @@ def test_validation_rejects_any_cycle_containing_a_physical_node() -> None:
         (
             "echo_value",
             {
+                "status": "FAILED",
+                "workflow_complete": True,
+                "terminal_failure": True,
+                "retry_allowed": False,
+            },
+            "terminal_failure=true",
+        ),
+        (
+            "echo_value",
+            {
                 "status": "REVIEW_REQUIRED",
                 "workflow_complete": False,
                 "required_next_tool": "review_candidate",
