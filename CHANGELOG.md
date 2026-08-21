@@ -2,31 +2,89 @@
 
 ## Unreleased
 
+- Add an independent 50 Hz Grip Provider and the finite current-pose Grip,
+  Scrap Grip, Move Carried Object, Let Go, and Lay Flat Skills. Keep the
+  gripper actuator group, arm Contact group, runtime attachment identity,
+  carried-object motion, release, and the declared Lay Flat Integrated/FLOAT
+  exception in separate typed boundaries under the new Grip and Carry
+  contract.
+- Keep Contact's Basic arm-group `POSITION_EFFORT_LIMITED` mode guard active
+  from its first endpoint through later Contact moves and carry confirmation.
+  Chain new trajectories from the previous commanded setpoint, add a 0.1 m/s
+  Cartesian speed ceiling, and start each signed physical-stage dwell only
+  after matching trajectory-complete evidence. Scrap Grip uses 1.5-second
+  lower, scrap, and post-contact grip dwells in both Agent and staged UI paths.
+- Remove Agent route gates that treated work-object/corner wording as a
+  mutually exclusive motion category or forced contact work through a
+  no-contact route. Semantic object roles remain planning and coordinate
+  evidence, not contact authority; compound requests retain their eligible
+  finite Skill surface, Provider/resource identity remains Manager/assembly-
+  resolved, and Contact Skills do not consume Integrated's collider scene.
+  Make the controller-owned Safe Home operation non-interactive at the Agent
+  SDK permission boundary without weakening controller checks.
+- Expand the reBot development joint envelopes to owner-observed operational
+  limits of J4 `+/-85`, J5 `+/-90`, and J6 `+/-170` degrees while retaining
+  separate hard envelopes and higher-controller IK margins.
+- Consolidate Locate Arm Base evidence into one multicolor mask ensemble, one
+  optional VLM-point image, and one final mask/CAD image with switchable vector
+  axes. Remove the post-SAM2 VLM mask rejection gate and replace final
+  orientation classification with one coarse active-effector landmark plus
+  timestamped FK, with an explicit rough-world-+X retry when the effector is
+  not identified.
+- Keep already active Agent Skills usable while a newly installed Skill awaits
+  add/disable review or restart. Repair non-GPT client Tool Search so repeated
+  identical JSON can recover and invalid, ambiguous, unknown, or ineligible
+  searches return bounded typed failures without enabling a Skill or ending
+  the Agent run.
+- Raise the owner-requested attended-development new-grip admission gate from
+  `70` to `85` C for every active arm and gripper joint. Replace position-error
+  and settled-velocity contact predicates with absolute measured motor torque
+  at or above `0.15` N m for 10 consecutive 50 Hz samples; position and
+  velocity remain diagnostics.
+
+- Move the owner-observed normal-object gripper target from `0` to `+12`
+  degrees and set Basic's separate gripper hard/absolute close limit to `+17`
+  degrees. The normal operational/calibration ceiling remains `+12` degrees;
+  the `-20` degree gripper safe-home target is unchanged. J4-J6 use the
+  separately listed expanded development envelopes.
+
+- Replace Locate Arm Base's direct 0/90/180/270 VLM panel selection with one
+  coarse point on the active profiled effector plus Basic's timestamped FK.
+  Accept any recognized point without a VLM quality gate, keep the candidate
+  set bounded in code, and return an explicit Agent retry requiring a rough
+  world-frame arm-base +X vector when the effector cannot be identified; that
+  retry performs no effector VLM call.
+- Raise the attended-development gripper request and Basic operational speed
+  boundary to 4 rad/s, retain the 0.75 native FORCE_POS translation and
+  measured-speed brake, and shorten the signed 50 Hz functional-open
+  transition to 1 second. This owner-requested test value exceeds reBot's
+  official 3 rad/s application setting and remains physically unqualified.
 - Accept Locate Arm Base's exact V3 canonical mounted-camera calibration policy
   across Agent spatial, point-cloud, observation, no-contact, and Integrated
   commit consumers while preserving exact V2 compatibility and V1 epoch gates.
 - Add Developer Agent startup reconciliation for every installed discoverable
   Skill outside the configured/runtime Agent lists. Persist Agent-owned
   add/disable choices without editing Skill manifests, require restart for an
-  add, and block tasks until the choice is resolved.
+  add before that Skill becomes callable, and keep the already active tool
+  surface usable while review or restart is pending.
 - Remove Regular Agent links from the Manager, Developer Agent, run journal,
   and launcher output; redirect the Agent root to the Developer Agent and make
   the Manager Developer Agent card border solid.
 - Replace the preliminary same-mask dilation experiment with independently
-  tunable VLM→SAM2 mask attempts and FoundationPose fit attempts. Ask the mask
-  VLM to remove bad independent masks, retain pixels present in at least half
-  of the survivors, apply one post-vote dilation, and use that exact mask for
-  every repeated native fit. Show every seed, SAM2 mask, review decision, vote,
-  final mask, and pose rendering in the Skill and Agent windows; retain
+  tunable VLM→SAM2 mask attempts and FoundationPose fit attempts. Retain every
+  acquired nonempty SAM2 mask without a post-mask VLM review, keep pixels
+  present in at least half of all acquired masks, apply one post-vote dilation,
+  and use that exact mask for every repeated native fit. Show every seed, mask,
+  vote, final mask, and pose rendering in the Skill window; retain
   structured failure timing; and keep native score-network output as raw
   ranking rather than calibrated confidence.
 - Repair the Locate Arm Base seed-component filter, which had attempted to
   flood-fill a read-only Pillow image and therefore always retained the bounded
   fallback mask. Constrain VLM seed prompts to CAD-defined base geometry and
-  exclude touching support structures. For low-confidence finite fit or
-  orientation selection, require a second independent VLM call and accept only
-  normal-threshold confidence or repeated same-candidate consensus above a
-  configured floor.
+  exclude touching support structures. For low-confidence finite fit
+  selection, require a second independent VLM call and accept only normal-
+  threshold confidence or repeated same-candidate consensus above a configured
+  floor. Bounded orientation now follows the separate coarse-effector/FK path.
 - Bind `locate_arm_base` CAD/reference/orientation selection to the active
   assembly-selected arm model through the flexible namespaced
   `appendix.midbrain.skill.locate_arm_base.v1` entry. Publish the arm appendix
@@ -40,9 +98,10 @@
   stationary calibration Skill with a Windows-native, single-function
   FoundationPose Provider and the finite `locate_arm_base` Skill. The Provider
   owns generic CAD pose inference only; the Skill owns robot CAD/reference
-  assets, VLM seed prompts, SAM2 invocation, bounded 0/90/180/270-degree
-  reference-image orientation, world-frame composition, and review-only
-  candidate publication. Remove fixed-effector orientation assumptions,
+  assets, VLM seed prompts, SAM2 invocation, bounded profile-defined local-Z
+  orientation from a coarse effector point plus timestamped FK, world-frame
+  composition, and review-only candidate publication. Remove fixed-effector
+  orientation assumptions,
   session/tracking Provider APIs, duplicate developer UI paths, and the
   retired Manager candidate validator.
 - Extend the existing SAM2 Provider with a caller-prompted one-shot image

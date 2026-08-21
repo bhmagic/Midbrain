@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/grip_control_state.v1.schema.json",
+  "title": "Midbrain Grip Control State v1",
+  "type": "object",
+  "required": ["provider_id", "provider_instance_id", "provider_boot_id", "residency", "health", "ready", "state", "assembly_fingerprint", "mounted_effector_revision", "thermal", "functionally_open", "ready_for_approach", "contact_inferred", "carry", "all_active_joints_position_effort_limited"],
+  "properties": {
+    "provider_id": {"type": "string"},
+    "provider_instance_id": {"type": "string"},
+    "provider_boot_id": {"type": "string"},
+    "residency": {"type": "string", "enum": ["HOT", "WARM", "COLD"]},
+    "health": {"type": "string"},
+    "ready": {"type": "boolean"},
+    "state": {"type": "string", "enum": ["MIT_FLOAT", "MIT_FLOAT_TRANSITION", "MIT_POSITION_TRANSITION", "MIT_POSITION_HOLD", "POS_TOR", "CONTACT_INFERRED", "CARRYING_POS_TOR", "THERMAL_RELEASE_RECOMMENDED", "RELEASING_POS_TOR", "DEGRADED"]},
+    "assembly_fingerprint": {"type": "string"},
+    "mounted_effector_revision": {"type": "string"},
+    "thermal": {"type": ["object", "null"]},
+    "gripper_position_rad": {"type": ["number", "null"]},
+    "gripper_velocity_rad_s": {"type": ["number", "null"]},
+    "gripper_torque_nm": {"type": ["number", "null"]},
+    "target": {"type": ["object", "null"]},
+    "functionally_open": {"type": "boolean"},
+    "ready_for_approach": {"type": "boolean"},
+    "contact_inferred": {"type": "boolean"},
+    "contact_stable_samples": {"type": "integer", "minimum": 0},
+    "carry": {"type": ["object", "null"]},
+    "all_active_joints_position_effort_limited": {"type": "boolean"}
+  },
+  "additionalProperties": true
+}

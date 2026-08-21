@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-lay-flat-skill"
+version = "0.1.0"
+description = "Finite Contact placement, release, and retreat Skill"
+requires-python = ">=3.11"
+dependencies = ["midbrain-grip-work-runtime>=0.1,<0.2"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["lay_flat_skill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

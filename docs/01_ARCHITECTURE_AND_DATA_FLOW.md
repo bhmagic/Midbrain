@@ -12,6 +12,14 @@ Provider residency is:
 
 Readiness remains capability-specific. A Provider can be HOT while an optional stream is unavailable or degraded.
 
+If a Manager-owned Provider process exits while a `HOT` transition is
+converging, Manager fails immediately with the stable
+`PROVIDER_PROCESS_EXITED` code, provider ID, PID, process state, and exit
+status. A still-running Provider retains the bounded 15-second readiness
+window and fails as `PROVIDER_HOT_TIMEOUT`. Skills preserve these bounded JSON
+diagnostics in their own domain error instead of reducing them to an opaque
+HTTP 500.
+
 ## Arm controller roles
 
 Basic is the sole hardware transport and final limit, fencing, deadline, and
@@ -20,13 +28,26 @@ free-space motion and prohibits deliberate sustained contact. The independent
 Contact Work Provider owns deliberate contact, has its own Python environment
 and Basic arm-group lease, and never calls or imports Integrated.
 
+The independent Grip Provider owns only the gripper actuator group, its 50 Hz
+background position/effort, MIT-position, or MIT-float transition, whole-active-joint new-grip
+temperature gate, contact inference, and runtime attachment identity. It
+declares Basic and Contact as Manager-resolved dependencies. A finite Grip Skill
+requests the task-facing Grip Provider once; it does not reproduce that
+dependency graph. While carrying, Contact owns every arm move and holds the
+last arm target, Grip holds the gripper target, and all active joints remain
+`POSITION_EFFORT_LIMITED` even during idle.
+
 A finite task-specific Contact Work Skill signs one complete Cartesian
 pose/wrench/timing plan. Each move explicitly selects a one-shot endpoint or a
 Contact-owned Cartesian segment. Contact advances a segment through sequential
 full-pose IK knots at Basic's advertised internal control rate (currently
-50 Hz), maps the full six-component acting-point wrench through the geometric
-Jacobian transpose, and holds the final Basic `POSITION_EFFORT_LIMITED`
-endpoint until the next move or relax. The solver minimizes a weighted
+50 Hz), enforces a 0.1 m/s Cartesian command-speed ceiling in addition to
+Basic's joint limits, maps the full six-component acting-point wrench through
+the geometric Jacobian transpose, and holds the final Basic
+`POSITION_EFFORT_LIMITED` endpoint until the next move or relax. The first
+endpoint establishes Basic's arm-group mode guard; subsequent segments retain
+that guard and chain from the previous commanded setpoint so measured tracking
+lag cannot create an unlocked or lowered-setpoint gap. The solver minimizes a weighted
 full-pose residual and keeps declared joint locks as hard constraints. The
 first development Skill is non-clamping slicing and
 always sets rotational wrench components to zero. Its mounted-effector
@@ -37,8 +58,10 @@ retract directly to Contact. Provider support for rotational wrench components
 remains available for separately qualified future Skills.
 
 The Contact Provider does not plan collisions or decide task success. It
-publishes measured joints and command disposition, immediately replaces the
-current endpoint or segment when a new signed-plan step arrives, and returns to verified
+publishes measured joints and command disposition and permits signed endpoint
+replacement without a Provider-side arrival gate. Shared finite-Skill runtime
+waits for trajectory completion and then applies the signed physical-stage
+dwell before submitting the next step. Contact returns to verified
 gravity float after explicit cleanup, inactivity timeout, authorization
 expiry, fault, lease loss, motion inhibit, or shutdown.
 
@@ -47,6 +70,21 @@ endpoint. Measured-start-relative moves bind a root-axis displacement and
 resolve it from fresh controlled-effector FK at acceptance. Slicing uses the
 relative form for extraction so preceding unreachable-target residual does not
 rotate or lengthen the requested outward displacement.
+
+The generic `Action: grip` Skill uses Contact's published measured acting-frame
+pose to acquire a zero-displacement current-pose hold before the gripper closes.
+`Action: scrap grip` retains the stable `grip_object` tool identity and composes
+concurrent Grip-owned functional opening with Slicing-style Integrated
+rotation-only alignment, verified gripper approach readiness and WARM/lease handoff,
+Contact absolute approach/table motion, relative insertion, stable-contact
+grip dwell, then carry confirmation. When the Agent specifies an offset from
+current IK/current effector, Scrap Grip captures measured Integrated FK itself;
+it does not use VLM effector localization as a substitute origin. `Action: lay
+gripped object flat` declares the same Integrated rotation handoff as a
+confirmed-carry exception, then uses Contact absolute
+placement and relative retreat. Other carried movement remains Contact-only.
+`Action: let go` opens under position/effort, enters gripper MIT
+float after measured opening, then permits Contact relaxation.
 
 ## State plane: World State Fabric
 
@@ -85,6 +123,9 @@ camera-relative centered-mesh measurement and never claims a world-frame or
 robot-semantic transform. The Skill owns CAD/reference assets, segmentation
 prompt policy, bounded CAD-axis ambiguity resolution, composition, and
 candidate evidence. Manager alone activates the reviewed transform.
+The active mounted-effector profile owns replaceable effector landmark
+semantics, and Basic owns timestamped joint state and FK; Locate Arm Base only
+combines those published inputs with its bounded workflow policy.
 
 ## FoundationPose object-pose flow
 
@@ -103,9 +144,9 @@ candidate evidence. Manager alone activates the reviewed transform.
 4. The Skill invokes `perception.image.sam2.segment` once for every independent
    VLM prompt. The SAM2 Provider returns one scored mask artifact per call
    without owning robot semantics, ensemble review, or voting policy.
-5. The Skill renders every independent mask and asks a review VLM to remove bad
-   masks. A coded pixel vote retains pixels present in at least half of the
-   survivors, using `ceil(survivor_count / 2)`, and the Skill dilates that one
+5. The Skill renders and retains every successfully acquired mask without a
+   post-SAM2 VLM review. A coded pixel vote retains pixels present in at least
+   half of all acquired masks, using `ceil(acquired_mask_count / 2)`, and the Skill dilates that one
    voted mask exactly once.
 6. The Skill independently invokes `perception.known_object_pose.estimate` the
    configured number of times with that one voted and dilated mask, renders every
@@ -121,10 +162,20 @@ candidate evidence. Manager alone activates the reviewed transform.
    FoundationPose's raw ranking score is retained as audit provenance, is
    withheld from the fit-selection VLM, and is not treated as calibrated
    confidence or a selection threshold.
-7. The Skill renders only profile-defined 0/90/180/270-degree local-Z
-   candidates and asks the VLM to select one against the reference atlas. A
-   separate final overlay preserves the selected measured CAD projection and
-   renders the corrected semantic axes for developer and Agent inspection.
+7. The Skill follows the active mounted-effector profile and asks one VLM call
+   to locate one or more of its named visual landmarks in the current RGB. One
+   recognized point is sufficient; VLM confidence is audit-only. The Skill
+   queries Basic's controlled-effector FK at the capture timestamp, projects
+   the profiled landmark under only the arm profile's 0/90/180/270-degree
+   local-Z candidates, and chooses the smallest coded image-space error. If the
+   effector is not identified, the Skill returns an actionable Agent retry that
+   requires a rough world-frame arm-base +X vector; the explicit rerun selects
+   the nearest bounded candidate without another effector VLM call. Separate
+   Internal artifacts preserve the recognized/projected points and every raw
+   fit. Agent evidence is consolidated into an all-mask multicolor raster, an
+   optional raw-RGB VLM-point card, and one mask-plus-CAD result whose final
+   semantic axes are vector layers. The pre-rotation axes are retained as
+   vector layers that default to hidden.
 8. The Skill queries the same capture-time transform again, requires its frame,
    epoch, and historical matrix to remain identical, composes in the exact active
    `local_vio/<session_epoch>` frame, and emits an immutable,
@@ -237,7 +288,8 @@ handoff is
 ## Agent visual evidence
 
 Camera-facing Agent Skills retain the exact frame they analyzed and may return
-normalized point or box annotations. The SDK-specific run stream is projected
+normalized point, box, or vector annotations. Individual layers may default to
+hidden while remaining operator-toggleable. The SDK-specific run stream is projected
 onto the versioned Midbrain event contract, and the browser renders those
 records as an interactive SVG overlay. The raster and annotation records remain
 separate authoritative artifacts; browser copy/download is a convenience
@@ -366,6 +418,35 @@ blade direction merely because both are three-element vectors. A world
 direction already bound to the active world does not require model-side
 transform math. Task-specific motion and contact Skills retain their canonical
 world-coordinate contracts and their independent physical authority.
+
+### Semantic evidence is not an action gate
+
+Object roles such as `WORK_OBJECT`, `KEEP_OUT`, or a caller-defined category
+describe scene evidence and planning intent. They do not authorize contact,
+select a controller, or define a mutually exclusive Agent action class. The
+reference Agent therefore does not narrow the general tool surface merely
+because a prompt mentions a work object, its AABB, a named corner, an obstacle,
+or a compound motion/contact sequence. A deterministic narrow route is valid
+only when the requested finite operation itself is unambiguous; it must not
+classify a longer request from one noun or its first action and hide the
+remaining eligible Skills.
+
+Planning geometry and control authority remain separate. Integrated consumes
+fresh semantic-scene geometry for free-space collision checks. Contact and the
+Grip Skills do not receive that collider set: the task-specific Contact Skill
+signs the deliberate-contact plan and Contact enforces its own controller
+boundary. Read-only coordinate Skills may use an object ID, AABB corner, or
+typed frame to derive a target, but their result grants neither motion nor
+contact authority. The Agent copies their typed outputs unchanged into the
+matching downstream fields.
+
+This separation is also the compatibility path for multiple arms and multiple
+object taxonomies. The Agent selects a declared finite capability and semantic
+arguments; it does not choose a physical arm instance from prompt wording.
+Manager and the assembly/resource binding resolve the compatible Provider and
+retain explicit resource identity. Adding another arm, effector, or object
+category therefore extends manifests, profiles, bindings, and planning
+evidence rather than adding global prompt gates or one-arm conditionals.
 
 The general reference invariant is one Agent decision per task-facing finite
 operation. Such an operation may own several sequential internal API calls

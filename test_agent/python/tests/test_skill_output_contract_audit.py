@@ -15,6 +15,19 @@ WORKSPACE = Path(__file__).resolve().parents[3]
 
 
 OUTPUT_AUDIT = {
+    "grip": {
+        "sources": ["skills/grip/python/grip_skill/host_adapter.py"],
+        "tokens": ["WAIT_FOR_GRIP_TEMPERATURE", "CARRYING_CURRENT_POSE_LOCKED"],
+        "declares": [
+            "status",
+            "workflow_complete",
+            "carry_id",
+            "attachment_revision",
+            "all_joints_position_effort_limited",
+            "retry_after_s",
+            "thermal",
+        ],
+    },
     "plan_no_contact_item_approach": {
         "sources": ["test_agent/python/physical_agent_test/no_contact_approach.py"],
         "tokens": ["build_no_contact_correction_plan", "controller_plan_request"],
@@ -42,6 +55,22 @@ OUTPUT_AUDIT = {
         "declares": ["decision_id", "reviewed_scene_refreshed", "integrated_controller"],
         "excludes": ["controller_result", "physical_motion_submitted"],
     },
+    "grip_object": {
+        "sources": [
+            "skills/grip-object/python/grip_object_skill/host_adapter.py",
+            "skills/grip-object/python/grip_object_skill/skill.py",
+        ],
+        "tokens": ["WAIT_FOR_GRIP_TEMPERATURE", "CARRYING_POSITION_EFFORT_LIMITED"],
+        "declares": [
+            "status",
+            "workflow_complete",
+            "carry_id",
+            "attachment_revision",
+            "all_joints_position_effort_limited",
+            "retry_after_s",
+            "thermal",
+        ],
+    },
     "identify_pointed_object": {
         "sources": ["test_agent/python/physical_agent_test/gemini_pointing_skill.py"],
         "tokens": ["PROVIDER_ACTIVATION_REQUIRED", "CAMERA_FRAME_UNAVAILABLE"],
@@ -61,6 +90,16 @@ OUTPUT_AUDIT = {
         "tokens": ["SCENE_MAPPING_PENDING", "visible_surface_aabbs"],
         "declares": ["mapping_failure", "sphere_type_counts", "expired_visible_surface_aabb_count"],
         "excludes": ["session_epoch"],
+    },
+    "lay_flat": {
+        "sources": ["skills/lay-flat/python/lay_flat_skill/host_adapter.py"],
+        "tokens": ["OBJECT_LAID_FLAT_RELEASED_AND_RETRACTED", "ENTER_MIT_FLOAT"],
+        "declares": ["status", "workflow_complete", "released_carry_id"],
+    },
+    "let_go": {
+        "sources": ["skills/let-go/python/let_go_skill/host_adapter.py"],
+        "tokens": ["OBJECT_RELEASED_AND_ARM_RELAXED", "ENTER_MIT_FLOAT"],
+        "declares": ["status", "workflow_complete", "released_carry_id"],
     },
     "perform_relative_effector_motion": {
         "sources": [
@@ -107,6 +146,19 @@ OUTPUT_AUDIT = {
         "tokens": ["ALREADY_AT_WORLD_POINT", "absolute_world_point"],
         "declares": ["target_position_world_m", "world_point_resolution", "target_position_m", "commit"],
         "excludes": ["final_position_arm_base_m"],
+    },
+    "move_carried_object": {
+        "sources": [
+            "skills/move-carried-object/python/move_carried_object_skill/host_adapter.py"
+        ],
+        "tokens": ["CARRIED_OBJECT_MOVED_AND_HELD", "behavior=\"CONTINUE\""],
+        "declares": [
+            "status",
+            "workflow_complete",
+            "carry_id",
+            "attachment_revision",
+            "all_joints_position_effort_limited",
+        ],
     },
     "locate_item": {
         "sources": [

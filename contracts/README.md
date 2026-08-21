@@ -46,6 +46,7 @@ schema versions it supports.
 | [Robot Assembly and Free-Space Motion](20_robot_assembly_and_free_space_motion.md) | Assembly profiles, controller separation, and signed free-space goals | v0.1 working draft |
 | [Contact Work Control](21_contact_work_control.md) | Independent contact Provider, finite Skill plans, wrench-to-joint effort limits, replacement, and relaxation | v0.1 working draft |
 | [Limited Skill Graph](22_limited_skill_graph.md) | Immutable bounded composition, typed branching, retry, model routing, and child authorization carry | v0.1 development contract |
+| [Grip and Carry Control](23_grip_and_carry_control.md) | Gripper ownership, temperature gate, all-joint carry mode, Slicing-style grip/lay-flat handoff, carrying motion, release, and MIT float | v0.1 working draft |
 
 The Limited Graph contract remains a development contract even though the
 current reference implementation has a near-stable linear-workflow checkpoint.
@@ -69,7 +70,8 @@ one another's implementation packages.
 - Any component that emits or consumes spatial values follows contracts 06 and
   14.
 - Any physical controller follows contract 05 in addition to its hardware
-  safety rules.
+  safety rules. Free-space, contact, and grip/carry implementations also follow
+  contracts 20, 21, and 23 as applicable.
 
 See [Compatibility and Extension](../docs/05_COMPATIBILITY_AND_EXTENSION.md)
 for the implementation workflow.

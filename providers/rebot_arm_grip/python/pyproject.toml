@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-rebot-arm-grip-provider"
+version = "0.2.6"
+description = "Independent Midbrain gripper control and carrying-state Provider"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rebot_arm_grip*"]
+namespaces = false

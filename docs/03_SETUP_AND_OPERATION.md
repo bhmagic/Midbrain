@@ -55,6 +55,9 @@ The setup builds Manager and Fabric, creates component-owned Python
 environments, builds CameraHost when its SDK paths are available, installs the
 core Providers and Skills, and creates missing local configuration from blank
 examples without overwriting existing files.
+Contact Provider setup runs before Grip Provider and the carrying Skills so
+the separate Contact-side authorization secrets and allowlist entries are
+present before those Skills are used.
 
 Manifest-discovered Skills may declare a Skill-owned setup entrypoint. Test
 Agent setup runs those entrypoints inside each Skill directory; the
@@ -86,11 +89,19 @@ Set up the arm Providers separately:
 .\providers\rebot_arm_dm\scripts\setup.ps1 -WithMotorBridge
 .\providers\rebot_arm_integrated\scripts\setup.ps1
 .\providers\rebot_arm_contact\scripts\setup.ps1
+.\providers\rebot_arm_grip\scripts\setup.ps1
 .\skills\contact_work_runtime\scripts\setup.ps1
+.\skills\grip_work_runtime\scripts\setup.ps1
 .\skills\slicing\scripts\setup.ps1
+.\skills\grip\scripts\setup.ps1
+.\skills\grip-object\scripts\setup.ps1
+.\skills\move-carried-object\scripts\setup.ps1
+.\skills\let-go\scripts\setup.ps1
+.\skills\lay-flat\scripts\setup.ps1
 .\providers\rebot_arm_dm\scripts\register.ps1
 .\providers\rebot_arm_integrated\scripts\register.ps1
 .\providers\rebot_arm_contact\scripts\register.ps1
+.\providers\rebot_arm_grip\scripts\register.ps1
 ```
 
 Restart Midbrain after registering a Provider or changing the eligible Skill
@@ -98,6 +109,39 @@ list. Manager snapshots Provider configuration and Provider UI manifests at
 startup, and the Agent snapshots its eligible execution adapters at startup.
 Registration does not start the Contact Provider; its entry remains
 `auto_start=false` until a task requests `HOT`.
+
+When setup discovers a new Agent-visible Skill, the Developer Agent requests a
+local add-or-disable decision. Adding it requires an Agent restart before that
+new Skill becomes callable, but unresolved or restart-pending additions do not
+disable the already active, validated tool surface.
+
+The Grip Provider also remains `auto_start=false`. Scrap Grip and Lay Flat own
+separate local developer pages at `http://127.0.0.1:7115/` and
+`http://127.0.0.1:7116/`. These pages use the Slicing profile layout to edit
+numbered gripper-vector and motion profiles, expose both gripper directions and
+both object/world directions, and freeze attended staged plans. Scrap Grip
+Prepare creates a nonphysical Integrated rotation-only collision preview at
+the measured current position. Its four separate physical buttons execute
+concurrent Grip-owned 50 Hz opening to the functional `-180` degree threshold
+and Integrated orientation alignment to verified `FLOAT`, Contact
+absolute-root approach plus table-inward motion, Contact relative insertion,
+and grip/carry confirmation. Prepare and the start of Stage 1 both require
+fresh below-gate temperature feedback; Stage 1 waits for measured functional
+openness before it completes.
+The local page reuses the existing host authorization API for the exact
+Integrated commit; it does not invoke language interpretation or require an
+Agent source change. Lay Flat has four separate buttons for Integrated
+rotation-only alignment, Contact absolute-root placement, gripper release/MIT
+float, and Contact relative retreat/relax. Lay Flat's Stage 1 is an explicit
+confirmed-carry exception to uninterrupted Contact POS_TOR; the UI and frozen
+plan expose that exception. Profiles, vectors, calibration, and Provider
+identities remain frozen during an active developer session. Both
+pages provide the same approach-begin entry selector as Slicing: absolute
+active-world point or current-effector-relative world-axis offset. Scrap Grip
+and Lay Flat capture and freeze the Integrated effector origin during Prepare.
+A zero offset preserves that captured approach origin. Both Skills use the
+Slicing handoff checks: Integrated must be `WARM`, verified `FLOAT`, inactive,
+and without a Basic lease before Contact becomes `HOT`.
 
 After restart, open the Slicing card in the Manager portal or navigate to
 `http://127.0.0.1:8000/dev/skills/slicing`. This developer surface accepts one
@@ -137,8 +181,11 @@ Set up the arm-base localization components directly when required:
 ```
 
 These commands build independent environments. `locate_arm_base` orchestrates
-VLM seed prompting, SAM2 segmentation, one generic FoundationPose estimate,
-bounded reference-image orientation selection, and a review-only candidate.
+VLM seed prompting, SAM2 segmentation, repeated generic FoundationPose fits,
+and one coarse point on the active profiled effector plus Basic's timestamped
+FK for bounded orientation. If the effector is absent, the Agent may explicitly
+retry with a rough world-frame arm-base +X vector and no effector VLM call. The
+result remains a review-only candidate.
 Its guarded developer link starts the Skill-owned UI on port 7114; that page
 shows the selected arm-profile file, exact CAD filename/path/hash, all VLM and
 FoundationPose images, and the flexible appendix. The FoundationPose developer

@@ -13,6 +13,7 @@ VISUAL_EVIDENCE_SCHEMA = "midbrain.visual_evidence"
 VISUAL_EVIDENCE_SCHEMA_VERSION = 1
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 _SAFE_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_SAFE_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 @dataclass(frozen=True)
@@ -318,19 +319,36 @@ def _sanitize_annotation(
         if width <= 0.0 or height <= 0.0 or x + width > 1.0 or y + height > 1.0:
             return None
         geometry = {"x": x, "y": y, "width": width, "height": height}
+    elif annotation_type == "vector":
+        x1 = _normalized_number(value.get("x1"))
+        y1 = _normalized_number(value.get("y1"))
+        x2 = _normalized_number(value.get("x2"))
+        y2 = _normalized_number(value.get("y2"))
+        if None in {x1, y1, x2, y2}:
+            return None
+        assert x1 is not None and y1 is not None
+        assert x2 is not None and y2 is not None
+        if abs(x2 - x1) + abs(y2 - y1) <= 1e-9:
+            return None
+        geometry = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
     else:
         return None
     confidence = str(value.get("confidence") or "unknown").lower()
     if confidence not in {"low", "medium", "high", "unknown"}:
         confidence = "unknown"
-    return {
+    result = {
         "id": annotation_id,
         "type": annotation_type,
         "label": str(value.get("label") or annotation_type)[:120],
         "confidence": confidence,
         "applies_to_channels": list(dict.fromkeys(channels)),
+        "default_visible": value.get("default_visible") is not False,
         **geometry,
     }
+    color = str(value.get("color") or "")
+    if _SAFE_COLOR.fullmatch(color):
+        result["color"] = color.lower()
+    return result
 
 
 def _normalized_number(value: Any) -> float | None:

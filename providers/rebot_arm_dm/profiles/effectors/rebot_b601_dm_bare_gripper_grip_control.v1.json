@@ -1,0 +1,77 @@
+{
+  "schema": "midbrain.grip_effector_control_profile",
+  "schema_version": 1,
+  "profile_id": "rebot_b601_dm.bare_gripper.grip_control",
+  "profile_revision": "rebot-b601-dm-bare-gripper-grip-control-v8",
+  "compatible_mounted_effector": {
+    "profile_id": "rebot_b601_dm.bare_gripper",
+    "profile_revision": "rebot-b601-dm-bare-gripper-v5",
+    "acting_frame_id": "rebot_arm_grip_center"
+  },
+  "qualification_state": "DEVELOPMENT",
+  "qualification_note": "The owner confirmed that more-negative joint positions open the physical gripper. The functional-open threshold, gripping thresholds, torque ceilings, and object retention still require attended physical qualification before autonomous use.",
+  "two_vector_basis": {
+    "table_inward_direction_effector": [0.0, 0.0, -1.0],
+    "insertion_direction_effector": [1.0, 0.0, 0.0],
+    "orthogonalization": "PROJECT_INSERTION_PERPENDICULAR_TO_TABLE_INWARD_THEN_NORMALIZE",
+    "qualification": "DEVELOPMENT_DEFAULT_REQUIRES_DEVELOPER_UI_CONFIRMATION"
+  },
+  "joint_control": {
+    "joint_name": "gripper",
+    "closing_direction": "INCREASING_POSITION_RAD",
+    "operational_position_range_rad": [-4.886921905584122, 0.20943951023931953],
+    "fully_open_position_rad": -4.886921905584122,
+    "open_position_rad": -3.141592653589793,
+    "open_position_tolerance_rad": 0.08,
+    "open_comparison": "AT_OR_BELOW_TARGET_PLUS_TOLERANCE",
+    "default_grip_position_rad": 0.20943951023931953,
+    "default_velocity_rad_s": 4.0,
+    "maximum_velocity_rad_s": 4.0,
+    "default_torque_limit_nm": 0.7,
+    "release_torque_limit_nm": 0.35,
+    "maximum_torque_limit_nm": 1.4,
+    "torque_semantics": "MOTOR_TORQUE_CEILING_NOT_CALIBRATED_JAW_FORCE",
+    "qualification": "OWNER_REQUESTED_ATTENDED_DEVELOPMENT_SPEED; 4_RAD_S_EXCEEDS_OFFICIAL_REBOT_APPLICATION_VLIM; SOFT_OR_THIN_OBJECTS_REQUIRE_A_DIFFERENT_SKILL"
+  },
+  "contact_detection": {
+    "decision_basis": "ABSOLUTE_MEASURED_MOTOR_TORQUE_ONLY",
+    "minimum_absolute_measured_torque_nm": 0.15,
+    "stable_samples_at_50hz": 10,
+    "result_semantics": "CONTACT_INFERRED_AFTER_ABSOLUTE_MEASURED_MOTOR_TORQUE_REMAINS_AT_OR_ABOVE_0_15_NM_FOR_10_CONSECUTIVE_50_HZ_SAMPLES; POSITION_AND_VELOCITY_ARE_DIAGNOSTIC_ONLY",
+    "qualification": "OWNER_REQUESTED_ATTENDED_DEVELOPMENT_THRESHOLD_REQUIRES_PHYSICAL_TUNING"
+  },
+  "mit_position_transition": {
+    "input_semantics": "TARGET_POSITION_PLUS_REQUESTED_MINIMUM_DURATION",
+    "interpolation_rate_hz": 50.0,
+    "default_duration_s": 1.0,
+    "maximum_duration_s": 5.0,
+    "duration_policy": "EXTEND_TO_RESPECT_MAXIMUM_VELOCITY",
+    "kp": 8.0,
+    "kd": 1.0,
+    "terminal_state": "MIT_POSITION_HOLD",
+    "forbidden_while_carrying": true
+  },
+  "mit_float_transition": {
+    "input_semantics": "MIT_GAINS_PLUS_DELTA_TIME",
+    "interpolation_rate_hz": 50.0,
+    "default_delta_time_s": 0.5,
+    "maximum_delta_time_s": 5.0,
+    "kp": 8.0,
+    "kd": 1.0,
+    "terminal_state": "BASIC_GROUP_GRAVITY_FLOAT",
+    "forbidden_while_carrying": true
+  },
+  "thermal_policy": {
+    "new_grip_gate_c": 85.0,
+    "scope": "EVERY_ACTIVE_ARM_AND_GRIPPER_JOINT",
+    "comparison": "REJECT_AT_OR_ABOVE_GATE",
+    "retry_after_s": 60.0,
+    "hot_while_carrying": "RETAIN_POSITION_EFFORT_LIMITED_AND_RECOMMEND_EXPLICIT_RELEASE"
+  },
+  "invalidation_conditions": [
+    "Mounted-effector identity or revision changes",
+    "Gripper joint calibration or motor limit changes",
+    "Jaw geometry or gearing changes",
+    "Physical qualification changes either direction or a control threshold"
+  ]
+}

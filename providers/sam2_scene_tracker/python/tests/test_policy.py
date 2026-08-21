@@ -36,3 +36,22 @@ def test_only_explicitly_described_objects_are_blocking() -> None:
     assert [value.object_id for value in policy.blocking_objects] == ["table"]
     assert policy.as_dict()["unclaimed_visible_type"] == "PUSHABLE"
     assert policy.as_dict()["pushable_collision_policy"] == "IGNORE"
+
+
+def test_policy_without_keep_out_objects_is_valid() -> None:
+    policy = parse_policy(
+        {
+            "contract_version": 1,
+            "policy_id": "location-only-scene",
+            "objects": [
+                {
+                    "object_id": "roll",
+                    "type": "WORK_OBJECT",
+                    "description": "the toilet paper roll",
+                }
+            ],
+        }
+    )
+
+    assert policy.blocking_objects == ()
+    assert [value.object_id for value in policy.objects] == ["roll"]

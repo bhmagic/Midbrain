@@ -48,6 +48,16 @@ Materialization changes context size and discovery mechanics only; it does not
 change eligibility, arguments, result validation, authorization, or execution
 ownership.
 
+The client compatibility function treats its model-generated arguments as an
+untrusted boundary. It may collapse two or more concatenated copies only when
+every decoded JSON object is exactly identical. Invalid or ambiguous JSON,
+invalid `paths`, and unknown or ineligible names return a typed retryable
+`tool_search_error` result rather than terminating the Agent run. No selected
+function becomes enabled on a failed search. Observer diagnostics may retain
+the failure code, call identity, input length, parse location, and bounded
+counts, but never raw search arguments, arbitrary rejected names, or loaded
+function definitions.
+
 Official references:
 
 - <https://developers.openai.com/api/docs/guides/tools-tool-search>
@@ -194,9 +204,28 @@ allowlist, verifies that every offered descriptor has a registered adapter,
 and then constructs an Agents SDK `FunctionTool` using the manifest's name,
 description, and strict input schema.
 
+### Routing and semantic evidence
+
+A host may narrow the offered surface for an exact user/test policy or an
+unambiguous finite operation. It must not infer a mutually exclusive action or
+authorization class merely from an object label, object category, scene role,
+AABB/corner reference, or the first verb in a compound request. Such evidence
+may select a read-only coordinate derivation or planning input, but it does not
+grant contact, refuse motion, or hide other eligible Skills required by the
+same request.
+
+The model selects semantic capabilities and arguments, not a physical arm
+instance. Manager/assembly binding retains explicit Provider, resource,
+effector, and attachment identity. An adapter intended for multiple arms or
+object taxonomies must extend those typed bindings and eligible manifests; it
+must not encode one-arm assumptions or create a new prompt-word route gate for
+each object category. Free-space collision policy and task-specific deliberate
+contact remain in their owning controller and Skill boundaries.
+
 At Reference Agent UI startup, every installed discoverable Skill that is
 absent from both the configured Agent eligibility list and the current runtime
-tool list requires one local operator decision before Agent tasks may begin.
+tool list requests one local operator decision. That unresolved Skill remains
+unavailable, but already active and validated Skills remain usable.
 The operator either adds the Skill to the Agent list or disables it for that
 Agent. This reconciliation is Agent-owned configuration: it must not edit the
 Skill manifest, import the Skill during discovery, start a Provider, invoke the
@@ -206,11 +235,12 @@ The Reference Agent persists those decisions in the ignored machine-local
 `config/agent_skill_installation.json` file by default. Disable takes effect
 immediately for later Agent launches and suppresses the startup prompt. Add
 extends the effective eligibility list on the next Agent process launch; the
-UI keeps Agent tasks blocked and requires a restart so adapter validation and
-tool construction occur at the normal process boundary. A configured path may
+UI reports that a restart is required for the newly added Skill while allowing
+tasks that use the current tool surface. Adapter validation and tool
+construction still occur at the normal process boundary. A configured path may
 be supplied through `AGENT_SKILL_INSTALLATION_STATE_PATH`. An unknown future
 decision schema, unknown action, missing execution adapter, or unreviewed Skill
-fails closed.
+fails closed for that Skill without disabling unrelated tools.
 
 Selecting a tool resolves its adapter ID; it does not resolve a provider.
 The adapter invokes the finite Skill, which requests a capability binding from

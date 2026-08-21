@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.contact.position_effort_limited",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "display_name": "Independent Arm Contact Work Provider",
   "manager_ids": ["robot_arm.primary.contact"],
   "ui": {
@@ -26,6 +26,9 @@
     "robot_arm.contact.wrench_6dof_joint_mapping",
     "robot_arm.contact.latest_setpoint_replacement",
     "robot_arm.contact.inactivity_float_watchdog",
+    "robot_arm.contact.carrying_position_effort_hold.v1",
+    "robot_arm.contact.carry_bound_plan_replacement.v1",
+    "robot_arm.contact.measured_settling_observation.v1",
     "robot_arm.contact.measured_joint_state",
     "robot_arm.contact.authority_lineage_shadow.v1"
   ],
@@ -34,6 +37,7 @@
     "robot_arm.gravity_float",
     "robot_arm.control.operational_api_v2",
     "robot_arm.assembly_state",
+    "robot_arm.control.position_effort_mode_guard.v1",
     "robot_arm.control.joint_group.v1"
   ],
   "provider_dependencies": [
@@ -47,7 +51,7 @@
   "published_streams": ["robot_arm.contact_work.state"],
   "consumed_streams": [],
   "package_layout": "providers/rebot_arm_contact",
-  "compatible_basic_controller": ">=0.1.20",
+  "compatible_basic_controller": ">=0.1.25",
   "contact_execution": {
     "provider_boundary": "INDEPENDENT_FROM_INTEGRATED_DIRECT_TO_BASIC",
     "physical_gate": "INSTALLED_SKILL_SIGNED_EXACT_PLAN_PLUS_BASIC_FENCED_LEASE",
@@ -72,6 +76,6 @@
     "The initial slicing Skill is non-clamping and uses zero tx, ty, and tz even though the Provider maps all six wrench components",
     "General collision planning and scene interpretation are intentionally excluded",
     "Basic POSITION_EFFORT_LIMITED accepts SI torque ceilings in N.m and reserves gravity capacity in the effort ceiling but does not accept a separate gravity feed-forward term",
-    "Physical Basic feedback currently does not expose finite motor temperatures; thermal integration remains future work"
+    "General collision planning remains outside Contact; carrying moves require finite Skill-owned paths and a bound runtime attachment revision"
   ]
 }

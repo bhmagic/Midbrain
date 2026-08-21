@@ -19,11 +19,13 @@ they are not, by themselves, validated autonomous whole-arm operating speeds.
 Midbrain keeps a separate configured motor envelope of 5.0 rad/s for the three
 DM-J4340P joints and 10.0 rad/s for the three arm DM-J4310 joints and the
 gripper. The Basic operational command limits are narrower than that motor
-envelope: 4.0 rad/s for all six arm joints and 2.1 rad/s for the gripper. The
-J1-J3 value is 80% of the official reBot application value; the developmental
-J4-J6 value exceeds the official application `vlim` of 3.0 rad/s but remains
-below the configured 10.0 rad/s motor envelope. These values are not a claim of
-physical qualification. Basic publishes those mode-specific limits under
+envelope: 4.0 rad/s for all six arm joints and the gripper. The J1-J3 value is
+80% of the official reBot application value; the developmental J4-J6 and
+gripper values exceed the official application `vlim` of 3.0 rad/s but remain
+below the configured 10.0 rad/s motor envelope. For gripper position/effort
+control, the retained 0.75 native translation turns the 4.0 rad/s request into
+a 3.0 rad/s motor command ceiling. These values are not a claim of physical
+qualification. Basic publishes those mode-specific limits under
 `command_limits`; higher providers consume that public boundary instead of
 calibration or developer-test fields. At 24 V,
 5.0 rad/s is below the

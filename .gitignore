@@ -12,6 +12,7 @@ config/robot_assemblies/*
 providers/rebot_arm_dm/config/
 providers/rebot_arm_integrated/config/
 providers/rebot_arm_contact/config/
+providers/rebot_arm_grip/config/
 **/api_keys.env
 **/*.env
 !**/*.env.example
@@ -82,6 +83,11 @@ cmake_install.cmake
 **/runtime_logs/
 skills/vegetable_cutting/config/plans/
 skills/slicing/config/motion_profiles.json
+skills/grip/config/motion_profiles.json
+skills/grip-object/config/motion_profiles.json
+skills/grip-object/config/gripper_vector_profiles.json
+skills/lay-flat/config/motion_profiles.json
+skills/lay-flat/config/gripper_vector_profiles.json
 test_agent/replay_bundles/
 *.log
 *.pid

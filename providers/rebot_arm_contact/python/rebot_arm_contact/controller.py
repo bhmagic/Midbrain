@@ -16,7 +16,13 @@ from .authorization import (
     verify_assertion,
 )
 from .basic_client import BasicControllerClient
-from .kinematics import ContactKinematics, rotation_vector, rpy_matrix, transform
+from .kinematics import (
+    ContactKinematics,
+    matrix_quaternion,
+    rotation_vector,
+    rpy_matrix,
+    transform,
+)
 
 
 @dataclass
@@ -159,6 +165,10 @@ class ContactController:
         self.next_basic_lease_renewal_monotonic = 0.0
         self.float_confirmed = False
         self.motion_inhibited = False
+        self.carry_id: str | None = None
+        self.carry_attachment_revision: str | None = None
+        self.carry_confirmed = False
+        self.position_effort_guard_active = False
 
     def start(self) -> None:
         with self.operation_lock:
@@ -198,7 +208,10 @@ class ContactController:
             changed = bool(inhibited) != self.motion_inhibited
             self.motion_inhibited = bool(inhibited)
             if changed and inhibited and self.session is not None:
-                self._relax(reason, "MOTION_INHIBIT_RELAXED")
+                if self.carry_confirmed:
+                    self._hold_carrying(reason, "MOTION_INHIBIT_CARRY_HOLD")
+                else:
+                    self._relax(reason, "MOTION_INHIBIT_RELAXED")
 
     def enter_hot(self) -> dict[str, Any]:
         with self.operation_lock:
@@ -214,6 +227,10 @@ class ContactController:
 
     def enter_warm(self) -> dict[str, Any]:
         with self.operation_lock:
+            if self.carry_confirmed:
+                raise RuntimeError(
+                    "Contact Provider cannot enter WARM during a confirmed carry"
+                )
             self.requested_residency = "WARM"
             if self.session is not None or self.basic.lease_snapshot() is not None:
                 self._relax("Contact Provider entering WARM", "WARM_RELAXED")
@@ -315,9 +332,13 @@ class ContactController:
     def _validate_plan(self, plan: dict[str, Any]) -> None:
         if not isinstance(plan, dict):
             raise ValueError("Contact Work plan must be a JSON object")
-        if plan.get("schema") != "midbrain.contact_work_plan" or plan.get("schema_version") != 1:
+        schema_version = plan.get("schema_version")
+        if (
+            plan.get("schema") != "midbrain.contact_work_plan"
+            or schema_version not in {1, 2}
+        ):
             raise ValueError("unsupported Contact Work plan schema")
-        if set(plan) != {
+        expected_fields = {
             "schema",
             "schema_version",
             "plan_id",
@@ -328,8 +349,13 @@ class ContactController:
             "acting_frame_id",
             "manager_authority",
             "steps",
-        }:
-            raise ValueError("Contact Work plan fields do not match schema version 1")
+        }
+        if schema_version == 2:
+            expected_fields.add("carry")
+        if set(plan) != expected_fields:
+            raise ValueError(
+                f"Contact Work plan fields do not match schema version {schema_version}"
+            )
         required_text = (
             "plan_id",
             "skill_id",
@@ -381,6 +407,20 @@ class ContactController:
         allowed = {str(value) for value in secret_envs}
         if plan["skill_id"] not in allowed:
             raise AuthorizationError("Contact Skill identity is not allowlisted")
+        if schema_version == 2:
+            carry = plan.get("carry")
+            if not isinstance(carry, dict) or set(carry) != {
+                "behavior",
+                "carry_id",
+                "attachment_revision",
+            }:
+                raise ValueError("Contact carry binding fields are invalid")
+            if carry.get("behavior") not in {"PREPARE", "CONTINUE"}:
+                raise ValueError("Contact carry behavior is unsupported")
+            if not str(carry.get("carry_id") or "").strip():
+                raise ValueError("Contact carry_id is missing")
+            if not str(carry.get("attachment_revision") or "").strip():
+                raise ValueError("Contact attachment revision is missing")
         steps = plan.get("steps")
         if not isinstance(steps, list) or not steps:
             raise ValueError("plan must contain at least one step")
@@ -466,11 +506,26 @@ class ContactController:
                 raise RuntimeError("Contact Work Provider must be HOT before a session")
             if self.motion_inhibited:
                 raise PermissionError("global motion inhibit is active")
-            if self.session is not None:
-                raise RuntimeError("a Contact Work session is already active")
             self._assert_assembly_unchanged()
             self._fresh_state()
             self._validate_plan(plan)
+            carry = plan.get("carry") if plan.get("schema_version") == 2 else None
+            continuing_carry = bool(
+                self.carry_confirmed
+                and isinstance(carry, dict)
+                and carry.get("behavior") == "CONTINUE"
+                and carry.get("carry_id") == self.carry_id
+                and carry.get("attachment_revision")
+                == self.carry_attachment_revision
+            )
+            if self.session is not None and not continuing_carry:
+                raise RuntimeError("a Contact Work session is already active")
+            if (
+                isinstance(carry, dict)
+                and carry.get("behavior") == "CONTINUE"
+                and not continuing_carry
+            ):
+                raise RuntimeError("Contact carry continuation does not match the active hold")
             plan_sha256 = canonical_sha256(plan)
             secret_name = str(
                 self.config["authorization"]["skill_secret_envs"][plan["skill_id"]]
@@ -497,10 +552,15 @@ class ContactController:
             assertion_id = str(payload["assertion_id"])
             if assertion_id in self.consumed_assertion_ids:
                 raise AuthorizationError("Contact Skill authorization was already consumed")
-            lease = self.basic.acquire(
-                f"{self.provider_id}:{plan['skill_id']}:{plan['execution_id']}",
-                int(self.config["basic"]["lease_duration_ms"]),
-            )
+            if continuing_carry:
+                lease = self.basic.lease_snapshot()
+                if lease is None:
+                    raise RuntimeError("confirmed carry lost its Basic arm lease")
+            else:
+                lease = self.basic.acquire(
+                    f"{self.provider_id}:{plan['skill_id']}:{plan['execution_id']}",
+                    int(self.config["basic"]["lease_duration_ms"]),
+                )
             now_us = time.time_ns() // 1000
             default_wait = float(self.config["limits"]["default_wait_timeout_s"])
             self.session = ContactSession(
@@ -518,23 +578,148 @@ class ContactController:
                 )
                 / 1000.0
             )
-            self.endpoint = None
+            if not continuing_carry:
+                self.endpoint = None
             self.lock_positions = {}
             self.consumed_assertion_ids.add(assertion_id)
             self.residency = "HOT"
-            self.control_state = "WAITING_FOR_FIRST_SETPOINT"
-            self.last_disposition = "SESSION_ACCEPTED"
+            self.control_state = (
+                "CARRYING_WAITING_FOR_SETPOINT"
+                if continuing_carry
+                else "WAITING_FOR_FIRST_SETPOINT"
+            )
+            self.last_disposition = (
+                "CARRY_SESSION_REPLACED"
+                if continuing_carry
+                else "SESSION_ACCEPTED"
+            )
             self.last_error = None
             self.last_control_fault = None
             self.last_relax_reason = None
             self.float_confirmed = False
+            if isinstance(carry, dict) and carry.get("behavior") == "PREPARE":
+                self.carry_id = str(carry["carry_id"])
+                self.carry_attachment_revision = str(
+                    carry["attachment_revision"]
+                )
+                self.carry_confirmed = False
             return {
                 "session_id": self.session.session_id,
                 "plan_sha256": plan_sha256,
-                "disposition": "SESSION_ACCEPTED",
+                "disposition": self.last_disposition,
                 "basic_lease_id": lease.lease_id,
                 "basic_fencing_generation": lease.fencing_generation,
             }
+
+    def settling_observation(
+        self,
+        session_id: str,
+        sequence: int,
+        *,
+        maximum_joint_error_rad: float = 0.04,
+        maximum_joint_velocity_rad_s: float = 0.05,
+    ) -> dict[str, Any]:
+        with self.operation_lock:
+            if self.session is None or self.session.session_id != str(session_id):
+                raise RuntimeError("settling observation does not match the active session")
+            if self.endpoint is None or self.endpoint.sequence != int(sequence):
+                raise RuntimeError("settling observation does not match the active endpoint")
+            position_limit = float(maximum_joint_error_rad)
+            velocity_limit = float(maximum_joint_velocity_rad_s)
+            if (
+                not math.isfinite(position_limit)
+                or not math.isfinite(velocity_limit)
+                or position_limit <= 0.0
+                or velocity_limit <= 0.0
+            ):
+                raise ValueError("settling limits must be positive finite values")
+            state = self._fresh_state()
+            positions = _six(state.get("positions_rad", [])[:6], "measured positions")
+            velocities = _six(state.get("velocities_rad_s", [])[:6], "measured velocities")
+            maximum_error = float(
+                np.max(np.abs(positions - self.endpoint.q_goal))
+            )
+            maximum_velocity = float(np.max(np.abs(velocities)))
+            trajectory_complete = bool(
+                self.endpoint.segment is None or self.endpoint.segment.complete
+            )
+            settled = bool(
+                trajectory_complete
+                and maximum_error <= position_limit
+                and maximum_velocity <= velocity_limit
+            )
+            return {
+                "session_id": self.session.session_id,
+                "sequence": self.endpoint.sequence,
+                "settled": settled,
+                "trajectory_complete": trajectory_complete,
+                "maximum_joint_error_rad": maximum_error,
+                "maximum_joint_velocity_rad_s": maximum_velocity,
+                "position_limit_rad": position_limit,
+                "velocity_limit_rad_s": velocity_limit,
+                "observed_at_us": state.get("observed_at_us"),
+            }
+
+    def confirm_carry(
+        self,
+        session_id: str,
+        carry_id: str,
+        attachment_revision: str,
+    ) -> dict[str, Any]:
+        with self.operation_lock:
+            session = self.session
+            if session is None or session.session_id != str(session_id):
+                raise RuntimeError("carry confirmation does not match the active session")
+            carry = session.plan.get("carry")
+            if not isinstance(carry, dict) or carry.get("behavior") != "PREPARE":
+                raise RuntimeError("active Contact plan did not prepare a carry")
+            if (
+                str(carry_id) != str(carry.get("carry_id"))
+                or str(attachment_revision)
+                != str(carry.get("attachment_revision"))
+            ):
+                raise RuntimeError("carry confirmation binding does not match the signed plan")
+            if self.endpoint is None or session.active_sequence != len(session.plan["steps"]) - 1:
+                raise RuntimeError("all prepared Contact steps must be accepted before carry confirmation")
+            settling = self.settling_observation(
+                session_id,
+                self.endpoint.sequence,
+            )
+            if not settling["settled"]:
+                raise RuntimeError("arm endpoint is not settled for carry confirmation")
+            lease = self.basic.lease_snapshot()
+            if (
+                not self.position_effort_guard_active
+                or lease is None
+                or lease.required_command_mode != "POSITION_EFFORT_LIMITED"
+            ):
+                raise RuntimeError(
+                    "Contact POSITION_EFFORT_LIMITED mode guard was not retained"
+                )
+            self.carry_id = str(carry_id)
+            self.carry_attachment_revision = str(attachment_revision)
+            self.carry_confirmed = True
+            session.deadline_monotonic = math.inf
+            self.control_state = "CARRYING_POSITION_EFFORT_HOLD"
+            self.last_disposition = "CARRY_CONFIRMED"
+            return {
+                "disposition": "CARRY_CONFIRMED",
+                "carry_id": self.carry_id,
+                "attachment_revision": self.carry_attachment_revision,
+                "required_command_mode": lease.required_command_mode,
+                "settling": settling,
+            }
+
+    def _hold_carrying(self, reason: str, disposition: str) -> None:
+        if not self.carry_confirmed or self.session is None or self.endpoint is None:
+            raise RuntimeError("no confirmed carry endpoint is available")
+        if self.endpoint.segment is not None and not self.endpoint.segment.complete:
+            self.endpoint.segment.complete = True
+            self.endpoint.q_goal = self.endpoint.q_command.copy()
+        self.session.deadline_monotonic = math.inf
+        self.control_state = "CARRYING_POSITION_EFFORT_HOLD"
+        self.last_disposition = disposition
+        self.last_error = str(reason)
 
     def move(self, session_id: str, sequence: int) -> dict[str, Any]:
         with self.operation_lock:
@@ -542,8 +727,8 @@ class ContactController:
             if session is None or session.session_id != str(session_id):
                 detail = (
                     self.last_control_fault
-                    or self.last_error
                     or self.last_relax_reason
+                    or self.last_error
                     or self.last_disposition
                 )
                 raise RuntimeError(
@@ -562,6 +747,11 @@ class ContactController:
             self._assert_assembly_unchanged()
             state = self._fresh_state()
             q_measured = _six(state.get("positions_rad", [])[:6], "measured positions")
+            q_control_reference = (
+                self.endpoint.q_command.copy()
+                if self.endpoint is not None
+                else q_measured.copy()
+            )
             step = copy.deepcopy(session.plan["steps"][sequence])
             if self.kinematics is None:
                 raise RuntimeError("contact kinematics are unavailable")
@@ -585,7 +775,7 @@ class ContactController:
             segment = None
             if motion_type == "CARTESIAN_SEGMENT":
                 segment, ik = self._build_cartesian_segment(
-                    q_measured,
+                    q_control_reference,
                     resolved_target,
                     active_locks,
                     velocity_limits,
@@ -593,11 +783,18 @@ class ContactController:
                 velocity_limited_transition_time_s = float(
                     segment.time_waypoints_s[-1]
                 )
-                q_command = q_measured.copy()
+                q_command = q_control_reference.copy()
             else:
-                ik = self._solve_pose(q_measured, resolved_target, active_locks)
+                ik = self._solve_pose(
+                    q_control_reference,
+                    resolved_target,
+                    active_locks,
+                )
                 velocity_limited_transition_time_s = float(
-                    np.max(np.abs(ik.q_goal - q_measured) / velocity_limits)
+                    np.max(
+                        np.abs(ik.q_goal - q_control_reference)
+                        / velocity_limits
+                    )
                 )
                 q_command = ik.q_goal.copy()
             endpoint = ActiveEndpoint(
@@ -620,6 +817,29 @@ class ContactController:
                 self._send_endpoint(state, endpoint)
             except Exception:
                 self.lock_positions = previous_lock_positions
+                raise
+            try:
+                if self.position_effort_guard_active:
+                    guard = self.basic.lease_snapshot()
+                else:
+                    guard = self.basic.set_required_command_mode(
+                        "POSITION_EFFORT_LIMITED"
+                    )
+                self.position_effort_guard_active = bool(
+                    guard is not None
+                    and guard.required_command_mode
+                    == "POSITION_EFFORT_LIMITED"
+                )
+                if not self.position_effort_guard_active:
+                    raise RuntimeError(
+                        "Basic did not retain the Contact POSITION_EFFORT_LIMITED mode guard"
+                    )
+            except Exception:
+                self.lock_positions = previous_lock_positions
+                self._relax(
+                    "Contact endpoint could not establish its POSITION_EFFORT_LIMITED mode guard",
+                    "MODE_GUARD_FAILED_RELAXED",
+                )
                 raise
             self.endpoint = endpoint
             session.active_sequence = sequence
@@ -703,10 +923,18 @@ class ContactController:
         maximum_waypoints = int(
             trajectory_config.get("maximum_waypoints_per_segment", 1000)
         )
+        maximum_cartesian_speed_m_s = float(
+            trajectory_config.get("maximum_cartesian_speed_m_s", 0.1)
+        )
         if not math.isfinite(spacing) or spacing <= 0.0:
             raise RuntimeError("Contact Cartesian waypoint spacing must be positive")
         if maximum_waypoints <= 0:
             raise RuntimeError("Contact Cartesian waypoint budget must be positive")
+        if (
+            not math.isfinite(maximum_cartesian_speed_m_s)
+            or maximum_cartesian_speed_m_s <= 0.0
+        ):
+            raise RuntimeError("Contact Cartesian speed limit must be positive")
         waypoint_count = max(1, int(math.ceil(distance / spacing)))
         if waypoint_count > maximum_waypoints:
             raise ValueError(
@@ -746,13 +974,15 @@ class ContactController:
         time_waypoints = np.cumsum(np.asarray(durations_s, dtype=float))
         control_period_s = 1.0 / self.basic_control_rate_hz
         total_duration_s = float(time_waypoints[-1])
-        if total_duration_s < control_period_s:
+        cartesian_speed_duration_s = distance / maximum_cartesian_speed_m_s
+        required_duration_s = max(control_period_s, cartesian_speed_duration_s)
+        if total_duration_s < required_duration_s:
             if total_duration_s > 1e-12:
-                time_waypoints *= control_period_s / total_duration_s
+                time_waypoints *= required_duration_s / total_duration_s
             else:
                 time_waypoints = np.linspace(
                     0.0,
-                    control_period_s,
+                    required_duration_s,
                     len(q_waypoints),
                     dtype=float,
                 )
@@ -1128,6 +1358,7 @@ class ContactController:
     def _relax(self, reason: str, disposition: str) -> bool:
         had_lease = self.basic.lease_snapshot() is not None
         had_active_control = self.session is not None or self.endpoint is not None
+        had_position_effort_guard = self.position_effort_guard_active
         with self.lock:
             self.session = None
             self.endpoint = None
@@ -1140,6 +1371,10 @@ class ContactController:
             self.gravity_budget_nm = None
             self.wrench_budget_nm = None
             self.saturated_joint_indices = []
+            self.carry_id = None
+            self.carry_attachment_revision = None
+            self.carry_confirmed = False
+            self.position_effort_guard_active = False
         if not had_lease and not had_active_control:
             self.float_confirmed = False
             self.residency = self.requested_residency
@@ -1150,6 +1385,11 @@ class ContactController:
         confirmed = False
         errors: list[str] = []
         try:
+            if had_position_effort_guard:
+                try:
+                    self.basic.set_required_command_mode(None)
+                except Exception as exc:
+                    errors.append(f"Basic mode guard clear failed: {exc}")
             try:
                 self.basic.float(reason)
             except Exception as exc:
@@ -1220,15 +1460,27 @@ class ContactController:
                 else:
                     now = time.monotonic()
                     if now >= session.deadline_monotonic:
-                        self._relax(
-                            "Contact Work command watchdog expired",
-                            "WATCHDOG_RELAXED",
-                        )
+                        if self.carry_confirmed:
+                            self._hold_carrying(
+                                "Contact Work command watchdog expired",
+                                "WATCHDOG_CARRY_HOLD",
+                            )
+                        else:
+                            self._relax(
+                                "Contact Work command watchdog expired",
+                                "WATCHDOG_RELAXED",
+                            )
                     elif time.time_ns() // 1000 >= session.authorization_expires_at_us:
-                        self._relax(
-                            "Contact Work authorization expired",
-                            "AUTHORIZATION_EXPIRED_RELAXED",
-                        )
+                        if self.carry_confirmed:
+                            self._hold_carrying(
+                                "Contact Work authorization expired",
+                                "AUTHORIZATION_EXPIRED_CARRY_HOLD",
+                            )
+                        else:
+                            self._relax(
+                                "Contact Work authorization expired",
+                                "AUTHORIZATION_EXPIRED_RELAXED",
+                            )
                     else:
                         try:
                             self._renew_basic_lease_if_due(now)
@@ -1270,8 +1522,26 @@ class ContactController:
             positions = list(state.get("positions_rad", [])[:6])
             velocities = list(state.get("velocities_rad_s", [])[:6])
             torques = list(state.get("torques_nm", [])[:6])
+            measured_acting_frame_pose = None
+            if (
+                self.kinematics is not None
+                and len(positions) == 6
+                and all(math.isfinite(float(value)) for value in positions)
+            ):
+                measured_transform = self.kinematics.evaluate(
+                    positions
+                ).controlled_transform
+                measured_acting_frame_pose = {
+                    "frame_id": self.kinematics.root_frame_id,
+                    "acting_frame_id": self.acting_frame_id,
+                    "position_m": measured_transform[:3, 3].tolist(),
+                    "orientation_xyzw": matrix_quaternion(
+                        measured_transform[:3, :3]
+                    ),
+                    "observed_at_us": state.get("observed_at_us"),
+                }
             deadline_at_us = None
-            if session is not None:
+            if session is not None and math.isfinite(session.deadline_monotonic):
                 remaining = max(0.0, session.deadline_monotonic - time.monotonic())
                 deadline_at_us = time.time_ns() // 1000 + int(remaining * 1_000_000)
             lease = self.basic.lease_snapshot()
@@ -1293,6 +1563,7 @@ class ContactController:
                 "positions_rad": positions,
                 "velocities_rad_s": velocities,
                 "torques_nm": torques,
+                "measured_acting_frame_pose": measured_acting_frame_pose,
                 "joint_observed_at_us": state.get("observed_at_us"),
                 "joint_timestamp_uncertainty_us": state.get("timestamp_uncertainty_us"),
                 "temperatures_c": list(state.get("temperatures_c", [])[:6]),
@@ -1300,6 +1571,19 @@ class ContactController:
                 "assembly_fingerprint": self.assembly_fingerprint,
                 "mounted_effector_revision": self.mounted_effector_revision,
                 "arm_resource_id": self.arm_resource_id,
+                "carry_id": self.carry_id,
+                "carry_attachment_revision": self.carry_attachment_revision,
+                "carry_confirmed": self.carry_confirmed,
+                "position_effort_guard_active": self.position_effort_guard_active,
+                "carry": (
+                    {
+                        "carry_id": self.carry_id,
+                        "attachment_revision": self.carry_attachment_revision,
+                        "confirmed": self.carry_confirmed,
+                    }
+                    if self.carry_id is not None
+                    else None
+                ),
                 "session_id": session.session_id if session else None,
                 "skill_id": session.plan["skill_id"] if session else None,
                 "active_sequence": endpoint.sequence if endpoint else None,
@@ -1382,6 +1666,7 @@ class ContactController:
                     "lease_id": lease.lease_id,
                     "fencing_generation": lease.fencing_generation,
                     "resource_id": lease.resource_id,
+                    "required_command_mode": lease.required_command_mode,
                 },
                 "capability_readiness": {
                     "robot_arm.motion.contact.position_effort_limited.v1": bool(

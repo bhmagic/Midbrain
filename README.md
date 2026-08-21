@@ -104,6 +104,16 @@ a semantic decision, Provider recovery, calibration review, re-observation,
 replanning, an operator answer, or uncertain physical-outcome handling.
 Independent task-facing Skills remain separate operations.
 
+Semantic labels remain evidence for planning, coordinate selection, and
+result interpretation; they are not an Agent-owned authorization taxonomy. A
+prompt mentioning a work object, corner, obstacle, or unfamiliar object class
+must not hide otherwise eligible motion or contact Skills or force the request
+through a no-contact route. The Agent selects declared finite capabilities,
+typed coordinate operations preserve their provenance, Manager resolves the
+physical Provider/resource binding, and the owning controller enforces the
+applicable collision or contact boundary. This keeps the same flow extensible
+to additional arms and object categories without adding prompt-word gates.
+
 With these host-side handoff mechanics established, remaining latency and
 reliability improvements for current robot workflows should normally be made
 inside the owning Provider or Skill: Provider initialization and publication,
@@ -137,13 +147,15 @@ The repository currently contains:
 - Local visual-inertial odometry with convention-versioned world frames.
 - Semantic scene tracking and an arm-scene compiler.
 - Basic reBot/Damiao motor Provider, an Integrated free-space Cartesian
-  controller, and an independent signed-plan Contact Work Provider.
+  controller, an independent signed-plan Contact Work Provider, and a separate
+  50 Hz gripper/carry Provider.
 - Finite Skills for initialization, visual localization, spatial
-  registration, effector-independent CAD arm-base localization,
+  registration, replaceable-effector-compatible CAD arm-base localization,
   profile-driven non-moving VLM
   arm-root translation refinement, relative and absolute-world free-space
-  positioning, no-contact approach, guarded motion, and the development
-  non-clamping slicing sequence.
+  positioning, no-contact approach, guarded motion, the development
+  non-clamping slicing sequence, current-pose grip, Scrap Grip, carried-object
+  motion, release, and lay-flat placement.
 - A bounded Limited Graph Skill with concise Agent authoring, typed compact
   bindings, branching, retry and model-route primitives, child-declared
   Provider handover, per-child authorization, and incremental visual evidence.
@@ -153,8 +165,9 @@ The repository currently contains:
   require a language-Agent turn.
 - A Windows-native generic FoundationPose Provider plus a finite
   `locate_arm_base` Skill that orchestrates independent VLM-seeded SAM2 masks,
-  VLM rejection plus coded pixel voting, repeated final-mask fitting, bounded
-  reference-image orientation, and Manager-reviewed activation.
+  all-mask coded pixel voting, repeated final-mask fitting, one coarse profiled
+  effector point plus timestamped FK for bounded orientation, and
+  Manager-reviewed activation.
 
 Capability maturity is intentionally component-specific. Consult each
 Provider's README and validation document before using real hardware. A
@@ -218,6 +231,7 @@ Key references:
 - [Current Limitations and Roadmap](docs/09_LIMITATIONS_AND_ROADMAP.md)
 - [Limited Graph Status and Qualification](docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md)
 - [Gripper-Motion Arm-Root Alignment](docs/13_GRIPPER_MOTION_ARM_ROOT_ALIGNMENT.md)
+- [Grip and Carry Control](contracts/23_grip_and_carry_control.md)
 - [Refine Arm-Root Translation Skill](skills/refine-arm-root-translation/SKILL.md)
 - [Move Effector to World Point Skill](skills/move-effector-to-world-point/SKILL.md)
 - [Physical AI Contracts](contracts/README.md)

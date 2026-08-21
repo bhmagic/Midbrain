@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 import time
@@ -624,6 +625,30 @@ async def _auto_initialize() -> None:
         auto_initialization_state = "FAILED"
 
 
+async def _close_lifespan_resources() -> None:
+    first_error: BaseException | None = None
+    close_callbacks = (
+        agent_run_stream_registry.shutdown,
+        world_point_cloud.stop,
+        locate_arm_base_skill.close,
+        basic.close,
+        integrated.close,
+        fabric.close,
+        manager.close,
+        agent_run_journal.close,
+    )
+    for close_callback in close_callbacks:
+        try:
+            result = close_callback()
+            if inspect.isawaitable(result):
+                await result
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     global auto_initialization_task, auto_initialization_state
@@ -659,26 +684,22 @@ async def lifespan(_app: FastAPI):
         )
     else:
         auto_initialization_state = "DISABLED"
-    yield
-    if auto_initialization_task is not None:
-        auto_initialization_task.cancel()
-        try:
-            await auto_initialization_task
-        except asyncio.CancelledError:
-            pass
-        auto_initialization_task = None
-    await agent_run_stream_registry.shutdown()
-    await world_point_cloud.stop()
-    await basic.close()
-    await integrated.close()
-    await fabric.close()
-    await manager.close()
-    await agent_run_journal.close()
+    try:
+        yield
+    finally:
+        if auto_initialization_task is not None:
+            auto_initialization_task.cancel()
+            try:
+                await auto_initialization_task
+            except asyncio.CancelledError:
+                pass
+            auto_initialization_task = None
+        await _close_lifespan_resources()
 
 
 app = FastAPI(
     title="Physical Agent Test Scaffold",
-    version="0.4.15",
+    version="0.4.19",
     lifespan=lifespan,
 )
 
@@ -3109,15 +3130,6 @@ def _session_authorization(
 async def start_streaming_run(request: PromptRequest) -> dict[str, Any]:
     """Start a backend-owned run and return an independently replayable SSE URL."""
 
-    installation = _agent_skill_installation_status()
-    if installation["prompt_required"] or installation["restart_required"]:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Resolve the startup Skill installation choices and restart "
-                "the Agent if an added Skill is pending before running a task."
-            ),
-        )
     await _refresh_midbrain_session_identity()
     run_id = str(uuid.uuid4())
     agent_model, reasoning_effort, vlm_model = _model_selection(request)
@@ -4386,10 +4398,9 @@ let developerSelectedImage = null;
 let developerSelectedImageUrl = null;
 let activeDeveloperRun = null;
 let activeDeveloperTurn = null;
-let skillInstallationBlocked = !focusedUtilityPage;
 
 function syncRunButtonState() {
-  runButton.disabled = skillInstallationBlocked || Boolean(activeDeveloperRun);
+  runButton.disabled = Boolean(activeDeveloperRun);
 }
 
 function skillInstallationCard(skill) {
@@ -4477,9 +4488,6 @@ function renderSkillInstallationStatus(status) {
   const pendingRestart = Array.isArray(status.pending_restart)
     ? status.pending_restart
     : [];
-  skillInstallationBlocked = Boolean(
-    status.prompt_required || status.restart_required
-  );
   skillInstallationList.replaceChildren(
     ...unresolved.map(skillInstallationCard)
   );
@@ -4487,7 +4495,7 @@ function renderSkillInstallationStatus(status) {
     skillInstallationRestart.textContent =
       'Restart the Agent runtime to load: ' +
       pendingRestart.map(skill => skill.display_name || skill.tool_name).join(', ') +
-      '. Agent tasks remain blocked until the restart completes.';
+      '. Those Skills become available after restart; active Skills remain usable now.';
     skillInstallationRestart.hidden = false;
   } else {
     skillInstallationRestart.hidden = true;
@@ -4495,16 +4503,14 @@ function renderSkillInstallationStatus(status) {
   }
   skillInstallationError.hidden = true;
   syncRunButtonState();
-  if (skillInstallationBlocked) {
-    if (!skillInstallationDialog.open) skillInstallationDialog.showModal();
-  } else if (skillInstallationDialog.open) {
-    skillInstallationDialog.close();
+  if ((status.prompt_required || status.restart_required) &&
+      !skillInstallationDialog.open) {
+    skillInstallationDialog.show();
   }
 }
 
 async function loadSkillInstallationStatus() {
   if (focusedUtilityPage) {
-    skillInstallationBlocked = false;
     syncRunButtonState();
     return;
   }
@@ -4520,19 +4526,14 @@ async function loadSkillInstallationStatus() {
     }
     renderSkillInstallationStatus(data);
   } catch (error) {
-    skillInstallationBlocked = true;
     skillInstallationList.replaceChildren();
     skillInstallationError.textContent =
-      'Agent startup is blocked: ' + error.message;
+      'Skill installation status is unavailable: ' + error.message;
     skillInstallationError.hidden = false;
     syncRunButtonState();
-    if (!skillInstallationDialog.open) skillInstallationDialog.showModal();
+    if (!skillInstallationDialog.open) skillInstallationDialog.show();
   }
 }
-
-skillInstallationDialog.addEventListener('cancel', (event) => {
-  if (skillInstallationBlocked) event.preventDefault();
-});
 
 function clearDeveloperSelectedImage() {
   if (developerSelectedImageUrl) {
@@ -5472,7 +5473,6 @@ function consumeStreamingDeveloperRun(started, turn) {
 }
 
 runButton.addEventListener('click', async () => {
-  if (skillInstallationBlocked) return;
   const prompt = promptBox.value.trim();
   if (!prompt) return;
   const turn = developerChatHistory.startTurn({

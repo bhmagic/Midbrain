@@ -60,6 +60,57 @@ def _project(
     return projected, valid
 
 
+def project_axis_vectors(
+    *,
+    camera_from_axis_frame: np.ndarray,
+    camera_intrinsics: Any,
+    image_size: tuple[int, int],
+    axis_length_m: float = 0.10,
+) -> list[dict[str, Any]]:
+    """Project a 3D axis frame into normalized UI vector annotations."""
+
+    pose = np.asarray(camera_from_axis_frame, dtype=np.float64)
+    if pose.shape != (4, 4):
+        raise ValueError("axis-vector pose must be a 4x4 matrix")
+    width, height = (int(image_size[0]), int(image_size[1]))
+    if width <= 0 or height <= 0:
+        raise ValueError("axis-vector image dimensions must be positive")
+    origin = pose[:3, 3]
+    points = np.vstack(
+        [
+            origin,
+            origin + pose[:3, 0] * float(axis_length_m),
+            origin + pose[:3, 1] * float(axis_length_m),
+            origin + pose[:3, 2] * float(axis_length_m),
+        ]
+    )
+    projected, valid = _project(points, camera_intrinsics)
+    if not bool(np.all(valid)) or len(projected) != 4:
+        return []
+    normalized = np.column_stack(
+        (projected[:, 0] / float(width), projected[:, 1] / float(height))
+    )
+    normalized = np.clip(normalized, 0.0, 1.0)
+    colors = ("#ff3c3c", "#46ff5a", "#3ca0ff")
+    records: list[dict[str, Any]] = []
+    for index, (axis, color) in enumerate(zip(("X", "Y", "Z"), colors)):
+        start = normalized[0]
+        end = normalized[index + 1]
+        if float(np.abs(end - start).sum()) <= 1e-9:
+            continue
+        records.append(
+            {
+                "axis": axis,
+                "color": color,
+                "x1": float(start[0]),
+                "y1": float(start[1]),
+                "x2": float(end[0]),
+                "y2": float(end[1]),
+            }
+        )
+    return records
+
+
 def render_fit_overlay(
     *,
     rgb_path: Path,
@@ -73,6 +124,7 @@ def render_fit_overlay(
     dilation_radius_px: int,
     label_details: str = "geometry-only review",
     camera_from_axis_frame: np.ndarray | None = None,
+    render_axes: bool = True,
 ) -> Path:
     image = Image.open(rgb_path).convert("RGBA")
     mask = np.asarray(Image.open(mask_path).convert("L"), dtype=np.uint8) > 0
@@ -112,36 +164,42 @@ def render_fit_overlay(
             width=max(2, image.width // 640),
         )
 
-    axis_pose = (
-        camera_from_centered_mesh
-        if camera_from_axis_frame is None
-        else np.asarray(camera_from_axis_frame, dtype=np.float64)
-    )
-    if axis_pose.shape != (4, 4):
-        raise ValueError("fit-overlay axis pose must be a 4x4 matrix")
-    origin = axis_pose[:3, 3]
-    axis_length = 0.10
-    axis_points = np.vstack(
-        [
-            origin,
-            origin + axis_pose[:3, 0] * axis_length,
-            origin + axis_pose[:3, 1] * axis_length,
-            origin + axis_pose[:3, 2] * axis_length,
-        ]
-    )
-    axes, valid = _project(axis_points, camera_intrinsics)
-    if bool(np.all(valid)) and len(axes) == 4:
-        for endpoint, color, label in zip(
-            axes[1:],
-            ((255, 60, 60, 255), (70, 255, 90, 255), (60, 160, 255, 255)),
-            ("X", "Y", "Z"),
-        ):
-            draw.line(
-                [tuple(axes[0]), tuple(endpoint)],
-                fill=color,
-                width=max(3, image.width // 480),
-            )
-            draw.text(tuple(endpoint), label, fill=color, font=ImageFont.load_default())
+    if render_axes:
+        axis_pose = (
+            camera_from_centered_mesh
+            if camera_from_axis_frame is None
+            else np.asarray(camera_from_axis_frame, dtype=np.float64)
+        )
+        if axis_pose.shape != (4, 4):
+            raise ValueError("fit-overlay axis pose must be a 4x4 matrix")
+        origin = axis_pose[:3, 3]
+        axis_length = 0.10
+        axis_points = np.vstack(
+            [
+                origin,
+                origin + axis_pose[:3, 0] * axis_length,
+                origin + axis_pose[:3, 1] * axis_length,
+                origin + axis_pose[:3, 2] * axis_length,
+            ]
+        )
+        axes, valid = _project(axis_points, camera_intrinsics)
+        if bool(np.all(valid)) and len(axes) == 4:
+            for endpoint, color, label in zip(
+                axes[1:],
+                ((255, 60, 60, 255), (70, 255, 90, 255), (60, 160, 255, 255)),
+                ("X", "Y", "Z"),
+            ):
+                draw.line(
+                    [tuple(axes[0]), tuple(endpoint)],
+                    fill=color,
+                    width=max(3, image.width // 480),
+                )
+                draw.text(
+                    tuple(endpoint),
+                    label,
+                    fill=color,
+                    font=ImageFont.load_default(),
+                )
 
     label = f"{candidate_id}  dilation={dilation_radius_px}px  {label_details}"
     draw.rectangle((0, 0, min(image.width, 980), 36), fill=(0, 0, 0, 225))

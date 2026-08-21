@@ -38,6 +38,57 @@ def quaternion_matrix(values: Iterable[float]) -> np.ndarray:
     )
 
 
+def matrix_quaternion(rotation: np.ndarray) -> list[float]:
+    matrix = np.asarray(rotation, dtype=float)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError("rotation must be a finite 3x3 matrix")
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        result = [
+            (matrix[2, 1] - matrix[1, 2]) / scale,
+            (matrix[0, 2] - matrix[2, 0]) / scale,
+            (matrix[1, 0] - matrix[0, 1]) / scale,
+            0.25 * scale,
+        ]
+    else:
+        index = int(np.argmax(np.diag(matrix)))
+        if index == 0:
+            scale = math.sqrt(
+                1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]
+            ) * 2.0
+            result = [
+                0.25 * scale,
+                (matrix[0, 1] + matrix[1, 0]) / scale,
+                (matrix[0, 2] + matrix[2, 0]) / scale,
+                (matrix[2, 1] - matrix[1, 2]) / scale,
+            ]
+        elif index == 1:
+            scale = math.sqrt(
+                1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]
+            ) * 2.0
+            result = [
+                (matrix[0, 1] + matrix[1, 0]) / scale,
+                0.25 * scale,
+                (matrix[1, 2] + matrix[2, 1]) / scale,
+                (matrix[0, 2] - matrix[2, 0]) / scale,
+            ]
+        else:
+            scale = math.sqrt(
+                1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]
+            ) * 2.0
+            result = [
+                (matrix[0, 2] + matrix[2, 0]) / scale,
+                (matrix[1, 2] + matrix[2, 1]) / scale,
+                0.25 * scale,
+                (matrix[1, 0] - matrix[0, 1]) / scale,
+            ]
+    norm = math.sqrt(sum(float(value) ** 2 for value in result))
+    if not math.isfinite(norm) or norm <= 1e-12:
+        raise ValueError("rotation could not be converted to a quaternion")
+    return [float(value) / norm for value in result]
+
+
 def axis_rotation(axis: np.ndarray, angle: float) -> np.ndarray:
     x, y, z = axis
     c, s = math.cos(angle), math.sin(angle)

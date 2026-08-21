@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/contact_work_plan.v2.schema.json",
+  "title": "Midbrain Carry-Bound Contact Work Plan v2",
+  "type": "object",
+  "required": ["schema", "schema_version", "plan_id", "skill_id", "execution_id", "provider_id", "assembly_fingerprint", "acting_frame_id", "manager_authority", "carry", "steps"],
+  "properties": {
+    "schema": {"const": "midbrain.contact_work_plan"},
+    "schema_version": {"const": 2},
+    "plan_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "skill_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "provider_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "assembly_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "acting_frame_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "manager_authority": {
+      "type": "object",
+      "required": ["resource_id", "lease_id", "owner_id", "fencing_generation", "permissions"],
+      "properties": {
+        "resource_id": {"type": "string", "minLength": 1, "maxLength": 300},
+        "lease_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "owner_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "fencing_generation": {"type": "integer", "minimum": 1},
+        "permissions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 100}}
+      },
+      "additionalProperties": false
+    },
+    "carry": {
+      "type": "object",
+      "required": ["behavior", "carry_id", "attachment_revision"],
+      "properties": {
+        "behavior": {"type": "string", "enum": ["PREPARE", "CONTINUE"]},
+        "carry_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "attachment_revision": {"type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {"$ref": "contact_work_plan.v1.schema.json#/$defs/step"}
+    }
+  },
+  "additionalProperties": false
+}

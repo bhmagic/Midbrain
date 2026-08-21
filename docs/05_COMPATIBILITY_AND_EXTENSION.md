@@ -138,12 +138,38 @@ Skill demonstrates the profile boundary:
   revision with its own attachment and landmark relationship, not a
   conditional inside the generic solver.
 
+Locate Arm Base follows the same ownership rule through its separate optional
+`extensions.midbrain.skill.locate_arm_base.v1` object. That extension contains
+only the coarse landmark names, VLM description, arm-base frame, and
+controlled-frame offset needed to resolve the bounded base yaw. It may reuse
+the same recognizable physical feature as arm-root refinement, but it does not
+read the refinement Skill's private extension or inherit its all-points,
+registered-depth, confidence, timing, or translation-quality policy. For
+Locate Arm Base, any one recognized coarse point is sufficient and Basic's
+timestamped FK supplies the geometry.
+
 The mounted-effector core remains closed to unknown ad hoc fields, while the
 `extensions` map is deliberately open to namespaced object-valued additions.
 Known extension namespaces are validated by the shared schema; unknown
 namespaces are preserved for their owning modules. This lets Basic use an
 effector when the VLM aligner is absent, and lets an effector omit the alignment
 extension when it is not qualified for visual refinement.
+
+A finite manipulation Skill may own numbered task-use direction profiles when
+one physical effector has several qualified use orientations. Those profiles
+must remain in the Skill's private configuration, bind to the active mounted-
+effector/control-profile compatibility gate, and contain only task geometry or
+task defaults. They must not duplicate actuator limits, resource ownership, or
+hardware safety caps. Scrap Grip and Lay Flat therefore own their independent
+left/right gripper-vector stores, while the Grip Provider's effector-control
+profile remains authoritative for gripper position, velocity, torque, thermal,
+contact-inference, functional-open threshold, and MIT-transition limits. The
+current bare-gripper profile uses `-280` degrees as fully open, `-180` degrees
+as functionally open for approach, and the owner-observed `+12` degrees as the
+normal-object close endpoint. Basic separately enforces `+17` degrees as the
+absolute close limit. Reaching the normal endpoint without stable contact is a
+failed normal grip; soft or thin object handling belongs in a separate
+qualified Skill.
 
 Store both controlled-frame-to-landmark and landmark-to-controlled-frame
 vectors and validate that they are exact inverses. Rotate those vectors with
@@ -178,8 +204,30 @@ Agent adapter should:
    targets, timing, controller digests, and freshness checks from that pending
    host state immediately before execution.
 10. Validate complete Skill results, expose only their declared compact tier
-    by default, and keep full-result inspection top-level, explicit, scoped to
-    one opaque result reference, and non-authoritative.
+     by default, and keep full-result inspection top-level, explicit, scoped to
+     one opaque result reference, and non-authoritative.
+
+An adapter must not turn perception labels or prompt vocabulary into a global
+action-authorization taxonomy. `WORK_OBJECT`, `KEEP_OUT`, object category,
+visible-surface AABB, and named-corner metadata may select planning evidence or
+a typed coordinate operation, but they do not decide whether an otherwise
+eligible finite Skill is motion, contact, or release work. In particular:
+
+- do not classify a compound request from its first verb or one object noun and
+  hide later eligible Skills;
+- do not require a new route category for every downstream object class;
+- do not make the model decide which physical arm instance owns the task;
+- preserve object and resource identity as explicit typed data rather than
+  inferring it from display labels; and
+- keep free-space collision checking in its controller and deliberate-contact
+  semantics in the task-specific Contact Skill and Contact Provider.
+
+Manager capability/resource binding and assembly identity are the extension
+points for multiple arms. Skill manifests, mounted-effector profiles, Fabric
+frames, and object evidence are the extension points for new effectors and
+object taxonomies. A compatible Agent may help choose among declared semantic
+capabilities, but it must not add prompt-word gates that become hidden safety
+or availability policy.
 
 For a predetermined sequence of eligible Skills, an adapter may expose the
 concise Limited Graph authoring projection and deterministically compile it to

@@ -1,7 +1,20 @@
 # Changelog
 
+## 0.2.0 - 2026-08-19
+
+- Added minimal carry-bound `PREPARE` and `CONTINUE` plans while retaining the Contact endpoint and Basic arm-group lease.
+- Added measured settling and explicit carry confirmation. Confirmed carrying activates Basic's arm-group `POSITION_EFFORT_LIMITED` guard and changes watchdog/auth-expiry fallback from relaxation to a last-position hold.
+- Kept object identity, gripper control, thermal policy, and runtime attachment details outside Contact.
+
 ## Unreleased
 
+- Establish the Basic arm-group `POSITION_EFFORT_LIMITED` mode guard at the
+  first Contact endpoint and retain it across all later Contact moves and
+  carry confirmation. Chain a new Cartesian segment from the previous
+  commanded setpoint so measured tracking lag cannot create a setpoint drop.
+- Add a 0.1 m/s Cartesian command-speed ceiling in addition to Basic's joint
+  limits. Publish trajectory-complete settling evidence for the shared runtime,
+  which now starts signed stage dwells only after trajectory completion.
 - Raise the temporary Basic-feedback freshness ceiling from 150 ms to 200 ms
   for physical stability testing while preserving stale-feedback fault and
   verified-float cleanup behavior.
@@ -30,8 +43,9 @@
   decomposes a segment into sequential IK knots at no more than 2 mm spacing,
   time-parameterizes them with Basic's joint limits, and streams changing
   position-effort-limited targets at the current 50 Hz rate.
-- Preserve immediate new-move replacement and final endpoint holding; no queue
-  of Skill moves or arrival-success assertion is introduced.
+- Preserve Provider-side new-move replacement and final endpoint holding; no
+  Provider queue or arrival-success assertion is introduced. Shared Skill
+  runtime sequencing remains a separate duty.
 
 ## 0.1.0 - 2026-08-12
 

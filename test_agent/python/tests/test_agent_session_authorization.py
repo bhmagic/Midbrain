@@ -32,7 +32,6 @@ from physical_agent_test.agent_driver import (
     _runner_context,
     provider_activation_needs_approval,
     relative_motion_needs_approval,
-    safe_home_needs_approval,
     space_reinitialization_needs_approval,
     arm_base_activation_needs_approval,
 )
@@ -608,9 +607,6 @@ class DynamicAgentApprovalPredicateTests(
             )
         )
         self.assertFalse(
-            await safe_home_needs_approval(context, {}, "safe-home-call")
-        )
-        self.assertFalse(
             await space_reinitialization_needs_approval(
                 context,
                 {"reason": "recover spatial drift"},
@@ -664,9 +660,6 @@ class DynamicAgentApprovalPredicateTests(
                 {},
                 "activation-call",
             )
-        )
-        self.assertTrue(
-            await safe_home_needs_approval(context, {}, "safe-home-call")
         )
         self.assertTrue(
             await space_reinitialization_needs_approval(

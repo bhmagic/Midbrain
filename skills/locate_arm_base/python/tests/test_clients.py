@@ -71,6 +71,59 @@ def test_arm_provider_readiness_reports_domain_timeout() -> None:
         clients.close()
 
 
+def test_arm_provider_readiness_preserves_manager_process_exit_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={
+                "error_code": "PROVIDER_PROCESS_EXITED",
+                "error": (
+                    "PROVIDER_PROCESS_EXITED: provider robot_arm.rebot_dm process "
+                    "32480 stopped while entering HOT; last_exit=exit code: 1"
+                ),
+            },
+        )
+
+    clients = MidbrainClients("http://manager", "http://fabric", "pose")
+    clients.http.close()
+    clients.http = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            clients.ensure_active_arm_profile_state(
+                "robot_arm.rebot_dm",
+                timeout_s=0.0,
+                poll_interval_s=0.0,
+            )
+    finally:
+        clients.close()
+    message = str(raised.value)
+    assert "ARM_PROVIDER_READINESS_FAILED" in message
+    assert "Manager HTTP 500" in message
+    assert "PROVIDER_PROCESS_EXITED" in message
+    assert "process 32480" in message
+    assert "exit code: 1" in message
+
+
+def test_provider_hot_preserves_bounded_manager_error_body() -> None:
+    long_detail = "driver unavailable " + ("x" * 3000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": long_detail})
+
+    clients = MidbrainClients("http://manager", "http://fabric", "pose")
+    clients.http.close()
+    clients.http = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            clients.ensure_foundation_pose_hot()
+    finally:
+        clients.close()
+    message = str(raised.value)
+    assert "PROVIDER_READINESS_FAILED" in message
+    assert "driver unavailable" in message
+    assert len(message) < 2200
+
+
 def test_latest_rgbd_retries_an_expired_bufferref_snapshot(
     tmp_path, monkeypatch
 ) -> None:

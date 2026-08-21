@@ -192,7 +192,7 @@ for ($index = 0; $index -lt $systemLines.Count; $index++) {
         break
     }
 }
-$requiredSpatialTools = @(
+$requiredAgentTools = @(
     "establish_world_axis",
     "locate_arm_base",
     "locate_effector_front",
@@ -203,6 +203,7 @@ $requiredSpatialTools = @(
     "translate_fabric_direction_to_world",
     "translate_fabric_pose_to_world",
     "refine_arm_root_translation",
+    "perform_relative_effector_motion",
     "run_limited_graph"
 )
 if ($eligibleIndex -ge 0) {
@@ -215,7 +216,7 @@ if ($eligibleIndex -ge 0) {
             $eligibleValues.Add($trimmed)
         }
     }
-    foreach ($toolName in $requiredSpatialTools) {
+    foreach ($toolName in $requiredAgentTools) {
         if (-not $eligibleValues.Contains($toolName)) {
             $eligibleValues.Add($toolName)
         }

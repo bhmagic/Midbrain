@@ -8,10 +8,14 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from locate_arm_base.candidate_selection import VisualCandidateSelection, VisualMaskReview
-from locate_arm_base.orientation import OrientationSelection, SegmentationPrompt
+from locate_arm_base.candidate_selection import VisualCandidateSelection
+from locate_arm_base.orientation import (
+    EffectorPointObservation,
+    SegmentationPrompt,
+)
 from locate_arm_base.profile import canonical_sha256
 from locate_arm_base.skill import (
+    EffectorOrientationHintRequired,
     LocateArmBaseSkill,
     _bounded_selection_decision,
     _vlm_backend_for_model,
@@ -58,6 +62,11 @@ class FakeClients:
             / "providers/rebot_arm_dm/config/arm_profiles/rebot_arm_b601_dm.v1.json"
         )
         model = json.loads(model_path.read_text(encoding="utf-8"))
+        effector_path = (
+            ROOT
+            / "providers/rebot_arm_dm/profiles/effectors/rebot_b601_dm_bare_gripper.v2.json"
+        )
+        mounted_effector = json.loads(effector_path.read_text(encoding="utf-8"))
         return {
             "schema": "midbrain.robot_assembly_state",
             "assembly_id": "test-assembly",
@@ -70,6 +79,7 @@ class FakeClients:
             },
             "profile_file_sha256": {"arm_model": file_sha256(model_path)},
             "arm_model_appendix": model["appendix"],
+            "mounted_effector": mounted_effector,
         }
 
     def ensure_active_arm_profile_state(
@@ -92,6 +102,23 @@ class FakeClients:
 
     def publish_candidate(self, candidate):
         self.published = candidate
+
+    def transform(
+        self,
+        from_frame,
+        to_frame,
+        at_us,
+        max_extrapolation_us,
+        session_epoch=None,
+    ):
+        if from_frame == "rebot_arm_tool" and to_frame == "rebot_arm_base":
+            base_from_tool = np.eye(4)
+            base_from_tool[:3, 3] = [0.30, 0.0, 0.20]
+            return base_from_tool, {
+                "path": [from_frame, to_frame],
+                "at_us": at_us,
+            }
+        raise AssertionError(f"unexpected transform request {from_frame} -> {to_frame}")
 
     def segment_mask(self, payload):
         self.segmentation_requests.append(payload)
@@ -117,9 +144,21 @@ class FakeClients:
         pass
 
 
-class FakeSelector:
-    def select(self, reference_paths, contact_sheet_path, candidates):
-        return OrientationSelection("z90", 0.93, "Distinctive plate edge matches.", "test-vlm", "response-1")
+class FakeEffectorLocator:
+    def __init__(self, *, identified: bool = True) -> None:
+        self.identified = identified
+        self.calls = 0
+
+    def locate(self, mounted_effector, scene_path):
+        self.calls += 1
+        return EffectorPointObservation(
+            self.identified,
+            (("rail_lateral_left", 500, 650),) if self.identified else (),
+            0.35,
+            "A coarse rail endpoint is visible." if self.identified else "No effector visible.",
+            "test-vlm",
+            "response-effector-1",
+        )
 
 
 class FakePromptLocator:
@@ -133,17 +172,6 @@ class FakePromptLocator:
             "The profiled base is visible.",
             "test-vlm",
             "response-mask-1",
-        )
-
-
-class FakeMaskSelector:
-    def review(self, reference_paths, contact_sheet_path, candidate_ids):
-        return VisualMaskReview(
-            tuple(candidate_ids),
-            0.91,
-            "All independent masks plausibly cover the base.",
-            "test-vlm",
-            "response-mask-selection-1",
         )
 
 
@@ -176,8 +204,7 @@ def test_skill_composes_profiled_orientation_and_emits_review_only_candidate(tmp
         config,
         ROOT,
         clients=clients,
-        selector=FakeSelector(),
-        mask_selector=FakeMaskSelector(),
+        effector_locator=FakeEffectorLocator(),
         fit_selector=FakeFitSelector(),
     )
     candidate = skill.run(
@@ -193,7 +220,14 @@ def test_skill_composes_profiled_orientation_and_emits_review_only_candidate(tmp
     )
     assert candidate["motion_usable"] is False
     assert candidate["review_state"] == "PENDING_REVIEW"
-    assert candidate["quality_provenance"]["orientation_resolution"]["selected_candidate_id"] == "z90"
+    orientation = candidate["quality_provenance"]["orientation_resolution"]
+    assert orientation["selected_candidate_id"] == "z0"
+    assert orientation["method"] == "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK"
+    assert orientation["vlm"]["invocation_count"] == 1
+    assert orientation["vlm"]["quality_gate_applied"] is False
+    assert orientation["acceptance_policy"] == (
+        "ONE_RECOGNIZED_EFFECTOR_POINT_IS_SUFFICIENT_NO_POINT_QUALITY_GATE"
+    )
 
 
 def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
@@ -202,7 +236,7 @@ def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
     class EpochWorldClients(FakeClients):
         def __init__(self) -> None:
             super().__init__()
-            self.transform_request = None
+            self.transform_requests = []
 
         def current_world_axis(self, stream, *, required_convention):
             assert stream == "localization.vio.status"
@@ -226,14 +260,23 @@ def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
             max_extrapolation_us,
             session_epoch=None,
         ):
-            self.transform_request = {
+            request = {
                 "from_frame": from_frame,
                 "to_frame": to_frame,
                 "at_us": at_us,
                 "max_extrapolation_us": max_extrapolation_us,
                 "session_epoch": session_epoch,
             }
-            return np.eye(4), {"path": [from_frame, to_frame]}
+            self.transform_requests.append(request)
+            if from_frame == "test_camera" and to_frame == "local_vio/epoch-7":
+                return np.eye(4), {"path": [from_frame, to_frame]}
+            return super().transform(
+                from_frame,
+                to_frame,
+                at_us,
+                max_extrapolation_us,
+                session_epoch=session_epoch,
+            )
 
     rgb_path = tmp_path / "rgb.png"
     depth_path = tmp_path / "depth.npy"
@@ -254,8 +297,7 @@ def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
         config,
         ROOT,
         clients=clients,
-        selector=FakeSelector(),
-        mask_selector=FakeMaskSelector(),
+        effector_locator=FakeEffectorLocator(),
         fit_selector=FakeFitSelector(),
     )
     candidate = skill.run(
@@ -278,13 +320,15 @@ def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
     assert candidate["parent_frame"] == "local_vio/epoch-7"
     assert candidate["frame_contract"]["world_frame"] == "local_vio/epoch-7"
     assert candidate["quality_provenance"]["world_axis"]["session_epoch"] == "epoch-7"
-    assert clients.transform_request == {
+    assert clients.transform_requests[0] == {
         "from_frame": "test_camera",
         "to_frame": "local_vio/epoch-7",
         "at_us": 1_234_567,
         "max_extrapolation_us": 250000,
         "session_epoch": "epoch-7",
     }
+    assert clients.transform_requests[1]["from_frame"] == "rebot_arm_tool"
+    assert clients.transform_requests[1]["to_frame"] == "rebot_arm_base"
     assert abs(candidate["world_from_arm_base"]["translation_m"][2] - 0.9553750055) < 1e-9
     immutable = dict(candidate)
     immutable.pop("candidate_path")
@@ -342,7 +386,7 @@ def test_skill_binds_candidate_to_current_epoch_scoped_world_frame(
         fit["source_mask_candidate_id"]
         for fit in inspection["foundation_pose"]["fits"]
     } == {"voted_mask_dilated_r4"}
-    assert "VLM_ORIENTATION_SELECTION" in consumers["orientation_candidates"]
+    assert "FK_ORIENTATION_RESOLUTION" in consumers["effector_fk_orientation"]
     assert "FINAL_ORIENTATION_INSPECTION" in consumers["resolved_pose"]
     assert Path(inspection["resolved_pose_path"]).is_file()
     assert candidate["quality_provenance"]["foundation_pose"]["score_semantics"] == (
@@ -400,15 +444,9 @@ def test_live_camera_provenance_rejects_missing_device_identity() -> None:
                 }
             }
         )
-def test_low_vlm_confidence_is_fail_closed(tmp_path: Path) -> None:
-    class LowSelector(FakeSelector):
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def select(self, reference_paths, contact_sheet_path, candidates):
-            self.calls += 1
-            return OrientationSelection("z0", 0.2, "Ambiguous.", "test-vlm", "response-2")
-
+def test_unidentified_effector_requests_one_agent_supplied_world_x_retry(
+    tmp_path: Path,
+) -> None:
     rgb = np.zeros((120, 160, 3), dtype=np.uint8)
     mask = np.zeros((120, 160), dtype=np.uint8)
     mask[20:100, 30:140] = 255
@@ -422,17 +460,19 @@ def test_low_vlm_confidence_is_fail_closed(tmp_path: Path) -> None:
         (ROOT / "skills/locate_arm_base/config_templates/skill.default.json").read_text(encoding="utf-8")
     )
     config["artifact_root"] = str(tmp_path / "artifacts")
-    low_selector = LowSelector()
+    effector_locator = FakeEffectorLocator(identified=False)
     skill = LocateArmBaseSkill(
         config,
         ROOT,
         clients=FakeClients(),
-        selector=low_selector,
+        effector_locator=effector_locator,
         prompt_locator=FakePromptLocator(),
-        mask_selector=FakeMaskSelector(),
         fit_selector=FakeFitSelector(),
     )
-    with pytest.raises(RuntimeError, match="orientation selection"):
+    with pytest.raises(
+        EffectorOrientationHintRequired,
+        match="rough_arm_base_positive_x_world",
+    ):
         skill.run(
             {
                 "rgb_path": str(rgb_path),
@@ -444,23 +484,66 @@ def test_low_vlm_confidence_is_fail_closed(tmp_path: Path) -> None:
                 "world_from_camera": np.eye(4).tolist(),
             }
         )
-    assert low_selector.calls == 3
+    assert effector_locator.calls == 1
     inspection = skill.inspection_snapshot()
-    assert len(inspection["orientation_selection"]["attempts"]) == 3
-    assert inspection["failed_stage"] == "ORIENTATION_PROVISIONAL_RENDERED"
-    assert inspection["resolved_pose_selection_accepted"] is False
-    assert Path(inspection["resolved_pose_path"]).is_file()
-    assert any(
-        item["image_id"] == "resolved_pose" for item in inspection["images"]
-    )
+    assert inspection["orientation_selection"]["vlm_invocation_count"] == 1
+    assert inspection["orientation_selection"]["accepted"] is False
+    assert inspection["failed_stage"] == "EFFECTOR_ORIENTATION_POINT_NOT_IDENTIFIED"
     assert inspection["timing"]["skill_elapsed_ms"] > 0.0
+
+
+def test_agent_world_x_retry_skips_effector_vlm_and_publishes_candidate(
+    tmp_path: Path,
+) -> None:
+    rgb = np.zeros((120, 160, 3), dtype=np.uint8)
+    mask = np.zeros((120, 160), dtype=np.uint8)
+    mask[20:100, 30:140] = 255
+    rgb_path = tmp_path / "rgb.png"
+    depth_path = tmp_path / "depth.npy"
+    mask_path = tmp_path / "mask.png"
+    Image.fromarray(rgb).save(rgb_path)
+    Image.fromarray(mask).save(mask_path)
+    np.save(depth_path, np.ones((120, 160), dtype=np.float32), allow_pickle=False)
+    config = json.loads(
+        (ROOT / "skills/locate_arm_base/config_templates/skill.default.json").read_text(encoding="utf-8")
+    )
+    config["artifact_root"] = str(tmp_path / "artifacts")
+    effector_locator = FakeEffectorLocator(identified=False)
+    clients = FakeClients()
+    skill = LocateArmBaseSkill(
+        config,
+        ROOT,
+        clients=clients,
+        effector_locator=effector_locator,
+        prompt_locator=FakePromptLocator(),
+        fit_selector=FakeFitSelector(),
+    )
+    candidate = skill.run(
+        {
+            "rgb_path": str(rgb_path),
+            "depth_npy_path": str(depth_path),
+            "mask_path": str(mask_path),
+            "camera_intrinsics": {"fx": 150.0, "fy": 150.0, "cx": 80.0, "cy": 60.0},
+            "camera_frame": "test_camera",
+            "observed_at_us": time.time_ns() // 1000,
+            "world_from_camera": np.eye(4).tolist(),
+            "rough_arm_base_positive_x_world": [1.0, 0.0, 0.0],
+        }
+    )
+    orientation = candidate["quality_provenance"]["orientation_resolution"]
+    assert candidate["review_state"] == "PENDING_REVIEW"
+    assert clients.published is not None
+    assert effector_locator.calls == 0
+    assert orientation["method"] == "AGENT_SUPPLIED_ROUGH_WORLD_POSITIVE_X"
+    assert orientation["vlm"]["invocation_count"] == 0
+    assert orientation["timestamped_fk_transform_query"] is None
 
 
 def test_qualified_majority_resolves_an_ambiguous_orientation_tie_break() -> None:
     attempts = [
-        OrientationSelection("z90", 0.56, "First choice.", "test-vlm", "one"),
-        OrientationSelection("z0", 0.68, "Second choice.", "test-vlm", "two"),
-        OrientationSelection("z0", 0.64, "Tie-break choice.", "test-vlm", "three"),
+        VisualCandidateSelection("z90", 0.56, "First choice.", "test-vlm", "one"),
+        VisualCandidateSelection("z0", 0.68, "Second choice.", "test-vlm", "two"),
+        VisualCandidateSelection("z0", 0.64, "Tie-break choice.", "test-vlm", "three"),
     ]
     selected, basis, accepted = _bounded_selection_decision(
         attempts,
@@ -509,8 +592,7 @@ def test_all_downward_foundation_pose_fits_are_normalized_before_orientation(
         config,
         ROOT,
         clients=clients,
-        selector=FakeSelector(),
-        mask_selector=FakeMaskSelector(),
+        effector_locator=FakeEffectorLocator(),
         fit_selector=FakeFitSelector(),
     )
     candidate = skill.run(
@@ -548,7 +630,7 @@ def test_all_downward_foundation_pose_fits_are_normalized_before_orientation(
     assert candidate["world_from_arm_base"]["matrix"][2][2] == pytest.approx(1.0)
 
 
-def test_repeated_moderate_fit_and_orientation_consensus_is_accepted(
+def test_repeated_moderate_fit_consensus_then_single_effector_call_is_accepted(
     tmp_path: Path,
 ) -> None:
     class ModerateFitSelector(FakeFitSelector):
@@ -563,20 +645,6 @@ def test_repeated_moderate_fit_and_orientation_consensus_is_accepted(
                 "Repeated fit is moderately convincing.",
                 "test-vlm",
                 f"fit-response-{self.calls}",
-            )
-
-    class ModerateOrientationSelector(FakeSelector):
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def select(self, reference_paths, contact_sheet_path, candidates):
-            self.calls += 1
-            return OrientationSelection(
-                "z270",
-                0.62,
-                "Repeated bounded orientation agrees.",
-                "test-vlm",
-                f"orientation-response-{self.calls}",
             )
 
     rgb_path = tmp_path / "rgb.png"
@@ -594,13 +662,12 @@ def test_repeated_moderate_fit_and_orientation_consensus_is_accepted(
     )
     config["artifact_root"] = str(tmp_path / "artifacts")
     fit_selector = ModerateFitSelector()
-    orientation_selector = ModerateOrientationSelector()
+    effector_locator = FakeEffectorLocator()
     skill = LocateArmBaseSkill(
         config,
         ROOT,
         clients=FakeClients(),
-        selector=orientation_selector,
-        mask_selector=FakeMaskSelector(),
+        effector_locator=effector_locator,
         fit_selector=fit_selector,
     )
     result = skill.run(
@@ -622,14 +689,14 @@ def test_repeated_moderate_fit_and_orientation_consensus_is_accepted(
     assert result["status"] == "VISUAL_PIPELINE_COMPLETED"
     inspection = skill.inspection_snapshot()
     assert fit_selector.calls == 2
-    assert orientation_selector.calls == 2
+    assert effector_locator.calls == 1
     assert inspection["foundation_pose"]["selection"]["decision_basis"] == (
         "REPEATED_CANDIDATE_CONSENSUS"
     )
     assert inspection["orientation_selection"]["decision_basis"] == (
-        "REPEATED_CANDIDATE_CONSENSUS"
+        "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK"
     )
-    assert result["orientation_resolution"]["selected_candidate_id"] == "z270"
+    assert result["orientation_resolution"]["vlm"]["invocation_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -660,8 +727,7 @@ def test_candidate_counts_reject_zero(
         config,
         ROOT,
         clients=FakeClients(),
-        selector=FakeSelector(),
-        mask_selector=FakeMaskSelector(),
+        effector_locator=FakeEffectorLocator(),
         fit_selector=FakeFitSelector(),
     )
     request = {
@@ -693,16 +759,6 @@ def test_skill_routes_vlm_seed_prompt_through_sam2_provider(tmp_path: Path) -> N
             self.additional_guidance.append(str(kwargs.get("additional_guidance") or ""))
             return super().locate(reference_paths, scene_path, **kwargs)
 
-    class RejectSecondMaskReviewer(FakeMaskSelector):
-        def review(self, reference_paths, contact_sheet_path, candidate_ids):
-                return VisualMaskReview(
-                    (candidate_ids[0],),
-                0.88,
-                "The second independent mask covers the support enclosure.",
-                "test-vlm",
-                "response-mask-review",
-            )
-
     rgb_path = tmp_path / "rgb.png"
     depth_path = tmp_path / "depth.npy"
     Image.fromarray(np.zeros((240, 320, 3), dtype=np.uint8)).save(rgb_path)
@@ -717,9 +773,8 @@ def test_skill_routes_vlm_seed_prompt_through_sam2_provider(tmp_path: Path) -> N
         config,
         ROOT,
         clients=clients,
-        selector=FakeSelector(),
+        effector_locator=FakeEffectorLocator(),
         prompt_locator=prompt_locator,
-        mask_selector=RejectSecondMaskReviewer(),
         fit_selector=FakeFitSelector(),
     )
     candidate = skill.run(
@@ -752,11 +807,23 @@ def test_skill_routes_vlm_seed_prompt_through_sam2_provider(tmp_path: Path) -> N
         for attempt in acquisition["attempts"]
     )
     mask_proof = candidate["quality_provenance"]
-    assert mask_proof["mask_review"]["accepted_candidate_ids"] == [
-        "mask_1",
-    ]
-    assert mask_proof["mask_review"]["rejected_candidate_ids"] == ["mask_2"]
+    assert mask_proof["mask_retention"] == {
+        "review_performed": False,
+        "retention_policy": "ALL_ACQUIRED_MASKS_WITHOUT_POST_SAM2_VLM_REVIEW",
+        "retained_candidate_ids": ["mask_1", "mask_2"],
+        "rationale": (
+            "Every successfully acquired mask is retained; no post-SAM2 VLM "
+            "selection or rejection is performed."
+        ),
+        "model": None,
+        "response_id": None,
+        "structured_output_attempt_count": 0,
+    }
     assert mask_proof["mask_vote"]["vote_threshold"] == 1
+    assert mask_proof["mask_vote"]["retained_candidate_ids"] == [
+        "mask_1",
+        "mask_2",
+    ]
     assert mask_proof["mask_vote"]["dilation_radius_px"] == 4
 
 
@@ -765,10 +832,11 @@ def test_visual_diagnostic_skips_world_axis_and_routes_references_by_role(
 ) -> None:
     seen = {}
 
-    class RecordingSelector(FakeSelector):
-        def select(self, reference_paths, contact_sheet_path, candidates):
-            seen["orientation"] = [path.name for path in reference_paths]
-            return super().select(reference_paths, contact_sheet_path, candidates)
+    class RecordingEffectorLocator(FakeEffectorLocator):
+        def locate(self, mounted_effector, scene_path):
+            seen["effector_profile"] = mounted_effector["profile_id"]
+            seen["effector_scene"] = scene_path.name
+            return super().locate(mounted_effector, scene_path)
 
     class RecordingPromptLocator(FakePromptLocator):
         def locate(self, reference_paths, scene_path, **kwargs):
@@ -790,9 +858,8 @@ def test_visual_diagnostic_skips_world_axis_and_routes_references_by_role(
         config,
         ROOT,
         clients=clients,
-        selector=RecordingSelector(),
+        effector_locator=RecordingEffectorLocator(),
         prompt_locator=RecordingPromptLocator(),
-        mask_selector=FakeMaskSelector(),
         fit_selector=FakeFitSelector(),
     )
     result = skill.run(
@@ -817,10 +884,8 @@ def test_visual_diagnostic_skips_world_axis_and_routes_references_by_role(
         "01_Base_reference_atlas.png",
         "02_Arm_axis_reference_no_effector_4views.png",
     ]
-    assert seen["orientation"] == [
-        "01_Base_reference_atlas.png",
-        "02_Arm_axis_reference_no_effector_4views.png",
-    ]
+    assert seen["effector_profile"] == "rebot_b601_dm.bare_gripper"
+    assert seen["effector_scene"] == "rgb.png"
     assert skill.inspection_snapshot()["stage"] == "VISUAL_DIAGNOSTIC_COMPLETED"
 
 
@@ -930,8 +995,7 @@ def test_negative_foundation_pose_ranking_scores_are_not_absolute_rejections(
         config,
         ROOT,
         clients=NegativeScoreClients(),
-        selector=FakeSelector(),
-        mask_selector=FakeMaskSelector(),
+        effector_locator=FakeEffectorLocator(),
         fit_selector=FakeFitSelector(),
     )
     result = skill.run(

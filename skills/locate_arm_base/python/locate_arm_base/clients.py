@@ -13,6 +13,41 @@ from midbrain_bufferref import copy_buffer_refs
 from .math3d import transform_from_translation_quaternion
 
 
+def _manager_error_detail(response: httpx.Response) -> str:
+    error_code = ""
+    message = ""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        error_code = str(payload.get("error_code") or "").strip()
+        message = str(payload.get("error") or payload.get("detail") or "").strip()
+    if not message:
+        message = response.text.strip()
+    message = " ".join(message.split())[:2000]
+    if not message:
+        message = response.reason_phrase or "Manager returned no diagnostic body"
+    if error_code and not message.startswith(f"{error_code}:"):
+        return f"{error_code}: {message}"
+    return message
+
+
+def _raise_manager_provider_error(
+    response: httpx.Response,
+    *,
+    provider_id: str,
+    domain_code: str,
+) -> None:
+    if response.is_success:
+        return
+    detail = _manager_error_detail(response)
+    raise RuntimeError(
+        f"{domain_code}: Manager HTTP {response.status_code} could not make "
+        f"Provider {provider_id!r} HOT; {detail}"
+    )
+
+
 class MidbrainClients:
     def __init__(
         self,
@@ -138,12 +173,16 @@ class MidbrainClients:
                 f"{self.manager_url}/v1/providers/"
                 f"{quote(normalized_provider_id, safe='')}/hot"
             )
-            hot.raise_for_status()
-        except httpx.HTTPError as error:
+        except httpx.RequestError as error:
             raise RuntimeError(
                 "ARM_PROVIDER_READINESS_FAILED: Manager could not make selected "
                 f"arm Provider {normalized_provider_id!r} HOT: {error}"
             ) from error
+        _raise_manager_provider_error(
+            hot,
+            provider_id=normalized_provider_id,
+            domain_code="ARM_PROVIDER_READINESS_FAILED",
+        )
 
         timeout_s = max(0.0, float(timeout_s))
         poll_interval_s = max(0.0, float(poll_interval_s))
@@ -212,10 +251,20 @@ class MidbrainClients:
         return self._ensure_provider_hot(self.sam2_provider_id)
 
     def _ensure_provider_hot(self, provider_id: str) -> dict[str, Any]:
-        response = self.http.post(
-            f"{self.manager_url}/v1/providers/{quote(provider_id, safe='')}/hot"
+        try:
+            response = self.http.post(
+                f"{self.manager_url}/v1/providers/{quote(provider_id, safe='')}/hot"
+            )
+        except httpx.RequestError as error:
+            raise RuntimeError(
+                "PROVIDER_READINESS_FAILED: Manager could not be reached while making "
+                f"Provider {provider_id!r} HOT: {error}"
+            ) from error
+        _raise_manager_provider_error(
+            response,
+            provider_id=provider_id,
+            domain_code="PROVIDER_READINESS_FAILED",
         )
-        response.raise_for_status()
         value = response.json()
         return value if isinstance(value, dict) else {}
 

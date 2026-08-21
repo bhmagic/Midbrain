@@ -129,6 +129,9 @@
         },
         "midbrain.skill.refine_arm_root_translation.v1": {
           "$ref": "#/$defs/armRootTranslationVisualAlignment"
+        },
+        "midbrain.skill.locate_arm_base.v1": {
+          "$ref": "#/$defs/armBaseCoarseOrientationLandmark"
         }
       },
       "additionalProperties": {"type": "object"}
@@ -177,6 +180,47 @@
         },
         "qualification": {"type": "string", "minLength": 1, "maxLength": 200},
         "note": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "additionalProperties": false
+    },
+    "armBaseCoarseOrientationLandmark": {
+      "type": "object",
+      "required": [
+        "schema",
+        "schema_version",
+        "arm_base_frame",
+        "landmark"
+      ],
+      "properties": {
+        "schema": {"const": "midbrain.effector_coarse_orientation_landmark"},
+        "schema_version": {"const": 1},
+        "arm_base_frame": {"type": "string", "minLength": 1, "maxLength": 200},
+        "landmark": {
+          "type": "object",
+          "required": [
+            "landmark_id",
+            "display_name",
+            "eligible_point_ids",
+            "description_for_vlm",
+            "controlled_frame_to_landmark_translation_m",
+            "qualification"
+          ],
+          "properties": {
+            "landmark_id": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"},
+            "display_name": {"type": "string", "minLength": 1, "maxLength": 200},
+            "eligible_point_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {"type": "string", "pattern": "^[a-z0-9_]{3,100}$"}
+            },
+            "description_for_vlm": {"type": "string", "minLength": 20, "maxLength": 2000},
+            "controlled_frame_to_landmark_translation_m": {"$ref": "#/$defs/vector3"},
+            "qualification": {"type": "string", "minLength": 3, "maxLength": 500}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

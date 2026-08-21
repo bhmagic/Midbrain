@@ -39,11 +39,15 @@ must hide an annotation on a selected channel that is not in that list.
 The initial implemented geometry is:
 
 - `point`: normalized `x` and `y`;
-- `box`: normalized top-left `x`, `y`, `width`, and `height`.
+- `box`: normalized top-left `x`, `y`, `width`, and `height`; and
+- `vector`: normalized start `x1`, `y1` and end `x2`, `y2`, rendered with an
+  arrowhead.
 
-Future compatible schema revisions may add lines, polygons, masks, keypoints,
-and projected 3D pose axes. Producers must not encode such geometry as a label
-or as arbitrary SVG/HTML.
+An annotation may set `default_visible=false` for an optional diagnostic layer
+and may supply a validated six-digit display-color hint. The observer retains
+local control of both visibility and color. Future compatible schema revisions
+may add polygons, raster-mask channels, and keypoints. Producers must not
+encode such geometry as a label or as arbitrary SVG/HTML.
 
 Model adapters may accept a known upstream coordinate convention and must
 convert it to normalized `0..1` geometry before producing this contract. The
@@ -76,11 +80,10 @@ annotation record. A flattened export is a user convenience and is not the
 authoritative evidence artifact. The channel digest continues to identify the
 unmodified source image.
 
-Display colors are browser state rather than inference output. The same local
-colors must be used by the live SVG and flattened export, and they remain
-stable when switching evidence channels. Color does not encode confidence or
-motion authority unless a future contract version explicitly defines that
-semantic.
+Display colors are browser state with an optional producer hint for conventional
+layers such as X/Y/Z axes. The same active local colors must be used by the live
+SVG and flattened export, and they remain stable when switching evidence
+channels. Color does not encode confidence or motion authority.
 
 ## Agent event projection
 

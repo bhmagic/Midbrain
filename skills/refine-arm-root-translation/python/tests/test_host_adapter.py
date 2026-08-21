@@ -343,7 +343,7 @@ class _EndToEndFabric(_Fabric):
                 "data": {
                     "model_id": "rebot_arm_b601_dm",
                     "model_revision": (
-                        "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope"
+                        "rebot-owner-observed-wrist-gripper-envelope-0.1.31"
                     ),
                 },
             }

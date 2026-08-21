@@ -13,6 +13,9 @@ from typing import Any
 from .skill import LocateArmBaseSkill
 
 
+DEVELOPER_SHUTDOWN_CONFIRMATION = "STOP_LOCATE_ARM_BASE_DEVELOPER_UI"
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Locate Arm Base Development</title><style>
@@ -35,7 +38,7 @@ details{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:1
 <label for="vlmSeedGuidance">Additional first-VLM target guidance</label><textarea id="vlmSeedGuidance" maxlength="2000"></textarea><p>This arm-specific text is sent to every independent VLM seed-localization attempt before SAM2. It is saved in this arm profile appendix.</p>
 <details><summary>Advanced profile JSON</summary><label for="appendix">Flexible appendix JSON (unknown field names are preserved)</label><textarea id="appendix"></textarea></details>
 <button id="saveProfile">Save arm-profile appendix</button><button class="secondary" id="reloadProfile">Reload</button><pre id="profileResult">Ready.</pre></section>
-<section class="card"><h2>Finite run</h2><p>The default limited test runs independent VLM point prompts through independent SAM2 calls, removes bad masks with VLM review, pixel-votes the survivors, dilates once, repeats FoundationPose on that one final mask, selects the best fit, and resolves bounded orientation without requiring a world axis or publishing calibration.</p><label for="maskCount">Independent VLM→SAM2 mask attempts</label><input id="maskCount" type="number" min="1" max="8" step="1" value="2"><label for="fitCount">FoundationPose fit count</label><input id="fitCount" type="number" min="1" max="8" step="1" value="2"><p>The two counts are independent and apply only to this run. Every pose fit reuses the single post-review, half-voted, once-dilated mask. Native FoundationPose scores are retained only for audit and are hidden from fit selection. All individual masks, the vote, the final mask, all fits, and the selected post-rotation pose are retained as inspection evidence.</p><label for="request">Request JSON</label><textarea id="request">{"use_latest_camera":true,"diagnostic_only":true}</textarea><button id="run">Run limited visual test</button><button class="secondary" id="refresh">Refresh evidence</button><pre id="result">Ready.</pre></section>
+<section class="card"><h2>Finite run</h2><p>The default limited test runs independent VLM point prompts through independent SAM2 calls, retains every successfully acquired mask, pixel-votes the complete ensemble, dilates once, repeats FoundationPose on that one final mask, selects the best fit, and resolves bounded orientation from one coarse active-effector point plus timestamped FK without requiring a world axis or publishing calibration.</p><label for="maskCount">Independent VLM→SAM2 mask attempts</label><input id="maskCount" type="number" min="1" max="8" step="1" value="2"><label for="fitCount">FoundationPose fit count</label><input id="fitCount" type="number" min="1" max="8" step="1" value="2"><p>The two counts are independent and apply only to this run. Every pose fit reuses the single half-of-all-acquired-masks, once-dilated mask. No post-SAM2 VLM review is performed. Native FoundationPose scores and coarse effector confidence are retained only for audit. The orientation stage makes exactly one effector-point VLM request; one recognized point is sufficient because coded projection against FK selects only a profiled candidate. All individual masks, the vote, the final mask, all fits, the effector/FK comparison, and the selected post-rotation pose are retained as inspection evidence.</p><label for="request">Request JSON</label><textarea id="request">{"use_latest_camera":true,"diagnostic_only":true}</textarea><button id="run">Run limited visual test</button><button class="secondary" id="refresh">Refresh evidence</button><pre id="result">Ready.</pre></section>
 <section class="card wide"><h2>Configured visual references</h2><p>These are the profile-owned images available to the VLM. Consumer labels show which stage receives each image.</p><div class="images" id="configuredImages"><div class="empty">Loading arm-profile references…</div></div></section>
 <section class="card wide"><h2>Exact visual pipeline inputs</h2><p>This is the last retained run, including failed-run evidence. A new limited test replaces it as stages complete.</p><div class="meta" id="runMeta"></div><div class="images" id="images"><div class="empty">No completed or active run evidence yet.</div></div></section>
 </div></main><script>
@@ -46,7 +49,7 @@ function meta(target,rows){target.innerHTML='';for(const [key,value] of rows){co
 async function loadProfile(){profile=await jsonFetch('/v1/profile');meta($('profileMeta'),[['Arm Provider',profile.arm_provider_id],['Arm model',`${profile.model_id}@${profile.model_revision}`],['Arm profile file',profile.arm_profile_path],['Appendix key',profile.appendix_key],['CAD sent to FoundationPose',profile.cad.filename],['Profile digest',profile.model_file_sha256]]);$('cadPath').value=profile.cad.workspace_path;$('cadScale').value=profile.cad.scale_to_m;$('references').value=profile.reference_images.map(x=>x.workspace_path).join('\\n');$('vlmSeedGuidance').value=profile.appendix.vlm_seed_guidance||'';$('appendix').value=JSON.stringify(profile.appendix,null,2);const configured=[...(profile.cad.preview?[{...profile.cad.preview,label:profile.cad.preview.role}]:[]),...profile.reference_images.map((item,index)=>({...item,label:item.role||`Reference ${index+1}`}))];renderImages('configuredImages',configured,'No visual references are configured.')}
 async function saveProfile(){const button=$('saveProfile');button.disabled=true;try{const appendix=JSON.parse($('appendix').value);appendix.mesh=appendix.mesh||{};appendix.mesh.path=$('cadPath').value.trim();appendix.mesh.scale_to_m=Number($('cadScale').value);appendix.vlm_seed_guidance=$('vlmSeedGuidance').value.trim();const old=Array.isArray(appendix.reference_images)?appendix.reference_images:[];appendix.reference_images=$('references').value.split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean).map((path,index)=>({...(old[index]||{}),path,role:(old[index]||{}).role||'CAD_ORIENTATION_REFERENCE'}));const value=await jsonFetch('/v1/profile',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({confirmation:'SAVE_ARM_PROFILE_APPENDIX',appendix})});$('profileResult').textContent=value.message;await loadProfile()}catch(error){$('profileResult').textContent=error.message}finally{button.disabled=false}}
 function renderImages(hostId,items,emptyText){const host=$(hostId);host.innerHTML='';if(!items?.length){const empty=document.createElement('div');empty.className='empty';empty.textContent=emptyText;host.append(empty);return}for(const item of items){const card=document.createElement('article');card.className='image';const image=document.createElement('img');image.src=item.url;image.alt=item.label;image.loading='lazy';const caption=document.createElement('div');caption.className='caption';const title=document.createElement('b'),use=document.createElement('small'),description=document.createElement('small'),path=document.createElement('small');title.textContent=item.label;use.textContent=`Used by: ${(item.consumers||[]).join(', ')||'Developer inspection only'}`;description.textContent=item.description||'';path.textContent=item.path;caption.append(title,use);if(item.description)caption.append(description);caption.append(path);card.append(image,caption);host.append(card)}}
-async function refreshEvidence(){try{const value=await jsonFetch('/v1/inspection');$('runState').textContent=value.status?`Last evidence: ${value.status} · ${value.stage}`:'No run evidence';const fp=value.foundation_pose||{},masks=value.mask_candidates||{},review=masks.review||{},vote=masks.vote||{},readiness=value.arm_provider_readiness||{},orientation=value.orientation_selection||{},vlm=value.vlm||{},fits=Array.isArray(fp.fits)?fp.fits:[],normalized=fits.filter(item=>item.upright_normalization_degrees===180).map(item=>`${item.candidate_id} (${Number(item.arm_base_positive_z_dot_world_raw).toFixed(3)}→${Number(item.arm_base_positive_z_dot_world).toFixed(3)})`),rejected=fits.filter(item=>item.physically_eligible===false).map(item=>`${item.candidate_id} (${Number(item.arm_base_positive_z_dot_world).toFixed(3)})`);meta($('runMeta'),[['Run ID',value.run_id],['Failed stage',value.failed_stage],['VLM route',`${vlm.backend||'—'} / ${vlm.model||'—'}`],['Arm Provider',readiness.provider_id],['Arm readiness',readiness.status],['Assembly stream',readiness.assembly_stream],['Arm profile',value.arm_profile?.model_id],['First-VLM profile guidance',masks.vlm_seed_guidance],['CAD filename sent',fp.cad_filename],['CAD path sent',fp.cad_path],['CAD SHA-256',fp.cad_sha256],['Configured VLM→SAM2 attempts',masks.configured_count],['Produced SAM2 masks',masks.produced_count],['VLM-retained masks',(review.accepted_candidate_ids||[]).join(', ')],['VLM-rejected masks',(review.rejected_candidate_ids||[]).join(', ')],['Pixel vote threshold',vote.vote_threshold&&vote.survivor_count?`${vote.vote_threshold} of ${vote.survivor_count}`:null],['Final dilation radius',vote.dilation_radius_px],['Fit candidates',fp.candidate_count],['World-up eligible fits',(fp.physically_eligible_candidate_ids||[]).join(', ')],['Fits normalized by local-X 180°',normalized.join(', ')],['Fits rejected after normalization',rejected.join(', ')],['Fit VLM selected',fp.selection?.candidate_id],['Fit decision basis',fp.selection?.decision_basis],['Orientation decision basis',orientation.decision_basis],['All fits use voted mask',fp.all_fits_use_selected_mask],['Raw aligned depth',fp.depth_npy_path],['Resolved pose image',value.resolved_pose_path],['Calibration candidate',value.candidate_id],['Error',value.error]]);renderImages('images',value.images||[],'No completed or active run evidence yet.')}catch(error){$('runState').textContent=error.message}}
+async function refreshEvidence(){try{const value=await jsonFetch('/v1/inspection');$('runState').textContent=value.status?`Last evidence: ${value.status} · ${value.stage}`:'No run evidence';const fp=value.foundation_pose||{},masks=value.mask_candidates||{},retention=masks.retention||{},vote=masks.vote||{},readiness=value.arm_provider_readiness||{},orientation=value.orientation_selection||{},vlm=value.vlm||{},fits=Array.isArray(fp.fits)?fp.fits:[],normalized=fits.filter(item=>item.upright_normalization_degrees===180).map(item=>`${item.candidate_id} (${Number(item.arm_base_positive_z_dot_world_raw).toFixed(3)}→${Number(item.arm_base_positive_z_dot_world).toFixed(3)})`),rejected=fits.filter(item=>item.physically_eligible===false).map(item=>`${item.candidate_id} (${Number(item.arm_base_positive_z_dot_world).toFixed(3)})`);meta($('runMeta'),[['Run ID',value.run_id],['Failed stage',value.failed_stage],['VLM route',`${vlm.backend||'—'} / ${vlm.model||'—'}`],['Arm Provider',readiness.provider_id],['Arm readiness',readiness.status],['Assembly stream',readiness.assembly_stream],['Arm profile',value.arm_profile?.model_id],['First-VLM profile guidance',masks.vlm_seed_guidance],['CAD filename sent',fp.cad_filename],['CAD path sent',fp.cad_path],['CAD SHA-256',fp.cad_sha256],['Configured VLM→SAM2 attempts',masks.configured_count],['Produced SAM2 masks',masks.produced_count],['Masks retained for vote',(retention.retained_candidate_ids||[]).join(', ')],['Post-SAM2 VLM review',retention.review_performed===false?'not performed':null],['Pixel vote threshold',vote.vote_threshold&&vote.survivor_count?`${vote.vote_threshold} of ${vote.survivor_count}`:null],['Final dilation radius',vote.dilation_radius_px],['Fit candidates',fp.candidate_count],['World-up eligible fits',(fp.physically_eligible_candidate_ids||[]).join(', ')],['Fits normalized by local-X 180°',normalized.join(', ')],['Fits rejected after normalization',rejected.join(', ')],['Fit VLM selected',fp.selection?.candidate_id],['Fit decision basis',fp.selection?.decision_basis],['Orientation decision basis',orientation.decision_basis],['All fits use voted mask',fp.all_fits_use_selected_mask],['Raw aligned depth',fp.depth_npy_path],['Resolved pose image',value.resolved_pose_path],['Calibration candidate',value.candidate_id],['Error',value.error]]);renderImages('images',value.images||[],'No completed or active run evidence yet.')}catch(error){$('runState').textContent=error.message}}
 async function run(){const button=$('run');button.disabled=true;$('result').textContent='Running…';try{const request=JSON.parse($('request').value),maskCount=Number($('maskCount').value),fitCount=Number($('fitCount').value);if(!Number.isInteger(maskCount)||maskCount<1||maskCount>8)throw new Error('VLM→SAM2 mask attempt count must be an integer from 1 to 8.');if(!Number.isInteger(fitCount)||fitCount<1||fitCount>8)throw new Error('FoundationPose fit count must be an integer from 1 to 8.');request.mask_attempt_count=maskCount;request.fit_candidate_count=fitCount;const value=await jsonFetch('/v1/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(request)});$('result').textContent=JSON.stringify(value,null,2)}catch(error){$('result').textContent=error.message}finally{button.disabled=false;await refreshEvidence()}}
 $('saveProfile').onclick=saveProfile;$('reloadProfile').onclick=()=>loadProfile().catch(e=>$('profileResult').textContent=e.message);$('refresh').onclick=refreshEvidence;$('run').onclick=run;
 Promise.all([loadProfile(),refreshEvidence()]).catch(error=>$('result').textContent=error.message);setInterval(refreshEvidence,3000);
@@ -164,7 +167,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/run":
+        path = self.path.split("?", 1)[0]
+        if path == "/v1/developer/shutdown":
+            self._request_shutdown()
+            return
+        if path != "/v1/run":
             self._json(404, {"error": "not found"})
             return
         try:
@@ -173,6 +180,36 @@ class Handler(BaseHTTPRequestHandler):
             self._json(409, {"error": str(exc)})
         except Exception as exc:
             self._json(500, {"error": str(exc)})
+
+    def _request_shutdown(self) -> None:
+        try:
+            content_type = self.headers.get("Content-Type", "").split(
+                ";",
+                1,
+            )[0]
+            if content_type.strip().lower() != "application/json":
+                raise ValueError(
+                    "developer shutdown requires application/json"
+                )
+            request = self._read_json()
+            if request.get("confirmation") != DEVELOPER_SHUTDOWN_CONFIRMATION:
+                raise ValueError(
+                    "exact developer shutdown confirmation is required"
+                )
+            self._json(
+                202,
+                {
+                    "status": "SHUTDOWN_REQUESTED",
+                    "skill_id": "locate_arm_base",
+                },
+            )
+            threading.Thread(
+                target=self.server.shutdown,
+                name="locate-arm-base-ui-shutdown",
+                daemon=True,
+            ).start()
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._json(400, {"error": str(exc)})
 
     def do_PUT(self) -> None:  # noqa: N802
         if self.path != "/v1/profile":
@@ -225,6 +262,7 @@ def main() -> int:
     try:
         server.serve_forever()
     finally:
+        server.server_close()
         skill.close()
     return 0
 

@@ -293,6 +293,10 @@ class ConfigTests(unittest.TestCase):
             0.05,
         )
         self.assertEqual(
+            config["trajectory"]["arrival_position_tolerance_rad"],
+            [0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
+        )
+        self.assertEqual(
             config["trajectory"]["one_shot_arrival_settle_timeout_s"],
             1.5,
         )
@@ -348,7 +352,11 @@ class ConfigTests(unittest.TestCase):
             result = ensure_controller_config(root, active_path)
 
             self.assertTrue(result.repaired)
-            self.assertEqual(result.config["managed_policy_revision"], 9)
+            self.assertEqual(result.config["managed_policy_revision"], 10)
+            self.assertEqual(
+                result.config["trajectory"]["arrival_position_tolerance_rad"],
+                [0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
+            )
             self.assertEqual(
                 result.config["manager_authority"]["resource_id"],
                 "ASSEMBLY_ARM_GROUP",

@@ -1,18 +1,18 @@
 {
   "skill_type": "locate_arm_base",
-  "version": "1.8.1",
+  "version": "1.10.1",
   "display_name": "Locate Arm Base",
-  "description": "Locate a profiled robot arm base from CAD and current RGB-D evidence, resolve only model-profile orientation candidates with reference-image VLM evidence, and emit a review-only world transform candidate.",
+  "description": "Locate a profiled robot arm base from CAD and current RGB-D evidence, resolve bounded orientation from one coarse effector-point VLM call plus timestamped FK or an Agent-supplied rough world +X direction, and emit a review-only world transform candidate.",
   "lifecycle": "FINITE",
   "agent_discovery": {
     "schema_version": 3,
     "discoverable": true,
     "tool_name": "locate_arm_base",
-    "description": "Locate the stationary robot arm base in the current world frame. The Skill owns the base CAD and reference images, creates configurable independent VLM-to-SAM2 masks, removes bad masks with VLM review, pixel-votes and dilates the survivors once, repeats independent fits of that final mask through the generic FoundationPose Provider, normalizes only the known upside-down pose family with a world-verified local-X half-turn, and asks the VLM to select only a profiled local-Z rotation. It creates a non-motion-usable candidate that must be reviewed and activated by Manager. When used in a Limited Graph, allocate at least 180 seconds.",
+    "description": "Locate the stationary robot arm base in the current world frame. The Skill owns the base CAD/profile, generates independent VLM-to-SAM2 masks, retains every mask, votes and dilates once, runs repeated generic FoundationPose fits with VLM fit selection, and applies bounded world-up normalization. It resolves profiled local-Z yaw from exactly one coarse point on the active effector plus timestamped Basic FK; one point is sufficient and VLM confidence is audit-only. If the effector is absent, retry with rough_arm_base_positive_x_world, which performs no effector VLM call. The result is non-motion-usable until Manager review and activation. In a Limited Graph, allocate at least 180 seconds.",
     "when_to_use": [
       "The current stationary camera rig needs a reviewed world-to-arm-base transform.",
       "The arm base is visible in current aligned RGB-D evidence and the current world axis is established.",
-      "A replaceable end effector makes gripper-dependent arm-base orientation assumptions invalid."
+      "The active mounted-effector profile and timestamped arm FK can disambiguate the base's bounded local-Z rotation."
     ],
     "when_not_to_use": [
       "Only the VIO world axis or world origin is requested.",
@@ -20,7 +20,7 @@
       "The requested robot base has no immutable Skill-owned model profile."
     ],
     "side_effects": [
-      "Captures one current aligned RGB-D snapshot and invokes independent VLM seed prompts, independent SAM2 masks, VLM bad-mask review, a coded half-survivor pixel vote, fit-candidate selection, and orientation selection.",
+      "Captures one current aligned RGB-D snapshot and invokes independent VLM seed prompts, independent SAM2 masks, a coded half-of-all-acquired-masks pixel vote, fit-candidate selection, and at most one coarse effector-point VLM call for orientation.",
       "Requests HOT residency for the assembly-selected arm Provider through Manager and waits for its profile-binding state.",
       "Temporarily activates the generic SAM2 segmentation and FoundationPose pose Providers through Manager and performs the configured number of independent fits on the voted and once-dilated mask.",
       "Persists and publishes one immutable review-only calibration candidate; it does not move hardware or activate the transform."
@@ -35,7 +35,15 @@
     ],
     "input_schema": {
       "type": "object",
-      "properties": {},
+      "properties": {
+        "rough_arm_base_positive_x_world": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {"type": "number"},
+          "description": "Optional rough world-frame direction pointing along arm-base +X. Supply it only when a previous locate_arm_base result requested an orientation hint because the gripper/effector was not visually identified. The Skill normalizes it and uses it only to select among the profiled 0/90/180/270-degree rotations."
+        }
+      },
       "required": [],
       "additionalProperties": false
     },
@@ -98,8 +106,8 @@
             "schema": {"const": "midbrain.skill.locate_arm_base.failed_result"},
             "status": {"const": "FAILED"},
             "workflow_complete": {"const": true},
-            "terminal_failure": {"const": true},
-            "retry_allowed": {"const": false},
+            "terminal_failure": {"type": "boolean"},
+            "retry_allowed": {"type": "boolean"},
             "candidate_published": {"const": false},
             "physical_motion_submitted": {"const": false}
           },
@@ -156,6 +164,7 @@
   "required_capabilities": [
     "camera.rgbd.bundle",
     "robot_arm.assembly_state",
+    "robot_arm.transforms.local",
     "camera.rgbd_geometry",
     "world.transforms.timestamped",
     "perception.image.sam2.segment",
@@ -178,6 +187,7 @@
       "label": "Locate Arm Base",
       "url": "http://127.0.0.1:7114/",
       "launch_command": ".\\skills\\locate_arm_base\\scripts\\run_ui.ps1",
+      "stop_command": ".\\skills\\locate_arm_base\\scripts\\stop_ui.ps1",
       "availability": "SEPARATE_LOCAL_PROCESS"
     }
   }

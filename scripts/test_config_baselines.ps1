@@ -96,12 +96,23 @@ $requiredFiles = @(
     "providers/rebot_arm_integrated/config_templates/controller.default.json",
     "providers/rebot_arm_contact/config_templates/provider_entry.json",
     "providers/rebot_arm_contact/config_templates/controller.default.json",
+    "providers/rebot_arm_grip/config_templates/provider_entry.json",
+    "providers/rebot_arm_grip/config_templates/controller.default.json",
     "skills/slicing/config_templates/motion_profiles.default.json",
+    "skills/grip/config_templates/motion_profiles.default.json",
+    "skills/grip-object/config_templates/motion_profiles.default.json",
     "skills/locate_arm_base/config_templates/skill.default.json",
     "providers/rebot_arm_dm/scripts/setup.ps1",
     "providers/rebot_arm_integrated/scripts/setup.ps1",
     "providers/rebot_arm_contact/scripts/setup.ps1",
+    "providers/rebot_arm_grip/scripts/setup.ps1",
     "skills/slicing/scripts/setup.ps1",
+    "skills/grip_work_runtime/scripts/setup.ps1",
+    "skills/grip/scripts/setup.ps1",
+    "skills/grip-object/scripts/setup.ps1",
+    "skills/move-carried-object/scripts/setup.ps1",
+    "skills/let-go/scripts/setup.ps1",
+    "skills/lay-flat/scripts/setup.ps1",
     "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py",
     "providers/foundation_pose/scripts/setup.ps1",
     "providers/orbbec_femto_bolt/python/orbbec_femto_provider/device_calibration.py",
@@ -137,6 +148,12 @@ $jsonFiles = @(
     "providers/rebot_arm_dm/config_templates/calibration_collision_model.json",
     "providers/rebot_arm_integrated/config_templates/provider_entry.json",
     "providers/rebot_arm_integrated/config_templates/controller.default.json",
+    "providers/rebot_arm_contact/config_templates/provider_entry.json",
+    "providers/rebot_arm_contact/config_templates/controller.default.json",
+    "providers/rebot_arm_grip/config_templates/provider_entry.json",
+    "providers/rebot_arm_grip/config_templates/controller.default.json",
+    "skills/grip/config_templates/motion_profiles.default.json",
+    "skills/grip-object/config_templates/motion_profiles.default.json",
     "skills/locate_arm_base/config_templates/skill.default.json"
 )
 foreach ($relativePath in $jsonFiles) {
@@ -157,6 +174,9 @@ Assert-True `
 Assert-True `
     -Condition ((Get-NormalizedText $rootSystem) -ceq (Get-NormalizedText $agentSystem)) `
     -Message "Root and Test Agent system.env templates have drifted"
+Assert-FileContains `
+    -RelativePath "config/system.env.example" `
+    -Tokens @("perform_relative_effector_motion")
 
 $rootApiKeys = Join-Path $workspace "config/api_keys.env.example"
 $coreApiKeys = Join-Path $workspace "platform_core/config_templates/api_keys.env.example"
@@ -258,13 +278,23 @@ foreach ($key in @("OPENAI_API_KEY", "GEMINI_API_KEY")) {
         Assert-True -Condition ([string]::IsNullOrEmpty($apiValues[$key])) -Message "$key must be blank in api_keys.env.example"
     }
 }
-Assert-True `
-    -Condition $apiValues.ContainsKey("MIDBRAIN_CONTACT_SLICING_SECRET") `
-    -Message "api_keys.env.example is missing MIDBRAIN_CONTACT_SLICING_SECRET"
-if ($apiValues.ContainsKey("MIDBRAIN_CONTACT_SLICING_SECRET")) {
-    Assert-True `
-        -Condition ([string]::IsNullOrEmpty($apiValues["MIDBRAIN_CONTACT_SLICING_SECRET"])) `
-        -Message "MIDBRAIN_CONTACT_SLICING_SECRET must be blank in api_keys.env.example"
+foreach ($key in @(
+    "MIDBRAIN_CONTACT_SLICING_SECRET",
+    "MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET",
+    "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET",
+    "MIDBRAIN_CONTACT_MOVE_CARRIED_OBJECT_SECRET",
+    "MIDBRAIN_CONTACT_LAY_FLAT_SECRET",
+    "MIDBRAIN_GRIP_OBJECT_SECRET",
+    "MIDBRAIN_GRIP_GENERIC_SECRET",
+    "MIDBRAIN_GRIP_LET_GO_SECRET",
+    "MIDBRAIN_GRIP_LAY_FLAT_SECRET"
+)) {
+    Assert-True -Condition $apiValues.ContainsKey($key) -Message "api_keys.env.example is missing $key"
+    if ($apiValues.ContainsKey($key)) {
+        Assert-True `
+            -Condition ([string]::IsNullOrEmpty($apiValues[$key])) `
+            -Message "$key must be blank in api_keys.env.example"
+    }
 }
 foreach ($key in @("OPENAI_AGENT_MODEL", "GEMINI_ROBOTICS_MODEL", "OPENAI_VISION_MODEL")) {
     Assert-True -Condition $apiValues.ContainsKey($key) -Message "api_keys.env.example is missing optional model selector $key"
@@ -278,6 +308,54 @@ Assert-True `
     -Condition ($armCalibration.assembly_identity.serial -eq "UNASSIGNED") `
     -Message "Basic arm calibration baseline must not contain a real serial"
 
+$armModel = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_dm/config_templates/arm_model.factory.json") -Raw | ConvertFrom-Json
+$wristOperationalDegrees = @{
+    joint4 = 85.0
+    joint5 = 90.0
+    joint6 = 170.0
+}
+foreach ($jointName in $wristOperationalDegrees.Keys) {
+    $joint = $armModel.joints | Where-Object { $_.name -eq $jointName } | Select-Object -First 1
+    $expectedRadians = $wristOperationalDegrees[$jointName] * [Math]::PI / 180.0
+    Assert-True `
+        -Condition (
+            [Math]::Abs([double]$joint.operational_limit_rad[0] + $expectedRadians) -lt 0.000000001 -and
+            [Math]::Abs([double]$joint.operational_limit_rad[1] - $expectedRadians) -lt 0.000000001
+        ) `
+        -Message "Basic $jointName operational envelope must match the owner-observed limit"
+}
+
+$gripControlProfile = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_dm/profiles/effectors/rebot_b601_dm_bare_gripper_grip_control.v1.json") -Raw | ConvertFrom-Json
+Assert-True `
+    -Condition (
+        $gripControlProfile.joint_control.closing_direction -eq "INCREASING_POSITION_RAD" -and
+        [Math]::Abs([double]$gripControlProfile.joint_control.fully_open_position_rad + (280.0 * [Math]::PI / 180.0)) -lt 0.000000001 -and
+        [Math]::Abs([double]$gripControlProfile.joint_control.open_position_rad + [Math]::PI) -lt 0.000000001 -and
+        [Math]::Abs([double]$gripControlProfile.joint_control.default_velocity_rad_s - 4.0) -lt 0.000000001 -and
+        [Math]::Abs([double]$gripControlProfile.joint_control.maximum_velocity_rad_s - 4.0) -lt 0.000000001 -and
+        $gripControlProfile.contact_detection.decision_basis -eq "ABSOLUTE_MEASURED_MOTOR_TORQUE_ONLY" -and
+        [Math]::Abs([double]$gripControlProfile.contact_detection.minimum_absolute_measured_torque_nm - 0.15) -lt 0.000000001 -and
+        [int]$gripControlProfile.contact_detection.stable_samples_at_50hz -eq 10 -and
+        [Math]::Abs([double]$gripControlProfile.mit_position_transition.default_duration_s - 1.0) -lt 0.000000001
+    ) `
+    -Message "Grip profile must preserve closure, opening, torque-only contact, and MIT transition semantics"
+
+foreach ($relativeProfilePath in @(
+    "skills/grip/config_templates/motion_profiles.default.json",
+    "skills/grip-object/config_templates/motion_profiles.default.json"
+)) {
+    $motionProfiles = Get-Content -LiteralPath (Join-Path $workspace $relativeProfilePath) -Raw | ConvertFrom-Json
+    $defaultMotionProfile = $motionProfiles.profiles | Where-Object {
+        $_.profile_number -eq $motionProfiles.default_profile_number
+    } | Select-Object -First 1
+    Assert-True `
+        -Condition (
+            [Math]::Abs([double]$defaultMotionProfile.grip_velocity_rad_s - 4.0) -lt 0.000000001 -and
+            [Math]::Abs([double]$defaultMotionProfile.contact_timeout_s - 10.0) -lt 0.000000001
+        ) `
+        -Message "$relativeProfilePath must request the attended-development 4 rad/s close limit and a 10 second contact timeout"
+}
+
 $integratedConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_integrated/config_templates/controller.default.json") -Raw | ConvertFrom-Json
 Assert-True -Condition ($integratedConfig.schema_version -eq 3) -Message "Integrated clean controller template must use schema version 3"
 Assert-True `
@@ -286,12 +364,29 @@ Assert-True `
 
 $contactConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_contact/config_templates/controller.default.json") -Raw | ConvertFrom-Json
 $contactSkills = @($contactConfig.authorization.skill_secret_envs.PSObject.Properties.Name)
+$expectedContactSkills = @(
+    "contact.slicing",
+    "grip.grip",
+    "grip.grip_object",
+    "contact.move_carried_object",
+    "grip.lay_flat"
+)
 Assert-True `
-    -Condition ($contactSkills.Count -eq 1 -and $contactSkills[0] -eq "contact.slicing") `
-    -Message "Contact clean controller template must allowlist only contact.slicing"
+    -Condition ($contactSkills.Count -eq $expectedContactSkills.Count -and @($contactSkills | Where-Object { $_ -notin $expectedContactSkills }).Count -eq 0) `
+    -Message "Contact clean controller template must allowlist only the approved contact-work Skills"
 Assert-True `
     -Condition ([double]$contactConfig.basic.maximum_feedback_age_ms -eq 200.0) `
     -Message "Contact Basic-feedback freshness ceiling must be 200 ms"
+
+$gripConfig = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_grip/config_templates/controller.default.json") -Raw | ConvertFrom-Json
+$gripSkills = @($gripConfig.authorization.skill_secret_envs.PSObject.Properties.Name)
+$expectedGripSkills = @("grip.grip", "grip.grip_object", "grip.let_go", "grip.lay_flat")
+Assert-True `
+    -Condition ($gripSkills.Count -eq $expectedGripSkills.Count -and @($gripSkills | Where-Object { $_ -notin $expectedGripSkills }).Count -eq 0) `
+    -Message "Grip clean controller template must allowlist only the approved gripping Skills"
+Assert-True `
+    -Condition ([double]$gripConfig.control.rate_hz -eq 50.0 -and [double]$gripConfig.thermal.new_grip_gate_c -eq 85.0) `
+    -Message "Grip clean controller template must retain the 50 Hz loop and 85 C new-grip gate"
 
 $slicingMotionProfiles = Get-Content -LiteralPath (Join-Path $workspace "skills/slicing/config_templates/motion_profiles.default.json") -Raw | ConvertFrom-Json
 Assert-True `
@@ -322,10 +417,22 @@ Assert-FileContains `
     -Tokens @("controller.default.json", "controller.json")
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_contact/scripts/setup.ps1" `
-    -Tokens @("controller.default.json", "MIDBRAIN_CONTACT_SLICING_SECRET", "RandomNumberGenerator")
+    -Tokens @("controller.default.json", "MIDBRAIN_CONTACT_SLICING_SECRET", "MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET", "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET", "RandomNumberGenerator")
+Assert-FileContains `
+    -RelativePath "providers/rebot_arm_grip/scripts/setup.ps1" `
+    -Tokens @("controller.default.json", "MIDBRAIN_GRIP_GENERIC_SECRET", "MIDBRAIN_GRIP_OBJECT_SECRET", "RandomNumberGenerator", ".venv")
+Assert-FileContains `
+    -RelativePath "platform_core/scripts/setup_workspace.ps1" `
+    -Tokens @("Setting up Contact Provider", "providers\rebot_arm_contact\scripts\setup.ps1", "Setting up Grip Provider")
 Assert-FileContains `
     -RelativePath "skills/slicing/scripts/setup.ps1" `
     -Tokens @("motion_profiles.default.json", "motion_profiles.json")
+Assert-FileContains `
+    -RelativePath "skills/grip/scripts/setup.ps1" `
+    -Tokens @("grip_velocity_rad_s", "contact_timeout_s", "0.7", "10.0")
+Assert-FileContains `
+    -RelativePath "skills/grip-object/scripts/setup.ps1" `
+    -Tokens @("grip_velocity_rad_s", "contact_timeout_s", "0.7", "10.0")
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/python/rebot_arm_integrated/config_repair.py" `
     -Tokens @("controller.default.json", "active_path.parent.mkdir", "active_path.write_text")
@@ -340,7 +447,7 @@ Assert-FileContains `
     -Tokens @(".venv", "Locate Arm Base", "pytest")
 Assert-FileContains `
     -RelativePath "test_agent/scripts/setup.ps1" `
-    -Tokens @("api_keys.env.example", "system.env.example", "Test-Path -LiteralPath")
+    -Tokens @("api_keys.env.example", "system.env.example", "Test-Path -LiteralPath", "perform_relative_effector_motion")
 
 if (Get-Command git -ErrorAction SilentlyContinue) {
     Push-Location $workspace
@@ -354,7 +461,10 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
             "providers/rebot_arm_dm/config/arm_calibration.json",
             "providers/rebot_arm_integrated/config/controller.json",
             "providers/rebot_arm_contact/config/controller.json",
+            "providers/rebot_arm_grip/config/controller.json",
             "skills/slicing/config/motion_profiles.json",
+            "skills/grip/config/motion_profiles.json",
+            "skills/grip-object/config/motion_profiles.json",
             "skills/locate_arm_base/config/calibrations/example.json"
         )) {
             & git check-ignore -q --no-index -- $activePath

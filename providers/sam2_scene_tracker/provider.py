@@ -100,9 +100,6 @@ def load_config(path: Path) -> dict[str, Any]:
     aabb_freshness_ms = int(value.get("aabb_freshness_ms", 5000))
     if not 1000 <= aabb_freshness_ms <= 60_000:
         raise ValueError("aabb_freshness_ms must be in [1000, 60000]")
-    attempts = int(value.get("mask_quality_maximum_attempts", 3))
-    if attempts != 3:
-        raise ValueError("mask_quality_maximum_attempts must be 3")
     padding = float(value.get("prompt_box_padding_fraction", 0.03))
     if not 0.0 <= padding <= 0.25:
         raise ValueError("prompt_box_padding_fraction must be in [0, 0.25]")

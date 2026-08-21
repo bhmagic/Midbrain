@@ -32,6 +32,7 @@ retain their own entry points, including:
 .\providers\rebot_arm_dm\scripts\verify.ps1
 .\providers\rebot_arm_integrated\scripts\verify.ps1
 .\providers\rebot_arm_contact\scripts\verify.ps1
+.\providers\rebot_arm_grip\scripts\verify.ps1
 .\skills\contact_work_runtime\scripts\verify.ps1
 .\skills\refine-arm-root-translation\scripts\check.ps1
 ```
@@ -147,8 +148,9 @@ sensing, and strict session-context sizing remain separate qualification; see
 - Contact Work remains a separate Provider: it accepts only an exact
   Skill-signed plan, commands Basic directly in `POSITION_EFFORT_LIMITED`,
   streams Contact-owned Cartesian segments at Basic's advertised 50 Hz control
-  cadence, immediately replaces endpoints or segments, and relaxes on explicit
-  cleanup or timeout.
+  cadence, chains replacements from the prior commanded setpoint, retains the
+  mode guard across moves, and relaxes on explicit cleanup or timeout when no
+  carry is confirmed.
 - Sequential segment IK knots stay within the configured 2 mm translation
   spacing, retain requested orientation and hard locks, and produce changing
   joint targets rather than repeated submission of one final endpoint.
@@ -159,6 +161,18 @@ sensing, and strict session-context sizing remain separate qualification; see
 - Contact tests do not use low-torque or low-stiffness load-bearing states.
 - Contact Provider disposition and joint telemetry do not claim that an
   intentionally unreachable Cartesian endpoint succeeded.
+- Shared Contact runtimes start a signed stage dwell only after matching
+  `trajectory_complete` evidence. Grip dwell begins only after stable grip
+  contact, and neither elapsed dwell nor contact inference proves task success.
+- The Grip Provider owns the gripper-group 50 Hz stream, new-grip thermal gate,
+  torque-only contact inference, and runtime attachment identity. A normal
+  failed grip verifies functional opening, enters MIT float, relaxes Contact,
+  returns an explicit unsuccessful result, and creates no carry.
+- Carry confirmation requires matching Contact/Grip carry and attachment
+  identities plus `POSITION_EFFORT_LIMITED` on every active joint. Ordinary
+  carried motion stays in Contact; release opens before gripper float and arm
+  relaxation. Lay Flat exposes its initial Integrated/FLOAT interval as an
+  explicit exception rather than claiming uninterrupted all-joint hold.
 - The Slicing numeric developer surface freezes a resolved plan before motion,
   resolves one relative begin point from a captured effector origin, derives
   the slice endpoint and measured-start-relative outward displacement, and

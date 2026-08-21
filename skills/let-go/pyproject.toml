@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-let-go-skill"
+version = "0.1.1"
+description = "Finite release, MIT transition, and relax Skill"
+requires-python = ">=3.11"
+dependencies = ["midbrain-grip-work-runtime>=0.1,<0.2"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["let_go_skill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

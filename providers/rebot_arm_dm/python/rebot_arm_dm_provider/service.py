@@ -233,6 +233,23 @@ class ArmProviderService:
         )
         return {"status": "payload_updated", "payload": value}
 
+    def operational_mode_guard(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._assert_operational_authority()
+        group_resource_id = self._group_resource_id(payload)
+        if group_resource_id is None:
+            raise ValueError("command mode guards require an actuator-group resource_id")
+        lease = self.controller.set_group_required_command_mode(
+            group_resource_id,
+            str(payload["lease_id"]),
+            int(payload["fencing_generation"]),
+            payload.get("required_command_mode"),
+        )
+        return {
+            "status": "mode_guard_updated",
+            "resource_id": group_resource_id,
+            "required_command_mode": lease.required_command_mode,
+        }
+
     def _registration_loop(self) -> None:
         next_register = 0.0
         next_heartbeat = 0.0
@@ -489,6 +506,7 @@ class ArmProviderService:
             "lease_id": lease.lease_id,
             "fencing_generation": lease.fencing_generation,
             "resource_id": lease.resource_id,
+            "required_command_mode": lease.required_command_mode,
             "expires_in_ms": int((lease.expires_monotonic-time.monotonic())*1000),
         }
 
@@ -547,7 +565,7 @@ class ArmProviderService:
         elapsed_ms=(time.monotonic()-started)*1000.0
         if elapsed_ms>100.0:
             print(f"[basic-ingress] slow endpoint=lease-renew elapsed_ms={elapsed_ms:.1f}")
-        return {"lease_id":lease.lease_id,"fencing_generation":lease.fencing_generation,"resource_id":lease.resource_id,"expires_in_ms":int((lease.expires_monotonic-time.monotonic())*1000),"ingress_latency_ms":elapsed_ms}
+        return {"lease_id":lease.lease_id,"fencing_generation":lease.fencing_generation,"resource_id":lease.resource_id,"required_command_mode":lease.required_command_mode,"expires_in_ms":int((lease.expires_monotonic-time.monotonic())*1000),"ingress_latency_ms":elapsed_ms}
 
     def command(self,payload:dict[str,Any]) -> dict[str,Any]:
         started=time.monotonic()
@@ -571,7 +589,7 @@ class ArmProviderService:
     def _handler_type(self):
         service=self
         class Handler(BaseHTTPRequestHandler):
-            server_version="RebotArmProvider/0.1.24"
+            server_version="RebotArmProvider/0.1.32"
             def log_message(self,format,*args):
                 # HTTP access lines are suppressed. Meaningful lifecycle and lease
                 # events are emitted explicitly by the controller/service.
@@ -664,6 +682,7 @@ class ArmProviderService:
                     if self.path=='/v1/control/lease': return self._json(200,service.acquire_operational_lease(body))
                     if self.path=='/v1/control/lease/renew': return self._json(200,service.renew_operational_lease(body))
                     if self.path=='/v1/control/lease/release': return self._json(200,service.release_operational_lease(body))
+                    if self.path=='/v1/control/lease/mode-guard': return self._json(200,service.operational_mode_guard(body))
                     if self.path=='/v1/control/command': return self._json(200,service.operational_command(body))
                     if self.path=='/v1/control/payload': return self._json(200,service.operational_payload(body))
                     if self.path=='/v1/calibration/lease': return self._json(200,service.acquire_lease(body))

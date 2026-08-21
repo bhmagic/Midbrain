@@ -6,8 +6,10 @@ Release history is recorded in [CHANGELOG.md](CHANGELOG.md).
 candidate for the world-to-arm-base transform. The active robot assembly
 selects the arm-model profile, and that profile's namespaced flexible appendix
 selects the base CAD, VLM reference images, first-VLM target guidance, semantic
-origin, and bounded orientation candidates. The workflow remains
-effector-independent.
+origin, and bounded orientation candidates. The active mounted-effector profile
+supplies the visual landmark semantics used for the final bounded rotation, and
+the Basic arm Provider supplies timestamped FK. This remains compatible with
+replaceable effectors without assuming one fixed gripper geometry.
 
 The Skill owns validation and interpretation of its arm-profile appendix. CAD
 and reference assets remain Skill-owned, while their exact paths and hashes are
@@ -37,9 +39,9 @@ functions.
    `perception.image.sam2.segment`; snapshot and verify every mask artifact.
    The generic Provider owns segmentation only and does not choose which
    robot-semantic mask is usable.
-5. Render every independent SAM2 mask and ask one mask-review VLM to remove bad
-   candidates. For every pixel, retain it when at least half of the surviving
-   masks contain that pixel (`ceil(survivor_count / 2)`). Dilate that one voted
+5. Render and retain every successfully acquired SAM2 mask without a post-SAM2
+   VLM review. For every pixel, retain it when at least half of all acquired
+   masks contain that pixel (`ceil(acquired_mask_count / 2)`). Dilate that one voted
    mask exactly once using the configured final radius. The default mask-attempt
    count is two, but the developer UI may set it from 1–8 for one run.
 6. Request FoundationPose HOT residency once, then reuse the single voted and
@@ -57,14 +59,19 @@ functions.
    remain ambiguous, one final tie-break call is allowed. Acceptance requires
    either the normal confidence threshold or a unique candidate with at least
    two votes above the configured consensus floor.
-7. Render one full-scene contact sheet for the profile's exact local-Z
-   candidates: 0, 90, 180, and 270 degrees. Ask the VLM to select only one
-   candidate by comparing the fixed base and first-arm geometry with the
-   immutable references. Full-arm references may intentionally omit the
-   interchangeable effector. The same bounded two-call-plus-one-tie-break
-   consensus rule applies when orientation remains below the normal confidence
-   threshold. Render a separate selected-pose overlay after the bounded
-   world-up and local-Z correction, including the final semantic axes.
+7. Make exactly one VLM request against the current RGB image to recognize one
+   or more named visual points from the active mounted-effector profile. One
+   recognized point is sufficient; its reported confidence is audit evidence,
+   not an acceptance gate. Query Basic for the controlled-effector FK at the
+   RGB-D capture timestamp, project the profiled effector landmark under each
+   allowed 0/90/180/270-degree local-Z candidate, and deterministically choose
+   the closest projected candidate. If the VLM cannot identify the effector,
+   return a retryable result asking the Agent to rerun with
+   `rough_arm_base_positive_x_world`, a rough world direction pointing along
+   arm-base +X. That rerun selects the nearest bounded candidate from the world
+   direction and performs no effector VLM call. Render the recognized point,
+   projected candidates, selected correction, and final semantic axes as
+   evidence.
 8. For a full run, query the captured timestamp again and require the Local VIO
    frame, epoch, and immutable historical transform to match the binding made
    before fitting. Then
@@ -74,10 +81,11 @@ functions.
    candidate. Only Resource Provider Manager can validate review and activate
    `transform.world.arm_base`.
 
-The Skill never observes or assumes a fixed gripper, tool, end-effector shape,
-or FK relationship. VLM output cannot introduce an arbitrary quaternion or
-translation: it can only select a candidate already defined by the model
-profile.
+The Skill never embeds a fixed gripper or tool identity. It follows the active
+assembly's mounted-effector profile and Basic's timestamped controlled-frame
+FK. VLM output supplies only a coarse image point and cannot introduce an
+arbitrary quaternion or translation; coded geometry can choose only a rotation
+candidate already defined by the arm-model profile.
 
 ## Setup and UI
 
@@ -96,10 +104,14 @@ reference/current/mask/candidate image supplied to a VLM or pose Provider,
 the profile-backed first-VLM guidance, all mask overlays, the voted and
 once-dilated masks, all projected-CAD fit renderings, the selected fit, the
 resolved post-rotation pose and semantic axes, per-stage timings, a derived
-depth preview, and the final result. The Developer Agent window receives every
-mask and fit overlay plus the distinct resolved post-rotation pose as separate
-visual-evidence cards, including structured failed runs. The default limited visual test runs
-through independent VLM→SAM2 attempts, bad-mask review, pixel voting, one
+depth preview, effector/FK candidate overlay, and final result. Those detailed
+artifacts remain available in the Skill developer surface. The Developer Agent
+window receives at most three ordered visual-evidence cards: one RGB frame with
+all SAM2 candidates in distinct mask colors; one raw-RGB VLM-point card only
+when the effector VLM route ran; and one final mask-plus-CAD raster with
+toggleable vector axes. Final axes default on and pre-rotation axes default off.
+The default limited visual test runs
+through independent VLM→SAM2 attempts, all-mask retention, pixel voting, one
 dilation, repeated voted-mask fitting, and bounded orientation
 in the camera frame without requiring a world axis or publishing a calibration
 candidate. Separate mask-attempt and fit-count controls apply to one developer
@@ -108,6 +120,13 @@ candidate. Separate mask-attempt and fit-count controls apply to one developer
 ```powershell
 .\skills\locate_arm_base\scripts\run_ui.ps1
 ```
+
+The standalone process advertises a matching `stop_command`. Whole-workspace
+shutdown requests its loopback-only confirmed shutdown route, waits for the
+HTTP listener to close, and then continues with Provider shutdown. The stop
+script verifies the exact `locate_arm_base` health identity before acting and
+can remove a verified older developer process that predates the graceful
+route.
 
 An Agent-owned run passes its selected visual model into the Skill explicitly.
 The Skill derives the matching Gemini or OpenAI transport without importing the
@@ -146,21 +165,36 @@ helps distinguish the CAD-defined base joint from external support hardware.
 The optional `vlm_seed_guidance` string is limited to 2000 characters and is
 sent only to the VLM seed-localization stage.
 
+The orientation stage resolves its landmark from the active mounted-effector
+profile's `midbrain.skill.locate_arm_base.v1` extension. Its coarse point names
+and visual description deliberately reuse the recognizable effector features
+qualified by the arm-root alignment work, but the two Skills do not read each
+other's private extension or inherit each other's depth and point-quality
+policy. When the Locate Arm Base extension is absent, this Skill uses the active
+effector's controlled-frame origin as a generic coarse compatibility fallback.
+Basic remains the only owner of joint state and FK; the Skill consumes the
+timestamped transform through the Provider-neutral transform client.
+
 ## Safety and qualification
 
 This Skill submits no physical motion. Its result cannot be consumed as a
 motion transform until Manager verifies the immutable hash, signed review,
-bounded orientation proof, VLM confidence, FoundationPose audit-only raw-ranking
+bounded orientation proof, fit-selection VLM confidence, deterministic
+effector-point/FK or Agent-world-direction provenance, deterministic
+all-acquired-mask vote provenance, FoundationPose audit-only raw-ranking
 provenance, timestamped world-axis proof, spatial conventions, and current
 canonical camera identity and calibration revision.
 
 Synthetic tests prove composition, hash immutability, fail-closed confidence,
-independent VLM-prompt-to-SAM2 routing, VLM bad-mask rejection, at-least-half
-pixel voting, one post-vote dilation, independent fit counts larger than mask
+independent VLM-prompt-to-SAM2 routing, absence of a post-SAM2 VLM review,
+at-least-half-of-all-acquired-masks pixel voting, one post-vote dilation,
+independent fit counts larger than mask
 attempt counts, repeated use of the final mask, transient structured-output
 recovery, stale-BufferRef recovery, bounded normalization of upside-down poses,
 rejection of non-upright poses, qualified-majority tie breaking, epoch-scoped
-world binding, and acceptance of finite negative raw ranking values.
+world binding, a single low-confidence effector point without a point-quality
+gate, actionable failure when no effector is identified, zero-VLM world-vector
+retry, and acceptance of finite negative raw ranking values.
 Physical qualification still requires
 ground-truth runs across the intended camera viewpoints, occlusions, lighting,
 base finishes, and every supported robot profile.

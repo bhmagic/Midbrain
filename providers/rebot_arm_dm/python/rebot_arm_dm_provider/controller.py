@@ -35,6 +35,7 @@ class ControlLease:
     holder: str
     expires_monotonic: float
     resource_id: str = "robot_arm.primary"
+    required_command_mode: str | None = None
 
     def valid(self, lease_id: str, generation: int, now: float) -> bool:
         return self.lease_id == lease_id and self.fencing_generation == generation and now < self.expires_monotonic
@@ -287,6 +288,7 @@ class ArmController:
                 "fencing_generation": lease.fencing_generation,
                 "holder": lease.holder,
                 "resource_id": lease.resource_id,
+                "required_command_mode": lease.required_command_mode,
                 "active": now < lease.expires_monotonic,
                 "expires_in_ms": max(
                     0, int((lease.expires_monotonic - now) * 1000)
@@ -827,6 +829,79 @@ class ArmController:
             current.expires_monotonic = now + timeout
             return current
 
+    def set_group_required_command_mode(
+        self,
+        resource_id: str,
+        lease_id: str,
+        generation: int,
+        required_command_mode: str | None,
+    ) -> ControlLease:
+        """Fence one group to an exact command mode under its current lease."""
+
+        normalized_resource = str(resource_id).strip()
+        normalized_mode = (
+            None
+            if required_command_mode is None
+            else str(required_command_mode).strip().upper()
+        )
+        if normalized_mode not in {None, "POSITION_EFFORT_LIMITED"}:
+            raise ValueError(
+                "required command mode must be POSITION_EFFORT_LIMITED or null"
+            )
+        now = time.monotonic()
+        with self.ingress_lock:
+            current = self.group_leases.get(normalized_resource)
+            if current is None:
+                raise LeasePermissionError(
+                    "NO_ACTIVE_LEASE",
+                    f"no active lease exists for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if now >= current.expires_monotonic:
+                raise LeasePermissionError(
+                    "LEASE_EXPIRED",
+                    f"lease for {normalized_resource} expired",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if (
+                current.lease_id != lease_id
+                or current.fencing_generation != generation
+            ):
+                raise LeasePermissionError(
+                    "STALE_LEASE",
+                    f"mode guard used a stale lease for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if normalized_mode is not None:
+                pending = self.group_pending.get(normalized_resource)
+                required_indices = self.resource_joint_indices[normalized_resource]
+                if pending is None:
+                    raise LeasePermissionError(
+                        "MODE_GUARD_NOT_PRIMED",
+                        "a group must have a complete matching command before its mode guard is enabled",
+                        {"resource_id": normalized_resource},
+                    )
+                if set(pending.commands) != set(required_indices) or any(
+                    command.mode != normalized_mode
+                    for command in pending.commands.values()
+                ):
+                    raise LeasePermissionError(
+                        "MODE_GUARD_NOT_PRIMED",
+                        "the pending group command does not completely match the requested mode guard",
+                        {"resource_id": normalized_resource},
+                    )
+            current.required_command_mode = normalized_mode
+            self._record_lease_event_ingress_locked(
+                "MODE_GUARD_UPDATED",
+                (
+                    "actuator-group command mode guard cleared"
+                    if normalized_mode is None
+                    else f"actuator-group command mode guard set to {normalized_mode}"
+                ),
+                lease=current,
+            )
+            return current
+
     def release_lease(self, lease_id: str, generation: int, *, fallback_to_float: bool = True) -> None:
         """Release only the exact fenced lease supplied by its owner."""
         with self.ingress_lock:
@@ -885,6 +960,12 @@ class ArmController:
                 raise LeasePermissionError(
                     "STALE_LEASE",
                     f"release used a stale lease for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if current.required_command_mode is not None:
+                raise LeasePermissionError(
+                    "MODE_GUARD_ACTIVE",
+                    f"clear the {normalized_resource} command mode guard before releasing its lease",
                     {"active_leases": self._all_leases_status_ingress_locked()},
                 )
             self.group_leases.pop(normalized_resource, None)
@@ -1024,6 +1105,7 @@ class ArmController:
                     {"active_leases": self._all_leases_status_ingress_locked()},
                 )
             allowed_indices = self.resource_joint_indices[resource_id]
+            required_command_mode = current.required_command_mode
         if envelope.deadline_monotonic <= now:
             raise TimeoutError("command deadline has expired")
         state = self.state
@@ -1040,6 +1122,22 @@ class ArmController:
                 "RESOURCE_SCOPE_VIOLATION",
                 f"{resource_id} may command only joint indices {sorted(allowed_indices)}",
                 {"submitted_joint_indices": sorted(submitted_indices)},
+            )
+        if required_command_mode is not None and (
+            submitted_indices != set(allowed_indices)
+            or any(
+                command.mode != required_command_mode
+                for command in envelope.commands.values()
+            )
+        ):
+            raise LeasePermissionError(
+                "REQUIRED_COMMAND_MODE_VIOLATION",
+                f"{resource_id} requires complete {required_command_mode} commands",
+                {
+                    "resource_id": resource_id,
+                    "required_command_mode": required_command_mode,
+                    "submitted_joint_indices": sorted(submitted_indices),
+                },
             )
         envelope.commands = {
             int(index): JointCommand(
@@ -1060,6 +1158,15 @@ class ArmController:
                 raise LeasePermissionError(
                     "STALE_LEASE",
                     "actuator-group lease changed while the command was validated",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if current.required_command_mode is not None and any(
+                command.mode != current.required_command_mode
+                for command in envelope.commands.values()
+            ):
+                raise LeasePermissionError(
+                    "REQUIRED_COMMAND_MODE_VIOLATION",
+                    f"{resource_id} command mode guard changed during validation",
                     {"active_leases": self._all_leases_status_ingress_locked()},
                 )
             if envelope.deadline_monotonic <= time.monotonic():
@@ -1090,10 +1197,17 @@ class ArmController:
 
         normalized_resource = str(resource_id).strip()
         with self.ingress_lock:
-            if normalized_resource not in self.group_leases:
+            current = self.group_leases.get(normalized_resource)
+            if current is None:
                 raise LeasePermissionError(
                     "NO_ACTIVE_LEASE",
                     f"no active lease exists for {normalized_resource}",
+                    {"active_leases": self._all_leases_status_ingress_locked()},
+                )
+            if current.required_command_mode is not None:
+                raise LeasePermissionError(
+                    "MODE_GUARD_ACTIVE",
+                    f"clear the {normalized_resource} command mode guard before requesting float",
                     {"active_leases": self._all_leases_status_ingress_locked()},
                 )
             self.group_pending.pop(normalized_resource, None)

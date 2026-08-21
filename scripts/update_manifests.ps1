@@ -166,7 +166,8 @@ function Write-Manifest {
     $providerManifest = (Split-Path $basePath -Leaf) -in @(
         'rebot_arm_dm',
         'rebot_arm_integrated',
-        'rebot_arm_contact'
+        'rebot_arm_contact',
+        'rebot_arm_grip'
     )
     $relativePaths = [System.Collections.Generic.List[string]]::new()
     $filesByRelativePath = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new(
@@ -242,6 +243,7 @@ $componentDirectories = @(
     (Join-Path $workspace 'providers\rebot_arm_dm'),
     (Join-Path $workspace 'providers\rebot_arm_integrated'),
     (Join-Path $workspace 'providers\rebot_arm_contact'),
+    (Join-Path $workspace 'providers\rebot_arm_grip'),
     (Join-Path $workspace 'providers\arm_scene_compiler'),
     (Join-Path $workspace 'providers\sam2_scene_tracker'),
     (Join-Path $workspace 'providers\local_vio'),

@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.rebot_dm",
-  "version": "0.1.24",
+  "version": "0.1.32",
   "display_name": "reBot Arm DM Basic Controller",
   "manager_ids": ["robot_arm.rebot_dm"],
   "ui": {
@@ -50,7 +50,9 @@
     "robot_arm.control.early_mit_mode_bridge",
     "robot_arm.control.physical_pos_tor_peak_envelope",
     "robot_arm.feedback.generation_verified",
-    "robot_arm.control.explicit_hot_fault_recovery"
+    "robot_arm.control.explicit_hot_fault_recovery",
+    "robot_arm.control.position_effort_mode_guard.v1",
+    "robot_arm.feedback.motor_temperature.v1"
   ],
   "published_streams": [
     "robot_arm.model",
@@ -139,5 +141,5 @@
     "provider_local_fencing": true,
     "full_physical_control_contract": false
   },
-  "notes": "0.1.24 routes the full-arm no-effector reference to both seed localization and orientation review while preserving the Provider-local arm-profile registry and flexible namespaced Skill appendices."
+  "notes": "0.1.32 advances the Basic-owned gripper control profile to the owner-requested attended-development policy: torque-only contact at an absolute measured 0.15 Nm for 10 consecutive 50 Hz samples and an 85 C all-active-joint new-grip admission gate. Position and velocity remain diagnostic only."
 }

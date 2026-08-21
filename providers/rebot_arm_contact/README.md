@@ -5,15 +5,30 @@ This Provider owns deliberate arm contact through Basic
 environment from the Integrated free-space controller and never calls or
 imports Integrated.
 
+Carry-bound v2 plans add only the persistence needed by gripping. After a
+settled `PREPARE` plan is explicitly confirmed, Contact retains its existing
+arm-group lease and guards all six arm joints in
+`POSITION_EFFORT_LIMITED`. Matching `CONTINUE` plans replace the finite path
+without changing that endpoint or lease boundary. Idle, plan gaps, and the
+Contact watchdog hold the last position/effort target; WARM and controlled
+stop are rejected until release. Gripper commands, object metadata, and
+thermal admission remain outside Contact.
+
 The Provider accepts an exact plan signed by an installed finite Contact Work
 Skill. A move may be a direct one-shot endpoint or a Contact-owned Cartesian
 segment. The segment is decomposed into sequential IK knots and streams
 changing joint targets at the active Basic Provider's advertised internal
-control rate (currently 50 Hz). A new move immediately replaces the preceding
-endpoint or in-progress segment. The Provider holds the final endpoint,
+control rate (currently 50 Hz). Its default Cartesian command-speed ceiling is
+0.1 m/s in addition to Basic's per-joint limits. A new move replaces the
+preceding endpoint or in-progress segment while chaining from the previous
+commanded joint setpoint instead of resetting to lagging measured joints. The
+Provider establishes Basic's arm-group `POSITION_EFFORT_LIMITED` mode guard at
+the first accepted endpoint and retains it across all Contact moves. It holds the final endpoint,
 recalculates measured-pose wrench and gravity effort ceilings, and returns to
 verified Basic gravity float only after `RELAX`, timeout, fault, lease loss, or
-shutdown.
+shutdown when no carry is confirmed. A confirmed carry converts ordinary
+timeout/auth-expiry fallback into last-target holding; emergency and hardware
+fault boundaries remain authoritative.
 
 Contact acquires Basic feedback through an independent poller at that same
 advertised rate. The command loop consumes the freshness-checked cache, so
@@ -51,8 +66,9 @@ rad/s but remains below Basic's configured 10.0 rad/s motor envelope. Every move
 result reports that frozen vector and a velocity-limited transition time from
 fresh measured joints. A Cartesian segment time-parameterizes its sequential
 IK intervals with that vector; a one-shot reports the direct joint lower bound.
-Finite Skills use the result as a minimum hold-time floor before replacement;
-it is timing telemetry, not an arrival or stroke-success claim.
+The shared finite-Skill runtime waits for trajectory completion before starting
+the signed physical-stage dwell and submitting a replacement; neither the
+timing result nor the completed dwell is an arrival or stroke-success claim.
 
 The default Cartesian knot spacing is at most 2 mm. Requested orientation is
 held at every knot and hard joint locks remain exact. Joint interpolation
@@ -64,12 +80,19 @@ displacement from the fresh measured controlled-effector position at move
 acceptance. The latter supports extraction whose direction must remain valid
 even when a preceding deliberate-contact endpoint was not reached.
 
+`GET /v1/contact/state` also exposes a read-only
+`measured_acting_frame_pose` from the same independent FK and fresh six-joint
+feedback. The generic `grip.grip` Skill uses its quaternion with a signed zero-
+displacement `PREPARE` segment so arm ownership and all-joint position/effort
+hold exist before the fingers close.
+
 ## Development setup
 
 Run `scripts/setup.ps1`, then `scripts/register.ps1`. Setup creates or preserves
-a local `MIDBRAIN_CONTACT_SLICING_SECRET` of at least 32 bytes in the ignored
-API-key configuration. The Provider and the slicing Skill host receive the
-matching secret. Do not commit it.
+the allowlisted Contact Skill secrets, including Slicing and the generic,
+scrap-grip, carrying-motion, and lay-flat identities, at least 32 bytes long in
+the ignored API-key configuration. Provider and matching Skill hosts receive
+the same per-Skill secret. Do not commit any of them.
 
 The Manager reads `config/providers.json` and the manifest catalog once at
 startup. Registration therefore affects the main menu only after restarting
@@ -107,6 +130,6 @@ success. The measured joint state is published as
 
 ## Qualification
 
-Version 0.1.0 is software-tested development code. It must not be represented
+Version 0.2.0 is software-tested development code. It must not be represented
 as physically qualified. Physical testing must retain load-bearing support and
 must never introduce a low-torque or low-stiffness arm state.

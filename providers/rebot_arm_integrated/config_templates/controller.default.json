@@ -1,7 +1,7 @@
 {
   "schema": "physical_agent.arm_integrated_mit_bringup_config",
   "schema_version": 3,
-  "managed_policy_revision": 9,
+  "managed_policy_revision": 10,
   "provider_id": "robot_arm.primary.integrated",
   "display_name": "Arm Integrated MIT Cartesian Bring-up Controller",
   "arm_id": "primary",
@@ -39,7 +39,7 @@
     "authorized_stage_progress_epsilon_rad": 0.002,
     "arrival_cartesian_position_tolerance_m": 0.003,
     "arrival_cartesian_orientation_tolerance_rad": 0.05,
-    "arrival_position_tolerance_rad": [0.025, 0.025, 0.025, 0.035, 0.035, 0.035],
+    "arrival_position_tolerance_rad": [0.04, 0.04, 0.04, 0.04, 0.04, 0.04],
     "arrival_velocity_tolerance_rad_s": [0.04, 0.04, 0.04, 0.06, 0.06, 0.06]
   },
   "runtime": {

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/grip_control_command.v1.schema.json",
+  "title": "Midbrain Grip Control Command v1",
+  "type": "object",
+  "required": ["schema", "schema_version", "command_id", "skill_id", "execution_id", "operation"],
+  "properties": {
+    "schema": {"const": "midbrain.grip_control_command"},
+    "schema_version": {"const": 1},
+    "command_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "skill_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "execution_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "operation": {"type": "string", "enum": ["SET_POSITION_EFFORT", "SET_MIT_POSITION", "CONFIRM_CARRY", "RELEASE_OBJECT", "ENTER_MIT_FLOAT"]},
+    "intent": {"type": "string", "enum": ["GRIP", "EXPAND", "OPEN"]},
+    "position_rad": {"type": "number"},
+    "velocity_limit_rad_s": {"type": "number", "exclusiveMinimum": 0},
+    "torque_limit_nm": {"type": "number", "exclusiveMinimum": 0},
+    "carry_id": {"type": "string", "minLength": 1, "maxLength": 200},
+    "attachment_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+    "attachment": {
+      "type": "object",
+      "required": ["object_binding"],
+      "properties": {
+        "object_binding": {"type": "object", "minProperties": 1},
+        "payload": {"type": ["object", "null"]},
+        "collision_geometry": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "delta_time_s": {"type": "number", "minimum": 0.02, "maximum": 5},
+    "duration_s": {"type": "number", "minimum": 0.02, "maximum": 5},
+    "kp": {"type": "number", "minimum": 0},
+    "kd": {"type": "number", "minimum": 0}
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "SET_POSITION_EFFORT"}}}, "then": {"required": ["intent", "position_rad", "torque_limit_nm"]}},
+    {"if": {"properties": {"operation": {"const": "SET_MIT_POSITION"}}}, "then": {"required": ["intent", "position_rad", "duration_s"]}},
+    {"if": {"properties": {"operation": {"const": "CONFIRM_CARRY"}}}, "then": {"required": ["carry_id", "attachment_revision", "attachment"]}},
+    {"if": {"properties": {"operation": {"const": "RELEASE_OBJECT"}}}, "then": {"required": ["carry_id"]}},
+    {"if": {"properties": {"operation": {"const": "ENTER_MIT_FLOAT"}}}, "then": {"required": ["delta_time_s"]}}
+  ],
+  "additionalProperties": false
+}

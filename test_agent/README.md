@@ -90,19 +90,50 @@ qualify every branch, retry, switch, model route, multi-visual presentation,
 or material-cut outcome. See
 [Limited Graph Status and Qualification](../docs/14_LIMITED_GRAPH_STATUS_AND_QUALIFICATION.md).
 
+Safe Home is a controller-owned recovery operation and never pauses for an
+Agent SDK permission decision. The Basic Controller's safety, fencing,
+readiness, and controller-confirmed completion checks remain in force.
+
 ## Skill discovery and execution
 
 Discovery reads concise manifest metadata without importing or starting Skill
 implementations. After selection, the host binds the required adapter and
 loads the detailed input schema.
 
+Non-GPT model transports use a client-executed `tool_search` compatibility
+function. Concatenated copies of one identical JSON object are collapsed as a
+bounded transport recovery. Invalid or ambiguous JSON and unknown Skill names
+return a retryable typed search result instead of terminating the Agent run.
+The event stream and journal expose only the failure code and bounded numeric
+diagnostics; they never expose the raw model arguments or loaded definitions.
+
 When the Developer Agent opens, an installed discoverable Skill outside both
-the configured and current runtime Agent lists triggers a blocking startup
-dialog. **Add to Agent list** records Agent-owned eligibility and requires an
-Agent restart before tasks can run; **Disable for Agent** records an immediate
-local exclusion. Decisions are stored in ignored machine-local configuration,
-never in the Skill manifest. This keeps installation, Agent eligibility, Skill
-execution, and Provider lifecycle as separate responsibilities.
+the configured and current runtime Agent lists triggers a startup decision.
+**Add to Agent list** records Agent-owned eligibility and requires an Agent
+restart before that newly added Skill can run; **Disable for Agent** records an
+immediate local exclusion. An unresolved or restart-pending Skill remains
+unavailable without blocking tasks that use the already active tool surface.
+Decisions are stored in ignored machine-local configuration, never in the
+Skill manifest. This keeps installation, Agent eligibility, Skill execution,
+and Provider lifecycle as separate responsibilities.
+
+### Routing compatibility
+
+The Reference Agent does not treat work-object, corner, obstacle, or arbitrary
+object-category wording as a mutually exclusive action class. Those labels may
+identify scene evidence or select a typed coordinate derivation, but they do
+not authorize contact and do not hide otherwise eligible motion, grip,
+slicing, release, or graph tools. A prompt that combines several operations
+keeps the complete eligible surface instead of being routed from its first
+verb or one noun.
+
+Narrow deterministic routes remain only for operations whose requested finite
+boundary is unambiguous, such as an explicit scene-only inspection, a specific
+no-contact approach, or mixed-frame direction translation. Contact Skills do
+not consume the semantic collider set; Integrated continues to own free-space
+collision checks. Manager and the active assembly resolve Provider/resource
+identity, so future multi-arm support does not depend on the model inventing a
+physical arm selection from language.
 
 An `EXTERNAL_SKILL_ENTRYPOINT` manifest may also declare a Skill-owned host
 adapter factory and setup entrypoint. The Reference Agent loads that factory
@@ -175,6 +206,22 @@ Retries are bounded at named read-only boundaries such as transient visual
 inference or initial camera capture. A complete task or physical action is not
 automatically repeated.
 
+## Arm-base localization
+
+The built-in `locate_arm_base` adapter delegates the finite visual workflow to
+the Skill and delegates activation to Manager. For the final bounded rotation,
+the Skill uses exactly one coarse VLM observation of a landmark defined by the
+active mounted-effector profile, then compares it with Basic's timestamped FK.
+One recognized point is enough; VLM confidence is audit-only and the Agent does
+not select the 0/90/180/270-degree candidate.
+
+If that VLM request cannot identify the effector, the adapter returns a
+non-terminal retry instruction requiring
+`rough_arm_base_positive_x_world`. The Agent must obtain or ask the user for a
+rough world-frame vector pointing along arm-base +X and invoke the Skill once
+with that argument. The explicit retry performs no effector VLM call. The Agent
+must not invent the direction or silently repeat the failed observation.
+
 ## Arm-root translation refinement
 
 The discoverable `refine_arm_root_translation` tool performs a non-moving
@@ -231,8 +278,9 @@ Midbrain attachment ID. It is conversational input and has no robot-camera
 timestamp, depth, calibration, spatial frame, or physical authority.
 
 Visual Skills independently capture current robot-camera evidence. They may
-return the exact analyzed channel plus normalized point or box annotations.
-The browser renders overlays without changing the retained source image.
+return the exact analyzed channel plus normalized point, box, or vector
+annotations. The browser provides per-layer visibility and color controls and
+renders overlays without changing the retained source image.
 
 See [Agent Image Attachments](../contracts/17_agent_image_attachments.md) and
 [Visual Evidence](../contracts/16_visual_evidence_and_annotations.md).

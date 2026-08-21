@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+- Consolidate Agent evidence to one multicolor all-mask image, one conditional
+  VLM-point image, and one final mask-plus-CAD image.
+- Move final and pre-rotation semantic axes into toggleable visual-evidence
+  vector layers; keep final axes visible and pre-rotation axes hidden by
+  default.
+
+## 1.10.1 - 2026-08-21
+
+- Advertise a matching developer `stop_command` and add a confirmed
+  loopback shutdown route that closes the listener, waits for request threads,
+  and releases the Skill's clients.
+- Verify the exact `locate_arm_base` service identity before stopping a
+  developer listener, with a bounded migration fallback for an older verified
+  server that lacks the graceful route.
+
+## 1.10.0 - 2026-08-20
+
+- Replace the unreliable direct 0/90/180/270 VLM panel choice with one coarse
+  active-effector point observation plus Basic's timestamped controlled-frame
+  FK. Coded projection error now selects only among the arm profile's existing
+  bounded local-Z candidates.
+- Consume the Skill-owned coarse visual landmark extension from the active
+  mounted-effector profile instead of embedding a fixed gripper model or
+  reading the refinement Skill's private alignment policy. Treat one recognized
+  point as sufficient and retain VLM confidence for audit without a
+  point-quality acceptance gate.
+- When the single VLM request cannot identify the effector, return an actionable
+  Agent retry requiring `rough_arm_base_positive_x_world`. The retry resolves
+  the bounded candidate from that world direction without another effector VLM
+  call.
+
+## 1.9.0 - 2026-08-20
+
+- Remove the post-SAM2 mask-review VLM call. Retain every successfully acquired
+  mask and apply the deterministic `ceil(acquired_mask_count / 2)` pixel vote to
+  the complete acquired ensemble before the existing single dilation.
+- Remove Manager's mask-review approval/confidence gate. Manager now validates
+  only that every acquired mask participated in the deterministic vote and that
+  the recorded threshold and final-mask binding are internally consistent.
+- Clarify the bounded local-Z orientation prompt: use the immutable reference
+  images and physical description to return the semantic axes to front-facing
+  +X, with the effector toward +X and J2/the elbow at the back toward -X.
+
 ## 1.8.1 - 2026-08-19
 
 - Reduce both default ensemble sizes from three to two while preserving the

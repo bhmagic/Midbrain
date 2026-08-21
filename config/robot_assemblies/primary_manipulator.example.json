@@ -2,7 +2,7 @@
   "schema": "midbrain.robot_assembly_selection",
   "schema_version": 1,
   "assembly_id": "primary_manipulator",
-  "assembly_revision": "rebot-b601-dm-5-inch-blade-development-v3",
+  "assembly_revision": "rebot-b601-dm-5-inch-blade-development-v8",
   "arm_resource_id": "robot_arm.primary",
   "arm_provider": {
     "provider_id": "robot_arm.rebot_dm",
@@ -13,28 +13,28 @@
       "relative_path": "config/arm_profiles/rebot_arm_b601_dm.v1.json",
       "expected_schema": "physical_agent.robot_arm_model",
       "expected_id": "rebot_arm_b601_dm",
-      "expected_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
+      "expected_revision": "rebot-owner-observed-wrist-gripper-envelope-0.1.31",
       "sha256": null
     },
     "calibration": {
       "relative_path": "config/arm_calibration.json",
       "expected_schema": "physical_agent.robot_arm_calibration",
       "expected_id": "rebot_arm_b601_dm",
-      "expected_revision": "cal-20260719T120559Z-742473",
+      "expected_revision": "cal-20260719T120559Z-742473-wrist-envelope-20260820-gripper-close-10deg-20260820-gripper-close-0deg-20260820-gripper-speed-4rads-20260820-gripper-close-plus12deg-20260820",
       "sha256": null
     },
     "mounted_effector": {
       "relative_path": "profiles/effectors/rebot_b601_dm_5_inch_blade.v1.json",
       "expected_schema": "midbrain.mounted_effector_profile",
       "expected_id": "rebot_b601_dm.5_inch_blade",
-      "expected_revision": "rebot-b601-dm-5-inch-blade-v3",
+      "expected_revision": "rebot-b601-dm-5-inch-blade-v5",
       "sha256": null
     },
     "collision_geometry": {
       "relative_path": "profiles/collision/rebot_b601_dm_arm_capsules.v2.json",
       "expected_schema": "midbrain.robot_collision_geometry_profile",
       "expected_id": "rebot_b601_dm.arm_capsules",
-      "expected_revision": "rebot-b601-dm-arm-capsules-v2",
+      "expected_revision": "rebot-b601-dm-arm-capsules-v3",
       "sha256": null
     }
   },

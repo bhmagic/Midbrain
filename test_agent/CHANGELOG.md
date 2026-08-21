@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+- Route mixed-frame Scrap Grip requests deterministically through direction
+  translation and `grip_object`; require the Skill's measured-FK relative point
+  mode and forbid VLM effector localization or work-object categorization for
+  that origin.
+- Make the controller-owned Safe Home tool non-interactive at the Agent SDK
+  permission boundary. Controller safety, fencing, readiness, and completion
+  checks remain authoritative.
+- Stop treating work-object/corner wording as an Agent action category, and do
+  not force compound grip/contact requests through the no-contact tool route.
+- Keep active Skills usable while new-Skill review or restart is pending, and
+  accept explicit scene policies with no blocking object.
+- Add validated vector annotations, per-layer default visibility, and optional
+  axis color hints; consolidate Locate Arm Base Agent evidence to three images.
+
+## 0.4.19 - 2026-08-21
+
+- Recover repeated identical JSON objects at the non-GPT client Tool Search
+  boundary, and return typed retryable failures for invalid, ambiguous, or
+  ineligible searches instead of terminating the Agent run.
+- Project failed compatibility searches as bounded `tool.search.failed`
+  events without retaining raw arguments, rejected names, messages, or loaded
+  definitions.
+- Close the in-process Locate Arm Base Skill from the Test Agent lifespan's
+  guaranteed cleanup path.
+
+## 0.4.18 - 2026-08-20
+
+- Forward the optional `rough_arm_base_positive_x_world` argument into Locate
+  Arm Base and expose the Skill's effector-not-identified result as an
+  actionable, non-terminal retry requiring that exact argument.
+- Register the coarse effector/FK orientation overlay as Agent visual evidence
+  alongside the final resolved-pose overlay. The world-direction retry remains
+  explicit and does not silently repeat the failed VLM observation.
+
+## 0.4.17 - 2026-08-20
+
+- Include `perform_relative_effector_motion` in clean and migrated Agent Skill
+  eligibility so deferred tool search can load the motion tool advertised by
+  the Agent instructions and installed Skill manifest.
+- Keep relative and world-point motion on their dedicated call-scoped adapter
+  path when those tools are also present in the generic eligibility allowlist,
+  while making those dedicated tools searchable under deferred loading.
+
+## 0.4.16 - 2026-08-20
+
+- Display every successfully acquired Locate Arm Base mask as retained for the
+  deterministic vote. Remove the obsolete VLM-retained/VLM-rejected evidence
+  labels now that the Skill no longer performs a post-SAM2 mask review.
+
 ## 0.4.15 - 2026-08-19
 
 - Accept exact canonical mounted-camera calibration policies V2 and V3 across
@@ -51,7 +102,7 @@
 - Preserve those visuals in a structured failed result when the Skill rejects
   a mask, fit, or orientation decision.
 
-## Unreleased
+## Earlier unreleased work
 
 - Qualify generalized non-GPT discovery as near stable after live Gemini run
   `20ff1e2c-6f6d-46cd-8ca6-6f79bde8e67c` emitted the canonical client Tool

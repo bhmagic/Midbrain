@@ -17,5 +17,7 @@ New-Item -ItemType Directory -Force -Path $config | Out-Null
 if (-not (Test-Path $controllerConfig)) {
     Copy-Item (Join-Path $root "config_templates\controller.default.json") $controllerConfig
 }
+& $python -m rebot_arm_integrated.config_repair --root $root --config $controllerConfig
+if ($LASTEXITCODE -ne 0) { throw "Integrated Controller configuration migration failed." }
 Write-Host "Arm Integrated Controller environment ready: $venv"
 Write-Host "Local controller configuration: $controllerConfig"

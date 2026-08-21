@@ -197,6 +197,7 @@ class Settings:
                 "verify_rgbd_image_alignment,"
                 "reinitialize_space_cognition,"
                 "refine_arm_root_translation,"
+                "perform_relative_effector_motion,"
                 "slice_with_blade,"
                 "run_limited_graph"
             ),

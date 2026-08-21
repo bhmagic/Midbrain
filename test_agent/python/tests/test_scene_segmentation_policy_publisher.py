@@ -81,7 +81,7 @@ def test_repeating_same_explicit_map_request_starts_a_new_mapping_epoch() -> Non
     )
 
 
-def test_publisher_rejects_descriptionless_or_nonblocking_policy() -> None:
+def test_publisher_rejects_descriptionless_policy() -> None:
     publisher = SceneSegmentationPolicyPublisher(_Fabric())
     with pytest.raises(ValueError, match="requires a description"):
         asyncio.run(
@@ -97,20 +97,26 @@ def test_publisher_rejects_descriptionless_or_nonblocking_policy() -> None:
                 arm_description="the arm",
             )
         )
-    with pytest.raises(ValueError, match="at least one KEEP_OUT"):
-        asyncio.run(
-            publisher.publish_policy(
-                policy_id="invalid",
-                objects=[
-                    {
-                        "object_id": "paper",
-                        "type": "PUSHABLE",
-                        "description": "a loose paper sheet",
-                    }
-                ],
-                arm_description="the arm",
-            )
+
+
+def test_publisher_accepts_policy_without_blocking_objects() -> None:
+    publisher = SceneSegmentationPolicyPublisher(_Fabric())
+
+    result = asyncio.run(
+        publisher.publish_policy(
+            policy_id="location-only",
+            objects=[
+                {
+                    "object_id": "paper",
+                    "type": "PUSHABLE",
+                    "description": "a loose paper sheet",
+                }
+            ],
+            arm_description="the arm",
         )
+    )
+
+    assert result["blocking_objects"] == []
 
 
 def test_explicit_policy_persists_and_restores_after_restart(tmp_path) -> None:

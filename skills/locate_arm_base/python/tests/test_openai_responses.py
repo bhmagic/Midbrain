@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import httpx
+import numpy as np
 from PIL import Image
 import pytest
 
-from locate_arm_base.candidate_selection import OpenAIResponsesMaskCandidateReviewer
 from locate_arm_base.openai_responses import request_structured_response
-from locate_arm_base.orientation import OpenAIResponsesArmBasePromptLocator
+from locate_arm_base.orientation import (
+    OpenAIResponsesArmBasePromptLocator,
+    OpenAIResponsesEffectorPointLocator,
+)
 
 
 def _request(
@@ -235,17 +238,23 @@ def test_arm_base_prompt_explicitly_excludes_touching_supports(
     assert "overrides generic appearance assumptions" in observed_prompt
 
 
-def test_mask_reviewer_retains_a_bounded_subset(tmp_path, monkeypatch) -> None:
-    reference_path = tmp_path / "reference.png"
-    contact_sheet_path = tmp_path / "masks.png"
-    Image.new("RGB", (32, 32), "white").save(reference_path)
-    Image.new("RGB", (64, 64), "black").save(contact_sheet_path)
+def test_effector_prompt_requests_one_coarse_call_without_point_quality_gate(
+    tmp_path, monkeypatch
+) -> None:
+    scene_path = tmp_path / "scene.png"
+    Image.new("RGB", (64, 64), "black").save(scene_path)
+    observed_prompt = ""
+    request_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observed_prompt, request_count
+        request_count += 1
+        payload = __import__("json").loads(request.content)
+        observed_prompt = payload["input"][0]["content"][0]["text"]
         return httpx.Response(
             200,
             json={
-                "id": "resp-mask-review",
+                "id": "resp-effector",
                 "status": "completed",
                 "output": [
                     {
@@ -254,8 +263,10 @@ def test_mask_reviewer_retains_a_bounded_subset(tmp_path, monkeypatch) -> None:
                             {
                                 "type": "output_text",
                                 "text": (
-                                    '{"accepted_candidate_ids":["mask_1","mask_3"],'
-                                    '"confidence":0.86,"rationale":"Two masks match."}'
+                                    '{"effector_identified":true,"points":['
+                                    '{"point_id":"left_tip","y_0_1000":410,'
+                                    '"x_0_1000":620}],"confidence":0.31,'
+                                    '"rationale":"One jaw tip is visible."}'
                                 ),
                             }
                         ],
@@ -264,18 +275,39 @@ def test_mask_reviewer_retains_a_bounded_subset(tmp_path, monkeypatch) -> None:
             },
         )
 
+    mounted_effector = {
+        "profile_id": "test.gripper",
+        "display_name": "Test Gripper",
+        "controlled_frame": {"frame_id": "test_tool"},
+            "extensions": {
+                "midbrain.skill.locate_arm_base.v1": {
+                    "schema": "midbrain.effector_coarse_orientation_landmark",
+                    "schema_version": 1,
+                    "arm_base_frame": "test_base",
+                    "landmark": {
+                        "landmark_id": "tips",
+                        "display_name": "gripper tips",
+                        "eligible_point_ids": ["left_tip", "right_tip"],
+                        "description_for_vlm": "Locate either visible rigid gripper jaw tip.",
+                        "controlled_frame_to_landmark_translation_m": [0, 0, 0],
+                        "qualification": "TEST",
+                    },
+                }
+            },
+    }
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    reviewer = OpenAIResponsesMaskCandidateReviewer("test-model")
-    reviewer.http.close()
-    reviewer.http = httpx.Client(transport=httpx.MockTransport(handler))
+    locator = OpenAIResponsesEffectorPointLocator("test-model")
+    locator.http.close()
+    locator.http = httpx.Client(transport=httpx.MockTransport(handler))
     try:
-        result = reviewer.review(
-            (reference_path,),
-            contact_sheet_path,
-            ("mask_1", "mask_2", "mask_3", "mask_4"),
-        )
+        result = locator.locate(mounted_effector, scene_path)
     finally:
-        reviewer.close()
+        locator.close()
 
-    assert result.accepted_candidate_ids == ("mask_1", "mask_3")
-    assert result.confidence == 0.86
+    assert request_count == 1
+    assert result.identified is True
+    assert result.points_yx_0_1000 == (("left_tip", 410, 620),)
+    assert result.confidence == pytest.approx(0.31)
+    assert "timestamped forward kinematics" in observed_prompt
+    assert "one recognized point is sufficient" in observed_prompt
+    assert "not a translation calibration or point-quality review" in observed_prompt

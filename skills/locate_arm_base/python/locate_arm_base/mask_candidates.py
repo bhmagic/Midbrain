@@ -9,6 +9,18 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
+MASK_OVERLAY_COLORS = (
+    (255, 76, 76),
+    (76, 220, 255),
+    (110, 235, 120),
+    (255, 195, 70),
+    (190, 120, 255),
+    (255, 105, 190),
+    (80, 145, 255),
+    (220, 235, 80),
+)
+
+
 @dataclass(frozen=True)
 class MaskCandidate:
     candidate_id: str
@@ -34,8 +46,7 @@ class MaskCandidate:
 @dataclass(frozen=True)
 class VotedMask:
     mask_id: str
-    accepted_candidate_ids: tuple[str, ...]
-    rejected_candidate_ids: tuple[str, ...]
+    retained_candidate_ids: tuple[str, ...]
     survivor_count: int
     vote_threshold: int
     vote_policy: str
@@ -50,8 +61,7 @@ class VotedMask:
     def record(self) -> dict[str, Any]:
         return {
             "mask_id": self.mask_id,
-            "accepted_candidate_ids": list(self.accepted_candidate_ids),
-            "rejected_candidate_ids": list(self.rejected_candidate_ids),
+            "retained_candidate_ids": list(self.retained_candidate_ids),
             "survivor_count": self.survivor_count,
             "vote_threshold": self.vote_threshold,
             "vote_policy": self.vote_policy,
@@ -115,6 +125,61 @@ def write_mask_overlay(
     return output_path
 
 
+def write_multicolor_mask_overlay(
+    *,
+    rgb_path: Path,
+    candidates: tuple[MaskCandidate, ...],
+    output_path: Path,
+) -> Path:
+    """Render all independent masks over one unduplicated RGB frame."""
+
+    if not candidates:
+        raise ValueError("multicolor mask overlay requires at least one candidate")
+    image = Image.open(rgb_path).convert("RGBA")
+    composite = image
+    masks: list[tuple[MaskCandidate, np.ndarray, tuple[int, int, int]]] = []
+    for index, candidate in enumerate(candidates):
+        color = MASK_OVERLAY_COLORS[index % len(MASK_OVERLAY_COLORS)]
+        mask = _read_mask(candidate.mask_path, image.size)
+        masks.append((candidate, mask, color))
+        tint = np.zeros((image.height, image.width, 4), dtype=np.uint8)
+        tint[mask] = (*color, 76)
+        composite = Image.alpha_composite(composite, Image.fromarray(tint))
+
+    for _, mask, color in masks:
+        edge = Image.fromarray(mask.astype(np.uint8) * 255).filter(
+            ImageFilter.FIND_EDGES
+        )
+        outline = np.zeros((image.height, image.width, 4), dtype=np.uint8)
+        outline[np.asarray(edge, dtype=np.uint8) > 0] = (*color, 255)
+        composite = Image.alpha_composite(composite, Image.fromarray(outline))
+
+    draw = ImageDraw.Draw(composite)
+    legend_height = 26 + len(masks) * 20
+    draw.rectangle(
+        (0, 0, min(image.width, 720), legend_height),
+        fill=(0, 0, 0, 215),
+    )
+    draw.text(
+        (10, 8),
+        "Independent SAM2 masks (one shared RGB frame)",
+        fill="white",
+        font=ImageFont.load_default(),
+    )
+    for index, (candidate, mask, color) in enumerate(masks):
+        y = 28 + index * 20
+        draw.rectangle((10, y, 24, y + 12), fill=(*color, 255))
+        draw.text(
+            (32, y),
+            f"{candidate.candidate_id}  pixels={int(mask.sum())}",
+            fill=(*color, 255),
+            font=ImageFont.load_default(),
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    composite.convert("RGB").save(output_path, format="PNG")
+    return output_path
+
+
 def create_mask_candidate(
     *,
     candidate_id: str,
@@ -149,7 +214,7 @@ def create_mask_candidate(
 def build_voted_mask(
     *,
     candidates: tuple[MaskCandidate, ...],
-    accepted_candidate_ids: tuple[str, ...],
+    retained_candidate_ids: tuple[str, ...],
     rgb_path: Path,
     output_dir: Path,
     dilation_radius_px: int,
@@ -159,23 +224,25 @@ def build_voted_mask(
     if not 0 <= dilation_radius_px <= 64:
         raise ValueError("final mask dilation radius must be between 0 and 64 pixels")
     candidate_by_id = {candidate.candidate_id: candidate for candidate in candidates}
-    if not accepted_candidate_ids or len(set(accepted_candidate_ids)) != len(
-        accepted_candidate_ids
+    if not retained_candidate_ids or len(set(retained_candidate_ids)) != len(
+        retained_candidate_ids
     ):
-        raise ValueError("mask voting requires a non-empty unique accepted set")
-    if any(candidate_id not in candidate_by_id for candidate_id in accepted_candidate_ids):
-        raise ValueError("mask voting accepted an unknown candidate")
+        raise ValueError("mask voting requires a non-empty unique retained set")
+    if any(candidate_id not in candidate_by_id for candidate_id in retained_candidate_ids):
+        raise ValueError("mask voting retained an unknown candidate")
+    if len(retained_candidate_ids) != len(candidates):
+        raise ValueError("mask voting must retain every successfully acquired candidate")
     image = Image.open(rgb_path)
-    accepted_masks = [
+    retained_masks = [
         _read_mask(candidate_by_id[candidate_id].mask_path, image.size)
-        for candidate_id in accepted_candidate_ids
+        for candidate_id in retained_candidate_ids
     ]
-    survivor_count = len(accepted_masks)
+    survivor_count = len(retained_masks)
     vote_threshold = int(math.ceil(survivor_count / 2.0))
-    vote_counts = np.sum(np.stack(accepted_masks, axis=0), axis=0)
+    vote_counts = np.sum(np.stack(retained_masks, axis=0), axis=0)
     voted = vote_counts >= vote_threshold
     if not np.any(voted):
-        raise RuntimeError("accepted SAM2 masks produced an empty pixel vote")
+        raise RuntimeError("retained masks produced an empty pixel vote")
     output_dir.mkdir(parents=True, exist_ok=True)
     voted_mask_path = output_dir / "voted_mask.png"
     Image.fromarray(voted.astype(np.uint8) * 255).save(voted_mask_path, format="PNG")
@@ -200,19 +267,12 @@ def build_voted_mask(
         label=f"voted_mask_dilated_r{dilation_radius_px}",
         footer="SINGLE_POST_VOTE_DILATION",
     )
-    accepted_set = set(accepted_candidate_ids)
-    rejected = tuple(
-        candidate.candidate_id
-        for candidate in candidates
-        if candidate.candidate_id not in accepted_set
-    )
     return VotedMask(
         mask_id=f"voted_mask_dilated_r{dilation_radius_px}",
-        accepted_candidate_ids=accepted_candidate_ids,
-        rejected_candidate_ids=rejected,
+        retained_candidate_ids=retained_candidate_ids,
         survivor_count=survivor_count,
         vote_threshold=vote_threshold,
-        vote_policy="AT_LEAST_HALF_OF_VLM_ACCEPTED_MASKS",
+        vote_policy="AT_LEAST_HALF_OF_ALL_ACQUIRED_MASKS",
         voted_mask_path=voted_mask_path,
         voted_overlay_path=voted_overlay_path,
         voted_nonzero_pixels=int(voted.sum()),

@@ -77,6 +77,12 @@ authorized transit as intended.
 Scene semantics must remain upstream-described. Visible material, color, or
 location must not silently turn every object into an obstacle. Close-range
 geometry should refine only the selected workpiece or relevant obstacle.
+Those semantic roles are planning evidence, not Agent route or contact-
+authorization categories. Adding a new object type must not require another
+global prompt gate, and compound requests must retain every eligible finite
+operation. Integrated remains the consumer of the fresh collider scene for
+free-space motion; deliberate-contact Skills and Contact do not receive that
+collider set.
 The current hand-centric angular projection and five-second arm-base-aligned
 visible-surface AABBs still require physical qualification across thin,
 occluded, and depth-poor objects. Named AABB corners are agent-planning
@@ -216,7 +222,9 @@ six-component acting-point wrenches to joint effort ceilings, executes
 one-shot endpoints or sequential-IK Cartesian segments at Basic's advertised
 internal control rate, holds its latest `POSITION_EFFORT_LIMITED` endpoint,
 and relaxes on explicit cleanup or its default six-second post-transition
-inactivity watchdog. The initial `slicing` Skill is
+inactivity watchdog when no carry is confirmed. A confirmed carry instead
+holds the last arm target through ordinary inactivity or authorization expiry;
+release remains explicit. The initial `slicing` Skill is
 non-clamping, derives blade orientation from numbered mounted-effector use
 profiles, uses Integrated only for the initial free-space rotation, and then
 submits exactly three Contact Cartesian segments. It fixes rotational wrench
@@ -235,6 +243,38 @@ Remaining qualification includes:
   estimator; and
 - qualify slicing and each later task Skill separately rather than exposing a
   generic arbitrary-wrench Agent tool.
+
+### Qualify grip and carry
+
+The independent Grip Provider and the finite Grip, Scrap Grip, Move Carried
+Object, Let Go, and Lay Flat Skills now implement the software boundary in the
+[Grip and Carry contract](../contracts/23_grip_and_carry_control.md). The
+current attended-development profile uses `-180` degrees as functional open,
+`+12` degrees as the normal-object close target, Basic's separate `+17` degree
+absolute close limit, a 4 rad/s physical request translated to a 3 rad/s native
+gripper ceiling, a whole-active-joint 85 C new-grip gate, and torque-only
+contact inference at `0.15` N m for 10 consecutive 50 Hz samples. Scrap Grip
+starts each 1.5-second lower/scrap dwell only after Contact reports trajectory
+completion and starts its grip dwell only after stable contact.
+
+These values and the owner's attended tests are development evidence, not an
+autonomous operating envelope. Before promotion, physically qualify:
+
+- functional-open and absolute-close calibration across the installed jaws;
+- false-positive and false-negative torque contact across representative
+  rigid objects, with soft and thin objects kept in separate Skills;
+- opening/closing speed, overshoot, stall, deformation, and sustained holding
+  torque at the requested 4 rad/s boundary;
+- temperature telemetry, the 85 C admission policy, and hardware over-
+  temperature behavior independently;
+- continuous all-joint position/effort hold, mode-guard continuity, and
+  recovery under delayed tracking, stage replacement, lease loss, fault, and
+  release; and
+- payload/attachment geometry, slip and drop evidence, carried motion, and the
+  declared Lay Flat Integrated/FLOAT exception.
+
+No current result should claim object identity, payload geometry, collision-
+safe free-space carrying, or successful grasp solely from motor torque.
 
 ### Retain and later rename Integrated CONTACT_WORK
 
@@ -296,8 +336,8 @@ rules for loss of network, perception, operator signal, or upstream authority.
   command or field-audit systems.
 - FoundationPose measurements depend on reviewed masks, CAD geometry, depth,
   symmetry, and the separately installed GPU runtime.
-- Obstacle-route search and contact-capable control are not generally
-  available.
+- General obstacle rerouting is not available, and the independent contact,
+  grip, and carrying paths remain development-only and physically unqualified.
 
 ## Completion policy
 

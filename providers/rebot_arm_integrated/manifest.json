@@ -1,6 +1,6 @@
 {
   "provider_type": "robot_arm.integrated_mit_cartesian_controller",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "display_name": "Arm Integrated Free-Space Controller",
   "manager_ids": ["robot_arm.primary.integrated"],
   "ui": {

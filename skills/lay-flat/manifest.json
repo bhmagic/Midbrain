@@ -1,0 +1,51 @@
+{
+  "skill_type": "lay_flat",
+  "version": "0.1.0",
+  "display_name": "Action: lay gripped object flat",
+  "ui": {
+    "observation": {"kind": "MANAGER_HOSTED", "information_level": "RICH", "read_only": true},
+    "developer": {
+      "label": "Action: lay gripped object flat Developer",
+      "url": "http://127.0.0.1:7116/",
+      "availability": "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER",
+      "launch_command": ".\\skills\\lay-flat\\scripts\\run_ui.ps1",
+      "stop_command": ".\\skills\\lay-flat\\scripts\\stop_ui.ps1"
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "lay_flat",
+    "description": "Place an already carried object using the bare gripper's two-vector alignment. Integrated performs a Slicing-style rotation-only alignment, reaches verified FLOAT, and hands off through Integrated WARM to Contact. Contact moves to an absolute-root table-inward and negative-insertion target, the gripper opens, Contact retreats relatively against insertion, and both groups then relax.",
+    "when_to_use": ["A confirmed carried object should be placed using reliable table-inward and insertion world directions."],
+    "when_not_to_use": ["The object is not carried, the destination is collision-uncertain, or a precise placement verification is required but unavailable."],
+    "side_effects": ["Temporarily routes the confirmed carry through an attended-style Integrated rotation and FLOAT handoff, moves and retreats under Contact, opens the gripper, transitions it to MIT float, and relaxes the arm."],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "HIGH",
+    "required_permissions": ["world.transforms.read", "robot.motion.preview", "robot.motion.contact.execute", "robot.grip.release", "robot.motion.relax"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "table_inward_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "insertion_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "table_inward_distance_m": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 0.25, "default": null},
+        "negative_insertion_distance_m": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 0.25, "default": null},
+        "retreat_distance_m": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 0.25, "default": null},
+        "mit_delta_time_s": {"type": ["number", "null"], "minimum": 0.02, "maximum": 5.0, "default": null},
+        "open_timeout_s": {"type": ["number", "null"], "minimum": 0.1, "maximum": 30.0, "default": null},
+        "gripper_vector_profile_number": {"type": ["integer", "null"], "minimum": 1, "default": null},
+        "motion_profile_number": {"type": ["integer", "null"], "minimum": 1, "default": null}
+      },
+      "required": ["table_inward_direction_world", "insertion_direction_world"],
+      "additionalProperties": false
+    },
+    "output_schema": {"type": "object", "properties": {"status": {"type": "string"}, "workflow_complete": {"type": "boolean"}, "released_carry_id": {"type": "string"}}, "required": ["status", "workflow_complete", "released_carry_id"], "additionalProperties": true, "x-midbrain-result-tiers": {"schema_version": 1, "compact_pointers": ["/status", "/workflow_complete", "/released_carry_id"], "detail_policy": "HOST_SANITIZED_REFERENCE", "max_compact_bytes": 32768}},
+    "execution_adapter": {"adapter_id": "skill.lay_flat.host.v1", "kind": "EXTERNAL_SKILL_ENTRYPOINT", "entrypoint": "python/lay_flat_skill/host_adapter.py", "host_adapter": {"entrypoint": "python/lay_flat_skill/host_adapter.py", "factory": "build_host_adapter"}, "invocation_requires_approval": false}
+  },
+  "required_capabilities": ["robot_arm.motion.free_space.preview_commit.v1", "robot_arm.motion.contact.position_effort_limited.v1", "robot_effector.grip.carrying_state.v1", "world.transforms.timestamped"],
+  "route_policy": {"controller": "INTEGRATED_THEN_CONTACT", "confirmed_carry_integrated_alignment_exception": true, "sequence": ["INTEGRATED_ROTATION_ONLY_TO_FLOAT", "INTEGRATED_WARM_LEASE_RELEASE", "CONTACT_ABSOLUTE_COMBINED_TABLE_AND_NEGATIVE_INSERTION", "RELEASE", "CONTACT_RELATIVE_NEGATIVE_INSERTION_RETREAT", "RELAX"]},
+  "installation": {"setup_entrypoint": "scripts/setup.ps1", "motion_profile_template": "config_templates/motion_profiles.default.json", "motion_profile_config": "config/motion_profiles.json", "gripper_vector_profile_template": "config_templates/gripper_vector_profiles.default.json", "gripper_vector_profile_config": "config/gripper_vector_profiles.json"},
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_PHYSICAL_QUALIFICATION_REQUIRED",
+  "published_streams": []
+}

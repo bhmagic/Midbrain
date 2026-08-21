@@ -1,0 +1,21 @@
+{
+  "schema": "midbrain.scrap_grip_gripper_vector_profiles",
+  "schema_version": 1,
+  "default_profile_number": 1,
+  "profiles": [
+    {
+      "profile_number": 1,
+      "name": "left lean",
+      "table_inward_direction_effector": [0.0, -0.3, -1.0],
+      "insertion_direction_effector": [1.0, 0.0, 0.0],
+      "qualification": "DEVELOPMENT_REQUIRES_ATTENDED_PHYSICAL_TUNING"
+    },
+    {
+      "profile_number": 2,
+      "name": "right lean",
+      "table_inward_direction_effector": [0.0, 0.3, -1.0],
+      "insertion_direction_effector": [1.0, 0.0, 0.0],
+      "qualification": "DEVELOPMENT_REQUIRES_ATTENDED_PHYSICAL_TUNING"
+    }
+  ]
+}

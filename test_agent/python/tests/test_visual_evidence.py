@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from jsonschema import validate
+from PIL import Image
 
+from physical_agent_test.arm_base_localization_adapter import (
+    ArmBaseLocalizationSkillAdapter,
+)
 from physical_agent_test.gemini_pointing_skill import (
     PointingIdentificationSkill,
 )
@@ -37,6 +42,19 @@ class VisualEvidenceTests(unittest.IsolatedAsyncioTestCase):
                     "y": 0.2,
                     "width": 0.3,
                     "height": 0.4,
+                },
+                {
+                    "id": "axis-x",
+                    "type": "vector",
+                    "label": "Pre-rotate X",
+                    "confidence": "high",
+                    "applies_to_channels": ["rgb"],
+                    "x1": 0.4,
+                    "y1": 0.5,
+                    "x2": 0.7,
+                    "y2": 0.5,
+                    "color": "#FF3C3C",
+                    "default_visible": False,
                 }
             ],
             confidence="high",
@@ -58,6 +76,12 @@ class VisualEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.data, b"exact-rgb-bytes")
         self.assertEqual(channel.width, 640)
         self.assertIn(evidence["evidence_id"], evidence["channels"][0]["url"])
+        browser_evidence = sanitize_visual_evidence(evidence)
+        assert browser_evidence is not None
+        vector = browser_evidence["annotations"][1]
+        self.assertEqual(vector["type"], "vector")
+        self.assertEqual(vector["color"], "#ff3c3c")
+        self.assertFalse(vector["default_visible"])
 
     async def test_browser_projection_rejects_arbitrary_image_urls(self) -> None:
         store = VisualEvidenceStore()
@@ -75,6 +99,78 @@ class VisualEvidenceTests(unittest.IsolatedAsyncioTestCase):
         evidence["channels"][0]["url"] = "https://example.test/private"
 
         self.assertIsNone(sanitize_visual_evidence(evidence))
+
+    async def test_arm_base_evidence_is_consolidated_to_three_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image_paths = {}
+            for image_id in (
+                "current_rgb",
+                "mask_candidates_multicolor",
+                "mask_candidate_mask_1",
+                "fit_candidate_fit_1",
+                "resolved_pose",
+            ):
+                path = root / f"{image_id}.png"
+                Image.new("RGB", (100, 80), "#303030").save(path)
+                image_paths[image_id] = path
+            inspection = {
+                "images": [
+                    {"image_id": image_id, "path": str(path)}
+                    for image_id, path in image_paths.items()
+                ],
+                "orientation_selection": {
+                    "accepted": True,
+                    "method": "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK",
+                    "vlm_invocation_count": 1,
+                    "attempts": [
+                        {
+                            "candidate_id": "rotate_90",
+                            "confidence": 0.9,
+                            "model": "vlm-test",
+                            "points_yx_0_1000": [
+                                {"point_id": "gripper", "x": 600, "y": 400}
+                            ],
+                        }
+                    ],
+                },
+                "axis_vector_overlays": {
+                    "final": [
+                        {
+                            "axis": "X",
+                            "color": "#ff3c3c",
+                            "x1": 0.5,
+                            "y1": 0.5,
+                            "x2": 0.7,
+                            "y2": 0.5,
+                        }
+                    ],
+                    "pre_rotation": [
+                        {
+                            "axis": "X",
+                            "color": "#ff3c3c",
+                            "x1": 0.5,
+                            "y1": 0.5,
+                            "x2": 0.3,
+                            "y2": 0.5,
+                        }
+                    ],
+                },
+            }
+            adapter = ArmBaseLocalizationSkillAdapter(
+                SimpleNamespace(),
+                visual_evidence_store=VisualEvidenceStore(),
+            )
+
+            evidence = await adapter._register_candidate_evidence(inspection)
+
+        self.assertEqual(len(evidence), 3)
+        self.assertIn("mask ensemble", evidence[0]["title"].lower())
+        self.assertEqual(evidence[1]["annotations"][0]["type"], "point")
+        self.assertEqual(
+            [value["default_visible"] for value in evidence[2]["annotations"]],
+            [True, False],
+        )
 
     def test_pointing_result_parses_only_supported_normalized_geometry(
         self,

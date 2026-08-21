@@ -2,12 +2,12 @@
   "schema": "midbrain.robot_collision_geometry_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.arm_capsules",
-  "profile_revision": "rebot-b601-dm-arm-capsules-v2",
+  "profile_revision": "rebot-b601-dm-arm-capsules-v3",
   "display_name": "reBot B601-DM Arm Conservative Capsule Approximation",
   "qualification": "SOFTWARE_TESTED",
   "robot_compatibility": {
     "model_id": "rebot_arm_b601_dm",
-    "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope"
+  "model_revision": "rebot-owner-observed-wrist-gripper-envelope-0.1.31"
   },
   "polyline_point_frames": [
     "rebot_arm_base",
