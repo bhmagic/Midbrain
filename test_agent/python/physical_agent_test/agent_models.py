@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import replace
@@ -32,6 +33,10 @@ GEMINI_AGENT_REASONING_EFFORTS = ("low", "medium", "high")
 LOCAL_TOOL_SEARCH_NAME = "tool_search"
 _LOCAL_TOOL_SEARCH_SOURCES = "_midbrain_local_tool_search_sources"
 _LOCAL_DEFERRED_TOOL = "_midbrain_local_deferred_tool"
+_LOCAL_TOOL_SEARCH_MAX_ARGUMENT_CHARS = 65_536
+
+
+logger = logging.getLogger(__name__)
 
 
 def is_gemini_agent_model(model_id: str) -> bool:
@@ -132,18 +137,49 @@ def _build_local_tool_search(
     ]
 
     async def search_tools(context_wrapper, raw_arguments: str) -> str:
-        arguments = json.loads(raw_arguments)
+        call_id = getattr(context_wrapper, "tool_call_id", None)
+        arguments, parse_failure = _parse_local_tool_search_arguments(
+            raw_arguments,
+            call_id=call_id,
+        )
+        if parse_failure is not None:
+            return parse_failure
+        assert arguments is not None
         selected_names = arguments.get("paths")
         if (
             not isinstance(selected_names, list)
             or not selected_names
             or not all(isinstance(name, str) for name in selected_names)
         ):
-            raise ValueError("paths must be a non-empty string array")
+            return _local_tool_search_failure(
+                call_id=call_id,
+                code="INVALID_PATHS",
+                message=(
+                    "paths must be a non-empty array of exact visible Skill "
+                    "names. Retry tool_search with one valid JSON object."
+                ),
+                diagnostics={
+                    "argument_length": len(raw_arguments),
+                    "allowed_path_count": len(tools_by_name),
+                },
+                allowed_paths=sorted(tools_by_name),
+            )
         unknown = sorted(set(selected_names) - tools_by_name.keys())
         if unknown:
-            raise ValueError(
-                "Unknown or ineligible Skill tools: " + ", ".join(unknown)
+            return _local_tool_search_failure(
+                call_id=call_id,
+                code="UNKNOWN_OR_INELIGIBLE_SKILL",
+                message=(
+                    "One or more requested paths are not eligible on this "
+                    "tool-search surface. Retry using only allowed_paths."
+                ),
+                diagnostics={
+                    "argument_length": len(raw_arguments),
+                    "selected_path_count": len(selected_names),
+                    "unknown_path_count": len(unknown),
+                    "allowed_path_count": len(tools_by_name),
+                },
+                allowed_paths=sorted(tools_by_name),
             )
         loaded = _loaded_tool_names(context_wrapper)
         loaded.update(selected_names)
@@ -162,7 +198,7 @@ def _build_local_tool_search(
             {
                 "type": "tool_search_output",
                 "execution": "client",
-                "call_id": getattr(context_wrapper, "tool_call_id", None),
+                "call_id": call_id,
                 "status": "completed",
                 "tools": loaded_tools,
             },
@@ -202,6 +238,133 @@ def _build_local_tool_search(
         tuple(deferred_tools),
     )
     return search_tool
+
+
+def _parse_local_tool_search_arguments(
+    raw_arguments: str,
+    *,
+    call_id: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    argument_length = len(raw_arguments)
+    if argument_length > _LOCAL_TOOL_SEARCH_MAX_ARGUMENT_CHARS:
+        return None, _local_tool_search_failure(
+            call_id=call_id,
+            code="ARGUMENTS_TOO_LARGE",
+            message=(
+                "Tool-search arguments exceed the bounded compatibility "
+                "limit. Retry with one concise JSON object."
+            ),
+            diagnostics={"argument_length": argument_length},
+        )
+    try:
+        value = json.loads(raw_arguments)
+    except json.JSONDecodeError as error:
+        duplicated = _collapse_identical_json_objects(raw_arguments)
+        if duplicated is not None:
+            value, duplicate_count = duplicated
+            logger.warning(
+                "Recovered repeated local tool-search JSON objects "
+                "without retaining arguments: call_id=%s "
+                "argument_length=%d duplicate_count=%d",
+                call_id,
+                argument_length,
+                duplicate_count,
+            )
+        else:
+            return None, _local_tool_search_failure(
+                call_id=call_id,
+                code="INVALID_JSON",
+                message=(
+                    "Tool-search arguments must be exactly one JSON object. "
+                    "Retry tool_search without trailing text or another "
+                    "object."
+                ),
+                diagnostics={
+                    "argument_length": argument_length,
+                    "error_position": error.pos,
+                    "error_line": error.lineno,
+                    "error_column": error.colno,
+                },
+            )
+    if not isinstance(value, dict):
+        return None, _local_tool_search_failure(
+            call_id=call_id,
+            code="INVALID_ARGUMENT_SHAPE",
+            message=(
+                "Tool-search arguments must be one JSON object. Retry with "
+                "an object containing paths."
+            ),
+            diagnostics={"argument_length": argument_length},
+        )
+    return value, None
+
+
+def _collapse_identical_json_objects(
+    raw_arguments: str,
+) -> tuple[Any, int] | None:
+    decoder = json.JSONDecoder()
+    cursor = 0
+    values: list[Any] = []
+    while cursor < len(raw_arguments) and len(values) < 4:
+        while (
+            cursor < len(raw_arguments)
+            and raw_arguments[cursor].isspace()
+        ):
+            cursor += 1
+        if cursor >= len(raw_arguments):
+            break
+        try:
+            value, cursor = decoder.raw_decode(raw_arguments, cursor)
+        except json.JSONDecodeError:
+            return None
+        values.append(value)
+    if raw_arguments[cursor:].strip() or len(values) < 2:
+        return None
+    first = values[0]
+    if not isinstance(first, dict) or any(value != first for value in values[1:]):
+        return None
+    return first, len(values)
+
+
+def _local_tool_search_failure(
+    *,
+    call_id: str | None,
+    code: str,
+    message: str,
+    diagnostics: dict[str, int],
+    allowed_paths: list[str] | None = None,
+) -> str:
+    safe_diagnostics = {
+        key: int(value)
+        for key, value in diagnostics.items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    logger.warning(
+        "Rejected local tool-search arguments without retaining them: "
+        "call_id=%s code=%s diagnostics=%s",
+        call_id,
+        code,
+        safe_diagnostics,
+    )
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "retryable": True,
+    }
+    if allowed_paths is not None:
+        error["allowed_paths"] = allowed_paths
+    return json.dumps(
+        {
+            "type": "tool_search_error",
+            "execution": "client",
+            "call_id": call_id,
+            "status": "failed",
+            "error": error,
+            "diagnostics": safe_diagnostics,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def narrow_local_tool_search(

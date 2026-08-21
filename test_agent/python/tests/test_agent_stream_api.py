@@ -139,17 +139,24 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
         app_module.agent_run_journal.path = self._original_journal_path
         self._journal_temporary.cleanup()
 
-    async def test_agent_run_is_blocked_until_skill_review_finishes(
+    async def test_agent_run_remains_available_during_skill_review(
         self,
     ) -> None:
         transport = httpx.ASGITransport(app=app_module.app)
-        with patch.object(
-            app_module,
-            "_agent_skill_installation_status",
-            return_value={
-                "prompt_required": True,
-                "restart_required": False,
-            },
+        with (
+            patch.object(
+                app_module,
+                "_agent_skill_installation_status",
+                return_value={
+                    "prompt_required": True,
+                    "restart_required": False,
+                },
+            ),
+            patch.object(
+                app_module,
+                "_run_streaming_autonomous_agent",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=transport,
@@ -157,11 +164,11 @@ class AgentStreamApiTests(unittest.IsolatedAsyncioTestCase):
             ) as client:
                 response = await client.post(
                     "/api/streaming-runs",
-                    json={"prompt": "do not start"},
+                    json={"prompt": "inspect with active skills"},
                 )
 
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("startup Skill installation", response.json()["detail"])
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "running")
 
     async def test_uploaded_image_reaches_agent_as_multimodal_input(
         self,

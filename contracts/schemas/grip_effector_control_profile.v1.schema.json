@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://midbrain.local/schemas/grip_effector_control_profile.v1.schema.json",
+  "title": "Midbrain Grip Effector Control Profile v1",
+  "type": "object",
+  "required": ["schema", "schema_version", "profile_id", "profile_revision", "compatible_mounted_effector", "qualification_state", "two_vector_basis", "joint_control", "contact_detection", "mit_position_transition", "mit_float_transition", "thermal_policy", "invalidation_conditions"],
+  "properties": {
+    "schema": {"const": "midbrain.grip_effector_control_profile"},
+    "schema_version": {"const": 1},
+    "profile_id": {"type": "string", "minLength": 1},
+    "profile_revision": {"type": "string", "minLength": 1},
+    "compatible_mounted_effector": {
+      "type": "object",
+      "required": ["profile_id", "profile_revision", "acting_frame_id"],
+      "properties": {
+        "profile_id": {"type": "string", "minLength": 1},
+        "profile_revision": {"type": "string", "minLength": 1},
+        "acting_frame_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "qualification_state": {"type": "string", "enum": ["DEVELOPMENT", "SOFTWARE_TESTED", "PHYSICALLY_QUALIFIED"]},
+    "qualification_note": {"type": "string"},
+    "two_vector_basis": {
+      "type": "object",
+      "required": ["table_inward_direction_effector", "insertion_direction_effector", "orthogonalization", "qualification"],
+      "properties": {
+        "table_inward_direction_effector": {"$ref": "#/$defs/vector3"},
+        "insertion_direction_effector": {"$ref": "#/$defs/vector3"},
+        "orthogonalization": {"type": "string"},
+        "qualification": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "joint_control": {
+      "type": "object",
+      "required": ["joint_name", "closing_direction", "operational_position_range_rad", "fully_open_position_rad", "open_position_rad", "open_position_tolerance_rad", "open_comparison", "default_grip_position_rad", "default_velocity_rad_s", "maximum_velocity_rad_s", "default_torque_limit_nm", "release_torque_limit_nm", "maximum_torque_limit_nm", "torque_semantics", "qualification"],
+      "properties": {
+        "joint_name": {"type": "string", "minLength": 1},
+        "closing_direction": {"type": "string", "enum": ["DECREASING_POSITION_RAD", "INCREASING_POSITION_RAD"]},
+        "operational_position_range_rad": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+        "fully_open_position_rad": {"type": "number"},
+        "open_position_rad": {"type": "number"},
+        "open_position_tolerance_rad": {"type": "number", "minimum": 0},
+        "open_comparison": {"const": "AT_OR_BELOW_TARGET_PLUS_TOLERANCE"},
+        "default_grip_position_rad": {"type": "number"},
+        "default_velocity_rad_s": {"type": "number", "exclusiveMinimum": 0},
+        "maximum_velocity_rad_s": {"type": "number", "exclusiveMinimum": 0},
+        "default_torque_limit_nm": {"type": "number", "exclusiveMinimum": 0},
+        "release_torque_limit_nm": {"type": "number", "exclusiveMinimum": 0},
+        "maximum_torque_limit_nm": {"type": "number", "exclusiveMinimum": 0},
+        "torque_semantics": {"type": "string"},
+        "qualification": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "mit_position_transition": {
+      "type": "object",
+      "required": ["input_semantics", "interpolation_rate_hz", "default_duration_s", "maximum_duration_s", "duration_policy", "kp", "kd", "terminal_state", "forbidden_while_carrying"],
+      "properties": {
+        "input_semantics": {"const": "TARGET_POSITION_PLUS_REQUESTED_MINIMUM_DURATION"},
+        "interpolation_rate_hz": {"type": "number", "const": 50},
+        "default_duration_s": {"type": "number", "minimum": 0.02},
+        "maximum_duration_s": {"type": "number", "minimum": 0.02},
+        "duration_policy": {"const": "EXTEND_TO_RESPECT_MAXIMUM_VELOCITY"},
+        "kp": {"type": "number", "minimum": 0},
+        "kd": {"type": "number", "minimum": 0},
+        "terminal_state": {"const": "MIT_POSITION_HOLD"},
+        "forbidden_while_carrying": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "contact_detection": {
+      "type": "object",
+      "required": ["decision_basis", "minimum_absolute_measured_torque_nm", "stable_samples_at_50hz", "result_semantics", "qualification"],
+      "properties": {
+        "decision_basis": {"const": "ABSOLUTE_MEASURED_MOTOR_TORQUE_ONLY"},
+        "minimum_absolute_measured_torque_nm": {"type": "number", "exclusiveMinimum": 0},
+        "stable_samples_at_50hz": {"type": "integer", "minimum": 1},
+        "result_semantics": {"type": "string"},
+        "qualification": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "mit_float_transition": {
+      "type": "object",
+      "required": ["input_semantics", "interpolation_rate_hz", "default_delta_time_s", "maximum_delta_time_s", "kp", "kd", "terminal_state", "forbidden_while_carrying"],
+      "properties": {
+        "input_semantics": {"type": "string"},
+        "interpolation_rate_hz": {"type": "number", "const": 50},
+        "default_delta_time_s": {"type": "number", "minimum": 0.02},
+        "maximum_delta_time_s": {"type": "number", "minimum": 0.02},
+        "kp": {"type": "number", "minimum": 0},
+        "kd": {"type": "number", "minimum": 0},
+        "terminal_state": {"type": "string"},
+        "forbidden_while_carrying": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "thermal_policy": {
+      "type": "object",
+      "required": ["new_grip_gate_c", "scope", "comparison", "retry_after_s", "hot_while_carrying"],
+      "properties": {
+        "new_grip_gate_c": {"type": "number", "exclusiveMinimum": 0},
+        "scope": {"const": "EVERY_ACTIVE_ARM_AND_GRIPPER_JOINT"},
+        "comparison": {"const": "REJECT_AT_OR_ABOVE_GATE"},
+        "retry_after_s": {"type": "number", "exclusiveMinimum": 0},
+        "hot_while_carrying": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "invalidation_conditions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "vector3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}
+  },
+  "additionalProperties": false
+}

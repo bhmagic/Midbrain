@@ -2,13 +2,13 @@
   "schema": "midbrain.mounted_effector_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.5_inch_blade",
-  "profile_revision": "rebot-b601-dm-5-inch-blade-v3",
+  "profile_revision": "rebot-b601-dm-5-inch-blade-v5",
   "display_name": "5 inch blade",
   "assembly_type": "MOUNTED_TOOL",
   "qualification": "DEVELOPMENT",
   "robot_compatibility": {
     "model_id": "rebot_arm_b601_dm",
-    "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
+    "model_revision": "rebot-owner-observed-wrist-gripper-envelope-0.1.31",
     "terminal_frame": "link6"
   },
   "kinematic_attachment": {
@@ -638,6 +638,22 @@
         "The trial controlled-frame-to-handle-mean vector is revised",
         "The active mounted-effector identity, revision, or assembly fingerprint changes"
       ]
+    },
+    "midbrain.skill.locate_arm_base.v1": {
+      "schema": "midbrain.effector_coarse_orientation_landmark",
+      "schema_version": 1,
+      "arm_base_frame": "rebot_arm_base",
+      "landmark": {
+        "landmark_id": "coarse_knife_handle_center",
+        "display_name": "Military-green mounted knife handle",
+        "eligible_point_ids": [
+          "knife_handle_blade_junction",
+          "knife_handle_rear_endpoint"
+        ],
+        "description_for_vlm": "Identify the military-green knife handle held by the two black gripper fingers. Return any clearly visible endpoint on that green handle: either the end adjoining the metallic blade or the opposite rear end. Rough image location is sufficient; do not reject it for missing depth, edge precision, partial occlusion, or reflections on the blade. Do not select the metallic blade, black gripper fingers, work object, arm link, base, or background.",
+        "controlled_frame_to_landmark_translation_m": [-0.09, 0.01, -0.07],
+        "qualification": "DEVELOPMENT_REUSES_USER_SUPPLIED_UNVERIFIED_HANDLE_CENTER_OFFSET"
+      }
     }
   },
   "invalidation_conditions": [

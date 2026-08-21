@@ -24,9 +24,12 @@ The Skill:
 - plans an ordered set of Cartesian poses, applied wrenches, lock masks, and
   delays, but does not select hardware joint-speed limits;
 - signs the exact bounded plan using its installed Skill identity;
-- submits one planned move at a time without waiting for Cartesian arrival;
+- submits one planned move at a time; the shared runtime waits for Contact's
+  trajectory-complete observation and then applies the signed stage dwell
+  before submitting the next move, without treating either as task success;
   and
-- submits `RELAX` in its terminal cleanup path.
+- submits `RELAX` in its terminal cleanup path unless a confirmed carry is
+  deliberately transferred to the persistent Contact and Grip Providers.
 
 The Contact Work Provider:
 
@@ -103,8 +106,13 @@ and does not emit a special warning for them.
 
 ## 5. IK and unreachable targets
 
-IK begins from fresh measured joint positions. Explicitly locked joints are
-hard constraints: they are removed from the solve and retain their first
+The first endpoint begins from fresh measured joint positions. A chained
+endpoint resolves any measured-start-relative target from fresh measured FK,
+but its command trajectory begins from the previous commanded joint setpoint.
+This distinction preserves Basic setpoint continuity when the physical arm is
+still slightly behind the preceding endpoint; a new segment must not replace a
+position/effort hold with the lagging measured joints. Explicitly locked joints
+are hard constraints: they are removed from the solve and retain their first
 captured session position. A joint that is unlocked and later locked again in
 the same session reuses its first captured lock position.
 
@@ -124,10 +132,13 @@ move, the Provider uses the per-joint `POSITION_EFFORT_LIMITED` velocity limits
 declared by the active Basic Provider. A `ONE_SHOT` move derives
 `velocity_limited_transition_time_s` as the largest absolute
 measured-to-target joint displacement divided by that Basic limit. A
-`CARTESIAN_SEGMENT` divides the measured-to-target translation into sequential
-IK knots no farther apart than the configured Cartesian spacing and
-time-parameterizes every joint interval against the same Basic limits. The
-resulting duration is still a kinematic lower bound, not an arrival assertion.
+`CARTESIAN_SEGMENT` divides the command-start-to-target translation into
+sequential IK knots no farther apart than the configured Cartesian spacing and
+time-parameterizes every joint interval against the same Basic limits. It also
+enforces the Contact-owned maximum Cartesian command speed, currently `0.1`
+m/s; the segment duration is the larger of joint-limit timing and Cartesian
+distance divided by that speed. The resulting duration is still a command
+timing lower bound, not an arrival assertion.
 The frozen Basic velocity vector and derived time are returned with the move
 disposition and published with the active move.
 
@@ -172,11 +183,15 @@ sequential-IK path and the final endpoint latches after the segment completes.
 
 ## 7. Replacement, timeout, and relaxation
 
-Accepted move sequence numbers are strictly increasing. The next valid move
-immediately replaces the active endpoint or segment regardless of current
-progress or arrival. There is no queue of Skill moves and no arrival-gated
-transition. A Cartesian segment's internal IK knots are ephemeral execution
-detail for that one active move; they do not weaken replacement semantics.
+Accepted move sequence numbers are strictly increasing. At the Provider API,
+the next valid move replaces the active endpoint or segment regardless of
+current progress or arrival. There is no Provider-side queue or task-success
+gate. Replacement preserves the previous commanded setpoint as the next
+segment's command origin, so measured tracking lag cannot create a momentary
+setpoint collapse. The shared finite-Skill runtime additionally waits for
+trajectory completion and the signed dwell before it submits the next move. A
+Cartesian segment's internal IK knots are ephemeral execution detail for that
+one active move; they do not weaken replacement semantics.
 
 Contact reads Basic's advertised internal control rate and advances a Cartesian
 segment at that cadence. The current Basic rate is 50 Hz. Each tick submits a
@@ -193,14 +208,16 @@ the motion's own calculated duration from consuming the safe inactivity wait.
 Only acceptance of a new valid setpoint resets that deadline. Invalid, stale,
 replayed, or duplicated content does not extend it.
 
-`delay_after_accept_s` is the Skill's signed minimum command spacing. The
-shared Contact runtime waits for the greater of that delay and the Provider's
-velocity-limited transition lower bound, with a conservative runtime margin,
-before submitting the next move. If that derived hold would reach the signed
-transition-plus-watchdog deadline, the runtime fails and requests relaxation
-rather than knowingly overrunning the authorized inactivity window. This
-timing floor does not add Provider-side arrival gating: a new valid move still
-replaces the active endpoint immediately when it arrives.
+`delay_after_accept_s` is the Skill's signed physical stage dwell. The shared
+Contact runtime polls the matching endpoint until `trajectory_complete=true`,
+then starts the complete dwell while continuing to service Manager authority.
+It submits the next move only after that dwell. If trajectory completion plus
+the dwell would reach the signed transition-plus-watchdog deadline, the
+runtime fails and requests relaxation rather than knowingly overrunning the
+authorized inactivity window. This runtime sequencing does not convert
+trajectory completion or elapsed dwell into Cartesian arrival or task-success
+evidence, and it does not add a Provider-side replacement gate for independent
+callers.
 
 On timeout, fault, lease loss, shutdown, or explicit `RELAX`, the Provider:
 
@@ -223,6 +240,13 @@ wrench/gravity contributions, saturation,
 session identity, command sequence, deadline, assembly fingerprint, and local
 lease lineage.
 
+The state also publishes a read-only `measured_acting_frame_pose` derived from
+the same independent FK and fresh six-joint feedback. It contains the Contact
+root frame, acting-frame identity, position, quaternion, and observation time.
+Finite Skills may use it to preserve the current measured orientation for a
+zero-displacement Contact acquisition; it is observation, not a new authority
+or command path.
+
 For each active Cartesian segment, Contact also derives command and measured
 cross-track error, orientation error, joint tracking error, and measured
 along-track fraction from Basic's measured joints and the same independent FK
@@ -242,9 +266,10 @@ Physical testing must not introduce a low-torque load-bearing state. The first
 physical boundary uses the selected blade development-v3 assembly and is
 revised as tool geometry and contact behavior are measured.
 
-Motor-temperature estimation is deferred. If the physical Basic adapter later
-publishes finite motor temperatures, a direct alert may be added before a
-history-based leaky thermal integrator is physically calibrated.
+Basic now publishes physical MOS/rotor temperature samples when the transport
+provides them. Contact republishes arm feedback but does not own task thermal
+policy. The independent Grip Provider applies the conservative whole-arm
+new-grip gate defined by the Grip and Carry contract.
 
 ## 10. Initial slicing composition
 
@@ -296,3 +321,23 @@ pairs. Each use profile may also own hard joint locks. Agent tools send a null
 selector unless the user explicitly requests a number; null resolves through
 each profile store's live declared default. Profile number `#1` has no special
 runtime privilege.
+
+## 11. Carry-bound extension
+
+`contact_work_plan.v2.schema.json` adds exactly one `carry` object to the v1
+plan fields. `PREPARE` starts a not-yet-confirmed carry approach. `CONTINUE`
+must match the currently confirmed carry ID and attachment revision; it may
+replace the finite session while Contact retains the same Basic arm-group
+lease and latest endpoint.
+
+The first accepted Contact endpoint primes and activates Basic's arm-group
+`POSITION_EFFORT_LIMITED` guard. That guard and the continuously streamed or
+latched position/effort setpoint remain active across every subsequent Contact
+move. Carry confirmation is a separate operation after the final signed
+approach step is accepted and measured joint error/velocity satisfy the
+settling gate; it verifies and retains the already-active guard rather than
+introducing a new mode transition.
+While confirmed, inactivity, authorization expiry, and endpoint replacement
+gaps hold the last arm target rather than selecting gravity float. Explicit
+relaxation clears the guard before group float and lease release. Contact does
+not infer gripper contact, bind object metadata, or apply the temperature gate.

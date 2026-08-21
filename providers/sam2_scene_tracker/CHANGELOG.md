@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Remove the post-SAM2 VLM mask-quality call and its three-attempt rejection
+  loop. Required SAM2 masks still fail when missing or empty.
+- Accept explicit policies with zero `KEEP_OUT` objects so mapping/location
+  semantics do not invent collision geometry.
+
 ## 0.3.2 - 2026-08-19
 
 - Generalize the one-shot prompt contract from exactly two positive points to
@@ -15,7 +22,7 @@
 - Preserve negative-point prompt provenance without moving semantic target
   selection out of the calling Skill.
 
-## Unreleased
+## Earlier unreleased work
 
 - Add the single-image `perception.image.sam2.segment` Provider capability.
 - Keep VLM seed-box and point selection outside the Provider so Skills own

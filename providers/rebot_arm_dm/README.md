@@ -62,7 +62,49 @@ fails closed if that API is absent.
 
 Setup seeds missing machine-local model, calibration, and calibration-collision
 files from `config_templates`. Active files under `config` are installation
-state and must not be committed or overwritten during an update.
+state and must not be committed or blanket-overwritten during an update. A
+versioned setup migration may replace an explicitly reviewed model or
+operational-limit field while preserving all unrelated measured calibration
+values and changing the applicable immutable revision binding. Version 0.1.29
+uses that mechanism for the owner-observed J4-J6 and gripper-close envelopes
+plus the unchanged prior `2.1` rad/s gripper velocity boundary.
+
+Version 0.1.30 revises both mounted-effector profiles to v4 and adds the
+optional `midbrain.skill.locate_arm_base.v1` coarse visual-landmark extension.
+Basic publishes that opaque profile data with assembly state and remains the
+sole owner of joint feedback and timestamped FK. Locate Arm Base alone owns the
+extension's VLM interpretation and bounded orientation workflow.
+
+Version 0.1.32 records the owner-observed `+12` degree normal-object close
+target and a separate `+17` degree Basic absolute close limit. Setup migrates
+only unchanged earlier `-20`, `-10`, or `0` degree envelopes and preserves
+customized values for explicit review.
+
+The separately versioned v8 grip-control extension records an
+owner-requested attended-development contact policy: absolute measured gripper
+motor torque at or above `0.15 N m` for 10 consecutive 50 Hz samples. Position
+and velocity remain diagnostics only. The extension also sets the new-grip
+admission gate to `85 C`; Basic supplies the measurements, while the Grip
+Provider alone owns contact inference and admission.
+
+The current owner-observed wrist model uses hard/operational limits of
+`+/-95`/`+/-85` degrees for J4, `+/-100`/`+/-90` degrees for J5, and
+`+/-180`/`+/-170` degrees for J6. Higher IK Providers may retain an additional
+inward solver margin; these Basic values do not authorize bypassing that
+Provider-owned margin.
+
+The owner-observed normal-object firm-close target is `+12` degrees. The Basic
+hard/absolute close limit is separately bounded at `+17` degrees, while the
+normal operational and calibration ceiling remains `+12` degrees. The
+safe-home gripper target remains `-20` degrees. Soft or thin object strategies
+require a separate Skill and do not widen this normal-object boundary.
+
+The owner-requested attended-development gripper velocity boundary is
+`4.0 rad/s`. It exceeds the official reBot application `3.0 rad/s` value but
+remains below the configured DM-J4310 motor envelope. Position/effort control
+retains its `0.75` native velocity translation and measured-speed brake, so a
+`4.0 rad/s` request sends a `3.0 rad/s` native motor ceiling. This is not an
+autonomous physical qualification.
 
 Follow [Windows setup and bring-up](docs/WINDOWS_INSTALL_COMPILE_RUN.md) for
 installation, stopped validation, simulation, read-only hardware connection,
@@ -98,6 +140,13 @@ Basic rejects every group command that includes a joint outside that group.
 The arm and gripper groups may be leased concurrently, while a root lease
 conflicts with both. This permits a separate grip controller to retain its
 hold while the free-space controller moves the arm.
+
+A group lease may also activate a generic `POSITION_EFFORT_LIMITED` mode guard
+after submitting one complete matching command for that group. While active,
+Basic rejects incomplete or incompatible commands, group float, and lease
+release. The owning higher Provider must explicitly clear the guard during a
+reviewed release transition. Basic does not know whether an object is carried;
+it enforces only the declared motor-mode invariant.
 
 At the service boundary, an omitted `resource_id` and the configured canonical
 root ID both select root authority. Only a declared child resource selects

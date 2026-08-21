@@ -1,0 +1,34 @@
+{
+  "skill_type": "move_carried_object",
+  "version": "0.1.0",
+  "display_name": "Move Carried Object",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "move_carried_object",
+    "description": "Move an already confirmed carried object by one finite arm-base translation and target orientation. Carry identity is read from Provider state, not selected by the Agent. Motion always uses Contact, and all active joints remain POSITION_EFFORT_LIMITED during motion and idle.",
+    "when_to_use": ["Grip Provider reports a confirmed carry with all active joints in POSITION_EFFORT_LIMITED."],
+    "when_not_to_use": ["Nothing is carried, the runtime attachment is missing, or free-space collision planning is required for the carried geometry."],
+    "side_effects": ["Replaces the carry-bound Contact plan and leaves the arm and gripper position/torque locked."],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "MEDIUM",
+    "required_permissions": ["robot.motion.contact.execute"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "translation_vector_arm_base_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "target_orientation_arm_base_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+      },
+      "required": ["translation_vector_arm_base_m", "target_orientation_arm_base_xyzw"],
+      "additionalProperties": false
+    },
+    "output_schema": {"type": "object", "properties": {"status": {"type": "string"}, "workflow_complete": {"type": "boolean"}, "carry_id": {"type": "string"}, "attachment_revision": {"type": "string"}, "all_joints_position_effort_limited": {"type": "boolean"}}, "required": ["status", "workflow_complete", "carry_id", "all_joints_position_effort_limited"], "additionalProperties": true, "x-midbrain-result-tiers": {"schema_version": 1, "compact_pointers": ["/status", "/workflow_complete", "/carry_id", "/attachment_revision", "/all_joints_position_effort_limited"], "detail_policy": "HOST_SANITIZED_REFERENCE", "max_compact_bytes": 32768}},
+    "execution_adapter": {"adapter_id": "skill.move_carried_object.host.v1", "kind": "EXTERNAL_SKILL_ENTRYPOINT", "entrypoint": "python/move_carried_object_skill/host_adapter.py", "host_adapter": {"entrypoint": "python/move_carried_object_skill/host_adapter.py", "factory": "build_host_adapter"}, "invocation_requires_approval": false}
+  },
+  "required_capabilities": ["robot_arm.motion.contact.position_effort_limited.v1", "robot_effector.grip.carrying_state.v1"],
+  "route_policy": {"controller": "CONTACT_ONLY", "free_space_controller_forbidden_while_carrying": true, "idle_mode": "POSITION_EFFORT_LIMITED"},
+  "installation": {"setup_entrypoint": "scripts/setup.ps1"},
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_PHYSICAL_QUALIFICATION_REQUIRED",
+  "published_streams": []
+}

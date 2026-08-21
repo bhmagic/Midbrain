@@ -40,6 +40,15 @@ class _PointingSkill:
         )
 
 
+class _SafeHomeSkill:
+    async def execute(self) -> dict[str, object]:
+        return {
+            "status": "SAFE_HOME_COMPLETED",
+            "workflow_complete": True,
+            "physical_motion_completed": True,
+        }
+
+
 class _EffectorFrontSkill:
     async def run(self, *, target_frame: str) -> dict[str, object]:
         return {
@@ -405,191 +414,16 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
         self.assertNotIn("analyze_visual_scene", route["allowed_tools"])
 
-    def test_workpiece_corner_route_uses_fresh_arm_base_aabb(self) -> None:
-        route = deterministic_intent_tool_route(
-            "where is the right-forward-up corner of the work piece"
+    def test_semantic_object_geometry_does_not_narrow_action_tools(self) -> None:
+        prompts = (
+            "where is the right-forward-up corner of the work piece",
+            "move the hand to the work piece right-forward-up corner",
+            "map the obstacle and move to the work piece corner then slice",
         )
 
-        self.assertEqual(route["route"], "SEMANTIC_WORK_OBJECT_BOUNDS")
-        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
-        self.assertNotIn("locate_item", route["allowed_tools"])
-        self.assertIn("forward is +X", route["instruction"])
-        self.assertIn("right is -Y", route["instruction"])
-        self.assertIn("currently visible surface", route["instruction"])
-        self.assertIn("never authorizes movement", route["instruction"])
-
-    def test_workpiece_corner_motion_uses_world_point_tandem_route(self) -> None:
-        route = deterministic_intent_tool_route(
-            "move the hand to the work piece right-forward-up corner plus "
-            "(0, -2, 15) cm in the arm base axes"
-        )
-
-        self.assertEqual(
-            route["route"],
-            "SEMANTIC_WORK_OBJECT_WORLD_POINT_MOTION",
-        )
-        self.assertIn(
-            "derive_fabric_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "move_effector_to_world_point",
-            route["allowed_tools"],
-        )
-        self.assertNotIn(
-            "inspect_arm_semantic_scene",
-            route["allowed_tools"],
-        )
-        self.assertNotIn("tool_search", route["allowed_tools"])
-        self.assertNotIn(
-            "perform_relative_effector_motion",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "Never perform coordinate addition",
-            route["instruction"],
-        )
-        self.assertIn(
-            "copying target_position_world_m",
-            route["instruction"],
-        )
-        self.assertIn(
-            "single authoritative scene read",
-            route["instruction"],
-        )
-        self.assertIn(
-            "Do not call inspect_arm_semantic_scene",
-            route["instruction"],
-        )
-
-    def test_scene_mapping_and_corner_motion_use_composed_tandem_route(
-        self,
-    ) -> None:
-        route = deterministic_intent_tool_route(
-            "map out the working piece: toilet paper roll; map out the "
-            "obstacle: table surface; move the hand to (0, -2, 15) cm in "
-            "arm base axes from the work piece right-forward-up corner"
-        )
-
-        self.assertEqual(
-            route["route"],
-            "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
-        )
-        self.assertIn(
-            "configure_scene_policy_and_inspect_runtime",
-            route["allowed_tools"],
-        )
-        self.assertNotIn("inspect_midbrain_runtime", route["allowed_tools"])
-        self.assertIn(
-            "derive_fabric_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "move_effector_to_world_point",
-            route["allowed_tools"],
-        )
-        self.assertNotIn(
-            "inspect_arm_semantic_scene",
-            route["allowed_tools"],
-        )
-        self.assertNotIn("tool_search", route["allowed_tools"])
-        self.assertNotIn(
-            "execute_no_contact_approach_step",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "null expected_scene_revision",
-            route["instruction"],
-        )
-        self.assertIn(
-            "Do not use no-contact approach tools",
-            route["instruction"],
-        )
-
-    def test_scene_corner_motion_and_slicing_expose_complete_graph_surface(
-        self,
-    ) -> None:
-        route = deterministic_intent_tool_route(
-            "map out the working piece: toilet paper; map out the obstacle: "
-            "white table surface; move the hand to (0, -2, 15) cm in arm "
-            "base axes from the right-forward-up corner; use current IK "
-            "+(0,0,-10) cm for a slice with world -z blade direction and arm "
-            "base -x slicing direction; move above the first slice and slice "
-            "again"
-        )
-
-        self.assertEqual(
-            route["route"],
-            "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
-        )
-        self.assertIn(
-            "configure_scene_policy_and_inspect_runtime",
-            route["allowed_tools"],
-        )
-        self.assertNotIn("inspect_midbrain_runtime", route["allowed_tools"])
-        self.assertIn(
-            "derive_fabric_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "move_effector_to_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "translate_fabric_direction_to_world",
-            route["allowed_tools"],
-        )
-        self.assertIn("slice_with_blade", route["allowed_tools"])
-        self.assertIn("one complete Limited Graph", route["instruction"])
-        self.assertIn("never submit a corner-move prefix", route["instruction"])
-        self.assertIn("never retry or loop a physical node", route["instruction"])
-        self.assertIn(
-            "/plan/path/slice_begin_point_world_m",
-            route["instruction"],
-        )
-        self.assertIn(
-            "never substitute /plan/path/planned_retract_endpoint_world_m",
-            route["instruction"],
-        )
-
-    def test_existing_scene_corner_motion_and_slicing_share_graph_route(
-        self,
-    ) -> None:
-        route = deterministic_intent_tool_route(
-            "move the hand to (0, -2, 15) cm in arm base axes from the "
-            "toilet paper right-forward-up corner; use current IK "
-            "+(0,0,-10) cm as the beginning point of cutting, world -z as "
-            "the blade direction, arm base -x as the slicing direction, and "
-            "submit a 20 cm slice using default profiles"
-        )
-
-        self.assertEqual(
-            route["route"],
-            "WORK_OBJECT_MOTION_AND_MIXED_FRAME_SLICING",
-        )
-        self.assertIn(
-            "derive_fabric_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "move_effector_to_world_point",
-            route["allowed_tools"],
-        )
-        self.assertIn(
-            "translate_fabric_direction_to_world",
-            route["allowed_tools"],
-        )
-        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
-        self.assertIn("offset_world_point", route["allowed_tools"])
-        self.assertIn("inspect_arm_semantic_scene", route["allowed_tools"])
-        self.assertIn("offset_world_point", route["allowed_tools"])
-        self.assertIn("slice_with_blade", route["allowed_tools"])
-        self.assertNotIn(
-            "configure_scene_segmentation_policy",
-            route["allowed_tools"],
-        )
-        self.assertIn("one complete Limited Graph", route["instruction"])
-        self.assertIn("never submit only", route["instruction"])
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(deterministic_intent_tool_route(prompt))
 
     def test_safe_home_has_an_exact_host_operation_route(self) -> None:
         route = deterministic_intent_tool_route("safe home")
@@ -603,6 +437,18 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("not a Limited Graph child", route["instruction"])
 
+    def test_safe_home_tool_never_requests_sdk_approval(self) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"identify_pointed_object"},
+            basic_safe_home_skill=_SafeHomeSkill(),  # type: ignore[arg-type]
+        )
+
+        tools = {tool.name: tool for tool in driver.agent.tools}
+        self.assertFalse(tools["execute_basic_safe_home"].needs_approval)
+
     def test_compound_graph_route_preserves_trailing_safe_home(self) -> None:
         route = deterministic_intent_tool_route(
             "map out the working piece and obstacle; move the hand to the "
@@ -610,12 +456,7 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "move above the first slice, slice again, then safe home"
         )
 
-        self.assertEqual(
-            route["route"],
-            "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
-        )
-        self.assertIn("execute_basic_safe_home", route["allowed_tools"])
-        self.assertIn("directly only after the graph", route["instruction"])
+        self.assertIsNone(route)
 
     def test_mixed_frame_slicing_uses_direction_translation_tandem(self) -> None:
         route = deterministic_intent_tool_route(
@@ -641,6 +482,22 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD",
             route["instruction"],
         )
+
+    def test_mixed_frame_scrap_grip_uses_current_fk_without_vlm_location(self) -> None:
+        route = deterministic_intent_tool_route(
+            "use current IK as the beginning, move arm base -z to the table, "
+            "scrape world +x and grip the workpiece"
+        )
+
+        self.assertEqual(route["route"], "MIXED_FRAME_SCRAP_GRIP")
+        self.assertIn("translate_fabric_direction_to_world", route["allowed_tools"])
+        self.assertIn("grip_object", route["allowed_tools"])
+        self.assertIn(
+            "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD",
+            route["instruction"],
+        )
+        self.assertIn("captures current measured effector FK", route["instruction"])
+        self.assertIn("Do not call a VLM", route["instruction"])
 
     def test_move_close_route_uses_composed_no_contact_planner(self) -> None:
         route = deterministic_intent_tool_route(
@@ -681,7 +538,13 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             "configure_scene_segmentation_policy",
             route["allowed_tools"],
         )
-        self.assertIn("do not invent one", route["instruction"])
+
+    def test_contact_work_is_not_forced_through_no_contact_category(self) -> None:
+        route = deterministic_intent_tool_route(
+            "rotate the hand, move to the toilet paper roll, and grip firm"
+        )
+
+        self.assertIsNone(route)
 
     def test_move_until_work_object_uses_no_contact_approach(self) -> None:
         route = deterministic_intent_tool_route(
@@ -746,11 +609,16 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "derive_fabric_world_point",
                 "establish_world_axis",
                 "execute_reviewed_observation_motion",
+                "grip",
+                "grip_object",
                 "identify_pointed_object",
                 "inspect_arm_semantic_scene",
+                "lay_flat",
+                "let_go",
                 "locate_arm_base",
                 "locate_effector_front",
                 "locate_item",
+                "move_carried_object",
                 "move_effector_to_world_point",
                 "offset_world_point",
                 "perform_relative_effector_motion",
@@ -844,15 +712,16 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         descriptors = discover_agent_skills(workspace, include_disabled=True)
+        manifest_paths = sorted((workspace / "skills").glob("*/manifest.json"))
 
-        for manifest_path in sorted((workspace / "skills").glob("*/manifest.json")):
+        for manifest_path in manifest_paths:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             validate_json(
                 instance=manifest["agent_discovery"],
                 schema=discovery_schema,
             )
 
-        self.assertEqual(len(descriptors), 22)
+        self.assertEqual(len(descriptors), len(manifest_paths))
         self.assertTrue(all(item.schema_version == 3 for item in descriptors))
         self.assertTrue(
             all(item.output_schema["type"] == "object" for item in descriptors)
@@ -915,6 +784,70 @@ class AgentDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             tool.params_json_schema["properties"]["motion_profile_number"]["type"],
             ["integer", "null"],
+        )
+
+    def test_grip_strict_tool_accepts_explicit_object_identity(self) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"grip"},
+            external_skill_adapters={
+                "skill.grip.host.v1": _ExternalSkillAdapter()
+            },
+        )
+
+        tool = driver.agent.tools[0]
+        self.assertEqual(tool.name, "grip")
+        binding = tool.params_json_schema["properties"]["object_binding"]
+        self.assertEqual(binding["required"], ["object_id"])
+        self.assertFalse(binding["additionalProperties"])
+        validate_json(
+            instance={
+                "object_binding": {"object_id": "current-object"},
+                "payload": None,
+                "collision_geometry": None,
+                "grip_position_rad": None,
+                "grip_velocity_rad_s": None,
+                "gripping_torque_limit_nm": None,
+                "contact_timeout_s": None,
+                "motion_profile_number": None,
+            },
+            schema=tool.params_json_schema,
+        )
+
+    def test_scrap_grip_strict_tool_accepts_explicit_object_identity(self) -> None:
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gpt-test",
+            tool_choice="required",
+            eligible_tool_names={"grip_object"},
+            external_skill_adapters={
+                "skill.grip_object.host.v1": _ExternalSkillAdapter()
+            },
+        )
+
+        tool = driver.agent.tools[0]
+        self.assertEqual(tool.name, "grip_object")
+        binding = tool.params_json_schema["properties"]["object_binding"]
+        self.assertEqual(binding["required"], ["object_id"])
+        self.assertFalse(binding["additionalProperties"])
+        validate_json(
+            instance={
+                "approach_begin_point_world_m": [0.0, 0.0, 0.0],
+                "point_mode": None,
+                "table_inward_direction_world": [1.0, 0.0, 0.0],
+                "insertion_direction_world": [0.0, 0.0, -1.0],
+                "object_binding": {"object_id": "current-object"},
+                "payload": None,
+                "collision_geometry": None,
+                "table_inward_distance_m": None,
+                "insertion_distance_m": None,
+                "gripping_torque_limit_nm": None,
+                "gripper_vector_profile_number": None,
+                "motion_profile_number": None,
+            },
+            schema=tool.params_json_schema,
         )
 
     def test_catalog_excludes_archived_vegetable_cutting_skill(self) -> None:

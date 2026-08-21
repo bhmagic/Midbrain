@@ -1,0 +1,34 @@
+{
+  "skill_type": "let_go",
+  "version": "0.1.1",
+  "display_name": "Action: let go",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "let_go",
+    "description": "Open and float the gripper, releasing the currently bound carried object when one exists. Opening remains POSITION_EFFORT_LIMITED and is allowed even when joints are hot; after measured opening, the Grip Provider performs a 50 Hz MIT transition for delta time and floats the gripper group. Contact relaxes the arm only when a confirmed carry is released.",
+    "when_to_use": ["The gripper should open, whether or not Grip Provider currently reports a confirmed carried object."],
+    "when_not_to_use": ["A confirmed carried object must first be placed at a controlled pose; use lay_flat."],
+    "side_effects": ["Opens and floats the gripper; when carrying, also clears the runtime attachment and relaxes Contact."],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "MEDIUM",
+    "required_permissions": ["robot.grip.release", "robot.motion.relax"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "mit_delta_time_s": {"type": "number", "minimum": 0.02, "maximum": 5.0, "default": 0.5},
+        "open_timeout_s": {"type": "number", "minimum": 0.1, "maximum": 30.0, "default": 10.0}
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "output_schema": {"type": "object", "properties": {"status": {"type": "string"}, "workflow_complete": {"type": "boolean"}, "released_carry_id": {"type": ["string", "null"]}}, "required": ["status", "workflow_complete", "released_carry_id"], "additionalProperties": true, "x-midbrain-result-tiers": {"schema_version": 1, "compact_pointers": ["/status", "/workflow_complete", "/released_carry_id"], "detail_policy": "HOST_SANITIZED_REFERENCE", "max_compact_bytes": 32768}},
+    "execution_adapter": {"adapter_id": "skill.let_go.host.v1", "kind": "EXTERNAL_SKILL_ENTRYPOINT", "entrypoint": "python/let_go_skill/host_adapter.py", "host_adapter": {"entrypoint": "python/let_go_skill/host_adapter.py", "factory": "build_host_adapter"}, "invocation_requires_approval": false}
+  },
+  "required_capabilities": ["robot_effector.grip.carrying_state.v1", "robot_effector.grip.mit_float_transition_50hz.v1", "robot_arm.motion.contact.position_effort_limited.v1"],
+  "route_policy": {"hot_temperature_may_block_release": false, "release_order": ["OPEN_POS_TOR", "VERIFY_OPEN", "GRIPPER_MIT_FLOAT", "CONTACT_RELAX"]},
+  "installation": {"setup_entrypoint": "scripts/setup.ps1"},
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_PHYSICAL_QUALIFICATION_REQUIRED",
+  "published_streams": []
+}

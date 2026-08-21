@@ -1,0 +1,25 @@
+{
+  "id": "robot_arm.primary.grip",
+  "display_name": "Independent Gripper Control Provider",
+  "dependencies": ["robot_arm.rebot_dm", "robot_arm.primary.contact"],
+  "command": "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_grip/.venv/Scripts/python.exe",
+  "args": [
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_grip/provider.py",
+    "--config",
+    "${PHYSICAL_AGENT_ROOT}/providers/rebot_arm_grip/config/controller.json",
+    "--basic-url",
+    "http://127.0.0.1:8791",
+    "--contact-url",
+    "http://127.0.0.1:8794",
+    "--manager-url",
+    "${MANAGER_URL}",
+    "--fabric-url",
+    "${FABRIC_URL}"
+  ],
+  "cwd": "${PHYSICAL_AGENT_ROOT}",
+  "control_url": "http://127.0.0.1:8795",
+  "auto_start": false,
+  "graceful_stop_timeout_ms": 10000,
+  "heartbeat_timeout_ms": 3500,
+  "env": {}
+}

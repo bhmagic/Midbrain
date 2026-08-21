@@ -17,7 +17,6 @@
   "minimum_sam2_score": 0.0,
   "mask_ensemble": {
     "attempt_count": 2,
-    "minimum_review_confidence": 0.60,
     "final_dilation_radius_px": 4
   },
   "fit_candidates": {
@@ -25,8 +24,6 @@
     "minimum_selection_confidence": 0.55,
     "minimum_consensus_confidence": 0.40
   },
-  "minimum_vlm_confidence": 0.72,
-  "minimum_vlm_consensus_confidence": 0.55,
   "vlm": {
     "backend": "google.gemini",
     "model": "gemini-robotics-er-2-preview",

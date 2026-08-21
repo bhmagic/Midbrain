@@ -25,7 +25,6 @@
   "visual_motion_hold_s": 2.0,
   "sam2_low_confidence_threshold": 0.60,
   "arm_mask_dilation_pixels": 18,
-  "mask_quality_maximum_attempts": 3,
   "prompt_box_padding_fraction": 0.03,
   "semantic_depth_connectivity_m": 0.035,
   "positive_seed_search_radius_pixels": 24,

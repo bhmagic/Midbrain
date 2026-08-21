@@ -35,10 +35,13 @@ tool-discovery features must be adapted before the model request and must not
 change this event contract.
 
 Native GPT Responses Tool Search and non-GPT client-executed compatibility
-search both project as `tool.search.called` and `tool.search.completed`; raw
-search arguments and loaded definitions are not published to browser
-observers. A compatibility completion is recognized only from a matching call
-ID and an exact completed client `tool_search_output` envelope, because a Chat
+search both project as `tool.search.called` and `tool.search.completed`.
+Rejected client compatibility arguments project as `tool.search.failed` with
+only a bounded error code, retryability, parse location, input length, and
+count diagnostics; raw search arguments, arbitrary rejected names, messages,
+and loaded definitions are not published to browser observers. A compatibility
+completion or failure is recognized only from a matching call ID and an exact
+client `tool_search_output` or `tool_search_error` envelope, because a Chat
 Completions function-output item does not retain the originating tool name.
 
 ## Version 1 envelope
@@ -65,7 +68,8 @@ The initial implementation publishes:
 - `assistant.message.delta`.
 - `assistant.reasoning_summary.delta` and completion metadata.
 - `agent.updated` and agent handoff lifecycle events.
-- `tool.called`, `tool.completed`, and tool-search lifecycle events.
+- `tool.called`, `tool.completed`, and called/completed/failed tool-search
+  lifecycle events.
 - `approval.required` and `approval.resolved` for unresolved host policy
   decisions.
 - `visual.evidence.created` for a validated image reference and structured

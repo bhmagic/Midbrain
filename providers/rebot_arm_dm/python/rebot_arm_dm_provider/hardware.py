@@ -399,6 +399,7 @@ class MotorBridgeBackend:
         positions=self.configuration.home_positions.astype(float).tolist()
         velocities=[0.0]*joint_count
         torques=[0.0]*joint_count
+        temperatures=[float("nan")]*joint_count
         status=["INACTIVE_NOT_INSTALLED"]*joint_count
         per_joint_observed_at_us=[0]*joint_count
         generations=[0]*joint_count
@@ -407,6 +408,16 @@ class MotorBridgeBackend:
             state,generation,observed_at_us,uncertainty_us,observed_monotonic=samples[index]
             q,qd,tau=self._joint_from_motor(index,float(state.pos),float(state.vel),float(state.torq))
             positions[index]=q; velocities[index]=qd; torques[index]=tau; status[index]=str(state.status_code)
+            thermal_channels = (
+                float(getattr(state, "t_mos", float("nan"))),
+                float(getattr(state, "t_rotor", float("nan"))),
+            )
+            finite_channels = [
+                value for value in thermal_channels if math.isfinite(value)
+            ]
+            temperatures[index] = (
+                max(finite_channels) if finite_channels else float("nan")
+            )
             per_joint_observed_at_us[index]=observed_at_us; generations[index]=generation
             interval_start_us.append(observed_at_us-uncertainty_us)
             interval_end_us.append(observed_at_us+uncertainty_us)
@@ -426,7 +437,7 @@ class MotorBridgeBackend:
             positions_rad=values,
             velocities_rad_s=np.asarray(velocities),
             torques_nm=np.asarray(torques),
-            temperatures_c=np.full(7,np.nan),
+            temperatures_c=np.asarray(temperatures,dtype=float),
             voltages_v=np.full(7,np.nan),
             status_codes=status,
             observed_at_us=observed_at_us,

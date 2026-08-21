@@ -1,5 +1,6 @@
 param(
-    [int]$Port = 7114
+    [int]$Port = 7114,
+    [switch]$NoBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,5 +29,6 @@ function Import-ProcessEnvFile {
 Import-ProcessEnvFile (Join-Path $projectRoot "config\system.env")
 Import-ProcessEnvFile (Join-Path $projectRoot "config\api_keys.env")
 $env:PHYSICAL_AGENT_ROOT = $projectRoot
+& (Join-Path $PSScriptRoot "stop_ui.ps1") -Port $Port -Quiet
 & $python -m locate_arm_base.app --config (Join-Path $skillRoot "config_templates\skill.default.json") --port $Port
 exit $LASTEXITCODE

@@ -374,7 +374,7 @@ def test_repeated_engine_frames_do_not_duplicate_persistent_voxels() -> None:
         engine.close()
 
 
-def test_new_policy_fuses_no_spheres_after_three_vlm_quality_rejections() -> None:
+def test_post_sam2_vlm_rejection_is_not_consulted() -> None:
     annotator = _RejectingAnnotator()
     semantic_map = PersistentSemanticVoxelMap(fusion_voxel_edge_m=0.02)
     engine = Sam2SceneTrackerEngine(
@@ -394,15 +394,16 @@ def test_new_policy_fuses_no_spheres_after_three_vlm_quality_rejections() -> Non
         engine.annotation_future.result(timeout=1.0)
 
         observation = engine.tick()
-        assert annotator.annotation_calls == 3
-        assert annotator.review_calls == 3
-        assert semantic_map.snapshot()["objects"] == {}
+        assert annotator.annotation_calls == 1
+        assert annotator.review_calls == 0
+        assert semantic_map.snapshot()["objects"]
         assert observation is not None
-        assert observation["valid"] is False
-        assert observation["data"]["assertions"] == []
-        assert observation["data"]["coverage"]["attempt_count"] == 3
-        assert engine.last_diagnostics["status"] == (
-            "VLM_MASK_QUALITY_REJECTED_AFTER_3_ATTEMPTS"
-        )
+        assert observation["valid"] is True
+        assert observation["data"]["assertions"]
+        assert engine.last_diagnostics["quality_review"] == {
+            "status": "SAM2_MASKS_ACCEPTED",
+            "post_sam2_vlm_review_performed": False,
+            "missing_or_empty_masks": [],
+        }
     finally:
         engine.close()

@@ -7,6 +7,14 @@ the live capability response for implementation work.
 
 ## Unreleased
 
+## 0.9.1 - 2026-08-20
+
+- Increase authorized-transit joint endpoint completion slack to `0.04 rad`
+  for all six arm joints. This covers the owner-observed `0.03559 rad`
+  alignment residual without weakening collision checks, IK acceptance, path
+  authorization, velocity settling, or the no-progress watchdog.
+- Migrate the unchanged prior arrival tolerance through managed policy
+  revision 10, while preserving an explicitly customized tolerance.
 - Accept the exact V3 canonical mounted-camera calibration policy emitted by
   Locate Arm Base anywhere the controller already accepts V2 canonical-camera
   identity semantics. Preserve V1 epoch binding and reject unknown versions.

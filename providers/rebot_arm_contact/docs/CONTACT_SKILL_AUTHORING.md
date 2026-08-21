@@ -29,32 +29,39 @@ The Provider does not wait for arrival. Each step selects `ONE_SHOT` or
 `CARTESIAN_SEGMENT`. One-shot commands latch the solved endpoint directly. A
 Cartesian segment is one replaceable Skill move whose internal sequential IK
 knots are streamed at Basic's advertised internal control rate. Its requested
-orientation is held at every knot, and hard locks apply to every solve. A Skill
-delay means only how long the Skill waits before submitting the next signed-plan step. Each step's
+orientation is held at every knot, and hard locks apply to every solve. The
+first endpoint establishes Basic's arm-group position/effort mode guard. Later
+moves retain that guard and build their command trajectory from the previous
+commanded endpoint rather than resetting to lagging measured joints.
+
+`delay_after_accept_s` is the signed physical-stage dwell. The shared runtime
+waits for Contact's matching `trajectory_complete` observation, then services
+authority through the complete dwell before submitting the next step. Contact
+itself still has no Provider-side arrival queue or task-success gate; another
+valid caller may replace the endpoint immediately. Each step's
 `next_command_timeout_s` is a signed safe inactivity interval after Contact's
-Basic-limit-derived transition time and must be longer than the Skill's
-declared minimum delay. Contact freezes the deadline at acceptance; it does not
-extend it from measured arrival. If the next accepted step does not arrive in
-that transition-plus-watchdog window, the Provider fences the session and
-returns to Basic gravity float.
+Basic-limit-derived transition time and must leave room for trajectory
+completion and the dwell. Contact freezes the deadline at acceptance; it does
+not extend it from measured arrival. If the next accepted step does not arrive
+in that transition-plus-watchdog window, the Provider fences the session and,
+when no carry is confirmed, returns to Basic gravity float.
 
 Skills do not specify joint velocity limits. An accepted move returns the
 Basic-declared `joint_velocity_limits_rad_s` used for the move and
 `velocity_limited_transition_time_s`. For one-shot moves this is derived from
 fresh measured joints and the solved endpoint. For Cartesian segments it is
-the sum of sequential-IK interval times under the same limits. The shared
-runtime treats the signed Skill delay as a minimum and
-extends it to this lower bound plus its conservative margin. The transition
-time does not consume `next_command_timeout_s`; the runtime still verifies that
-its complete hold fits the signed transition-plus-watchdog window. This
-prevents a short nominal delay from predictably truncating a stroke while
-retaining the rule that Contact never waits for or asserts Cartesian arrival.
+the larger of sequential-IK joint-limit timing and Cartesian distance under
+Contact's configured 0.1 m/s ceiling. The transition time does not consume
+`next_command_timeout_s`; the runtime still verifies that trajectory waiting
+plus the complete dwell fits the signed transition-plus-watchdog window. This
+prevents a short nominal dwell from truncating a stroke while retaining the
+rule that Contact never asserts Cartesian arrival or task success.
 
 The runtime result includes `move_tracking_observations`. Each observation is
-a diagnostic FK reconstruction from Basic's measured joints at the end of the
-planned hold. Compare commanded cross-track error with measured cross-track and
-joint tracking errors when tuning a path. Do not interpret those values as
-material-contact success or an arrival gate.
+a diagnostic FK reconstruction from Basic's measured joints after trajectory
+completion and the planned dwell. Compare commanded cross-track error with
+measured cross-track and joint tracking errors when tuning a path. Do not
+interpret those values as material-contact success or an arrival gate.
 
 Each installed Skill has a separate configured signing credential. A Skill
 process receives only its own credential; the Provider receives the matching

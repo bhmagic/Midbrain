@@ -19,6 +19,10 @@ $providerConfig = Join-Path $workspace "config\providers.json"
 $managerExe = Join-Path $core "target\release\resource-provider-manager.exe"
 $fabricExe = Join-Path $core "target\release\world-state-fabric.exe"
 $agentPython = Join-Path $workspace "test_agent\.venv\Scripts\python.exe"
+$agentLogDirectory = Join-Path $workspace "test_agent\logs"
+$agentOutputLog = Join-Path $agentLogDirectory "ui.out.log"
+$agentErrorLog = Join-Path $agentLogDirectory "ui.err.log"
+$agentLauncherScript = Join-Path $PSScriptRoot "run_agent_ui_logged.ps1"
 $pidsFile = Join-Path $core "run\pids.json"
 
 function Test-TcpPortOpen {
@@ -87,6 +91,24 @@ function Start-IndependentProcess {
         throw "Failed to start $FilePath"
     }
     return $process
+}
+
+function Get-RecentProcessFailureLog {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ""
+    }
+    return [string](
+        Get-Content -LiteralPath $Path -Tail 40 -ErrorAction SilentlyContinue |
+            Out-String
+    ).Trim()
+}
+
+function ConvertTo-QuotedProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    return '"' + $Value.Replace('"', '\"') + '"'
 }
 
 function Wait-BoundedHealth {
@@ -162,7 +184,12 @@ if ($CoreOnly -and $StartAgentUi) {
     throw "-CoreOnly and -StartAgentUi cannot be combined."
 }
 
-foreach ($required in @($managerExe, $fabricExe, $providerConfig)) {
+foreach ($required in @(
+    $managerExe,
+    $fabricExe,
+    $providerConfig,
+    $agentLauncherScript
+)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Missing required file: $required. Run setup_workspace.ps1 first."
     }
@@ -260,7 +287,7 @@ Import-EnvFile (Join-Path $workspace "config\api_keys.env")
 $env:PHYSICAL_AGENT_ROOT = $workspace
 
 New-Item -ItemType Directory -Force `
-    -Path (Join-Path $core "logs"), (Join-Path $core "run") |
+    -Path (Join-Path $core "logs"), (Join-Path $core "run"), $agentLogDirectory |
     Out-Null
 
 $started = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
@@ -301,18 +328,47 @@ try {
     }
 
     if ($StartAgentUi) {
+        Remove-Item `
+            -LiteralPath $agentOutputLog, $agentErrorLog `
+            -Force `
+            -ErrorAction SilentlyContinue
+        $agentLauncherArguments =
+            "-NoProfile -ExecutionPolicy Bypass -File " +
+            (ConvertTo-QuotedProcessArgument $agentLauncherScript) +
+            " -PythonPath " +
+            (ConvertTo-QuotedProcessArgument $agentPython) +
+            " -Workspace " +
+            (ConvertTo-QuotedProcessArgument $workspace) +
+            " -StandardOutputPath " +
+            (ConvertTo-QuotedProcessArgument $agentOutputLog) +
+            " -StandardErrorPath " +
+            (ConvertTo-QuotedProcessArgument $agentErrorLog)
         $uiProcess = Start-IndependentProcess `
-            -FilePath $agentPython `
-            -Arguments "-m physical_agent_test.app" `
+            -FilePath (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") `
+            -Arguments $agentLauncherArguments `
             -Environment @{
                 "AUTO_INITIALIZE_SPACE_COGNITION" = "false"
             }
         $started.Add($uiProcess)
-        Wait-BoundedHealth `
-            -Url "http://127.0.0.1:8000/health" `
-            -Process $uiProcess `
-            -TimeoutSeconds $StartupTimeoutSeconds |
-            Out-Null
+        try {
+            Wait-BoundedHealth `
+                -Url "http://127.0.0.1:8000/health" `
+                -Process $uiProcess `
+                -TimeoutSeconds $StartupTimeoutSeconds |
+                Out-Null
+        }
+        catch {
+            $failureMessage = $_.Exception.Message
+            $errorLog = Get-RecentProcessFailureLog -Path $agentErrorLog
+            if ([string]::IsNullOrWhiteSpace($errorLog)) {
+                $errorLog = Get-RecentProcessFailureLog -Path $agentOutputLog
+            }
+            if (-not [string]::IsNullOrWhiteSpace($errorLog)) {
+                $failureMessage += "`nAgent UI startup log:`n$errorLog"
+            }
+            $failureMessage += "`nFull logs: $agentErrorLog and $agentOutputLog"
+            throw $failureMessage
+        }
         $uiListenerPid = Get-TcpListenerProcessId -Port 8000
         if ($null -eq $uiListenerPid) {
             throw "Agent UI reported no TCP listener on port 8000."

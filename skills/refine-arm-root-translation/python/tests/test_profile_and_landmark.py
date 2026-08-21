@@ -115,7 +115,7 @@ def test_blade_profile_contains_user_trial_handle_landmark() -> None:
     profile = load_effector_profile(BLADE_PROFILE_PATH)
     landmark = select_visual_landmark(profile)
 
-    assert profile["profile_revision"] == "rebot-b601-dm-5-inch-blade-v3"
+    assert profile["profile_revision"] == "rebot-b601-dm-5-inch-blade-v5"
     assert landmark["required_point_ids"] == [
         "knife_handle_blade_junction",
         "knife_handle_rear_endpoint",

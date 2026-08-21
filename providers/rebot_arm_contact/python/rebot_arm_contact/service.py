@@ -175,7 +175,7 @@ class ContactService:
         service = self
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "MidbrainContactWork/0.1.0"
+            server_version = "MidbrainContactWork/0.2.0"
 
             def log_message(self, fmt, *args):
                 try:
@@ -254,6 +254,29 @@ class ContactService:
                                 str(body["session_id"]), int(body["sequence"])
                             ),
                         )
+                    if path == "/v1/contact/settling":
+                        return self._json(
+                            200,
+                            service.controller.settling_observation(
+                                str(body["session_id"]),
+                                int(body["sequence"]),
+                                maximum_joint_error_rad=float(
+                                    body.get("maximum_joint_error_rad", 0.04)
+                                ),
+                                maximum_joint_velocity_rad_s=float(
+                                    body.get("maximum_joint_velocity_rad_s", 0.05)
+                                ),
+                            ),
+                        )
+                    if path == "/v1/contact/carry/confirm":
+                        return self._json(
+                            200,
+                            service.controller.confirm_carry(
+                                str(body["session_id"]),
+                                str(body["carry_id"]),
+                                str(body["attachment_revision"]),
+                            ),
+                        )
                     if path in {"/v1/contact/relax", "/v1/float"}:
                         return self._json(
                             200,
@@ -282,6 +305,16 @@ class ContactService:
                             )
                         raise ValueError("unsupported Contact Provider control action")
                     if path in {"/v1/control/stop", "/v1/safe-terminate"}:
+                        if service.controller.snapshot().get("carry_confirmed"):
+                            return self._json(
+                                409,
+                                service._error(
+                                    RuntimeError(
+                                        "Contact Provider stop is rejected while carrying; release the object first"
+                                    ),
+                                    "CARRYING_STOP_REJECTED",
+                                ),
+                            )
                         threading.Thread(
                             target=service.shutdown,
                             name="contact-work-stop-request",

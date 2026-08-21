@@ -91,9 +91,13 @@ collision primitive. `KEEP_OUT` obstacles remain sphere-only and receive no
 AABB or per-object text label from this path.
 
 Unclaimed visible depth is classified as `PUSHABLE` telemetry. It is not
-published into controller collision geometry by default. The provider refuses
-to advertise ready obstacle coverage until an explicit policy is received and
-every described `KEEP_OUT` object has at least one fused voxel.
+published into controller collision geometry by default. The Provider requires
+an explicit policy, but that policy may contain no `KEEP_OUT` object. Readiness
+then describes a valid scene with zero blocking objects. When `KEEP_OUT`
+objects are explicitly described, each must still produce usable SAM2 depth
+geometry before obstacle coverage is advertised. SAM2 output is accepted
+without a second VLM mask-quality call; missing or empty required masks remain
+a segmentation failure.
 
 RGB and registered-depth views remain available even when the camera-to-arm
 transform is unavailable. The exact RGB, registered depth, and reviewed

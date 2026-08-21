@@ -21,16 +21,6 @@ class VisualCandidateSelection:
     attempt_count: int = 1
 
 
-@dataclass(frozen=True)
-class VisualMaskReview:
-    accepted_candidate_ids: tuple[str, ...]
-    confidence: float
-    rationale: str
-    model: str
-    response_id: str | None
-    attempt_count: int = 1
-
-
 class VisualCandidateSelector(Protocol):
     def select(
         self,
@@ -38,15 +28,6 @@ class VisualCandidateSelector(Protocol):
         contact_sheet_path: Path,
         candidate_ids: tuple[str, ...],
     ) -> VisualCandidateSelection: ...
-
-
-class VisualMaskReviewer(Protocol):
-    def review(
-        self,
-        reference_paths: tuple[Path, ...],
-        contact_sheet_path: Path,
-        candidate_ids: tuple[str, ...],
-    ) -> VisualMaskReview: ...
 
 
 class _OpenAIResponsesVisualCandidateSelector:
@@ -137,81 +118,13 @@ class _OpenAIResponsesVisualCandidateSelector:
         self.http.close()
 
 
-class OpenAIResponsesMaskCandidateReviewer(_OpenAIResponsesVisualCandidateSelector):
-    def review(
-        self,
-        reference_paths: tuple[Path, ...],
-        contact_sheet_path: Path,
-        candidate_ids: tuple[str, ...],
-    ) -> VisualMaskReview:
-        if not self.key:
-            raise RuntimeError(f"{self.key_name} is unavailable for mask review")
-        if not candidate_ids:
-            raise ValueError("mask review requires at least one candidate")
-        schema = {
-            "type": "object",
-            "properties": {
-                "accepted_candidate_ids": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": list(candidate_ids)},
-                    "minItems": 1,
-                    "maxItems": len(candidate_ids),
-                },
-                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "rationale": {"type": "string", "maxLength": 700},
-            },
-            "required": ["accepted_candidate_ids", "confidence", "rationale"],
-            "additionalProperties": False,
-        }
-        instruction = (
-            "The first image(s) are immutable reference views of the robot arm base. "
-            "The final image is a labeled contact sheet of independent SAM2 masks. Each "
-            "mask came from a separate VLM point prompt on the same current camera frame. "
-            "Remove every clearly bad mask. Retain every mask whose red region primarily "
-            "covers physical surfaces belonging to the referenced base CAD while excluding "
-            "arm links, upper joints, cables, the support enclosure below the CAD/support "
-            "seam, table, tray, and unrelated hardware. Do not select a single best mask: "
-            "return all usable candidate IDs so the Skill can perform a pixel vote. Retain "
-            "at least one candidate and lower confidence when every candidate is ambiguous."
-        )
-        content: list[dict[str, str]] = [
-            {"type": "input_text", "text": instruction}
-        ]
-        content.extend(self._image(path) for path in reference_paths)
-        content.append(self._image(contact_sheet_path))
-        structured = request_structured_response(
-            self.http,
-            backend=self.backend,
-            key=self.key,
-            model=self.model,
-            reasoning_effort=self.reasoning_effort,
-            content=content,
-            schema_name="arm_base_mask_review",
-            schema=schema,
-            operation="mask-candidate-review",
-        )
-        value = structured.value
-        accepted = tuple(str(item) for item in value["accepted_candidate_ids"])
-        if not accepted or len(set(accepted)) != len(accepted):
-            raise RuntimeError("mask-review VLM returned an empty or duplicate candidate set")
-        if any(candidate_id not in candidate_ids for candidate_id in accepted):
-            raise RuntimeError("mask-review VLM retained an unknown candidate")
-        return VisualMaskReview(
-            accepted_candidate_ids=accepted,
-            confidence=float(value["confidence"]),
-            rationale=str(value["rationale"]),
-            model=self.model,
-            response_id=structured.response_id,
-            attempt_count=structured.attempt_count,
-        )
-
-
 class OpenAIResponsesFitCandidateSelector(_OpenAIResponsesVisualCandidateSelector):
     schema_name = "arm_base_pose_fit_candidate"
     instruction = (
         "The first image(s) are immutable CAD reference views of the robot arm base. "
         "The final image is a labeled contact sheet of independently repeated fits from "
-        "the same RGB-D frame and the single mask already selected by the mask-review VLM. "
+        "the same RGB-D frame and the deterministic pixel vote over every successfully "
+        "acquired mask. "
         "Cyan dots and axes are the CAD projected using each FoundationPose result; "
         "translucent red is the shared supporting mask. Select the "
         "candidate whose projected CAD best aligns with the visible cylindrical base, "

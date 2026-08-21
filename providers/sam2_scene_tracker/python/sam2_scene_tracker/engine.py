@@ -40,15 +40,6 @@ class AnnotatorProtocol(Protocol):
 
     def describe(self) -> dict[str, Any]: ...
 
-    def validate_masks(
-        self,
-        image_rgb: np.ndarray,
-        depth_m: np.ndarray,
-        masks: dict[str, np.ndarray],
-        policy: SceneSegmentationPolicy,
-    ) -> dict[str, Any]: ...
-
-
 class TrackerProtocol(Protocol):
     def set_image(self, image_rgb: np.ndarray) -> None: ...
 
@@ -104,7 +95,6 @@ class Sam2SceneTrackerEngine:
         self.last_visual_motion_monotonic: float | None = None
         self.previous_motion_thumbnail: np.ndarray | None = None
         self.last_min_sam2_score: float | None = None
-        self.quality_failure_policy_identity: str | None = None
         self.last_quality_review: dict[str, Any] | None = None
         self.latest_angular_assertions: list[dict[str, Any]] = []
         self.latest_angular_projection: dict[str, Any] | None = None
@@ -169,16 +159,10 @@ class Sam2SceneTrackerEngine:
             self.latest_angular_projection = None
             self.latest_visible_surface_aabbs = []
             self.annotation_error = None
-            self.quality_failure_policy_identity = None
             self.last_quality_review = None
         return policy
 
     def _annotation_due(self, now: float) -> bool:
-        if (
-            self.policy is not None
-            and self.quality_failure_policy_identity == self.policy.identity
-        ):
-            return False
         if self.annotation_future is not None:
             return False
         if not self.prompts:
@@ -352,7 +336,7 @@ class Sam2SceneTrackerEngine:
             diagnostics[object_id] = detail
         return constrained, diagnostics
 
-    def _segment_with_quality_review(
+    def _segment_masks(
         self,
         frame: RgbdFrame,
         policy: SceneSegmentationPolicy,
@@ -365,105 +349,35 @@ class Sam2SceneTrackerEngine:
         dict[str, Any],
         bool,
     ]:
+        masks, scores, errors = self._segment_current_frame(
+            frame,
+            policy,
+            annotation_refreshed=annotation_refreshed,
+        )
+        masks, constraints = self._constrain_masks(
+            frame,
+            masks,
+            annotation_refreshed=annotation_refreshed,
+        )
         expected = {ARM_OBJECT_ID, *[value.object_id for value in policy.objects]}
-        maximum_attempts = max(
-            1,
-            min(3, int(self.config.get("mask_quality_maximum_attempts", 3))),
+        missing = sorted(
+            object_id
+            for object_id in expected
+            if object_id not in masks or not np.any(masks[object_id])
         )
-        attempt_reviews: list[dict[str, Any]] = []
-        latest_masks: dict[str, np.ndarray] = {}
-        latest_scores: dict[str, float] = {}
-        latest_errors: list[str] = []
-        latest_constraints: dict[str, Any] = {}
-        needs_review = annotation_refreshed or not self.previous_masks
-
-        for attempt in range(1, maximum_attempts + 1 if needs_review else 2):
-            if attempt > 1:
-                try:
-                    self.prompts = self.annotator.annotate(frame.rgb.copy(), policy)
-                    self.annotation_error = None
-                    annotation_refreshed = True
-                except Exception as error:
-                    self.annotation_error = str(error)
-                    attempt_reviews.append(
-                        {
-                            "attempt": attempt,
-                            "accepted": False,
-                            "stage": "VLM_ANNOTATION",
-                            "error": str(error),
-                        }
-                    )
-                    continue
-            masks, scores, errors = self._segment_current_frame(
-                frame,
-                policy,
-                annotation_refreshed=annotation_refreshed,
-            )
-            masks, constraints = self._constrain_masks(
-                frame,
-                masks,
-                annotation_refreshed=annotation_refreshed,
-            )
-            latest_masks = masks
-            latest_scores = scores
-            latest_errors = errors
-            latest_constraints = constraints
-            missing = sorted(
-                object_id
-                for object_id in expected
-                if object_id not in masks or not np.any(masks[object_id])
-            )
-            if not needs_review:
-                self.previous_masks.update(masks)
-                return masks, scores, errors, constraints, True
-            if missing:
-                attempt_reviews.append(
-                    {
-                        "attempt": attempt,
-                        "accepted": False,
-                        "stage": "SAM2_SEGMENTATION",
-                        "missing_or_empty_masks": missing,
-                    }
-                )
-                continue
-            try:
-                review = self.annotator.validate_masks(
-                    frame.rgb.copy(),
-                    frame.depth_m.copy(),
-                    masks,
-                    policy,
-                )
-            except Exception as error:
-                review = {
-                    "accepted": False,
-                    "stage": "VLM_MASK_QUALITY_REVIEW",
-                    "error": str(error),
-                }
-            review = {"attempt": attempt, **review}
-            attempt_reviews.append(review)
-            if review.get("accepted") is True:
-                self.previous_masks.update(masks)
-                self.quality_failure_policy_identity = None
-                self.last_quality_review = {
-                    "status": "VLM_MASK_QUALITY_ACCEPTED",
-                    "attempt_count": attempt,
-                    "attempts": attempt_reviews,
-                }
-                return masks, scores, errors, constraints, True
-
-        self.quality_failure_policy_identity = policy.identity
+        accepted = not missing
+        if accepted:
+            self.previous_masks.update(masks)
         self.last_quality_review = {
-            "status": "VLM_MASK_QUALITY_REJECTED_AFTER_3_ATTEMPTS",
-            "attempt_count": maximum_attempts,
-            "attempts": attempt_reviews,
+            "status": (
+                "SAM2_MASKS_ACCEPTED"
+                if accepted
+                else "SAM2_SEGMENTATION_INCOMPLETE"
+            ),
+            "post_sam2_vlm_review_performed": False,
+            "missing_or_empty_masks": missing,
         }
-        return (
-            latest_masks,
-            latest_scores,
-            latest_errors,
-            latest_constraints,
-            False,
-        )
+        return masks, scores, errors, constraints, accepted
 
     @staticmethod
     def _encode_rgb(frame: RgbdFrame) -> bytes:
@@ -573,7 +487,7 @@ class Sam2SceneTrackerEngine:
             segmentation_errors,
             prompt_constraints,
             quality_accepted,
-        ) = self._segment_with_quality_review(
+        ) = self._segment_masks(
             frame,
             policy,
             annotation_refreshed=annotation_refreshed,
@@ -596,7 +510,7 @@ class Sam2SceneTrackerEngine:
                     },
                 )
             self.last_diagnostics = {
-                "status": "VLM_MASK_QUALITY_REJECTED_AFTER_3_ATTEMPTS",
+                "status": "SAM2_SEGMENTATION_INCOMPLETE",
                 "policy": policy.as_dict(),
                 "quality_review": self.last_quality_review,
                 "prompt_depth_constraints": prompt_constraints,
@@ -607,8 +521,8 @@ class Sam2SceneTrackerEngine:
             return self._publish_mapping_failure(
                 frame,
                 policy,
-                failure_status="VLM_MASK_QUALITY_REJECTED_AFTER_3_ATTEMPTS",
-                attempt_count=3,
+                failure_status="SAM2_SEGMENTATION_INCOMPLETE",
+                attempt_count=1,
                 failure_details={
                     "quality_review": self.last_quality_review,
                     "prompt_depth_constraints": prompt_constraints,

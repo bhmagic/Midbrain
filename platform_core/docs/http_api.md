@@ -188,12 +188,18 @@ lifetime. Manager requires
 - candidate and approval schema/state plus exact canonical candidate SHA-256;
 - signed reviewer identity, nonce, issue/expiry, and candidate binding;
 - current mounted camera canonical-device/calibration identity and health;
+- the deterministic mask-vote provenance, including exact participation of
+  every acquired mask and `ceil(acquired_mask_count / 2)` threshold; no VLM
+  mask-review approval or confidence is required;
 - historical VIO provenance used to establish the gravity-aligned stationary
   world frame, without making a later VIO process restart a freshness gate;
 - parent-from-child world/VIO/arm-base frame semantics;
-- the exact single centered-mesh base-orientation proof: current world up,
-  matching identity/X-180/Y-180/Z-180 choice, correction count zero or one,
-  zero mesh-correction translation, and preserved CAD mesh center;
+- the exact bounded Locate Arm Base orientation proof: current world up,
+  zero-translation local-X normalization when required, one coarse active-
+  effector point plus timestamped FK or an Agent-supplied rough world +X
+  direction, a deterministic best score over every profiled local-Z candidate,
+  and preserved CAD mesh center. Manager does not impose a VLM confidence gate
+  once the effector VLM has returned at least one valid coarse point;
 - a serialized `world_from_base` quaternion whose +Z is upward and matches the
   reviewed corrected up dot product; and
 - proof that the immutable approval decision was recorded before the

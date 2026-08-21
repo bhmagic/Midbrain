@@ -16,17 +16,16 @@ from PIL import Image, ImageDraw
 from .arm_profile import ArmProfileRecord, ArmProfileStore
 from .candidate_selection import (
     OpenAIResponsesFitCandidateSelector,
-    OpenAIResponsesMaskCandidateReviewer,
     VisualCandidateSelector,
-    VisualMaskReviewer,
 )
 from .clients import MidbrainClients
-from .fit_candidates import render_fit_overlay
+from .fit_candidates import project_axis_vectors, render_fit_overlay
 from .mask_candidates import (
     MaskCandidate,
     build_image_contact_sheet,
     build_voted_mask,
     create_mask_candidate,
+    write_multicolor_mask_overlay,
 )
 from .math3d import (
     matrix4,
@@ -35,15 +34,24 @@ from .math3d import (
     x_rotation,
 )
 from .orientation import (
-    OpenAIResponsesOrientationSelector,
     OpenAIResponsesArmBasePromptLocator,
+    OpenAIResponsesEffectorPointLocator,
+    EffectorLandmarkSpec,
+    EffectorPointObservation,
+    EffectorPointLocator,
+    GeometricOrientationResolution,
     PromptLocator,
-    OrientationSelection,
-    OrientationSelector,
-    build_contact_sheet,
-    orientation_evidence_hash,
+    build_effector_orientation_overlay,
+    effector_landmark_spec,
+    effector_orientation_evidence_hash,
+    resolve_orientation_from_effector_fk,
+    resolve_orientation_from_world_x_hint,
 )
 from .profile import ModelProfile, canonical_sha256, file_sha256, load_profile_payload
+
+
+class EffectorOrientationHintRequired(RuntimeError):
+    """One visual effector attempt failed; an Agent-supplied rough +X is required."""
 
 
 def _bounded_selection_decision(
@@ -126,9 +134,8 @@ class LocateArmBaseSkill:
         root: Path,
         *,
         clients: MidbrainClients | None = None,
-        selector: OrientationSelector | None = None,
+        effector_locator: EffectorPointLocator | None = None,
         prompt_locator: PromptLocator | None = None,
-        mask_selector: VisualMaskReviewer | None = None,
         fit_selector: VisualCandidateSelector | None = None,
     ) -> None:
         self.config = config
@@ -155,16 +162,14 @@ class LocateArmBaseSkill:
         self._vlm_config = vlm
         self._default_vlm_backend = vlm_backend
         self._default_vlm_model = vlm_model
-        self._selector_override = selector
+        self._effector_locator_override = effector_locator
         self._prompt_locator_override = prompt_locator
-        self._mask_selector_override = mask_selector
         self._fit_selector_override = fit_selector
         self.vlm_backend = ""
         self.vlm_model = ""
         self.vlm_selection_source = "SKILL_DEFAULT"
-        self.selector = selector
+        self.effector_locator = effector_locator
         self.prompt_locator = prompt_locator
-        self.mask_selector = mask_selector
         self.fit_selector = fit_selector
         self._configure_vlm_route(vlm_backend, vlm_model)
         artifact_root = Path(
@@ -221,19 +226,14 @@ class LocateArmBaseSkill:
             )
 
         replace_client(
-            "selector",
-            self._selector_override,
-            OpenAIResponsesOrientationSelector,
+            "effector_locator",
+            self._effector_locator_override,
+            OpenAIResponsesEffectorPointLocator,
         )
         replace_client(
             "prompt_locator",
             self._prompt_locator_override,
             OpenAIResponsesArmBasePromptLocator,
-        )
-        replace_client(
-            "mask_selector",
-            self._mask_selector_override,
-            OpenAIResponsesMaskCandidateReviewer,
         )
         replace_client(
             "fit_selector",
@@ -282,7 +282,7 @@ class LocateArmBaseSkill:
         run_dir = self.run_root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
         self._begin_attempt_inspection(run_id, run_dir)
-        record, profile, binding = self._resolve_active_profile()
+        record, profile, binding, mounted_effector = self._resolve_active_profile()
         profile = self._snapshot_profile_assets(record, profile, run_dir)
         self.profile = profile
         self._begin_inspection(run_id, run_dir, record, profile, binding)
@@ -318,6 +318,7 @@ class LocateArmBaseSkill:
         observed_at_us = int(capture["observed_at_us"])
         camera_frame = str(capture["camera_frame"])
         diagnostic_only = bool(request.get("diagnostic_only", False))
+        rough_positive_x_world = request.get("rough_arm_base_positive_x_world")
         mask_config = self.config.get("mask_ensemble")
         mask_config = mask_config if isinstance(mask_config, dict) else {}
         requested_mask_count = request.get(
@@ -356,7 +357,7 @@ class LocateArmBaseSkill:
             )
         early_world_from_camera: np.ndarray | None = None
         early_world_axis_proof: dict[str, Any] | None = None
-        if not diagnostic_only:
+        if not diagnostic_only or rough_positive_x_world is not None:
             early_world_from_camera, early_world_axis_proof = self._world_from_camera(
                 request, camera_frame, observed_at_us
             )
@@ -385,7 +386,7 @@ class LocateArmBaseSkill:
                 f"mask_candidate_{candidate.candidate_id}",
                 f"Independent SAM2 mask {candidate.candidate_id}",
                 candidate.overlay_path,
-                ["VLM_MASK_CANDIDATE_REVIEW", "AGENT_VISUAL_EVIDENCE"],
+                ["MASK_PIXEL_VOTE", "AGENT_VISUAL_EVIDENCE"],
             )
         mask_sheet = build_image_contact_sheet(
             tuple(candidate.overlay_path for candidate in mask_candidates),
@@ -393,62 +394,40 @@ class LocateArmBaseSkill:
         )
         self._add_image(
             "mask_candidates_contact_sheet",
-            "Independent SAM2 masks supplied to VLM review",
+            "Every acquired mask retained for deterministic pixel voting",
             mask_sheet,
-            ["VLM_MASK_CANDIDATE_REVIEW"],
+            ["MASK_PIXEL_VOTE", "AGENT_VISUAL_EVIDENCE"],
         )
-        mask_review_started = time.monotonic()
+        multicolor_mask_path = write_multicolor_mask_overlay(
+            rgb_path=Path(capture["rgb_path"]),
+            candidates=mask_candidates,
+            output_path=run_dir / "mask_candidates_multicolor.png",
+        )
+        self._add_image(
+            "mask_candidates_multicolor",
+            "All independent SAM2 masks over one shared RGB frame",
+            multicolor_mask_path,
+            ["AGENT_VISUAL_EVIDENCE", "MASK_PIXEL_VOTE"],
+        )
         mask_candidate_ids = tuple(
             candidate.candidate_id for candidate in mask_candidates
         )
-        if mask_acquisition["method"] == "CALLER_PROVIDED_MASK":
-            mask_review_record = {
-                "accepted_candidate_ids": list(mask_candidate_ids),
-                "rejected_candidate_ids": [],
-                "confidence": 1.0,
-                "minimum_confidence": 1.0,
-                "accepted": True,
-                "rationale": "Caller supplied the replay mask explicitly.",
-                "model": "CALLER_PROVIDED_MASK",
-                "response_id": None,
-                "structured_output_attempt_count": 0,
-            }
-        else:
-            mask_review = self.mask_selector.review(
-                self.profile.segmentation_reference_paths,
-                mask_sheet,
-                mask_candidate_ids,
-            )
-            minimum_mask_confidence = float(
-                mask_config.get("minimum_review_confidence", 0.60)
-            )
-            accepted_set = set(mask_review.accepted_candidate_ids)
-            mask_review_record = {
-                "accepted_candidate_ids": list(mask_review.accepted_candidate_ids),
-                "rejected_candidate_ids": [
-                    candidate_id
-                    for candidate_id in mask_candidate_ids
-                    if candidate_id not in accepted_set
-                ],
-                "confidence": mask_review.confidence,
-                "minimum_confidence": minimum_mask_confidence,
-                "accepted": mask_review.confidence >= minimum_mask_confidence,
-                "rationale": mask_review.rationale,
-                "model": mask_review.model,
-                "response_id": mask_review.response_id,
-                "structured_output_attempt_count": mask_review.attempt_count,
-            }
-        mask_review_elapsed_ms = (time.monotonic() - mask_review_started) * 1000.0
-        if not mask_review_record["accepted"]:
-            raise RuntimeError(
-                "mask review confidence "
-                f"{float(mask_review_record['confidence']):.3f} is below required "
-                f"{float(mask_review_record['minimum_confidence']):.3f}"
-            )
+        mask_retention_record = {
+            "review_performed": False,
+            "retention_policy": "ALL_ACQUIRED_MASKS_WITHOUT_POST_SAM2_VLM_REVIEW",
+            "retained_candidate_ids": list(mask_candidate_ids),
+            "rationale": (
+                "Every successfully acquired mask is retained; no post-SAM2 VLM "
+                "selection or rejection is performed."
+            ),
+            "model": None,
+            "response_id": None,
+            "structured_output_attempt_count": 0,
+        }
         vote_started = time.monotonic()
         voted_mask = build_voted_mask(
             candidates=mask_candidates,
-            accepted_candidate_ids=tuple(mask_review_record["accepted_candidate_ids"]),
+            retained_candidate_ids=mask_candidate_ids,
             rgb_path=Path(capture["rgb_path"]),
             output_dir=run_dir / "mask_vote",
             dilation_radius_px=final_dilation_radius_px,
@@ -479,8 +458,7 @@ class LocateArmBaseSkill:
                 "vlm_seed_guidance": self.profile.vlm_seed_guidance,
                 "contact_sheet_path": str(mask_sheet),
                 "candidates": [candidate.record() for candidate in mask_candidates],
-                "review": mask_review_record,
-                "review_elapsed_ms": mask_review_elapsed_ms,
+                "retention": mask_retention_record,
                 "vote": voted_mask.record(),
                 "vote_elapsed_ms": mask_vote_elapsed_ms,
             },
@@ -769,8 +747,8 @@ class LocateArmBaseSkill:
             foundation_pose={
                 **self.inspection_snapshot().get("foundation_pose", {}),
                 "selected_candidate_id": fit_selection.candidate_id,
-                "mask_vlm_accepted_candidate_ids": mask_review_record[
-                    "accepted_candidate_ids"
+                "mask_retained_candidate_ids": mask_retention_record[
+                    "retained_candidate_ids"
                 ],
                 "all_fits_use_selected_mask": True,
                 "mask_path": str(mask_path),
@@ -779,101 +757,175 @@ class LocateArmBaseSkill:
                 "measurement": measurement,
             },
         )
-        contact_sheet = build_contact_sheet(
-            Path(capture["rgb_path"]),
-            mask_path,
-            camera_from_mesh,
-            capture["camera_intrinsics"],
-            self.profile,
-            run_dir / "orientation_candidates.png",
-            pre_orientation_correction=upright_correction,
-        )
-        self._add_image(
-            "orientation_candidates",
-            "World-up-normalized bounded orientation candidates",
-            contact_sheet,
-            ["VLM_ORIENTATION_SELECTION"],
-        )
-        self._update_inspection(stage="ORIENTATION_CANDIDATES_RENDERED")
         orientation_selection_started = time.monotonic()
-        minimum_confidence = float(self.config.get("minimum_vlm_confidence", 0.72))
-        orientation_consensus_floor = float(
-            self.config.get("minimum_vlm_consensus_confidence", 0.55)
-        )
-        orientation_attempts = [
-            self.selector.select(
-                self.profile.orientation_reference_paths,
-                contact_sheet,
-                self.profile.candidates,
-            )
-        ]
-        if orientation_attempts[0].confidence < minimum_confidence:
-            orientation_attempts.append(
-                self.selector.select(
-                    self.profile.orientation_reference_paths,
-                    contact_sheet,
-                    self.profile.candidates,
+        effector_observation = None
+        fk_proof = None
+        landmark_spec = effector_landmark_spec(mounted_effector)
+        if rough_positive_x_world is not None:
+            if early_world_from_camera is None:
+                raise RuntimeError(
+                    "rough arm-base +X orientation requires a timestamped world axis"
                 )
+            orientation_resolution = resolve_orientation_from_world_x_hint(
+                rough_positive_x_world=rough_positive_x_world,
+                world_from_camera=early_world_from_camera,
+                camera_from_centered_mesh=camera_from_mesh,
+                upright_correction=upright_correction,
+                profile=self.profile,
             )
-        _, _, orientation_provisionally_accepted = _bounded_selection_decision(
-            orientation_attempts,
-            minimum_confidence=minimum_confidence,
-            consensus_confidence_floor=orientation_consensus_floor,
-        )
-        if not orientation_provisionally_accepted and len(orientation_attempts) < 3:
-            orientation_attempts.append(
-                self.selector.select(
-                    self.profile.orientation_reference_paths,
-                    contact_sheet,
-                    self.profile.candidates,
+        else:
+            effector_observation = self.effector_locator.locate(
+                mounted_effector,
+                Path(capture["rgb_path"]),
+            )
+            if not effector_observation.identified:
+                self._update_inspection(
+                    stage="EFFECTOR_ORIENTATION_POINT_NOT_IDENTIFIED",
+                    orientation_selection={
+                        "method": "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK",
+                        "vlm_invocation_count": 1,
+                        "accepted": False,
+                        "effector_observation": {
+                            "identified": False,
+                            "points_yx_0_1000": [],
+                            "confidence": effector_observation.confidence,
+                            "rationale": effector_observation.rationale,
+                            "model": effector_observation.model,
+                            "response_id": effector_observation.response_id,
+                        },
+                    },
                 )
+                raise EffectorOrientationHintRequired(
+                    "EFFECTOR_ORIENTATION_HINT_REQUIRED: one VLM observation could "
+                    "not identify the active gripper/effector. Ask the Agent to run "
+                    "locate_arm_base again with rough_arm_base_positive_x_world set "
+                    "to a world-axis direction vector that points approximately along "
+                    "the arm base +X direction; that rerun will resolve the bounded "
+                    "90/180-degree rotation without another effector VLM call."
+                )
+            base_from_controlled_frame, fk_proof = self.clients.transform(
+                landmark_spec.controlled_frame_id,
+                landmark_spec.arm_base_frame or self.profile.semantic_frame,
+                observed_at_us,
+                int(self.config.get("maximum_transform_extrapolation_us", 250000)),
             )
-        selection, orientation_decision_basis, orientation_accepted = (
-            _bounded_selection_decision(
-                orientation_attempts,
-                minimum_confidence=minimum_confidence,
-                consensus_confidence_floor=orientation_consensus_floor,
+            with Image.open(Path(capture["rgb_path"])) as orientation_image:
+                orientation_image_size = orientation_image.size
+            orientation_resolution = resolve_orientation_from_effector_fk(
+                observation=effector_observation,
+                camera_from_centered_mesh=camera_from_mesh,
+                upright_correction=upright_correction,
+                profile=self.profile,
+                base_from_controlled_frame=base_from_controlled_frame,
+                landmark_spec=landmark_spec,
+                camera_intrinsics=capture["camera_intrinsics"],
+                image_size=orientation_image_size,
             )
-        )
         orientation_selection_elapsed_ms = (
             time.monotonic() - orientation_selection_started
         ) * 1000.0
-        orientation_attempt_records = [
-            {
-                "candidate_id": value.candidate_id,
-                "confidence": value.confidence,
-                "rationale": value.rationale,
-                "model": value.model,
-                "response_id": value.response_id,
-                "structured_output_attempt_count": value.attempt_count,
-            }
-            for value in orientation_attempts
-        ]
+        orientation_attempt_records = (
+            []
+            if effector_observation is None
+            else [
+                {
+                    "candidate_id": orientation_resolution.candidate_id,
+                    "confidence": effector_observation.confidence,
+                    "confidence_semantics": "AUDIT_ONLY_NOT_AN_ACCEPTANCE_GATE",
+                    "rationale": effector_observation.rationale,
+                    "model": effector_observation.model,
+                    "response_id": effector_observation.response_id,
+                    "structured_output_attempt_count": effector_observation.attempt_count,
+                    "points_yx_0_1000": [
+                        {
+                            "point_id": value[0],
+                            "y": value[1],
+                            "x": value[2],
+                        }
+                        for value in effector_observation.points_yx_0_1000
+                    ],
+                }
+            ]
+        )
+        orientation_overlay = build_effector_orientation_overlay(
+            rgb_path=Path(capture["rgb_path"]),
+            observation=effector_observation,
+            resolution=orientation_resolution,
+            output_path=run_dir / "effector_fk_orientation.png",
+        )
+        self._add_image(
+            "effector_fk_orientation",
+            "Coarse effector/FK orientation resolution",
+            orientation_overlay,
+            ["AGENT_VISUAL_EVIDENCE", "FK_ORIENTATION_RESOLUTION"],
+        )
         self._update_inspection(
             orientation_selection={
-                "selected_candidate_id": selection.candidate_id,
-                "selected_confidence": selection.confidence,
-                "minimum_confidence": minimum_confidence,
-                "minimum_consensus_confidence": orientation_consensus_floor,
-                "accepted": orientation_accepted,
-                "decision_basis": orientation_decision_basis,
+                "method": orientation_resolution.decision_basis,
+                "selected_candidate_id": orientation_resolution.candidate_id,
+                "selected_confidence": (
+                    effector_observation.confidence
+                    if effector_observation is not None
+                    else 1.0
+                ),
+                "confidence_gate_applied": False,
+                "accepted": True,
+                "decision_basis": orientation_resolution.decision_basis,
                 "attempts": orientation_attempt_records,
+                "vlm_invocation_count": 0 if effector_observation is None else 1,
+                "landmark": {
+                    "landmark_id": landmark_spec.landmark_id,
+                    "display_name": landmark_spec.display_name,
+                    "source": landmark_spec.source,
+                    "controlled_frame_id": landmark_spec.controlled_frame_id,
+                    "arm_base_frame": landmark_spec.arm_base_frame,
+                    "controlled_frame_to_landmark_translation_m": list(
+                        landmark_spec.controlled_frame_to_landmark_translation_m
+                    ),
+                },
+                "candidate_comparisons": list(
+                    orientation_resolution.candidate_comparisons
+                ),
+                "selected_score": orientation_resolution.selected_score,
+                "runner_up_separation": orientation_resolution.runner_up_separation,
+                "fk_transform_query": fk_proof,
                 "elapsed_ms": orientation_selection_elapsed_ms,
             }
         )
         candidate_definition = next(
-            (value for value in self.profile.candidates if value.candidate_id == selection.candidate_id),
+            (
+                value
+                for value in self.profile.candidates
+                if value.candidate_id == orientation_resolution.candidate_id
+            ),
             None,
         )
         if candidate_definition is None:
-            raise RuntimeError("orientation selector returned an unprofiled candidate")
+            raise RuntimeError("orientation resolver returned an unprofiled candidate")
         combined_orientation_correction = (
             upright_correction @ candidate_definition.matrix
+        )
+        camera_from_arm_base_pre_rotation = (
+            camera_from_mesh
+            @ upright_correction
+            @ self.profile.centered_mesh_from_arm_base
         )
         camera_from_arm_base = (
             camera_from_mesh
             @ combined_orientation_correction
             @ self.profile.centered_mesh_from_arm_base
+        )
+        with Image.open(Path(capture["rgb_path"])) as axis_image:
+            axis_image_size = axis_image.size
+        pre_rotation_axis_vectors = project_axis_vectors(
+            camera_from_axis_frame=camera_from_arm_base_pre_rotation,
+            camera_intrinsics=capture["camera_intrinsics"],
+            image_size=axis_image_size,
+        )
+        final_axis_vectors = project_axis_vectors(
+            camera_from_axis_frame=camera_from_arm_base,
+            camera_intrinsics=capture["camera_intrinsics"],
+            image_size=axis_image_size,
         )
         resolved_pose_path = render_fit_overlay(
             rgb_path=Path(capture["rgb_path"]),
@@ -891,9 +943,10 @@ class LocateArmBaseSkill:
                 f"selected {fit_selection.candidate_id}; local-Z "
                 f"{candidate_definition.degrees}deg; upright local-X "
                 f"{selected_fit['upright_normalization_degrees']}deg; "
-                f"VLM {'accepted' if orientation_accepted else 'provisional-rejected'}"
+                f"{orientation_resolution.decision_basis}"
             ),
             camera_from_axis_frame=camera_from_arm_base,
+            render_axes=False,
         )
         self._add_image(
             "resolved_pose",
@@ -902,42 +955,30 @@ class LocateArmBaseSkill:
             ["AGENT_VISUAL_EVIDENCE", "FINAL_ORIENTATION_INSPECTION"],
         )
         self._update_inspection(
-            stage=(
-                "ORIENTATION_SELECTED"
-                if orientation_accepted
-                else "ORIENTATION_PROVISIONAL_RENDERED"
-            ),
+            stage="ORIENTATION_SELECTED",
             resolved_pose_path=str(resolved_pose_path),
-            resolved_pose_selection_accepted=orientation_accepted,
+            resolved_pose_selection_accepted=True,
+            axis_vector_overlays={
+                "annotation_space": "NORMALIZED_IMAGE_TOP_LEFT_X_RIGHT_Y_DOWN",
+                "final": final_axis_vectors,
+                "pre_rotation": pre_rotation_axis_vectors,
+                "pre_rotation_default_visible": False,
+            },
         )
-        if not orientation_accepted:
-            attempt_summary = ", ".join(
-                f"{value.candidate_id}:{value.confidence:.3f}"
-                for value in orientation_attempts
-            )
-            raise RuntimeError(
-                "orientation selection lacked confidence or qualified consensus "
-                f"after attempts [{attempt_summary}]; required confidence "
-                f"{minimum_confidence:.3f} or same-candidate majority consensus at "
-                f"{orientation_consensus_floor:.3f}"
-            )
         orientation_proof = self._orientation_proof(
-            selection,
             candidate_definition,
-            contact_sheet,
-            minimum_confidence,
             upright_normalization,
+            mounted_effector=mounted_effector,
+            landmark_spec=landmark_spec,
+            effector_observation=effector_observation,
+            resolution=orientation_resolution,
+            rgb_path=Path(capture["rgb_path"]),
+            fk_proof=fk_proof,
         )
         orientation_proof["selection_attempts"] = orientation_attempt_records
-        orientation_proof["selection_decision_basis"] = orientation_decision_basis
-        orientation_proof["minimum_consensus_confidence"] = (
-            orientation_consensus_floor
+        orientation_proof["selection_decision_basis"] = (
+            orientation_resolution.decision_basis
         )
-        if orientation_decision_basis in {
-            "REPEATED_CANDIDATE_CONSENSUS",
-            "QUALIFIED_MAJORITY_CANDIDATE_CONSENSUS",
-        }:
-            orientation_proof["status"] = "PASSED_WITH_WARNINGS"
         if diagnostic_only:
             diagnostic = {
                 "schema": "midbrain.skill.locate_arm_base.visual_diagnostic",
@@ -958,18 +999,22 @@ class LocateArmBaseSkill:
                     "score_semantics": "AUDIT_ONLY_NOT_SELECTION_INPUT",
                     "camera_from_centered_mesh": transform_record(camera_from_mesh),
                 },
-                "mask_review": mask_review_record,
+                "mask_retention": mask_retention_record,
                 "mask_vote": voted_mask.record(),
                 "fit_selection": fit_selection_record,
                 "orientation_resolution": orientation_proof,
                 "camera_from_arm_base": transform_record(camera_from_arm_base),
                 "message": (
                     "The camera-frame visual pipeline completed. Diagnostic mode "
-                    "does not query the world axis or publish a calibration candidate."
+                    + (
+                        "used the supplied rough arm-base +X world direction but did "
+                        "not publish a calibration candidate."
+                        if rough_positive_x_world is not None
+                        else "did not query the world axis or publish a calibration candidate."
+                    )
                 ),
                 "timing": {
                     "mask_source_elapsed_ms": mask_source_elapsed_ms,
-                    "mask_review_elapsed_ms": mask_review_elapsed_ms,
                     "mask_vote_elapsed_ms": mask_vote_elapsed_ms,
                     "foundation_pose_candidates_elapsed_ms": fitting_elapsed_ms,
                     "fit_selection_elapsed_ms": fit_selection_elapsed_ms,
@@ -982,9 +1027,14 @@ class LocateArmBaseSkill:
                 stage="VISUAL_DIAGNOSTIC_COMPLETED",
                 candidate_id=None,
                 selected_orientation={
-                    "candidate_id": selection.candidate_id,
-                    "confidence": selection.confidence,
-                    "rationale": selection.rationale,
+                    "candidate_id": orientation_resolution.candidate_id,
+                    "confidence": (
+                        effector_observation.confidence
+                        if effector_observation is not None
+                        else 1.0
+                    ),
+                    "confidence_semantics": "AUDIT_ONLY_NOT_AN_ACCEPTANCE_GATE",
+                    "rationale": orientation_resolution.decision_basis,
                 },
                 diagnostic_result=diagnostic,
             )
@@ -1090,7 +1140,7 @@ class LocateArmBaseSkill:
                         for fit in ordered_fits
                     ],
                 },
-                "mask_review": mask_review_record,
+                "mask_retention": mask_retention_record,
                 "mask_vote": voted_mask.record(),
                 "fit_selection": fit_selection_record,
                 "orientation_resolution": orientation_proof,
@@ -1105,7 +1155,9 @@ class LocateArmBaseSkill:
                     "rgb_sha256": file_sha256(Path(capture["rgb_path"])),
                     "depth_sha256": file_sha256(Path(capture["depth_npy_path"])),
                     "mask_sha256": file_sha256(mask_path),
-                    "contact_sheet_sha256": file_sha256(contact_sheet),
+                    "effector_fk_orientation_overlay_sha256": file_sha256(
+                        orientation_overlay
+                    ),
                     "source_observations": capture.get("source_observations"),
                     "mask_acquisition": {
                         **mask_acquisition,
@@ -1123,7 +1175,6 @@ class LocateArmBaseSkill:
             },
             "timing": {
                 "mask_source_elapsed_ms": mask_source_elapsed_ms,
-                "mask_review_elapsed_ms": mask_review_elapsed_ms,
                 "mask_vote_elapsed_ms": mask_vote_elapsed_ms,
                 "foundation_pose_candidates_elapsed_ms": fitting_elapsed_ms,
                 "fit_selection_elapsed_ms": fit_selection_elapsed_ms,
@@ -1156,9 +1207,14 @@ class LocateArmBaseSkill:
             candidate_id=candidate["candidate_id"],
             candidate_path=str(candidate_path),
             selected_orientation={
-                "candidate_id": selection.candidate_id,
-                "confidence": selection.confidence,
-                "rationale": selection.rationale,
+                "candidate_id": orientation_resolution.candidate_id,
+                "confidence": (
+                    effector_observation.confidence
+                    if effector_observation is not None
+                    else 1.0
+                ),
+                "confidence_semantics": "AUDIT_ONLY_NOT_AN_ACCEPTANCE_GATE",
+                "rationale": orientation_resolution.decision_basis,
             },
         )
         return candidate
@@ -1466,18 +1522,21 @@ class LocateArmBaseSkill:
 
     def _orientation_proof(
         self,
-        selection: OrientationSelection,
         selected: Any,
-        contact_sheet: Path,
-        minimum_confidence: float,
         upright_normalization: dict[str, Any],
+        *,
+        mounted_effector: dict[str, Any],
+        landmark_spec: EffectorLandmarkSpec,
+        effector_observation: EffectorPointObservation | None,
+        resolution: GeometricOrientationResolution,
+        rgb_path: Path,
+        fk_proof: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return {
             "status": "PASSED",
-            "method": "BOUNDED_REFERENCE_IMAGE_VLM",
+            "method": resolution.decision_basis,
             "profile_id": self.profile.profile_id,
             "profile_sha256": self.profile.profile_sha256,
-            "reference_set_sha256": self.profile.reference_set_sha256,
             "allowed_candidates": [
                 {
                     "candidate_id": value.candidate_id,
@@ -1492,16 +1551,60 @@ class LocateArmBaseSkill:
             "selected_degrees": selected.degrees,
             "selected_rotation_xyzw": selected.rotation_xyzw,
             "world_up_normalization": upright_normalization,
-            "vlm": {
-                "model": selection.model,
-                "response_id": selection.response_id,
-                "structured_output_attempt_count": selection.attempt_count,
-                "confidence": selection.confidence,
-                "minimum_confidence": minimum_confidence,
-                "rationale": selection.rationale,
+            "mounted_effector": {
+                "profile_id": mounted_effector.get("profile_id"),
+                "profile_revision": mounted_effector.get("profile_revision"),
+                "landmark_id": landmark_spec.landmark_id,
+                "landmark_source": landmark_spec.source,
+                "controlled_frame_id": landmark_spec.controlled_frame_id,
+                "arm_base_frame": landmark_spec.arm_base_frame,
+                "controlled_frame_to_landmark_translation_m": list(
+                    landmark_spec.controlled_frame_to_landmark_translation_m
+                ),
             },
-            "source_evidence_sha256": orientation_evidence_hash(
-                self.profile, contact_sheet, selection
+            "vlm": (
+                {
+                    "invocation_count": 0,
+                    "used": False,
+                    "quality_gate_applied": False,
+                    "reason": "Agent supplied a rough arm-base +X world direction.",
+                }
+                if effector_observation is None
+                else {
+                    "invocation_count": 1,
+                    "used": True,
+                    "model": effector_observation.model,
+                    "response_id": effector_observation.response_id,
+                    "structured_output_attempt_count": effector_observation.attempt_count,
+                    "confidence": effector_observation.confidence,
+                    "confidence_semantics": "AUDIT_ONLY_NOT_AN_ACCEPTANCE_GATE",
+                    "quality_gate_applied": False,
+                    "rationale": effector_observation.rationale,
+                    "recognized_points_yx_0_1000": [
+                        {
+                            "point_id": value[0],
+                            "y": value[1],
+                            "x": value[2],
+                        }
+                        for value in effector_observation.points_yx_0_1000
+                    ],
+                }
+            ),
+            "timestamped_fk_transform_query": fk_proof,
+            "candidate_comparisons": list(resolution.candidate_comparisons),
+            "selected_score": resolution.selected_score,
+            "runner_up_separation": resolution.runner_up_separation,
+            "acceptance_policy": (
+                "ONE_RECOGNIZED_EFFECTOR_POINT_IS_SUFFICIENT_NO_POINT_QUALITY_GATE"
+                if effector_observation is not None
+                else "AGENT_SUPPLIED_ROUGH_WORLD_DIRECTION"
+            ),
+            "source_evidence_sha256": effector_orientation_evidence_hash(
+                profile=self.profile,
+                rgb_path=rgb_path,
+                mounted_effector=mounted_effector,
+                observation=effector_observation,
+                resolution=resolution,
             ),
             "application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
             "application_order": "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base",
@@ -1510,7 +1613,7 @@ class LocateArmBaseSkill:
 
     def _resolve_active_profile(
         self,
-    ) -> tuple[ArmProfileRecord, ModelProfile, dict[str, Any]]:
+    ) -> tuple[ArmProfileRecord, ModelProfile, dict[str, Any], dict[str, Any]]:
         record = self.profile_store.load()
         readiness = {
             "status": "REQUESTING_HOT_RESIDENCY",
@@ -1542,8 +1645,16 @@ class LocateArmBaseSkill:
         identity = state.get("arm_model_identity")
         hashes = state.get("profile_file_sha256")
         appendix_root = state.get("arm_model_appendix")
+        mounted_effector = state.get("mounted_effector")
         if not isinstance(identity, dict) or not isinstance(hashes, dict):
             raise RuntimeError("active assembly lacks arm-profile identity and digest")
+        if (
+            not isinstance(mounted_effector, dict)
+            or mounted_effector.get("schema") != "midbrain.mounted_effector_profile"
+        ):
+            raise RuntimeError(
+                "active assembly lacks a supported mounted-effector profile for orientation"
+            )
         if str(state.get("arm_provider_id") or "") != record.arm_provider_id:
             raise RuntimeError(
                 "active assembly arm Provider does not match the locally selected arm Provider"
@@ -1572,7 +1683,7 @@ class LocateArmBaseSkill:
             raise RuntimeError(
                 "active arm profile appendix is stale; restart the arm Provider after profile edits"
             )
-        return record, load_profile_payload(appendix, self.root), {
+        binding = {
             "assembly_id": state.get("assembly_id"),
             "assembly_revision": state.get("assembly_revision"),
             "assembly_fingerprint": state.get("assembly_fingerprint"),
@@ -1582,7 +1693,18 @@ class LocateArmBaseSkill:
             "arm_model_file_sha256": record.model_file_sha256,
             "appendix_key": record.appendix_key,
             "appendix_sha256": canonical_sha256(appendix),
+            "mounted_effector_profile_id": mounted_effector.get("profile_id"),
+            "mounted_effector_profile_revision": mounted_effector.get(
+                "profile_revision"
+            ),
+            "mounted_effector_file_sha256": hashes.get("mounted_effector"),
         }
+        return (
+            record,
+            load_profile_payload(appendix, self.root),
+            binding,
+            mounted_effector,
+        )
 
     def _snapshot_profile_assets(
         self,
@@ -1856,15 +1978,12 @@ class LocateArmBaseSkill:
         return output_path
 
     def close(self) -> None:
-        close_selector = getattr(self.selector, "close", None)
-        if callable(close_selector):
-            close_selector()
+        close_effector_locator = getattr(self.effector_locator, "close", None)
+        if callable(close_effector_locator):
+            close_effector_locator()
         close_prompt_locator = getattr(self.prompt_locator, "close", None)
         if callable(close_prompt_locator):
             close_prompt_locator()
-        close_mask_selector = getattr(self.mask_selector, "close", None)
-        if callable(close_mask_selector):
-            close_mask_selector()
         close_fit_selector = getattr(self.fit_selector, "close", None)
         if callable(close_fit_selector):
             close_fit_selector()

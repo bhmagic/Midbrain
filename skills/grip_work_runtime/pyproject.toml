@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-grip-work-runtime"
+version = "0.1.3"
+description = "Signed finite Contact and Grip protocol runtime for carrying Skills"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["grip_work_runtime*"]
+
+[tool.setuptools.package-data]
+grip_work_runtime = ["*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

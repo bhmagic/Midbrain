@@ -1,0 +1,51 @@
+{
+  "skill_type": "grip",
+  "version": "0.1.9",
+  "display_name": "Action: grip",
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "grip",
+    "description": "Grip a normal object at the current measured gripper pose without approach motion. The Skill first hands an idle Integrated controller from verified FLOAT to WARM so Contact can lock the arm, then the Grip Provider closes toward the owner-observed default +12 degree endpoint and binds a carry only after absolute measured motor torque remains at or above 0.15 Nm for 10 consecutive 50 Hz samples. If contact is not confirmed, the Skill opens and floats the gripper, relaxes Contact, and returns FAILED_TO_GRIP. Soft or thin objects require another Skill. Null motion_profile_number selects the live default.",
+    "when_to_use": ["The gripper is already positioned around the intended object and only closing plus carry confirmation is required."],
+    "when_not_to_use": ["The arm still needs alignment or approach motion; use grip_object (Action: scrap grip) instead, or wait when any active joint is at least 85 C."],
+    "side_effects": ["Closes the gripper and leaves every active arm and gripper joint in POSITION_EFFORT_LIMITED, including idle."],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "MEDIUM",
+    "required_permissions": ["robot.motion.contact.execute", "robot.grip.execute"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "object_binding": {
+          "type": "object",
+          "properties": {
+            "object_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stable caller-supplied identity for the physical object currently between the gripper jaws."
+            }
+          },
+          "required": ["object_id"],
+          "additionalProperties": false
+        },
+        "payload": {"type": ["object", "null"], "default": null},
+        "collision_geometry": {"type": ["object", "null"], "default": null},
+        "grip_position_rad": {"type": ["number", "null"], "default": null},
+        "grip_velocity_rad_s": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null},
+        "gripping_torque_limit_nm": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1.4, "default": null, "description": "Motor torque ceiling, not calibrated jaw force."},
+        "contact_timeout_s": {"type": ["number", "null"], "minimum": 0.1, "maximum": 30.0, "default": null},
+        "motion_profile_number": {"type": ["integer", "null"], "minimum": 1, "default": null}
+      },
+      "required": ["object_binding"],
+      "additionalProperties": false
+    },
+    "output_schema": {"type": "object", "properties": {"status": {"type": "string"}, "workflow_complete": {"type": "boolean"}, "message": {"type": "string"}, "grip_confirmed": {"type": "boolean"}, "cleanup_complete": {"type": "boolean"}, "task_success": {"type": "boolean"}, "carry_id": {"type": "string"}, "attachment_revision": {"type": "string"}, "all_joints_position_effort_limited": {"type": "boolean"}, "retry_after_s": {"type": "number"}, "thermal": {"type": ["object", "null"]}}, "required": ["status", "workflow_complete"], "additionalProperties": true, "x-midbrain-result-tiers": {"schema_version": 1, "compact_pointers": ["/status", "/workflow_complete", "/message", "/grip_confirmed", "/cleanup_complete", "/task_success", "/carry_id", "/attachment_revision", "/all_joints_position_effort_limited", "/retry_after_s", "/thermal"], "detail_policy": "HOST_SANITIZED_REFERENCE", "max_compact_bytes": 32768}},
+    "execution_adapter": {"adapter_id": "skill.grip.host.v1", "kind": "EXTERNAL_SKILL_ENTRYPOINT", "entrypoint": "python/grip_skill/host_adapter.py", "host_adapter": {"entrypoint": "python/grip_skill/host_adapter.py", "factory": "build_host_adapter"}, "invocation_requires_approval": false}
+  },
+  "required_capabilities": ["robot_arm.integrated.verified_gravity_float", "robot_arm.motion.contact.position_effort_limited.v1", "robot_effector.grip.position_effort_background.v1", "robot_effector.grip.thermal_gate.v1"],
+  "route_policy": {"provider_activation_sequence": ["robot_arm.primary.grip", "robot_arm.primary.integrated", "robot_arm.primary.contact"], "arm_motion": "MEASURED_POSE_HOLD_ONLY", "controller_handoff": "INTEGRATED_VERIFIED_FLOAT_TO_WARM_BEFORE_CONTACT_HOT", "terminal_state": "CARRYING_ALL_ACTIVE_JOINTS_POSITION_EFFORT_LIMITED_OR_FAILED_TO_GRIP_RELEASED"},
+  "installation": {"setup_entrypoint": "scripts/setup.ps1", "motion_profile_template": "config_templates/motion_profiles.default.json", "motion_profile_config": "config/motion_profiles.json"},
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_PHYSICAL_QUALIFICATION_REQUIRED",
+  "published_streams": []
+}

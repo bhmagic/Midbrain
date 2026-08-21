@@ -23,6 +23,7 @@ from physical_agent_test.vlm_router import (
     reset_vlm_model_selection,
     set_vlm_model_selection,
 )
+from locate_arm_base.skill import EffectorOrientationHintRequired
 
 
 class FakeManager:
@@ -141,6 +142,10 @@ class FakeLocateSkillWithEvidence(FakeLocateSkill):
 
 def evidence_inspection(tmp_path: Path) -> dict:
     images = []
+    for image_id in ("current_rgb", "mask_candidates_multicolor"):
+        path = tmp_path / f"{image_id}.png"
+        Image.new("RGB", (32, 24), (35, 45, 55)).save(path)
+        images.append({"image_id": image_id, "path": str(path)})
     for index in range(1, 5):
         candidate_id = f"mask_{index}"
         path = tmp_path / f"mask_candidate_{candidate_id}.png"
@@ -162,26 +167,52 @@ def evidence_inspection(tmp_path: Path) -> dict:
     resolved_path = tmp_path / "resolved_pose.png"
     Image.new("RGB", (32, 24), (20, 90, 40)).save(resolved_path)
     images.append({"image_id": "resolved_pose", "path": str(resolved_path)})
-    review = {
-        "accepted_candidate_ids": ["mask_1", "mask_3", "mask_4"],
-        "confidence": 0.85,
-        "model": "test-vlm",
+    retention = {
+        "review_performed": False,
+        "retained_candidate_ids": ["mask_1", "mask_2", "mask_3", "mask_4"],
     }
     selection = {"candidate_id": "fit_2", "confidence": 0.85, "model": "test-vlm"}
     return {
         "run_id": "run-evidence",
         "images": images,
-        "mask_candidates": {"review": review},
+        "mask_candidates": {"retention": retention},
         "foundation_pose": {"selection": selection},
         "orientation_selection": {
             "selected_candidate_id": "z180",
             "selected_confidence": 0.86,
             "accepted": True,
+            "method": "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK",
+            "vlm_invocation_count": 1,
             "attempts": [
                 {
                     "candidate_id": "z180",
                     "confidence": 0.86,
                     "model": "test-vlm",
+                    "points_yx_0_1000": [
+                        {"point_id": "gripper", "x": 600, "y": 400}
+                    ],
+                }
+            ],
+        },
+        "axis_vector_overlays": {
+            "final": [
+                {
+                    "axis": "X",
+                    "color": "#ff3c3c",
+                    "x1": 0.5,
+                    "y1": 0.5,
+                    "x2": 0.75,
+                    "y2": 0.5,
+                }
+            ],
+            "pre_rotation": [
+                {
+                    "axis": "X",
+                    "color": "#ff3c3c",
+                    "x1": 0.5,
+                    "y1": 0.5,
+                    "x2": 0.25,
+                    "y2": 0.5,
                 }
             ],
         },
@@ -202,6 +233,24 @@ def test_agent_adapter_runs_current_camera_and_returns_review_boundary() -> None
     assert result["motion_usable"] is False
     assert result["required_next_tool"]["name"] == "review_and_activate_arm_base"
     assert result["required_next_tool"]["arguments"]["candidate_sha256"] == "a" * 64
+
+
+def test_agent_adapter_forwards_rough_world_x_orientation_hint() -> None:
+    candidate = {
+        "candidate_id": str(uuid.uuid4()),
+        "candidate_sha256": "d" * 64,
+        "motion_usable": False,
+        "review_state": "PENDING_REVIEW",
+    }
+    skill = FakeLocateSkill(candidate)
+    adapter = ArmBaseLocalizationSkillAdapter(skill)
+    asyncio.run(
+        adapter.run(rough_arm_base_positive_x_world=[0.8, 0.2, 0.0])
+    )
+    assert skill.request == {
+        "use_latest_camera": True,
+        "rough_arm_base_positive_x_world": [0.8, 0.2, 0.0],
+    }
 
 
 def test_agent_adapter_forwards_agent_ui_vlm_selection() -> None:
@@ -271,7 +320,7 @@ def test_agent_adapter_establishes_world_axis_before_localization() -> None:
     }
 
 
-def test_agent_adapter_projects_all_mask_and_fit_candidates(tmp_path: Path) -> None:
+def test_agent_adapter_consolidates_mask_point_and_pose_evidence(tmp_path: Path) -> None:
     candidate = {
         "candidate_id": str(uuid.uuid4()),
         "candidate_sha256": "c" * 64,
@@ -286,13 +335,15 @@ def test_agent_adapter_projects_all_mask_and_fit_candidates(tmp_path: Path) -> N
         visual_evidence_store=VisualEvidenceStore(),
     )
     result = asyncio.run(adapter.run())
-    assert len(result["visual_evidence"]) == 11
+    assert len(result["visual_evidence"]) == 3
     titles = [item["title"] for item in result["visual_evidence"]]
-    assert sum("VLM retained" in title for title in titles) == 3
-    assert sum("VLM rejected" in title for title in titles) == 1
-    assert sum("VLM selected" in title for title in titles) == 1
-    assert sum("used by all pose fits" in title for title in titles) == 1
-    assert sum("90/180 correction accepted" in title for title in titles) == 1
+    assert "mask ensemble" in titles[0].lower()
+    assert "VLM effector observation" in titles[1]
+    assert "toggleable axis frames" in titles[2]
+    assert [
+        value["default_visible"]
+        for value in result["visual_evidence"][2]["annotations"]
+    ] == [True, False]
 
 
 def test_agent_adapter_returns_failed_result_with_retained_visuals(tmp_path: Path) -> None:
@@ -312,7 +363,7 @@ def test_agent_adapter_returns_failed_result_with_retained_visuals(tmp_path: Pat
     assert result["retry_allowed"] is False
     assert result["candidate_published"] is False
     assert result["failed_stage"] == "FIT_CANDIDATE_SELECTED"
-    assert len(result["visual_evidence"]) == 11
+    assert len(result["visual_evidence"]) == 3
     manifest = json.loads(
         (
             Path(__file__).resolve().parents[3]
@@ -320,6 +371,32 @@ def test_agent_adapter_returns_failed_result_with_retained_visuals(tmp_path: Pat
         ).read_text(encoding="utf-8")
     )
     validate(result, manifest["agent_discovery"]["output_schema"])
+
+
+def test_agent_adapter_requests_world_x_retry_when_effector_is_not_identified(
+    tmp_path: Path,
+) -> None:
+    inspection = evidence_inspection(tmp_path)
+    inspection["failed_stage"] = "EFFECTOR_ORIENTATION_POINT_NOT_IDENTIFIED"
+    skill = FakeLocateSkillWithEvidence(
+        {},
+        inspection,
+        EffectorOrientationHintRequired("EFFECTOR_ORIENTATION_HINT_REQUIRED"),
+    )
+    adapter = ArmBaseLocalizationSkillAdapter(skill)
+    result = asyncio.run(adapter.run())
+    assert result["status"] == "FAILED"
+    assert result["terminal_failure"] is False
+    assert result["retry_allowed"] is True
+    assert result["required_next_tool"] == {
+        "name": "locate_arm_base",
+        "required_argument": "rough_arm_base_positive_x_world",
+        "argument_semantics": (
+            "Three finite world-axis components pointing approximately along "
+            "arm-base +X; normalization is performed by the Skill."
+        ),
+    }
+    assert "does not repeat effector recognition" in result["agent_instruction"]
 
 
 def test_agent_adapter_joins_worker_after_first_waiter_is_cancelled() -> None:

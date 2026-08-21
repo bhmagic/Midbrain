@@ -402,8 +402,9 @@ class BrowserUiContractTests(unittest.TestCase):
             '@app.post("/api/agent-skill-installation/{tool_name}")',
             app,
         )
-        self.assertIn("skillInstallationBlocked", app)
-        self.assertIn("installation[\"restart_required\"]", app)
+        self.assertNotIn("skillInstallationBlocked", app)
+        self.assertNotIn("installation[\"restart_required\"]", app)
+        self.assertIn("active Skills remain usable now", app)
         self.assertIn('@app.get("/", response_class=RedirectResponse)', app)
         self.assertNotIn('>Regular agent</a>', app)
         self.assertIn('href="/dev">Developer Agent</a>', journal)

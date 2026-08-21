@@ -183,6 +183,87 @@ class AgentEventTranslationTests(unittest.TestCase):
         self.assertEqual(translated[0], "tool.completed")
         self.assertNotIn("tool_name", translated[1])
 
+    def test_local_tool_search_failure_exposes_only_safe_diagnostics(self) -> None:
+        raw_arguments = '{"secret":"must-not-stream"} trailing'
+        completed = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_output",
+            item=SimpleNamespace(
+                type="tool_call_output_item",
+                raw_item={"call_id": "search-failed-1", "output": "redacted"},
+                output=json.dumps(
+                    {
+                        "type": "tool_search_error",
+                        "execution": "client",
+                        "call_id": "search-failed-1",
+                        "status": "failed",
+                        "error": {
+                            "code": "INVALID_JSON",
+                            "message": raw_arguments,
+                            "retryable": True,
+                        },
+                        "diagnostics": {
+                            "argument_length": len(raw_arguments),
+                            "error_position": 29,
+                            "error_line": 1,
+                            "error_column": 30,
+                            "untrusted": raw_arguments,
+                        },
+                    }
+                ),
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=SimpleNamespace(tool_name="tool_search"),
+                title=None,
+            ),
+        )
+
+        translated = translate_openai_sdk_event(completed)
+
+        self.assertIsNotNone(translated)
+        assert translated is not None
+        event_type, payload = translated
+        self.assertEqual(event_type, "tool.search.failed")
+        self.assertEqual(payload["tool_name"], "tool_search")
+        self.assertEqual(payload["error_code"], "INVALID_JSON")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["argument_length"], len(raw_arguments))
+        self.assertEqual(payload["error_position"], 29)
+        self.assertNotIn("message", payload)
+        self.assertNotIn("untrusted", payload)
+        self.assertNotIn("must-not-stream", str(payload))
+
+    def test_unrecognized_tool_search_output_is_not_marked_completed(self) -> None:
+        completed = SimpleNamespace(
+            type="run_item_stream_event",
+            name="tool_output",
+            item=SimpleNamespace(
+                type="tool_call_output_item",
+                raw_item={"call_id": "search-invalid-envelope"},
+                output=json.dumps(
+                    {
+                        "type": "tool_search_error",
+                        "execution": "client",
+                        "call_id": "search-invalid-envelope",
+                        "status": "failed",
+                        "error": {
+                            "code": "SECRET_VALUE_MUST_NOT_PROJECT",
+                            "retryable": True,
+                        },
+                    }
+                ),
+                agent=SimpleNamespace(name="Physical Agent"),
+                tool_origin=SimpleNamespace(tool_name="tool_search"),
+                title=None,
+            ),
+        )
+
+        translated = translate_openai_sdk_event(completed)
+
+        self.assertIsNotNone(translated)
+        assert translated is not None
+        self.assertEqual(translated[0], "tool.completed")
+        self.assertNotIn("SECRET_VALUE_MUST_NOT_PROJECT", str(translated))
+
     def test_tool_output_emits_only_allowlisted_visual_evidence(self) -> None:
         evidence_id = "evidence-1"
         output = {

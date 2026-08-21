@@ -1,0 +1,50 @@
+{
+  "provider_type": "robot_effector.grip.position_effort_background",
+  "version": "0.2.6",
+  "display_name": "Independent Gripper Control Provider",
+  "manager_ids": ["robot_arm.primary.grip"],
+  "ui": {
+    "observation": {
+      "kind": "MANAGER_HOSTED",
+      "information_level": "RICH",
+      "read_only": true
+    }
+  },
+  "residency_modes": ["HOT", "WARM", "COLD"],
+  "capabilities": [
+    "robot_effector.grip.position_effort_background.v1",
+    "robot_effector.grip.carrying_state.v1",
+    "robot_effector.grip.thermal_gate.v1",
+    "robot_effector.grip.mit_position_transition_50hz.v1",
+    "robot_effector.grip.mit_float_transition_50hz.v1"
+  ],
+  "required_capabilities": [
+    "robot_arm.control.operational_api_v2",
+    "robot_arm.control.joint_group.v1",
+    "robot_arm.control.position_effort_mode_guard.v1",
+    "robot_arm.motion.contact.position_effort_limited.v1"
+  ],
+  "provider_dependencies": [
+    {
+      "provider_id": "robot_arm.rebot_dm",
+      "required_residency": "HOT",
+      "activation_order": 1,
+      "reason": "Basic exclusively owns physical feedback, group leases, motor modes, fencing, and caps."
+    },
+    {
+      "provider_id": "robot_arm.primary.contact",
+      "required_residency": "HOT",
+      "activation_order": 2,
+      "reason": "Contact owns arm POSITION_EFFORT_LIMITED motion and arm holding while carrying."
+    }
+  ],
+  "published_streams": ["robot_effector.grip_control.state"],
+  "consumed_streams": [],
+  "package_layout": "providers/rebot_arm_grip",
+  "limitations": [
+    "Software-tested development implementation; the owner-requested torque-only 0.15 Nm contact threshold, 85 C admission gate, and effector vectors require physical qualification",
+    "torque_limit_nm is a motor torque ceiling, not a calibrated jaw force",
+    "object presence is inferred from absolute measured gripper motor torque and must be bound explicitly before carrying",
+    "a hot joint during carrying produces a release recommendation but never silently drops the object"
+  ]
+}

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-generic-grip-skill"
+version = "0.1.9"
+description = "Finite current-pose grip and carry-confirmation Skill"
+requires-python = ">=3.11"
+dependencies = ["midbrain-grip-work-runtime>=0.1,<0.2"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["grip_skill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

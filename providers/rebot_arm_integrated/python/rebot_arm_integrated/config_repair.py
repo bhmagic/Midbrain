@@ -9,8 +9,16 @@ import json
 from .modes import SUPPORTED_EXECUTION_MODES, normalize_execution_mode
 
 
-MANAGED_POLICY_REVISION = 9
+MANAGED_POLICY_REVISION = 10
 LEGACY_ENDPOINT_JOINT_DELTA_RAD = (0.80, 0.80, 0.80, 1.00, 1.00, 1.00)
+LEGACY_ARRIVAL_POSITION_TOLERANCE_RAD = (
+    0.025,
+    0.025,
+    0.025,
+    0.035,
+    0.035,
+    0.035,
+)
 
 
 @dataclass(frozen=True)
@@ -401,6 +409,13 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
     active_endpoint_delta = active_planning.get(
         "maximum_endpoint_joint_delta_rad"
     )
+    active_trajectory = active.get("trajectory")
+    active_trajectory = (
+        active_trajectory if isinstance(active_trajectory, dict) else {}
+    )
+    active_arrival_tolerance = active_trajectory.get(
+        "arrival_position_tolerance_rad"
+    )
     if (
         active_policy_revision < default_policy_revision
         and isinstance(active_endpoint_delta, list)
@@ -409,6 +424,15 @@ def ensure_controller_config(provider_root: Path, active_path: Path) -> ConfigRe
     ):
         merged["planning"]["maximum_endpoint_joint_delta_rad"] = copy.deepcopy(
             defaults["planning"]["maximum_endpoint_joint_delta_rad"]
+        )
+    if (
+        active_policy_revision < default_policy_revision
+        and isinstance(active_arrival_tolerance, list)
+        and tuple(float(value) for value in active_arrival_tolerance)
+        == LEGACY_ARRIVAL_POSITION_TOLERANCE_RAD
+    ):
+        merged["trajectory"]["arrival_position_tolerance_rad"] = copy.deepcopy(
+            defaults["trajectory"]["arrival_position_tolerance_rad"]
         )
     if active_policy_revision < default_policy_revision:
         merged["manager_authority"]["resource_id"] = str(

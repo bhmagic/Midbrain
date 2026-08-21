@@ -1,0 +1,17 @@
+{
+  "schema": "midbrain.lay_flat_motion_profiles",
+  "schema_version": 1,
+  "default_profile_number": 1,
+  "profiles": [
+    {
+      "profile_number": 1,
+      "name": "development-conservative",
+      "table_inward_distance_m": 0.03,
+      "negative_insertion_distance_m": 0.04,
+      "retreat_distance_m": 0.05,
+      "mit_delta_time_s": 0.5,
+      "open_timeout_s": 5.0,
+      "qualification": "DEVELOPMENT_REQUIRES_ATTENDED_PHYSICAL_TUNING"
+    }
+  ]
+}

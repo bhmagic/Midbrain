@@ -68,9 +68,9 @@ The suite is expected to validate:
   Provider-detail reads, opaque full/selected Skill-result detail reads,
   session scoping and retention pruning, and exclusion of both detail tools
   from Limited Graph children;
-- compound existing-scene work-object motion and mixed-frame slicing discovery,
-  including Fabric derivation, absolute-world motion, direction translation,
-  and slicing in one eligible graph child catalog;
+- unrestricted compound semantic-geometry, motion, contact, and slicing
+  discovery, including proof that object/corner wording does not narrow the
+  Agent tool surface or classify the requested action;
 - graph-contained SAM2/FoundationPose/VLM evidence projection, including
   sanitized child arrays and bounded dictionary-representation tool outputs;
 - immediate graph-child visual publication before graph completion, isolated
@@ -81,7 +81,8 @@ The suite is expected to validate:
 - exact slice-point to typed-offset to absolute-world-motion schema preflight,
   with Fabric frame identity preserved and no model coordinate arithmetic;
 - standalone and compound trailing Safe Home routing, including a typed Basic
-  Provider activation continuation when the controller is disconnected;
+  Provider activation continuation when the controller is disconnected and a
+  non-interactive Agent SDK permission boundary;
 - canonical streaming-run creation, replay, terminal status, and decisions;
 - task-scoped cancellation, pending-action cleanup, terminal `CANCELLED`
   replay, and preservation of background Providers;

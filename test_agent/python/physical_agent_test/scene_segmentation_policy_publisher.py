@@ -73,8 +73,6 @@ class SceneSegmentationPolicyPublisher:
                     "description": description,
                 }
             )
-        if not any(value["type"] == "KEEP_OUT" for value in output):
-            raise ValueError("scene policy requires at least one KEEP_OUT object")
         return output
 
     async def publish_policy(

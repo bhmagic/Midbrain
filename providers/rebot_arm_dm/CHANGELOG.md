@@ -1,5 +1,85 @@
 # Changelog
 
+## 0.1.32 - 2026-08-20
+
+- Advance the Basic-owned grip-control profile to torque-only contact inference
+  at an absolute measured `0.15` N m for 10 consecutive 50 Hz samples.
+  Position and velocity remain published diagnostics but no longer decide
+  contact.
+- Raise the owner-requested attended-development all-active-joint new-grip
+  admission gate from `70` to `85` C. Missing, stale, and non-finite
+  temperature feedback remains ineligible.
+
+## 0.1.31 - 2026-08-20
+
+- Move the owner-observed normal-object gripper close target from `0` to `+12`
+  degrees and set the distinct Basic hard/absolute close limit to `+17`
+  degrees.
+- Keep the gripper operational and calibration ceiling at the `+12` degree
+  normal target. The other six joint limits and the `-20` degree gripper
+  safe-home target are unchanged.
+- Setup migrates only unchanged earlier `-20`, `-10`, or `0` degree gripper
+  bounds and advances the affected immutable model, calibration, and assembly
+  identities.
+- Advance both mounted-effector compatibility revisions to v5 and the collision
+  profile compatibility revision to v3 so every selected profile binds the new
+  Basic model revision consistently.
+
+## 0.1.30 - 2026-08-20
+
+- Add the `midbrain.skill.locate_arm_base.v1` mounted-effector extension with a
+  coarse visual landmark, eligible point names, VLM description, and
+  controlled-frame offset for both qualified development effectors.
+- Revise the bare-gripper and blade profile identities to v4. Locate Arm Base
+  owns interpretation of its extension; Basic continues to own assembly
+  selection, joint state, and timestamped FK and does not acquire visual
+  workflow policy.
+
+## 0.1.29 - 2026-08-20
+
+- Raised the attended-development gripper operational velocity boundary from
+  `2.1` to `4.0` rad/s. This owner-requested test value exceeds the official
+  reBot application `vlim` of `3.0` rad/s but remains below the configured
+  DM-J4310 motor envelope.
+- Retained the `0.75` native FORCE_POS velocity translation and measured-speed
+  brake, so a `4.0` rad/s position/effort request sends a `3.0` rad/s native
+  motor ceiling.
+- Setup migrates only the unchanged prior `2.1` rad/s model and calibration
+  boundary and updates the immutable model, calibration, and assembly bindings.
+
+## 0.1.28 - 2026-08-20
+
+- Moved the owner-observed normal-object firm-grip endpoint and development
+  gripper hard maximum from `-10`/`-9` degrees to `0` degrees. The `-20`
+  degree safe-home target remains unchanged.
+- Setup migrates only the prior unchanged `-20` or `-10` degree operational
+  envelope and the prior `-9` degree hard maximum. Customized envelopes still
+  require explicit review, and migrated model, calibration, and assembly
+  identity bindings change together.
+
+## 0.1.27 - 2026-08-20
+
+- Extended the normal-object gripper operational and default-calibration close
+  envelope from `-20` to `-10` degrees while retaining the observed `-9`
+  degree hard boundary.
+- Setup migrates only the unchanged prior gripper envelope, preserves the
+  `-20` degree safe-home target, and changes the model/calibration revision
+  bindings. Customized gripper envelopes require explicit review.
+
+## 0.1.26 - 2026-08-20
+
+- Expanded J4, J5, and J6 operational limits to the owner-observed `+/-85`,
+  `+/-90`, and `+/-170` degree envelopes. Corresponding conservative hard
+  bounds are `+/-95`, `+/-100`, and `+/-180` degrees.
+- Setup now migrates both the active arm-model registry entry and the active
+  calibration limits, changes their immutable revision bindings, and preserves
+  all unrelated measured calibration values.
+
+## 0.1.25 - 2026-08-19
+
+- Added a generic per-actuator-group `POSITION_EFFORT_LIMITED` command-mode guard. The guard requires a complete matching command before activation and blocks incompatible commands, group float, and group lease release until explicitly cleared.
+- Published physical joint temperature feedback from MotorBridge MOS/rotor samples so higher Providers can enforce conservative task gates without owning the motor transport.
+
 ## 0.1.24 - 2026-08-19
 
 - Route the profiled full-arm no-effector reference to both arm-base seed
@@ -49,11 +129,11 @@ work.
   allowance replaces scheduler-sensitive cycle subtraction, so a stationary
   arm is accepted reliably without weakening the measured-rest requirement.
 - Set the operational IMPEDANCE, POS_VEL, and POS_TOR velocity boundaries to
-  4.0 rad/s for all six arm joints while retaining the gripper at 2.1 rad/s.
-  Publish all three mode-specific vectors under `command_limits`; retain the
-  wider configured motor envelope as a separate hardware boundary. The J4-J6
-  developmental cap exceeds the official reBot application `vlim` of 3.0
-  rad/s but remains below Basic's configured 10.0 rad/s motor envelope.
+  4.0 rad/s for all seven joints. Publish all three mode-specific vectors under
+  `command_limits`; retain the wider configured motor envelope as a separate
+  hardware boundary. The J4-J6 and gripper developmental caps exceed the
+  official reBot application `vlim` of 3.0 rad/s but remain below Basic's
+  configured 10.0 rad/s motor envelope.
 - Change the public `POSITION_EFFORT_LIMITED` torque ceiling from a motor ratio
   to `torque_limit_nm`, publish effective per-joint velocity and torque limits,
   and keep FORCE_POS ratio conversion private to the hardware adapter. The

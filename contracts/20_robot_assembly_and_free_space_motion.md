@@ -69,6 +69,13 @@ and owns only its namespace. Other consumers preserve unknown extensions and
 must not acquire the extension owner's duties. Therefore a missing visual-
 alignment extension does not invalidate Basic's mounted-effector selection; it
 only makes that alignment Skill unavailable for the selected effector.
+The separate `midbrain.skill.locate_arm_base.v1` extension may declare one
+coarse visual orientation landmark for Locate Arm Base. It owns only eligible
+point names, the VLM description, arm-base frame, and controlled-frame offset;
+it does not transfer Basic's FK ownership or the translation-refinement
+Skill's registered-depth, all-points, timing, or confidence policy. Locate Arm
+Base may use a generic controlled-frame-origin fallback when this optional
+extension is absent, but Basic still treats the mounted effector as valid.
 
 Changing a mounted effector invalidates existing previews, authorizations,
 tool registrations, payload assumptions, collision geometry, and controller

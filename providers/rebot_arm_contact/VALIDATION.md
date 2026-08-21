@@ -1,6 +1,6 @@
 # Validation
 
-Version 0.1.0 is software-tested development code and has not been physically
+Version 0.2.0 is software-tested development code and has not been physically
 qualified.
 
 `scripts/verify.ps1` compiles the independent package, runs its unit tests, and
@@ -22,18 +22,26 @@ Current unit coverage includes:
 - Basic lease servicing during deliberately slowed multi-knot Cartesian IK
   construction;
 - Basic-declared per-joint velocity-limit consumption and transition timing
-  returned for Skill-side minimum command spacing;
+  plus Contact's Cartesian-speed ceiling returned for Skill-side sequencing;
 - Basic-rate discovery and a Contact-owned Cartesian segment that produces
   changing joint targets at the advertised 50 Hz cadence through sequential
   IK knots no farther than 2 mm apart;
 - acceptance of finite best-effort unreachable targets without an arrival
   success claim;
+- establishment of the Basic arm-group position/effort mode guard at the first
+  endpoint, retention across replacements, and explicit clearing on relax;
+- chaining a new segment from the previous commanded setpoint rather than the
+  lagging measured joints;
+- trajectory-complete observation and runtime dwell sequencing without a
+  Provider-side task-success assertion;
+- carry `PREPARE`/`CONTINUE`, matching attachment identity, all-joint mode
+  confirmation, last-target hold, and release behavior;
 - non-zero rotational wrench acceptance at the Provider boundary;
 - explicit relaxation to Basic `IMPEDANCE` and lease release;
 - priority-preserving slicing orientation, three-step engage/slice/retract
   planning, zero rotational torque, and Integrated-before-Contact ordering; and
 - Skill terminal relax and Manager authority release after normal, failed, and
-  transport-ambiguous session submission.
+  transport-ambiguous session submission when no confirmed carry is retained.
 
 No motor was commanded during this software validation. Physical validation
 must not use a low-torque or low-stiffness load-bearing state. The next physical

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use anyhow::{anyhow, Context, Result};
 use axum::{
     extract::{Path, State},
@@ -1338,24 +1340,24 @@ fn build_workcell_activation_record(
     let now_us = now.timestamp_micros().max(0) as u64;
 
     let orientation = &request.candidate["quality_provenance"]["orientation_resolution"];
+    let orientation_method =
+        require_json_string(orientation, "method", "candidate orientation proof")?;
     if !matches!(
         orientation["status"].as_str(),
         Some("PASSED") | Some("PASSED_WITH_WARNINGS")
-    ) || orientation["method"] != "BOUNDED_REFERENCE_IMAGE_VLM"
-        || orientation["application_origin"] != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
+    ) || !matches!(
+        orientation_method.as_str(),
+        "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK" | "AGENT_SUPPLIED_ROUGH_WORLD_POSITIVE_X"
+    ) || orientation["application_origin"] != "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN"
         || orientation["application_order"]
             != "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base"
         || orientation["mesh_center_translation_preserved"] != true
     {
         return Err(anyhow!(
-            "candidate orientation proof does not satisfy the bounded reference-image contract"
+            "candidate orientation proof does not satisfy the bounded effector/FK or world-direction contract"
         ));
     }
-    for field in [
-        "profile_sha256",
-        "reference_set_sha256",
-        "source_evidence_sha256",
-    ] {
+    for field in ["profile_sha256", "source_evidence_sha256"] {
         let hash = require_json_string(orientation, field, "candidate orientation proof")?;
         if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(anyhow!(
@@ -1494,29 +1496,158 @@ fn build_workcell_activation_record(
             "candidate world-up normalization does not match the observed pose family"
         ));
     }
-    let confidence = orientation["vlm"]["confidence"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate VLM confidence is required"))?;
-    let minimum_confidence = orientation["vlm"]["minimum_confidence"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate VLM minimum confidence is required"))?;
-    let orientation_consensus_confidence = orientation["minimum_consensus_confidence"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate VLM orientation consensus floor is required"))?;
     let orientation_decision_basis = require_json_string(
         orientation,
         "selection_decision_basis",
         "candidate orientation proof",
     )?;
-    validate_bounded_vlm_selection(
-        &selected_id,
-        confidence,
-        minimum_confidence,
-        orientation_consensus_confidence,
-        &orientation_decision_basis,
-        &orientation["selection_attempts"],
-        "candidate VLM orientation",
+    if orientation_decision_basis != orientation_method {
+        return Err(anyhow!(
+            "candidate orientation decision basis does not match its geometric method"
+        ));
+    }
+    let mounted_effector = &orientation["mounted_effector"];
+    for field in [
+        "profile_id",
+        "profile_revision",
+        "controlled_frame_id",
+        "arm_base_frame",
+    ] {
+        require_json_string(
+            mounted_effector,
+            field,
+            "candidate mounted-effector orientation proof",
+        )?;
+    }
+    let vlm = &orientation["vlm"];
+    let vlm_invocation_count = vlm["invocation_count"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("candidate orientation VLM invocation count is required"))?;
+    let vlm_used = vlm["used"]
+        .as_bool()
+        .ok_or_else(|| anyhow!("candidate orientation VLM used flag is required"))?;
+    if vlm["quality_gate_applied"] != false {
+        return Err(anyhow!(
+            "candidate orientation must not apply a VLM point-quality gate"
+        ));
+    }
+    let acceptance_policy = require_json_string(
+        orientation,
+        "acceptance_policy",
+        "candidate orientation proof",
     )?;
+    let selection_attempts = orientation["selection_attempts"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate orientation selection attempts are required"))?;
+    match orientation_method.as_str() {
+        "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK" => {
+            if vlm_invocation_count != 1
+                || !vlm_used
+                || acceptance_policy
+                    != "ONE_RECOGNIZED_EFFECTOR_POINT_IS_SUFFICIENT_NO_POINT_QUALITY_GATE"
+                || selection_attempts.len() != 1
+                || !orientation["timestamped_fk_transform_query"].is_object()
+            {
+                return Err(anyhow!(
+                    "candidate effector/FK orientation proof has invalid invocation, acceptance, or FK provenance"
+                ));
+            }
+            let confidence = vlm["confidence"]
+                .as_f64()
+                .ok_or_else(|| anyhow!("candidate audit-only VLM confidence is required"))?;
+            if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+                return Err(anyhow!("candidate audit-only VLM confidence is invalid"));
+            }
+            let recognized_points = vlm["recognized_points_yx_0_1000"]
+                .as_array()
+                .ok_or_else(|| anyhow!("candidate recognized effector points are required"))?;
+            if recognized_points.is_empty()
+                || recognized_points.iter().any(|point| {
+                    point["point_id"]
+                        .as_str()
+                        .is_none_or(|value| value.trim().is_empty())
+                        || point["y"].as_u64().is_none_or(|value| value > 1000)
+                        || point["x"].as_u64().is_none_or(|value| value > 1000)
+                })
+            {
+                return Err(anyhow!(
+                    "candidate effector/FK orientation requires at least one valid coarse point"
+                ));
+            }
+        }
+        "AGENT_SUPPLIED_ROUGH_WORLD_POSITIVE_X" => {
+            if vlm_invocation_count != 0
+                || vlm_used
+                || acceptance_policy != "AGENT_SUPPLIED_ROUGH_WORLD_DIRECTION"
+                || !selection_attempts.is_empty()
+                || !orientation["timestamped_fk_transform_query"].is_null()
+            {
+                return Err(anyhow!(
+                    "candidate world-direction orientation proof must use zero VLM calls and no effector FK query"
+                ));
+            }
+        }
+        _ => unreachable!(),
+    }
+    let comparisons = orientation["candidate_comparisons"]
+        .as_array()
+        .ok_or_else(|| anyhow!("candidate orientation comparisons are required"))?;
+    let allowed_ids = allowed
+        .iter()
+        .map(|entry| {
+            require_json_string(entry, "candidate_id", "candidate allowed orientation entry")
+        })
+        .collect::<Result<HashSet<_>>>()?;
+    let mut comparison_ids = HashSet::new();
+    let mut selected_comparison_score = None;
+    let selected_score = orientation["selected_score"]
+        .as_f64()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| anyhow!("candidate orientation selected score is invalid"))?;
+    for comparison in comparisons {
+        let comparison_id = require_json_string(
+            comparison,
+            "candidate_id",
+            "candidate orientation comparison",
+        )?;
+        if !allowed_ids.contains(&comparison_id) || !comparison_ids.insert(comparison_id.clone()) {
+            return Err(anyhow!(
+                "candidate orientation comparisons must contain each allowed candidate exactly once"
+            ));
+        }
+        let score = if orientation_method == "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK" {
+            comparison["distance_0_1000"]
+                .as_f64()
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or_else(|| anyhow!("candidate effector/FK comparison distance is invalid"))?
+        } else {
+            comparison["direction_dot"]
+                .as_f64()
+                .filter(|value| value.is_finite() && (-1.0..=1.0).contains(value))
+                .ok_or_else(|| anyhow!("candidate world-direction comparison dot is invalid"))?
+        };
+        if comparison_id == selected_id {
+            selected_comparison_score = Some(score);
+        }
+        let strictly_better =
+            if orientation_method == "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK" {
+                score < selected_score - 1e-9
+            } else {
+                score > selected_score + 1e-9
+            };
+        if strictly_better {
+            return Err(anyhow!(
+                "candidate selected orientation is not the best recorded geometric comparison"
+            ));
+        }
+    }
+    if comparison_ids != allowed_ids
+        || selected_comparison_score.is_none_or(|value| (value - selected_score).abs() > 1e-9)
+    {
+        return Err(anyhow!(
+            "candidate orientation comparisons do not exactly bind the selected profiled candidate"
+        ));
+    }
     let world_axis = &request.candidate["quality_provenance"]["world_axis"];
     if !matches!(
         world_axis["status"].as_str(),
@@ -1562,34 +1693,21 @@ fn build_workcell_activation_record(
         "selected_mask_candidate_id",
         "candidate FoundationPose proof",
     )?;
-    let mask_review = &request.candidate["quality_provenance"]["mask_review"];
-    if mask_review["accepted"] != true {
-        return Err(anyhow!("candidate mask review was not accepted"));
-    }
-    let mask_review_confidence = mask_review["confidence"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate mask-review confidence is required"))?;
-    let mask_review_minimum = mask_review["minimum_confidence"]
-        .as_f64()
-        .ok_or_else(|| anyhow!("candidate mask-review minimum confidence is required"))?;
-    if !mask_review_confidence.is_finite()
-        || !mask_review_minimum.is_finite()
-        || mask_review_confidence < mask_review_minimum
-    {
-        return Err(anyhow!("candidate mask review confidence is insufficient"));
-    }
-    let accepted_masks = mask_review["accepted_candidate_ids"]
+    let acquired_masks = request.candidate["quality_provenance"]["source_evidence"]
+        ["mask_candidates"]
         .as_array()
-        .ok_or_else(|| anyhow!("candidate accepted mask IDs are required"))?;
-    if accepted_masks.is_empty() || accepted_masks.iter().any(|value| value.as_str().is_none()) {
-        return Err(anyhow!("candidate accepted mask IDs are invalid"));
+        .ok_or_else(|| anyhow!("candidate acquired mask evidence is required"))?;
+    if acquired_masks.is_empty() {
+        return Err(anyhow!("candidate acquired mask evidence is empty"));
     }
-    let accepted_mask_ids = accepted_masks
+    let acquired_mask_ids = acquired_masks
         .iter()
-        .map(|value| value.as_str().unwrap_or_default())
+        .filter_map(|value| value["candidate_id"].as_str())
         .collect::<std::collections::HashSet<_>>();
-    if accepted_mask_ids.len() != accepted_masks.len() {
-        return Err(anyhow!("candidate accepted mask IDs contain duplicates"));
+    if acquired_mask_ids.len() != acquired_masks.len() {
+        return Err(anyhow!(
+            "candidate acquired mask IDs are invalid or duplicated"
+        ));
     }
     let mask_vote = &request.candidate["quality_provenance"]["mask_vote"];
     let vote_survivors = mask_vote["survivor_count"]
@@ -1598,27 +1716,27 @@ fn build_workcell_activation_record(
     let vote_threshold = mask_vote["vote_threshold"]
         .as_u64()
         .ok_or_else(|| anyhow!("candidate mask-vote threshold is required"))?;
-    let vote_accepted = mask_vote["accepted_candidate_ids"]
+    let vote_retained = mask_vote["retained_candidate_ids"]
         .as_array()
-        .ok_or_else(|| anyhow!("candidate mask-vote accepted IDs are required"))?;
-    let vote_accepted_ids = vote_accepted
+        .ok_or_else(|| anyhow!("candidate mask-vote retained IDs are required"))?;
+    let vote_retained_ids = vote_retained
         .iter()
         .filter_map(|value| value.as_str())
         .collect::<std::collections::HashSet<_>>();
-    let expected_vote_threshold = (accepted_masks.len() as u64 + 1) / 2;
+    let expected_vote_threshold = (acquired_masks.len() as u64 + 1) / 2;
     let dilation_radius = mask_vote["dilation_radius_px"]
         .as_u64()
         .ok_or_else(|| anyhow!("candidate final-mask dilation radius is required"))?;
     if mask_vote["mask_id"].as_str() != Some(selected_mask_id.as_str())
-        || mask_vote["vote_policy"] != "AT_LEAST_HALF_OF_VLM_ACCEPTED_MASKS"
-        || vote_survivors != accepted_masks.len() as u64
+        || mask_vote["vote_policy"] != "AT_LEAST_HALF_OF_ALL_ACQUIRED_MASKS"
+        || vote_survivors != acquired_masks.len() as u64
         || vote_threshold != expected_vote_threshold
-        || vote_accepted_ids != accepted_mask_ids
-        || vote_accepted.len() != accepted_masks.len()
+        || vote_retained_ids != acquired_mask_ids
+        || vote_retained.len() != acquired_masks.len()
         || dilation_radius > 64
     {
         return Err(anyhow!(
-            "candidate mask-vote proof does not match the accepted mask ensemble"
+            "candidate mask-vote proof does not match the acquired mask ensemble"
         ));
     }
     let pose_candidates = foundation_pose["candidates"]
@@ -1857,7 +1975,7 @@ fn build_workcell_activation_record(
         translation_refinement_revision: 0,
         last_translation_refinement: None,
         translation_refinement_journal: Vec::new(),
-        last_transition_reason: "bounded reference-image orientation and timestamped world-axis candidate activated after exact review".to_string(),
+        last_transition_reason: "bounded effector/FK or rough-world-direction orientation and timestamped world-axis candidate activated after exact review".to_string(),
     })
 }
 
@@ -4116,15 +4234,57 @@ async fn ensure_single_provider_hot(state: &AppState, id: &str) -> Result<Value>
             .await
         {
             Ok(result) => return Ok(result),
-            Err(error) if Instant::now() >= deadline => {
-                return Err(anyhow!(
-                    "provider {id} did not accept HOT within 15 seconds: {error}"
-                ));
+            Err(error) => {
+                if let Some(failure) = manager_tracked_process_failure(state, id).await {
+                    return Err(anyhow!(format_provider_hot_process_failure(
+                        id,
+                        failure.pid,
+                        &failure.process_state,
+                        failure.last_exit.as_deref(),
+                    )));
+                }
+                if Instant::now() >= deadline {
+                    return Err(anyhow!(
+                        "PROVIDER_HOT_TIMEOUT: provider {id} did not accept HOT within 15 seconds; last_control_error={error}"
+                    ));
+                }
             }
-            Err(_) => {}
         }
         sleep(Duration::from_millis(250)).await;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedProcessFailure {
+    pid: u32,
+    process_state: String,
+    last_exit: Option<String>,
+}
+
+async fn manager_tracked_process_failure(
+    state: &AppState,
+    provider_id: &str,
+) -> Option<ManagedProcessFailure> {
+    let mut processes = state.processes.lock().await;
+    let process = processes.get_mut(provider_id)?;
+    refresh_process_state(process);
+    matches!(process.state.as_str(), "exited" | "error").then(|| ManagedProcessFailure {
+        pid: process.pid,
+        process_state: process.state.clone(),
+        last_exit: process.last_exit.clone(),
+    })
+}
+
+fn format_provider_hot_process_failure(
+    provider_id: &str,
+    pid: u32,
+    process_state: &str,
+    last_exit: Option<&str>,
+) -> String {
+    format!(
+        "PROVIDER_PROCESS_EXITED: provider {provider_id} process {pid} stopped while entering HOT; process_state={process_state}; last_exit={}; review the Manager provider stderr and verify the Provider's hardware, driver, and local configuration readiness",
+        last_exit.unwrap_or("unavailable")
+    )
 }
 
 async fn ensure_provider_hot(state: &AppState, id: &str) -> Result<Value> {
@@ -4726,8 +4886,29 @@ fn bounded_agent_catalog_value(value: Option<&Value>) -> Option<Value> {
 }
 
 fn internal_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    error!(error = %error, "request failed");
-    api_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+    let message = error.to_string();
+    error!(error = %message, "request failed");
+    let error_code = stable_internal_error_code(&message);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error_code": error_code, "error": message})),
+    )
+}
+
+fn stable_internal_error_code(message: &str) -> &str {
+    let Some((candidate, _)) = message.split_once(':') else {
+        return "INTERNAL_ERROR";
+    };
+    if !candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate.chars().all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        candidate
+    } else {
+        "INTERNAL_ERROR"
+    }
 }
 
 #[cfg(test)]
@@ -4942,20 +5123,12 @@ mod tests {
                         }
                     ]
                 },
-                "mask_review": {
-                    "accepted_candidate_ids": ["mask_1", "mask_3", "mask_4"],
-                    "rejected_candidate_ids": ["mask_2"],
-                    "confidence": 0.84,
-                    "minimum_confidence": 0.60,
-                    "accepted": true
-                },
                 "mask_vote": {
                     "mask_id": "voted_mask_dilated_r4",
-                    "accepted_candidate_ids": ["mask_1", "mask_3", "mask_4"],
-                    "rejected_candidate_ids": ["mask_2"],
-                    "survivor_count": 3,
+                    "retained_candidate_ids": ["mask_1", "mask_2", "mask_3", "mask_4"],
+                    "survivor_count": 4,
                     "vote_threshold": 2,
-                    "vote_policy": "AT_LEAST_HALF_OF_VLM_ACCEPTED_MASKS",
+                    "vote_policy": "AT_LEAST_HALF_OF_ALL_ACQUIRED_MASKS",
                     "dilation_radius_px": 4
                 },
                 "fit_selection": {
@@ -4971,9 +5144,8 @@ mod tests {
                 },
                 "orientation_resolution": {
                     "status": "PASSED_WITH_WARNINGS",
-                    "method": "BOUNDED_REFERENCE_IMAGE_VLM",
+                    "method": "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK",
                     "profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "reference_set_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "source_evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
                     "allowed_candidates": [
                         {"candidate_id": "z0", "axis": "Z", "degrees": 0, "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]},
@@ -4985,15 +5157,43 @@ mod tests {
                     "selected_axis": "Z",
                     "selected_degrees": 0,
                     "selected_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                    "vlm": {
-                        "confidence": 0.62,
-                        "minimum_confidence": 0.72
+                    "mounted_effector": {
+                        "profile_id": "rebot_b601_dm.bare_gripper",
+                        "profile_revision": "rebot-b601-dm-bare-gripper-v4",
+                        "landmark_id": "coarse_gripper_rail_center",
+                        "landmark_source": "MOUNTED_EFFECTOR_LOCATE_ARM_BASE_EXTENSION",
+                        "controlled_frame_id": "rebot_arm_tool",
+                        "arm_base_frame": "rebot_arm_base",
+                        "controlled_frame_to_landmark_translation_m": [-0.08, 0.0, 0.0]
                     },
-                    "minimum_consensus_confidence": 0.55,
-                    "selection_decision_basis": "REPEATED_CANDIDATE_CONSENSUS",
+                    "vlm": {
+                        "invocation_count": 1,
+                        "used": true,
+                        "model": "test-vlm",
+                        "confidence": 0.31,
+                        "confidence_semantics": "AUDIT_ONLY_NOT_AN_ACCEPTANCE_GATE",
+                        "quality_gate_applied": false,
+                        "recognized_points_yx_0_1000": [
+                            {"point_id": "rail_lateral_left", "y": 500, "x": 650}
+                        ]
+                    },
+                    "timestamped_fk_transform_query": {
+                        "from_frame": "rebot_arm_tool",
+                        "to_frame": "rebot_arm_base",
+                        "at_us": now_us - 2_000_000
+                    },
+                    "candidate_comparisons": [
+                        {"candidate_id": "z0", "distance_0_1000": 5.0},
+                        {"candidate_id": "z90", "distance_0_1000": 200.0},
+                        {"candidate_id": "z180", "distance_0_1000": 400.0},
+                        {"candidate_id": "z270", "distance_0_1000": 205.0}
+                    ],
+                    "selected_score": 5.0,
+                    "runner_up_separation": 195.0,
+                    "acceptance_policy": "ONE_RECOGNIZED_EFFECTOR_POINT_IS_SUFFICIENT_NO_POINT_QUALITY_GATE",
+                    "selection_decision_basis": "SINGLE_VLM_EFFECTOR_POINT_WITH_TIMESTAMPED_FK",
                     "selection_attempts": [
-                        {"candidate_id": "z0", "confidence": 0.60},
-                        {"candidate_id": "z0", "confidence": 0.62}
+                        {"candidate_id": "z0", "confidence": 0.31}
                     ],
                     "application_origin": "FOUNDATIONPOSE_CENTERED_CAD_MESH_ORIGIN",
                     "application_order": "camera_from_centered_mesh @ orientation_correction @ centered_mesh_from_arm_base",
@@ -5006,6 +5206,14 @@ mod tests {
                     "world_frame": "local_vio/epoch-7",
                     "session_epoch": "epoch-7",
                     "convention_id": "MIDBRAIN_X_FORWARD_Y_LEFT_Z_UP_V2"
+                },
+                "source_evidence": {
+                    "mask_candidates": [
+                        {"candidate_id": "mask_1"},
+                        {"candidate_id": "mask_2"},
+                        {"candidate_id": "mask_3"},
+                        {"candidate_id": "mask_4"}
+                    ]
                 }
             },
             "frame_contract": {
@@ -5116,6 +5324,61 @@ mod tests {
         assert_eq!(record.arm_base_frame, "rebot_arm_base");
         assert!(record.motion_usable);
         assert_eq!(record.state, "ACTIVE");
+    }
+
+    #[test]
+    fn locate_arm_base_candidate_accepts_zero_vlm_world_x_retry_proof() {
+        let now = Utc::now();
+        let now_us = now.timestamp_micros() as u64;
+        let secret = b"test-review-auth-secret-with-at-least-32-bytes";
+        let (mut request, reports) = locate_arm_base_activation_fixture(now);
+        let orientation = &mut request.candidate["quality_provenance"]["orientation_resolution"];
+        orientation["method"] = json!("AGENT_SUPPLIED_ROUGH_WORLD_POSITIVE_X");
+        orientation["vlm"] = json!({
+            "invocation_count": 0,
+            "used": false,
+            "quality_gate_applied": false,
+            "reason": "Agent supplied a rough arm-base +X world direction."
+        });
+        orientation["timestamped_fk_transform_query"] = Value::Null;
+        orientation["candidate_comparisons"] = json!([
+            {"candidate_id": "z0", "direction_dot": 0.95},
+            {"candidate_id": "z90", "direction_dot": 0.10},
+            {"candidate_id": "z180", "direction_dot": -0.95},
+            {"candidate_id": "z270", "direction_dot": -0.10}
+        ]);
+        orientation["selected_score"] = json!(0.95);
+        orientation["runner_up_separation"] = json!(0.85);
+        orientation["acceptance_policy"] = json!("AGENT_SUPPLIED_ROUGH_WORLD_DIRECTION");
+        orientation["selection_decision_basis"] = json!("AGENT_SUPPLIED_ROUGH_WORLD_POSITIVE_X");
+        orientation["selection_attempts"] = json!([]);
+        request
+            .candidate
+            .as_object_mut()
+            .unwrap()
+            .remove("candidate_sha256");
+        let candidate_sha = canonical_json_sha256(&request.candidate);
+        request.candidate["candidate_sha256"] = json!(candidate_sha);
+        request.review_decision["candidate_sha256"] = json!(candidate_sha);
+        let identity_payload = json!({
+            "issuer": "test.identity",
+            "reviewer_id": "operator@example.test",
+            "candidate_id": "arm-base-1",
+            "candidate_sha256": candidate_sha,
+            "decision": "APPROVE",
+            "issued_at_us": now_us - 100_000,
+            "expires_at_us": now_us + 300_000_000,
+            "nonce": "nonce-locate-arm-base-1"
+        });
+        let identity_bytes = serde_json::to_vec(&identity_payload).unwrap();
+        request.review_identity_assertion = format!(
+            "{}.{}",
+            base64url_encode(&identity_bytes),
+            base64url_encode(&hmac_sha256(secret, &identity_bytes))
+        );
+        let request_sha = canonical_json_sha256(&serde_json::to_value(&request).unwrap());
+        super::build_workcell_activation_record(&request, request_sha, &reports, secret, now)
+            .expect("a zero-VLM rough-world-+X orientation proof should activate");
     }
 
     #[test]
@@ -5600,6 +5863,37 @@ mod tests {
         let missing_error = provider_dependency_order(&missing, "provider.a")
             .expect_err("unknown dependency must be rejected");
         assert!(missing_error.to_string().contains("provider.missing"));
+    }
+
+    #[test]
+    fn provider_hot_process_failure_is_actionable_and_stable() {
+        let message = format_provider_hot_process_failure(
+            "robot_arm.rebot_dm",
+            32480,
+            "exited",
+            Some("exit code: 1"),
+        );
+        assert!(message.contains("PROVIDER_PROCESS_EXITED"));
+        assert!(message.contains("robot_arm.rebot_dm"));
+        assert!(message.contains("process 32480"));
+        assert!(message.contains("exit code: 1"));
+        assert!(message.contains("hardware, driver, and local configuration"));
+        assert_eq!(
+            stable_internal_error_code(&message),
+            "PROVIDER_PROCESS_EXITED"
+        );
+    }
+
+    #[test]
+    fn internal_error_code_rejects_unstructured_prefixes() {
+        assert_eq!(
+            stable_internal_error_code("provider control returned 500: unavailable"),
+            "INTERNAL_ERROR"
+        );
+        assert_eq!(
+            stable_internal_error_code("PROVIDER_HOT_TIMEOUT: timed out"),
+            "PROVIDER_HOT_TIMEOUT"
+        );
     }
 
     #[test]

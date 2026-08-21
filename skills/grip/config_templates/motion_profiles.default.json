@@ -1,0 +1,16 @@
+{
+  "schema": "midbrain.generic_grip_motion_profiles",
+  "schema_version": 1,
+  "default_profile_number": 1,
+  "profiles": [
+    {
+      "profile_number": 1,
+      "name": "development-conservative",
+      "grip_position_rad": 0.20943951023931953,
+      "grip_velocity_rad_s": 4.0,
+      "gripping_torque_limit_nm": 0.7,
+      "contact_timeout_s": 10.0,
+      "qualification": "DEVELOPMENT_REQUIRES_ATTENDED_PHYSICAL_TUNING"
+    }
+  ]
+}

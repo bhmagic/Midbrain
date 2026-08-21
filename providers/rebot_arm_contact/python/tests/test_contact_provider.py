@@ -115,7 +115,7 @@ class FakeBasic:
                 }
             ],
             "mounted_effector": {
-                "profile_revision": "rebot-b601-dm-5-inch-blade-v3",
+                "profile_revision": "rebot-b601-dm-5-inch-blade-v5",
                 "controlled_frame": {
                     "frame_id": "rebot_arm_knife_tip",
                     "transform": {
@@ -147,6 +147,7 @@ class FakeBasic:
         self.fail_command = False
         self.state_call_threads: list[str] = []
         self.renew_calls = 0
+        self.mode_guard_calls: list[str | None] = []
 
     def model(self):
         return copy.deepcopy(self.model_value)
@@ -180,6 +181,13 @@ class FakeBasic:
             raise RuntimeError("simulated Basic command failure")
         self.commands.append(copy.deepcopy(commands))
         return {"accepted": True}
+
+    def set_required_command_mode(self, required_command_mode):
+        self.mode_guard_calls.append(required_command_mode)
+        if self.lease is None:
+            raise RuntimeError("no fake Basic lease")
+        self.lease.required_command_mode = required_command_mode
+        return copy.deepcopy(self.lease)
 
     def float(self, reason):
         self.float_calls += 1
@@ -237,12 +245,36 @@ def plan_for(controller: ContactController, *, rotational=False, steps=1) -> dic
     }
 
 
+def carry_plan_for(
+    controller: ContactController,
+    *,
+    behavior: str,
+    execution_id: str,
+    skill_id: str,
+    carry_id: str = "carry-1",
+    attachment_revision: str = "attachment-1",
+) -> dict:
+    plan = plan_for(controller)
+    plan["schema_version"] = 2
+    plan["plan_id"] = f"plan-{execution_id}"
+    plan["skill_id"] = skill_id
+    plan["execution_id"] = execution_id
+    plan["manager_authority"]["lease_id"] = f"manager-{execution_id}"
+    plan["manager_authority"]["owner_id"] = execution_id
+    plan["carry"] = {
+        "behavior": behavior,
+        "carry_id": carry_id,
+        "attachment_revision": attachment_revision,
+    }
+    return plan
+
+
 def assertion_for(controller: ContactController, plan: dict) -> str:
     now = time.time_ns() // 1000
     payload = {
         "schema": "midbrain.contact_work_authorization",
         "schema_version": 1,
-        "assertion_id": "assertion-1",
+        "assertion_id": f"assertion-{plan['execution_id']}",
         "nonce": "0123456789abcdef0123456789abcdef",
         "issuer_skill_id": plan["skill_id"],
         "execution_id": plan["execution_id"],
@@ -412,6 +444,113 @@ class ControllerTests(unittest.TestCase):
             all(command["mode"] == "POSITION_EFFORT_LIMITED" for command in last_commands)
         )
 
+    def test_confirmed_carry_keeps_lease_and_accepts_bound_replacement_plan(self):
+        prepare = carry_plan_for(
+            self.controller,
+            behavior="PREPARE",
+            execution_id="grip-execution",
+            skill_id="grip.grip_object",
+        )
+        secrets = {
+            "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET": SECRET,
+            "MIDBRAIN_CONTACT_MOVE_CARRIED_OBJECT_SECRET": SECRET,
+        }
+        with mock.patch.dict("os.environ", secrets, clear=False):
+            self.controller.begin_session(
+                prepare,
+                assertion_for(self.controller, prepare),
+            )
+            self.controller.move("grip-execution", 0)
+            self.basic.state_value["positions_rad"][:6] = (
+                self.controller.endpoint.q_goal.tolist()
+            )
+            confirmed = self.controller.confirm_carry(
+                "grip-execution",
+                "carry-1",
+                "attachment-1",
+            )
+
+            first_lease_id = self.basic.lease.lease_id
+            continuation = carry_plan_for(
+                self.controller,
+                behavior="CONTINUE",
+                execution_id="move-execution",
+                skill_id="contact.move_carried_object",
+            )
+            replaced = self.controller.begin_session(
+                continuation,
+                assertion_for(self.controller, continuation),
+            )
+
+        self.assertEqual(confirmed["disposition"], "CARRY_CONFIRMED")
+        self.assertTrue(self.controller.carry_confirmed)
+        self.assertEqual(self.basic.mode_guard_calls, ["POSITION_EFFORT_LIMITED"])
+        self.assertEqual(replaced["disposition"], "CARRY_SESSION_REPLACED")
+        self.assertEqual(self.basic.lease.lease_id, first_lease_id)
+        self.assertEqual(self.controller.session.session_id, "move-execution")
+
+        self.controller.session.deadline_monotonic = time.monotonic() - 0.01
+        self.controller._hold_carrying(
+            "test watchdog",
+            "WATCHDOG_CARRY_HOLD",
+        )
+        self.assertTrue(self.controller.carry_confirmed)
+        self.assertIsNotNone(self.basic.lease)
+        self.assertEqual(
+            self.controller.control_state,
+            "CARRYING_POSITION_EFFORT_HOLD",
+        )
+
+        self.controller.relax("move-execution", "test release")
+        self.assertEqual(
+            self.basic.mode_guard_calls,
+            ["POSITION_EFFORT_LIMITED", None],
+        )
+        self.assertFalse(self.controller.carry_confirmed)
+        self.assertIsNone(self.basic.lease)
+
+    def test_generic_grip_can_prepare_current_pose_hold(self):
+        current_q = np.asarray(self.basic.state_value["positions_rad"][:6], dtype=float)
+        current_pose = self.controller.kinematics.evaluate(current_q).controlled_transform
+        prepare = carry_plan_for(
+            self.controller,
+            behavior="PREPARE",
+            execution_id="generic-grip-execution",
+            skill_id="grip.grip",
+        )
+        prepare["steps"][0]["motion_type"] = "CARTESIAN_SEGMENT"
+        prepare["steps"][0]["locked_joint_names"] = []
+        prepare["steps"][0]["target"]["position_mode"] = (
+            "RELATIVE_TO_MEASURED_EFFECTOR_ROOT_AXES"
+        )
+        prepare["steps"][0]["target"]["position_m"] = [0.0, 0.0, 0.0]
+        prepare["steps"][0]["target"]["orientation_xyzw"] = quaternion_from_matrix(
+            current_pose[:3, :3]
+        )
+        with mock.patch.dict(
+            "os.environ",
+            {"MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET": SECRET},
+            clear=False,
+        ):
+            self.controller.begin_session(
+                prepare,
+                assertion_for(self.controller, prepare),
+            )
+            result = self.controller.move("generic-grip-execution", 0)
+            self.basic.state_value["positions_rad"][:6] = (
+                self.controller.endpoint.q_goal.tolist()
+            )
+            self.controller.endpoint.segment.complete = True
+            confirmed = self.controller.confirm_carry(
+                "generic-grip-execution",
+                "carry-1",
+                "attachment-1",
+            )
+
+        self.assertEqual(result["signed_position_m"], [0.0, 0.0, 0.0])
+        self.assertEqual(confirmed["disposition"], "CARRY_CONFIRMED")
+        self.assertTrue(self.controller.snapshot()["carry_confirmed"])
+
     def test_nonzero_rotational_components_are_accepted_without_gate(self):
         plan = plan_for(self.controller, rotational=True)
         with mock.patch.dict(
@@ -450,6 +589,22 @@ class ControllerTests(unittest.TestCase):
         np.testing.assert_allclose(
             result["resolved_target_position_m"],
             current_pose[:3, 3] + np.asarray([0.0, 0.0, 0.02]),
+        )
+
+    def test_snapshot_publishes_measured_acting_frame_pose(self):
+        current_q = np.asarray(self.basic.state_value["positions_rad"][:6], dtype=float)
+        expected = self.controller.kinematics.evaluate(current_q).controlled_transform
+
+        snapshot = self.controller.snapshot()
+        measured = snapshot["measured_acting_frame_pose"]
+
+        self.assertEqual(measured["frame_id"], self.controller.kinematics.root_frame_id)
+        self.assertEqual(measured["acting_frame_id"], self.controller.acting_frame_id)
+        np.testing.assert_allclose(measured["position_m"], expected[:3, 3])
+        np.testing.assert_allclose(
+            np.abs(np.dot(measured["orientation_xyzw"], quaternion_from_matrix(expected[:3, :3]))),
+            1.0,
+            atol=1e-9,
         )
 
     def test_cartesian_segment_streams_changing_setpoints_at_basic_rate(self):
@@ -513,6 +668,49 @@ class ControllerTests(unittest.TestCase):
             self.assertIn("NOT_TASK_SUCCESS", tracking["semantics"])
         finally:
             controller.stop()
+
+    def test_cartesian_segments_chain_guarded_position_setpoints_without_float(self):
+        current_q = np.asarray(self.basic.state_value["positions_rad"][:6], dtype=float)
+        current_pose = self.controller.kinematics.evaluate(
+            current_q
+        ).controlled_transform
+        plan = plan_for(self.controller, steps=2)
+        for sequence, step in enumerate(plan["steps"]):
+            step["motion_type"] = "CARTESIAN_SEGMENT"
+            step["locked_joint_names"] = []
+            step["target"]["position_m"] = (
+                current_pose[:3, 3] + np.array([0.005 * (sequence + 1), 0.0, 0.0])
+            ).tolist()
+            step["target"]["orientation_xyzw"] = quaternion_from_matrix(
+                current_pose[:3, :3]
+            )
+        with mock.patch.dict(
+            "os.environ", {"MIDBRAIN_CONTACT_SLICING_SECRET": SECRET}, clear=False
+        ):
+            self.controller.begin_session(plan, assertion_for(self.controller, plan))
+            self.controller.move("execution-1", 0)
+            first_endpoint = self.controller.endpoint
+            first_endpoint.q_command = first_endpoint.q_goal.copy()
+            first_endpoint.segment.complete = True
+            previous_command = first_endpoint.q_command.copy()
+            self.basic.state_value["positions_rad"][:6] = (
+                previous_command - np.array([0.03, 0.02, 0.01, 0.0, 0.0, 0.0])
+            ).tolist()
+            self.controller.move("execution-1", 1)
+
+        second_first_command = np.asarray(
+            [
+                command["values"]["position_rad"]
+                for command in self.basic.commands[-1]
+            ]
+        )
+        np.testing.assert_allclose(second_first_command, previous_command)
+        self.assertEqual(
+            self.basic.mode_guard_calls,
+            ["POSITION_EFFORT_LIMITED"],
+        )
+        self.assertTrue(self.controller.position_effort_guard_active)
+        self.assertEqual(self.basic.float_calls, 0)
 
     def test_feedback_poll_failure_before_first_setpoint_does_not_end_session(self):
         self.controller.start()

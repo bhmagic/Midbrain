@@ -25,6 +25,29 @@ New-Item -ItemType Directory -Force -Path $configDirectory | Out-Null
 if (-not (Test-Path $controllerConfig)) {
     Copy-Item (Join-Path $providerRoot "config_templates\controller.default.json") $controllerConfig
 }
+$controllerDocument = Get-Content -LiteralPath $controllerConfig -Raw | ConvertFrom-Json
+if ($null -eq $controllerDocument.authorization) {
+    $controllerDocument | Add-Member NoteProperty authorization ([pscustomobject]@{}) -Force
+}
+if ($null -eq $controllerDocument.authorization.skill_secret_envs) {
+    $controllerDocument.authorization | Add-Member NoteProperty skill_secret_envs ([pscustomobject]@{}) -Force
+}
+$requiredSkillSecrets = [ordered]@{
+    "contact.slicing" = "MIDBRAIN_CONTACT_SLICING_SECRET"
+    "grip.grip" = "MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET"
+    "grip.grip_object" = "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET"
+    "contact.move_carried_object" = "MIDBRAIN_CONTACT_MOVE_CARRIED_OBJECT_SECRET"
+    "grip.lay_flat" = "MIDBRAIN_CONTACT_LAY_FLAT_SECRET"
+}
+foreach ($entry in $requiredSkillSecrets.GetEnumerator()) {
+    $controllerDocument.authorization.skill_secret_envs |
+        Add-Member NoteProperty $entry.Key $entry.Value -Force
+}
+[IO.File]::WriteAllText(
+    $controllerConfig,
+    ($controllerDocument | ConvertTo-Json -Depth 30) + [Environment]::NewLine,
+    [Text.UTF8Encoding]::new($false)
+)
 
 $keyFile = Join-Path $workspaceRoot "config\api_keys.env"
 if (-not (Test-Path -LiteralPath $keyFile)) {
@@ -32,47 +55,55 @@ if (-not (Test-Path -LiteralPath $keyFile)) {
         Join-Path $workspaceRoot "config\api_keys.env.example"
     ) -Destination $keyFile
 }
-$keyName = "MIDBRAIN_CONTACT_SLICING_SECRET"
 $keyLines = @(Get-Content -LiteralPath $keyFile)
-$keyIndex = -1
-for ($index = 0; $index -lt $keyLines.Count; $index++) {
-    if ($keyLines[$index].StartsWith("$keyName=")) {
-        $keyIndex = $index
-        break
+$keyNames = @(
+    "MIDBRAIN_CONTACT_SLICING_SECRET",
+    "MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET",
+    "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET",
+    "MIDBRAIN_CONTACT_MOVE_CARRIED_OBJECT_SECRET",
+    "MIDBRAIN_CONTACT_LAY_FLAT_SECRET"
+)
+foreach ($keyName in $keyNames) {
+    $keyIndex = -1
+    for ($index = 0; $index -lt $keyLines.Count; $index++) {
+        if ($keyLines[$index].StartsWith("$keyName=")) {
+            $keyIndex = $index
+            break
+        }
     }
-}
-$configuredSecret = if ($keyIndex -ge 0) {
-    $keyLines[$keyIndex].Substring($keyName.Length + 1)
-}
-else {
-    ""
-}
-if ([Text.Encoding]::UTF8.GetByteCount($configuredSecret) -lt 32) {
-    $secretBytes = New-Object byte[] 48
-    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
-        $generator.GetBytes($secretBytes)
-    }
-    finally {
-        $generator.Dispose()
-    }
-    $generatedSecret = [Convert]::ToBase64String($secretBytes)
-    if ($keyIndex -ge 0) {
-        $keyLines[$keyIndex] = "$keyName=$generatedSecret"
+    $configuredSecret = if ($keyIndex -ge 0) {
+        $keyLines[$keyIndex].Substring($keyName.Length + 1)
     }
     else {
-        $keyLines += "$keyName=$generatedSecret"
+        ""
     }
-    [IO.File]::WriteAllLines(
-        $keyFile,
-        $keyLines,
-        [Text.UTF8Encoding]::new($false)
-    )
-    Write-Host "Generated the local slicing authorization secret in $keyFile"
+    if ([Text.Encoding]::UTF8.GetByteCount($configuredSecret) -lt 32) {
+        $secretBytes = New-Object byte[] 48
+        $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try {
+            $generator.GetBytes($secretBytes)
+        }
+        finally {
+            $generator.Dispose()
+        }
+        $generatedSecret = [Convert]::ToBase64String($secretBytes)
+        if ($keyIndex -ge 0) {
+            $keyLines[$keyIndex] = "$keyName=$generatedSecret"
+        }
+        else {
+            $keyLines += "$keyName=$generatedSecret"
+        }
+        Write-Host "Generated local authorization secret $keyName in $keyFile"
+    }
+    else {
+        Write-Host "Preserved local authorization secret $keyName."
+    }
 }
-else {
-    Write-Host "Preserved the existing local slicing authorization secret."
-}
+[IO.File]::WriteAllLines(
+    $keyFile,
+    $keyLines,
+    [Text.UTF8Encoding]::new($false)
+)
 Write-Host "Contact Provider environment ready: $venv"
 Write-Host "Local controller configuration: $controllerConfig"
-Write-Host "The uncommitted slicing authorization secret is shared only through local process configuration."
+Write-Host "The uncommitted Contact authorization secrets are shared only through local process configuration."

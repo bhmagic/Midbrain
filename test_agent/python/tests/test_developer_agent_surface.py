@@ -373,7 +373,11 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
             _PointingSkill(),
             "gpt-5.6-terra",
             workspace_root=root,
-            eligible_tool_names={"identify_pointed_object"},
+            eligible_tool_names={
+                "identify_pointed_object",
+                "perform_relative_effector_motion",
+                "move_effector_to_world_point",
+            },
             manager=_Manager(),
             provider_lifecycle_control=True,
             integrated_motion_skill=_IntegratedMotionSkill(),
@@ -387,6 +391,20 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertTrue(callable(tools["set_provider_residency"].needs_approval))
         self.assertIn("perform_relative_effector_motion", tools)
         self.assertIn("move_effector_to_world_point", tools)
+        self.assertEqual(
+            sum(
+                tool.name == "perform_relative_effector_motion"
+                for tool in driver.agent.tools
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                tool.name == "move_effector_to_world_point"
+                for tool in driver.agent.tools
+            ),
+            1,
+        )
         self.assertNotIn("retry_last_integrated_motion_target", tools)
         self.assertNotIn("preview_relative_effector_motion", tools)
         self.assertNotIn("execute_integrated_motion_preview", tools)
@@ -421,7 +439,7 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
                 "properties"
             ],
         )
-        self.assertTrue(tools["execute_basic_safe_home"].needs_approval)
+        self.assertFalse(tools["execute_basic_safe_home"].needs_approval)
         self.assertIn(
             "instead of answering with a permission request",
             driver.agent.instructions,
@@ -462,6 +480,57 @@ class DeveloperAgentSurfaceTests(unittest.TestCase):
         self.assertNotIn(
             "activate robot_arm.rebot_dm to HOT first",
             driver.agent.instructions,
+        )
+
+    def test_deferred_search_loads_dedicated_motion_tools(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        driver = PrototypeAgentDriver(
+            _PointingSkill(),
+            "gemini-3.7-flash",
+            workspace_root=root,
+            eligible_tool_names={
+                "identify_pointed_object",
+                "perform_relative_effector_motion",
+                "move_effector_to_world_point",
+            },
+            integrated_motion_skill=_IntegratedMotionSkill(),
+            defer_loading=True,
+        )
+        tools = {tool.name: tool for tool in driver.agent.tools}
+        context = SimpleNamespace(
+            context=SimpleNamespace(loaded_tool_names=set()),
+            tool_call_id="search-dedicated-motion",
+        )
+
+        result = json.loads(
+            asyncio.run(
+                tools["tool_search"].on_invoke_tool(
+                    context,
+                    json.dumps(
+                        {
+                            "paths": [
+                                "perform_relative_effector_motion",
+                                "move_effector_to_world_point",
+                            ]
+                        }
+                    ),
+                )
+            )
+        )
+
+        self.assertEqual(
+            [item["name"] for item in result["tools"]],
+            [
+                "perform_relative_effector_motion",
+                "move_effector_to_world_point",
+            ],
+        )
+        self.assertEqual(
+            context.context.loaded_tool_names,
+            {
+                "perform_relative_effector_motion",
+                "move_effector_to_world_point",
+            },
         )
 
     def test_fabric_world_point_composer_is_a_separate_read_only_tool(

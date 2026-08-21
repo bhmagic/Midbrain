@@ -36,6 +36,33 @@ def wait_for(predicate, timeout=1.5):
     return False
 
 
+class GripperEnvelopeTests(unittest.TestCase):
+    def test_normal_close_target_remains_inside_absolute_close_limit(self):
+        model = json.loads(
+            (ROOT / 'config_templates' / 'arm_model.factory.json').read_text(
+                encoding='utf-8'
+            )
+        )
+        gripper = next(joint for joint in model['joints'] if joint['name'] == 'gripper')
+
+        self.assertAlmostEqual(
+            gripper['operational_limit_rad'][1],
+            0.20943951023931953,
+        )
+        self.assertAlmostEqual(
+            gripper['default_calibration_range_rad'][1],
+            0.20943951023931953,
+        )
+        self.assertAlmostEqual(
+            gripper['hard_limit_rad'][1],
+            0.29670597283903605,
+        )
+        self.assertLess(
+            gripper['operational_limit_rad'][1],
+            gripper['hard_limit_rad'][1],
+        )
+
+
 class AssemblyConfigurationTests(unittest.TestCase):
     def setUp(self):
         self.workspace = ROOT.parents[1]
@@ -926,6 +953,148 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(controller.group_leases)
         self.assertFalse(controller.group_pending)
 
+    def test_owner_observed_wrist_envelopes_are_loaded_from_model_and_calibration(self):
+        configured = configuration()
+        by_name = {joint.name: joint for joint in configured.joints}
+        expected = {
+            "joint4": (-1.6580627893946132, 1.6580627893946132, -1.4835298641951802, 1.4835298641951802),
+            "joint5": (-1.7453292519943295, 1.7453292519943295, -1.5707963267948966, 1.5707963267948966),
+            "joint6": (-3.141592653589793, 3.141592653589793, -2.9670597283903604, 2.9670597283903604),
+        }
+        for name, limits in expected.items():
+            joint = by_name[name]
+            self.assertEqual(
+                (
+                    joint.hard_min,
+                    joint.hard_max,
+                    joint.operational_min,
+                    joint.operational_max,
+                ),
+                limits,
+            )
+        gripper = by_name["gripper"]
+        self.assertEqual(gripper.operational_min, -4.886921905584122)
+        self.assertEqual(gripper.operational_max, 0.20943951023931953)
+        self.assertEqual(gripper.hard_max, 0.29670597283903605)
+
+    def test_group_mode_guard_requires_complete_pos_tor_and_blocks_float(self):
+        backend = SimulationBackend(
+            self.config,
+            self.dyn.calibrated_gravity_torque,
+        )
+        backend.connect()
+        backend.enable()
+        controller = ArmController(self.config, backend, self.dyn)
+        controller.feedback = backend.read()
+        controller.state = ProviderState.SAFE_HOLD_GRAVITY_FLOAT
+        controller.configure_resource_groups(
+            "robot_arm.primary",
+            [
+                {
+                    "resource_id": "robot_arm.primary/arm",
+                    "joint_names": [
+                        "joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6",
+                    ],
+                },
+                {
+                    "resource_id": "robot_arm.primary/gripper",
+                    "joint_names": ["gripper"],
+                },
+            ],
+        )
+        lease = controller.acquire_group_lease(
+            "robot_arm.primary/gripper", "grip-controller", 1000
+        )
+        with self.assertRaises(LeasePermissionError) as unprimed:
+            controller.set_group_required_command_mode(
+                "robot_arm.primary/gripper",
+                lease.lease_id,
+                lease.fencing_generation,
+                "POSITION_EFFORT_LIMITED",
+            )
+        self.assertEqual(unprimed.exception.error_code, "MODE_GUARD_NOT_PRIMED")
+
+        pos_tor = JointCommand(
+            "POSITION_EFFORT_LIMITED",
+            {
+                "position_rad": float(self.config.home_positions[6]),
+                "velocity_limit_rad_s": 0.1,
+                "torque_limit_nm": 0.7,
+            },
+        )
+        controller.submit_group(
+            CommandEnvelope(
+                "grip-hold",
+                lease.lease_id,
+                lease.fencing_generation,
+                {6: pos_tor},
+                time.monotonic() + 0.5,
+                resource_id="robot_arm.primary/gripper",
+            )
+        )
+        guarded = controller.set_group_required_command_mode(
+            "robot_arm.primary/gripper",
+            lease.lease_id,
+            lease.fencing_generation,
+            "POSITION_EFFORT_LIMITED",
+        )
+        self.assertEqual(
+            guarded.required_command_mode,
+            "POSITION_EFFORT_LIMITED",
+        )
+
+        with self.assertRaises(LeasePermissionError) as wrong_mode:
+            controller.submit_group(
+                CommandEnvelope(
+                    "wrong-mode",
+                    lease.lease_id,
+                    lease.fencing_generation,
+                    {
+                        6: JointCommand(
+                            "IMPEDANCE",
+                            {
+                                "position_rad": float(self.config.home_positions[6]),
+                                "velocity_rad_s": 0.0,
+                                "target_rate_limit_rad_s": 0.1,
+                                "kp": 8.0,
+                                "kd": 1.0,
+                                "feedforward_torque_nm": 0.0,
+                            },
+                        )
+                    },
+                    time.monotonic() + 0.5,
+                    resource_id="robot_arm.primary/gripper",
+                )
+            )
+        self.assertEqual(
+            wrong_mode.exception.error_code,
+            "REQUIRED_COMMAND_MODE_VIOLATION",
+        )
+        with self.assertRaises(LeasePermissionError) as float_blocked:
+            controller.request_group_float("robot_arm.primary/gripper")
+        self.assertEqual(float_blocked.exception.error_code, "MODE_GUARD_ACTIVE")
+        with self.assertRaises(LeasePermissionError) as release_blocked:
+            controller.release_group_lease(
+                "robot_arm.primary/gripper",
+                lease.lease_id,
+                lease.fencing_generation,
+            )
+        self.assertEqual(release_blocked.exception.error_code, "MODE_GUARD_ACTIVE")
+
+        controller.set_group_required_command_mode(
+            "robot_arm.primary/gripper",
+            lease.lease_id,
+            lease.fencing_generation,
+            None,
+        )
+        controller.release_group_lease(
+            "robot_arm.primary/gripper",
+            lease.lease_id,
+            lease.fencing_generation,
+        )
+        self.assertNotIn("robot_arm.primary/gripper", controller.group_leases)
+
     def test_group_release_with_only_idle_sibling_immediately_recaptures_safely(self):
         backend = SimulationBackend(
             self.config,
@@ -1050,7 +1219,7 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.config.validate_joint_command(0,'POSITION_VELOCITY_LIMITED',{'position_rad':100,'velocity_limit_rad_s':0.1})
 
     def test_physical_pos_vel_caps_use_tuned_arm_limits(self):
-        expected = [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1]
+        expected = [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0]
         self.assertEqual(
             [float(value) for value in self.config.model["control"]["physical_test_pos_vel_cap_rad_s"]],
             expected,
@@ -1098,7 +1267,7 @@ class CoreTests(unittest.TestCase):
         ]
         self.assertEqual(
             [float(item["velocity_limit_rad_s"]) for item in public_limits],
-            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
         )
         public_model = self.config.public_model()
         self.assertEqual(
@@ -1106,7 +1275,7 @@ class CoreTests(unittest.TestCase):
                 float(item["target_rate_limit_rad_s"])
                 for item in public_model["command_limits"]["IMPEDANCE"]
             ],
-            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
         )
         self.assertEqual(
             [
@@ -1115,7 +1284,7 @@ class CoreTests(unittest.TestCase):
                     "POSITION_VELOCITY_LIMITED"
                 ]
             ],
-            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 2.1],
+            [4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
         )
         self.assertTrue(np.allclose(
             [float(item["torque_limit_nm"]) for item in public_limits],
@@ -1156,6 +1325,7 @@ class CoreTests(unittest.TestCase):
         class FakeState:
             def __init__(self,index):
                 self.pos=float(index); self.vel=0.0; self.torq=0.0; self.status_code=0
+                self.t_mos=35.0+index; self.t_rotor=40.0+index
 
         class FakeMotor:
             def __init__(self,index):
@@ -1195,6 +1365,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(FakeController.instance.poll_count,1)
         self.assertEqual(feedback.positions_rad.shape,(7,))
         self.assertTrue(np.all(np.isfinite(feedback.positions_rad)))
+        self.assertEqual(feedback.temperatures_c.tolist(), [40.0+i for i in range(7)])
 
     def test_motorbridge_does_not_register_or_poll_inactive_gripper(self):
         class FakeState:

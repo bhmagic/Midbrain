@@ -1,5 +1,63 @@
 # Development record
 
+## 2026-08-21 — Semantic evidence and Agent routing separation
+
+The deterministic route layer had accumulated mutually exclusive prompt
+categories such as work-object corner motion, scene-plus-work-object motion,
+and work-object-motion-plus-slicing. A request that also rotated, scraped, or
+gripped could therefore be classified from one noun or its first action. The
+result hid eligible contact Skills, sent deliberate-contact work toward the
+no-contact route, or caused the model to treat a visible-surface AABB warning
+as a reason to refuse the complete operation.
+
+The current boundary removes those work-object action categories. Object IDs,
+scene roles, AABBs, named corners, and arbitrary object classes remain useful
+as planning evidence and typed coordinate inputs, but they neither grant
+contact nor narrow the general physical Skill surface. Explicit narrow routes
+remain only where the finite operation itself is unambiguous. Mixed-frame
+Scrap Grip has a deterministic translation route because it preserves exact
+direction roles and current measured FK, not because the target belongs to a
+special object category. Contact Skills do not receive Integrated's semantic
+collider set.
+
+This is a compatibility change, not a removal of safety checks. Integrated
+still owns free-space collision validation, task-specific Contact Skills sign
+deliberate-contact plans, Contact and Basic retain controller enforcement, and
+typed coordinate Skills grant no physical authority. Manager and assembly
+binding continue to resolve Provider/resource identity. Future arms,
+effectors, and object taxonomies should extend those declared bindings,
+profiles, frames, and manifests instead of adding global prompt-word gates or
+asking the model to invent a physical arm selection.
+
+## 2026-08-21 — Recoverable compatibility search and finite UI cleanup
+
+Two retained Gemini runs published a scene policy and then terminated at the
+client `tool_search` boundary with Python's `JSONDecodeError: Extra data`.
+The policy side effect had already committed, and a later run compiled the
+same scene successfully, so this was not a semantic-scene rejection. The
+compatibility adapter had allowed malformed model arguments and unknown Skill
+names to escape as Python exceptions, making a recoverable discovery mistake
+appear to reject the complete Agent operation.
+
+The local search boundary now accepts one strict JSON object and has one
+bounded compatibility recovery for concatenated copies of an exactly
+identical object. Invalid or ambiguous JSON, invalid `paths`, and unknown or
+ineligible names return a retryable `tool_search_error`; they enable no Skill
+and do not terminate the run. The canonical observer projects a matching
+`tool.search.failed` event containing only the error code, retryability, parse
+location, argument length, and bounded counts. Raw arguments, arbitrary
+rejected names, error messages, and loaded definitions remain excluded by the
+event and journal privacy contracts.
+
+The same incident review found a detached Locate Arm Base developer server
+that had survived workspace shutdown. Its manifest now advertises a stop
+command. The server accepts an exact-confirmation loopback shutdown request,
+closes its listener, waits for request threads, and closes the finite Skill's
+clients. The stop script verifies the service identity and retains a bounded
+forced-stop migration path for an older verified server without the new
+route. The Test Agent lifespan now closes its in-process Locate Arm Base Skill
+from a `finally` cleanup path as well.
+
 ## 2026-08-18 — GPT-native and non-GPT client Tool Search boundary
 
 Retained live runs confirmed that GPT and Gemini had the same two-tier
@@ -1006,7 +1064,7 @@ authorization.
 | `register_tool_to_control_frame` | `ToolControlFrameSkillAdapter.run` plus registration candidate builder | Replaced invented candidate/control-frame fields with the exact review-only transform, landmarks, quality, bindings, provenance, and route fields. |
 | `slice_with_blade` | `SlicingHostAdapter.invoke` and `SlicingPlan.as_dict` | Restricted the Agent result to the exact completed command-handling envelope and fully declared the nested path and measured-start deltas. |
 | `register_rgbd_pixel_to_world` | `SpatialRegistrationSkillAdapter.run` plus `register_rgbd_point` | Replaced generic aliases with RGB/depth pixels, camera-system XYZ, `target_point_m`, selection, binding, transform, and temporal evidence. |
-| `locate_arm_base` | `ArmBaseLocalizationSkillAdapter.run` plus `LocateArmBaseSkill.run` | Declares Skill-owned VLM seed prompts, SAM2 Provider segmentation, FoundationPose measurement, bounded reference-image orientation, a review-only candidate, and the exact Manager activation continuation. |
+| `locate_arm_base` | `ArmBaseLocalizationSkillAdapter.run` plus `LocateArmBaseSkill.run` | Declares Skill-owned VLM seed prompts, SAM2 Provider segmentation, FoundationPose measurement, one coarse active-effector point plus timestamped FK for bounded orientation, an explicit rough-world-+X retry when the effector is absent, a review-only candidate, and the exact Manager activation continuation. |
 | `translate_fabric_direction_to_world` | `FabricSpatialTranslator.translate_direction` | Removed nonexistent root transform path; declared exact framed direction and typed frame-authority failures. |
 | `translate_fabric_pose_to_world` | `FabricSpatialTranslator.translate_pose` | Removed nonexistent root transform path; declared exact framed pose and typed frame-authority failures. |
 | `verify_rgbd_image_alignment` | `RgbdAlignmentValidationSkill.run` | Replaced a different review vocabulary with actual numeric quality, VLM review/route, geometry, timing, binding, and artifacts. |

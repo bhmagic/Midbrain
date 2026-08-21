@@ -113,10 +113,6 @@ def parse_policy(payload: dict[str, Any]) -> SceneSegmentationPolicy:
         seen.add(object_id)
         objects.append(SceneObjectDescription(object_id, description, object_type))
 
-    if not any(value.object_type == "KEEP_OUT" for value in objects):
-        raise ValueError(
-            "segmentation policy requires at least one described KEEP_OUT object"
-        )
     canonical = {
         "policy_id": policy_id,
         "arm_description": arm_description,

@@ -1,0 +1,65 @@
+{
+  "skill_type": "grip_object",
+  "version": "0.2.9",
+  "display_name": "Action: scrap grip",
+  "ui": {
+    "observation": {"kind": "MANAGER_HOSTED", "information_level": "RICH", "read_only": true},
+    "developer": {
+      "label": "Action: scrap grip Developer",
+      "url": "http://127.0.0.1:7115/",
+      "availability": "SEPARATE_LOCAL_PROCESS_REQUIRES_PROVIDER",
+      "launch_command": ".\\skills\\grip-object\\scripts\\run_ui.ps1",
+      "stop_command": ".\\skills\\grip-object\\scripts\\stop_ui.ps1"
+    }
+  },
+  "lifecycle": "FINITE",
+  "agent_discovery": {
+    "schema_version": 3,
+    "discoverable": true,
+    "tool_name": "grip_object",
+    "description": "Align the gripper's qualified vectors with table-inward and insertion directions, open joint 7 to the functional -180 degree threshold, hand off Integrated through verified FLOAT and WARM, and approach through Contact. The motion profile supplies 1.5-second default dwells after lower trajectory completion, scrap trajectory completion, and stable grip contact. Current-effector-relative entry is resolved from measured Integrated FK inside the Skill. Grip closes toward +12 degrees and binds a carry after measured motor torque stays at or above 0.15 Nm for 10 consecutive 50 Hz samples. Otherwise it opens and floats the gripper, relaxes Contact, and returns FAILED_TO_GRIP. Soft or thin objects require another Skill. Null profile selectors use live defaults.",
+    "when_to_use": ["A gripable object has an explicit approach begin point, two reliable world directions, and a stable object binding."],
+    "when_not_to_use": ["The active effector lacks the grip-control profile, object geometry is uncertain, temperatures are unavailable or at least 85 C, or collision geometry is inadequate."],
+    "side_effects": ["Moves the arm through Integrated then Contact, closes the gripper, and leaves every active joint in POSITION_EFFORT_LIMITED including idle."],
+    "safety_class": "PHYSICAL_MOTION_AUTHORIZATION_REQUIRED",
+    "expected_latency": "HIGH",
+    "required_permissions": ["world.transforms.read", "robot.motion.preview", "robot.motion.contact.execute", "robot.grip.execute"],
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "approach_begin_point_world_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "point_mode": {"type": ["string", "null"], "enum": ["ABSOLUTE_WORLD", "RELATIVE_TO_CURRENT_EFFECTOR_WORLD", null], "default": null, "description": "Interpret approach_begin_point_world_m as either an absolute world point or a world-axis offset captured from measured current effector FK during preparation. Null preserves the absolute-world API default."},
+        "table_inward_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "insertion_direction_world": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+        "object_binding": {
+          "type": "object",
+          "properties": {
+            "object_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stable caller-supplied identity for the physical object targeted by this grip."
+            }
+          },
+          "required": ["object_id"],
+          "additionalProperties": false
+        },
+        "payload": {"type": ["object", "null"], "default": null},
+        "collision_geometry": {"type": ["object", "null"], "default": null},
+        "table_inward_distance_m": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 0.25, "default": null},
+        "insertion_distance_m": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 0.25, "default": null},
+        "gripping_torque_limit_nm": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1.4, "default": null, "description": "Motor torque ceiling, not calibrated jaw force."},
+        "gripper_vector_profile_number": {"type": ["integer", "null"], "minimum": 1, "default": null},
+        "motion_profile_number": {"type": ["integer", "null"], "minimum": 1, "default": null}
+      },
+      "required": ["approach_begin_point_world_m", "table_inward_direction_world", "insertion_direction_world", "object_binding"],
+      "additionalProperties": false
+    },
+    "output_schema": {"type": "object", "properties": {"status": {"type": "string"}, "workflow_complete": {"type": "boolean"}, "message": {"type": "string"}, "grip_confirmed": {"type": "boolean"}, "cleanup_complete": {"type": "boolean"}, "task_success": {"type": "boolean"}, "carry_id": {"type": "string"}, "attachment_revision": {"type": "string"}, "all_joints_position_effort_limited": {"type": "boolean"}, "retry_after_s": {"type": "number"}, "thermal": {"type": ["object", "null"]}}, "required": ["status", "workflow_complete"], "additionalProperties": true, "x-midbrain-result-tiers": {"schema_version": 1, "compact_pointers": ["/status", "/workflow_complete", "/message", "/grip_confirmed", "/cleanup_complete", "/task_success", "/carry_id", "/attachment_revision", "/all_joints_position_effort_limited", "/retry_after_s", "/thermal"], "detail_policy": "HOST_SANITIZED_REFERENCE", "max_compact_bytes": 32768}},
+    "execution_adapter": {"adapter_id": "skill.grip_object.host.v1", "kind": "EXTERNAL_SKILL_ENTRYPOINT", "entrypoint": "python/grip_object_skill/skill.py", "host_adapter": {"entrypoint": "python/grip_object_skill/host_adapter.py", "factory": "build_host_adapter"}, "invocation_requires_approval": false}
+  },
+  "required_capabilities": ["robot_arm.motion.free_space.preview_commit.v1", "robot_arm.motion.contact.position_effort_limited.v1", "robot_effector.grip.position_effort_background.v1", "robot_effector.grip.mit_position_transition_50hz.v1", "world.transforms.timestamped"],
+  "route_policy": {"provider_activation_sequence": ["robot_arm.primary.grip", "robot_arm.primary.integrated", "robot_arm.primary.contact"], "sequence": ["CONCURRENT_GRIPPER_FUNCTIONAL_OPEN_AND_INTEGRATED_ROTATION_ONLY_TO_FLOAT", "GRIPPER_APPROACH_READY_AND_INTEGRATED_WARM_LEASE_RELEASE", "CONTACT_ABSOLUTE_APPROACH_PLUS_TABLE_INWARD", "WAIT_AFTER_LOWER_TRAJECTORY", "CONTACT_RELATIVE_INSERTION", "WAIT_AFTER_SCRAP_TRAJECTORY", "GRIP_COMMAND", "CONFIRM_STABLE_CONTACT", "WAIT_AFTER_GRIP_CONTACT", "CONFIRM_CARRY_OR_RELEASE"], "terminal_state": "CARRYING_ALL_ACTIVE_JOINTS_POSITION_EFFORT_LIMITED_OR_FAILED_TO_GRIP_RELEASED"},
+  "installation": {"setup_entrypoint": "scripts/setup.ps1", "motion_profile_template": "config_templates/motion_profiles.default.json", "motion_profile_config": "config/motion_profiles.json", "gripper_vector_profile_template": "config_templates/gripper_vector_profiles.default.json", "gripper_vector_profile_config": "config/gripper_vector_profiles.json"},
+  "qualification": "DEVELOPMENT_SOFTWARE_TESTED_PHYSICAL_QUALIFICATION_REQUIRED",
+  "published_streams": []
+}

@@ -20,6 +20,13 @@ _RUN_ITEM_EVENT_TYPES = {
     "mcp_approval_response": "mcp.approval.resolved",
     "mcp_list_tools": "mcp.tools.listed",
 }
+_CLIENT_TOOL_SEARCH_ERROR_CODES = {
+    "ARGUMENTS_TOO_LARGE",
+    "INVALID_ARGUMENT_SHAPE",
+    "INVALID_JSON",
+    "INVALID_PATHS",
+    "UNKNOWN_OR_INELIGIBLE_SKILL",
+}
 
 
 def translate_openai_sdk_event(
@@ -116,14 +123,25 @@ def _translate_run_item_event(
     if agent_name is not None:
         payload["agent_name"] = agent_name
     decoded_output = _tool_output_object(event)
-    if _is_client_tool_search_output(decoded_output, call_id):
+    is_search_output = _is_client_tool_search_output(
+        decoded_output,
+        call_id,
+    )
+    is_search_failure = _is_client_tool_search_failure(
+        decoded_output,
+        call_id,
+    )
+    if is_search_output or is_search_failure:
         tool_name = "tool_search"
         payload["tool_name"] = tool_name
     if tool_name == "tool_search":
         if name == "tool_called":
             translated_type = "tool.search.called"
-        elif name == "tool_output":
+        elif name == "tool_output" and is_search_output:
             translated_type = "tool.search.completed"
+        elif name == "tool_output" and is_search_failure:
+            translated_type = "tool.search.failed"
+            payload.update(_client_tool_search_failure_payload(decoded_output))
     return translated_type, payload
 
 
@@ -257,6 +275,59 @@ def _is_client_tool_search_output(
         and output_call_id is not None
         and output_call_id == call_id
     )
+
+
+def _is_client_tool_search_failure(
+    value: dict[str, Any] | None,
+    call_id: str | None,
+) -> bool:
+    if value is None:
+        return False
+    output_call_id = _optional_text(value.get("call_id"))
+    error = value.get("error")
+    return (
+        value.get("type") == "tool_search_error"
+        and value.get("execution") == "client"
+        and value.get("status") == "failed"
+        and isinstance(error, dict)
+        and error.get("code") in _CLIENT_TOOL_SEARCH_ERROR_CODES
+        and isinstance(error.get("retryable"), bool)
+        and output_call_id is not None
+        and output_call_id == call_id
+    )
+
+
+def _client_tool_search_failure_payload(
+    value: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if value is None:
+        return {}
+    error = value.get("error")
+    diagnostics = value.get("diagnostics")
+    if not isinstance(error, dict):
+        return {}
+    payload: dict[str, Any] = {
+        "error_code": str(error.get("code") or "TOOL_SEARCH_FAILED")[:80],
+        "retryable": error.get("retryable") is True,
+    }
+    if isinstance(diagnostics, dict):
+        for key in (
+            "argument_length",
+            "error_position",
+            "error_line",
+            "error_column",
+            "selected_path_count",
+            "unknown_path_count",
+            "allowed_path_count",
+        ):
+            diagnostic_value = diagnostics.get(key)
+            if _bounded_integer(
+                diagnostic_value,
+                minimum=0,
+                maximum=1_000_000,
+            ):
+                payload[key] = diagnostic_value
+    return payload
 
 
 def _bounded_integer(value: Any, *, minimum: int, maximum: int) -> bool:

@@ -205,16 +205,120 @@ class AgentModelTests(unittest.TestCase):
             [deferred, ToolSearchTool()],
         )
 
-        with self.assertRaisesRegex(ValueError, "Unknown or ineligible"):
-            asyncio.run(
+        state = SimpleNamespace(loaded_tool_names=set())
+        with self.assertLogs(
+            "physical_agent_test.agent_models",
+            level="WARNING",
+        ):
+            result = asyncio.run(
                 tools[-1].on_invoke_tool(
                     SimpleNamespace(
-                        context=SimpleNamespace(loaded_tool_names=set()),
+                        context=state,
                         tool_call_id="search-call-unknown",
                     ),
                     '{"paths":["not_offered"]}',
                 )
             )
+        decoded = json.loads(result)
+
+        self.assertEqual(decoded["type"], "tool_search_error")
+        self.assertEqual(decoded["status"], "failed")
+        self.assertEqual(
+            decoded["error"]["code"],
+            "UNKNOWN_OR_INELIGIBLE_SKILL",
+        )
+        self.assertTrue(decoded["error"]["retryable"])
+        self.assertEqual(decoded["error"]["allowed_paths"], ["deferred_skill"])
+        self.assertEqual(state.loaded_tool_names, set())
+
+    def test_gemini_tool_search_recovers_identical_repeated_json(self) -> None:
+        async def invoke(_context, _arguments: str) -> str:
+            return "{}"
+
+        deferred = FunctionTool(
+            name="deferred_skill",
+            description="Deferred test Skill",
+            params_json_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            on_invoke_tool=invoke,
+            defer_loading=True,
+        )
+        tools = tools_for_agent_model(
+            "gemini-3.7-flash",
+            [deferred, ToolSearchTool()],
+        )
+        state = SimpleNamespace(loaded_tool_names=set())
+        arguments = '{"paths":["deferred_skill"]}'
+
+        with self.assertLogs(
+            "physical_agent_test.agent_models",
+            level="WARNING",
+        ) as logs:
+            result = asyncio.run(
+                tools[-1].on_invoke_tool(
+                    SimpleNamespace(
+                        context=state,
+                        tool_call_id="search-call-duplicate",
+                    ),
+                    arguments + arguments,
+                )
+            )
+
+        self.assertEqual(json.loads(result)["status"], "completed")
+        self.assertEqual(state.loaded_tool_names, {"deferred_skill"})
+        self.assertIn("duplicate_count=2", " ".join(logs.output))
+        self.assertNotIn(arguments, " ".join(logs.output))
+
+    def test_gemini_tool_search_returns_typed_invalid_json_failure(self) -> None:
+        async def invoke(_context, _arguments: str) -> str:
+            return "{}"
+
+        deferred = FunctionTool(
+            name="deferred_skill",
+            description="Deferred test Skill",
+            params_json_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            on_invoke_tool=invoke,
+            defer_loading=True,
+        )
+        tools = tools_for_agent_model(
+            "gemini-3.7-flash",
+            [deferred, ToolSearchTool()],
+        )
+        state = SimpleNamespace(loaded_tool_names=set())
+        arguments = (
+            '{"paths":["deferred_skill"]}'
+            '{"paths":["different_skill"]}'
+        )
+
+        with self.assertLogs(
+            "physical_agent_test.agent_models",
+            level="WARNING",
+        ) as logs:
+            result = asyncio.run(
+                tools[-1].on_invoke_tool(
+                    SimpleNamespace(
+                        context=state,
+                        tool_call_id="search-call-invalid-json",
+                    ),
+                    arguments,
+                )
+            )
+        decoded = json.loads(result)
+
+        self.assertEqual(decoded["status"], "failed")
+        self.assertEqual(decoded["error"]["code"], "INVALID_JSON")
+        self.assertGreater(decoded["diagnostics"]["error_position"], 0)
+        self.assertEqual(state.loaded_tool_names, set())
+        self.assertNotIn(arguments, " ".join(logs.output))
 
     def test_gemini_tool_search_can_be_narrowed_to_a_routed_surface(self) -> None:
         async def invoke(_context, _arguments: str) -> str:
@@ -259,8 +363,11 @@ class AgentModelTests(unittest.TestCase):
             )
         )
         self.assertEqual(json.loads(result)["tools"][0]["name"], "first_skill")
-        with self.assertRaisesRegex(ValueError, "Unknown or ineligible"):
-            asyncio.run(
+        with self.assertLogs(
+            "physical_agent_test.agent_models",
+            level="WARNING",
+        ):
+            failure = asyncio.run(
                 narrowed.on_invoke_tool(
                     SimpleNamespace(
                         context=SimpleNamespace(loaded_tool_names=set()),
@@ -269,6 +376,7 @@ class AgentModelTests(unittest.TestCase):
                     '{"paths":["second_skill"]}',
                 )
             )
+        self.assertEqual(json.loads(failure)["status"], "failed")
 
     def test_gemini_two_tier_discovery_requires_one_search_source(self) -> None:
         async def invoke(_context, _arguments: str) -> str:

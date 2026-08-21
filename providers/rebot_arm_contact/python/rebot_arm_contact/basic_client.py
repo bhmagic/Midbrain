@@ -32,6 +32,7 @@ class BasicLease:
     expires_monotonic: float
     holder: str
     resource_id: str | None = None
+    required_command_mode: str | None = None
 
 
 class BasicControllerClient:
@@ -123,6 +124,11 @@ class BasicControllerClient:
             time.monotonic() + int(data.get("expires_in_ms", duration_ms)) / 1000.0,
             holder,
             str(data.get("resource_id") or self.resource_id or "") or None,
+            (
+                str(data["required_command_mode"])
+                if data.get("required_command_mode") is not None
+                else None
+            ),
         )
         with self._lease_lock:
             self.lease = lease
@@ -153,6 +159,42 @@ class BasicControllerClient:
             self.lease.expires_monotonic = (
                 time.monotonic()
                 + int(data.get("expires_in_ms", duration_ms)) / 1000.0
+            )
+            self.lease.required_command_mode = (
+                str(data["required_command_mode"])
+                if data.get("required_command_mode") is not None
+                else None
+            )
+            return replace(self.lease)
+
+    def set_required_command_mode(
+        self,
+        required_command_mode: str | None,
+    ) -> BasicLease:
+        lease = self.lease_snapshot()
+        if lease is None:
+            raise LeaseLostError("no Basic lease", "NO_LOCAL_LEASE")
+        try:
+            data = self.lease_http.post(
+                f"{self.base_url}/v1/control/lease/mode-guard",
+                {
+                    "lease_id": lease.lease_id,
+                    "fencing_generation": lease.fencing_generation,
+                    "resource_id": lease.resource_id,
+                    "required_command_mode": required_command_mode,
+                },
+            )
+        except HttpStatusError as exc:
+            if exc.status_code in {403, 404, 409}:
+                raise self._lease_error(exc) from exc
+            raise
+        with self._lease_lock:
+            if self.lease is None or self.lease.lease_id != lease.lease_id:
+                raise LeaseLostError("lease changed during mode guard update")
+            self.lease.required_command_mode = (
+                str(data["required_command_mode"])
+                if data.get("required_command_mode") is not None
+                else None
             )
             return replace(self.lease)
 

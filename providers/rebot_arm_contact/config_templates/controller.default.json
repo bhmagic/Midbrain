@@ -13,7 +13,11 @@
   },
   "authorization": {
     "skill_secret_envs": {
-      "contact.slicing": "MIDBRAIN_CONTACT_SLICING_SECRET"
+      "contact.slicing": "MIDBRAIN_CONTACT_SLICING_SECRET",
+      "grip.grip": "MIDBRAIN_CONTACT_GRIP_GENERIC_SECRET",
+      "grip.grip_object": "MIDBRAIN_CONTACT_GRIP_OBJECT_SECRET",
+      "contact.move_carried_object": "MIDBRAIN_CONTACT_MOVE_CARRIED_OBJECT_SECRET",
+      "grip.lay_flat": "MIDBRAIN_CONTACT_LAY_FLAT_SECRET"
     }
   },
   "limits": {
@@ -30,7 +34,8 @@
   },
   "trajectory": {
     "maximum_cartesian_waypoint_spacing_m": 0.002,
-    "maximum_waypoints_per_segment": 1000
+    "maximum_waypoints_per_segment": 1000,
+    "maximum_cartesian_speed_m_s": 0.1
   },
   "wrench": {
     "minimum_additional_ratio": 0.20

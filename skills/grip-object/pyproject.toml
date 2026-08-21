@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midbrain-grip-object-skill"
+version = "0.2.9"
+description = "Finite two-vector grip and carry-confirmation Skill"
+requires-python = ">=3.11"
+dependencies = ["midbrain-grip-work-runtime>=0.1,<0.2"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["grip_object_skill*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

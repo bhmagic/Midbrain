@@ -2,13 +2,13 @@
   "schema": "midbrain.mounted_effector_profile",
   "schema_version": 1,
   "profile_id": "rebot_b601_dm.bare_gripper",
-  "profile_revision": "rebot-b601-dm-bare-gripper-v3",
+  "profile_revision": "rebot-b601-dm-bare-gripper-v5",
   "display_name": "reBot B601-DM Bare Gripper",
   "assembly_type": "REPLACEABLE_EFFECTOR",
   "qualification": "DEVELOPMENT",
   "robot_compatibility": {
     "model_id": "rebot_arm_b601_dm",
-    "model_revision": "rebot-official-fixed-end-0.1.21-pos-speed-motor-envelope",
+    "model_revision": "rebot-owner-observed-wrist-gripper-envelope-0.1.31",
     "terminal_frame": "link6"
   },
   "kinematic_attachment": {
@@ -229,6 +229,22 @@
         "A configured visual landmark or its measured controlled-frame offset changes",
         "The active mounted-effector identity, revision, or assembly fingerprint changes"
       ]
+    },
+    "midbrain.skill.locate_arm_base.v1": {
+      "schema": "midbrain.effector_coarse_orientation_landmark",
+      "schema_version": 1,
+      "arm_base_frame": "rebot_arm_base",
+      "landmark": {
+        "landmark_id": "coarse_gripper_rail_center",
+        "display_name": "Neon-green bare-gripper Rail-Bracket",
+        "eligible_point_ids": [
+          "rail_lateral_left",
+          "rail_lateral_right"
+        ],
+        "description_for_vlm": "Identify the rigid neon-green Rail-Bracket mounted immediately behind the two bare gripper jaws. Return any clearly visible left or right lateral endpoint on that green bracket. Rough image location is sufficient; do not reject it for missing depth, edge precision, partial occlusion, or a visible work object. Do not select a jaw tip, work object, arm link, base, or background.",
+        "controlled_frame_to_landmark_translation_m": [-0.08, 0.0, 0.0],
+        "qualification": "DEVELOPMENT_REUSES_USER_MEASURED_RAIL_CENTER_TO_CONTROLLED_TIP_OFFSET"
+      }
     }
   },
   "invalidation_conditions": [

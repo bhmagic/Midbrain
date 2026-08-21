@@ -50,6 +50,7 @@
         "downloadAnnotatedImage"
       );
       this.annotationColors = new Map();
+      this.annotationVisibility = new Map();
       this.available = Boolean(
         this.panel && this.title && this.meta && this.channelButtons &&
         this.overlayEnabled && this.annotationColorControls &&
@@ -76,6 +77,7 @@
       this.channelButtons.replaceChildren();
       this.annotationColorControls.replaceChildren();
       this.annotationColors.clear();
+      this.annotationVisibility.clear();
     }
 
     show(evidence) {
@@ -89,6 +91,7 @@
       if (!channels.length) return;
       this.evidence = {...evidence, channels};
       this.assignAnnotationColors();
+      this.assignAnnotationVisibility();
       this.title.textContent = evidence.title || "Visual evidence";
       this.panel.hidden = false;
       this.channelButtons.replaceChildren();
@@ -141,6 +144,12 @@
       );
     }
 
+    visibleAnnotations() {
+      return this.applicableAnnotations().filter(
+        (annotation, index) => this.isAnnotationVisible(annotation, index)
+      );
+    }
+
     assignAnnotationColors() {
       this.annotationColors.clear();
       const annotations = Array.isArray(this.evidence?.annotations)
@@ -149,7 +158,22 @@
       annotations.forEach((annotation, index) => {
         this.annotationColors.set(
           this.annotationKey(annotation, index),
-          ANNOTATION_PALETTE[index % ANNOTATION_PALETTE.length]
+          /^#[0-9a-f]{6}$/i.test(String(annotation?.color || ""))
+            ? String(annotation.color)
+            : ANNOTATION_PALETTE[index % ANNOTATION_PALETTE.length]
+        );
+      });
+    }
+
+    assignAnnotationVisibility() {
+      this.annotationVisibility.clear();
+      const annotations = Array.isArray(this.evidence?.annotations)
+        ? this.evidence.annotations
+        : [];
+      annotations.forEach((annotation, index) => {
+        this.annotationVisibility.set(
+          this.annotationKey(annotation, index),
+          annotation?.default_visible !== false
         );
       });
     }
@@ -164,15 +188,23 @@
         ANNOTATION_PALETTE[index % ANNOTATION_PALETTE.length];
     }
 
+    isAnnotationVisible(annotation, index = 0) {
+      return this.annotationVisibility.get(
+        this.annotationKey(annotation, index)
+      ) !== false;
+    }
+
     render() {
       if (!this.available || !this.evidence) return;
       const annotations = this.applicableAnnotations();
+      const visibleAnnotations = this.visibleAnnotations();
       const model = this.evidence.model || "unknown model";
       const confidence = this.evidence.confidence || "unknown";
       this.meta.textContent = `${model} | ${confidence} confidence | ` +
-        `${annotations.length} annotation${annotations.length === 1 ? "" : "s"}`;
+        `${visibleAnnotations.length}/${annotations.length} visible layer` +
+        `${annotations.length === 1 ? "" : "s"}`;
       this.renderColorControls(annotations);
-      this.renderOverlay(annotations);
+      this.renderOverlay(visibleAnnotations);
     }
 
     renderColorControls(annotations) {
@@ -181,6 +213,13 @@
       annotations.forEach((annotation, index) => {
         const control = document.createElement("label");
         control.className = "visual-color-control";
+        const visibility = document.createElement("input");
+        visibility.type = "checkbox";
+        visibility.checked = this.isAnnotationVisible(annotation, index);
+        visibility.setAttribute(
+          "aria-label",
+          `Show ${String(annotation.label || annotation.type)}`
+        );
         const input = document.createElement("input");
         input.type = "color";
         input.value = this.colorFor(annotation, index);
@@ -190,13 +229,20 @@
         );
         const text = document.createElement("span");
         text.textContent = String(annotation.label || annotation.type);
-        control.append(input, text);
+        control.append(visibility, input, text);
+        visibility.addEventListener("change", () => {
+          this.annotationVisibility.set(
+            this.annotationKey(annotation, index),
+            visibility.checked
+          );
+          this.render();
+        });
         input.addEventListener("input", () => {
           this.annotationColors.set(
             this.annotationKey(annotation, index),
             input.value
           );
-          this.renderOverlay(this.applicableAnnotations());
+          this.renderOverlay(this.visibleAnnotations());
         });
         this.annotationColorControls.appendChild(control);
       });
@@ -211,8 +257,50 @@
           this.renderPoint(annotation, color);
         } else if (annotation.type === "box") {
           this.renderBox(annotation, color);
+        } else if (annotation.type === "vector") {
+          this.renderVector(annotation, color);
         }
       });
+    }
+
+    renderVector(annotation, color) {
+      const channel = this.channel();
+      if (!channel) return;
+      const width = Number(channel.width);
+      const height = Number(channel.height);
+      const x1 = Number(annotation.x1) * width;
+      const y1 = Number(annotation.y1) * height;
+      const x2 = Number(annotation.x2) * width;
+      const y2 = Number(annotation.y2) * height;
+      const strokeWidth = Math.max(2, width / 320);
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      const headLength = Math.max(10, width / 55);
+      const headWidth = headLength * 0.55;
+      const baseX = x2 - Math.cos(angle) * headLength;
+      const baseY = y2 - Math.sin(angle) * headLength;
+      const perpendicularX = -Math.sin(angle) * headWidth;
+      const perpendicularY = Math.cos(angle) * headWidth;
+      this.overlay.appendChild(this.svg("line", {
+        x1,
+        y1,
+        x2,
+        y2,
+        stroke: color,
+        "stroke-width": strokeWidth,
+        "stroke-linecap": "round"
+      }));
+      this.overlay.appendChild(this.svg("polygon", {
+        points: `${x2},${y2} ${baseX + perpendicularX},${baseY + perpendicularY} ` +
+          `${baseX - perpendicularX},${baseY - perpendicularY}`,
+        fill: color
+      }));
+      this.renderLabel(
+        annotation.label,
+        x2 + strokeWidth * 3,
+        Math.max(this.labelFontSize(width), y2 - strokeWidth * 3),
+        color,
+        width
+      );
     }
 
     renderPoint(annotation, color) {
@@ -348,12 +436,12 @@
       context.lineWidth = lineWidth;
       context.font = `${ANNOTATION_LABEL_WEIGHT} ` +
         `${this.labelFontSize(width)}px system-ui, sans-serif`;
-      this.applicableAnnotations().forEach((annotation, index) => {
+      this.visibleAnnotations().forEach((annotation, index) => {
         const color = this.colorFor(annotation, index);
         context.strokeStyle = color;
         context.fillStyle = color;
-        const x = Number(annotation.x) * width;
-        const y = Number(annotation.y) * height;
+        let x = Number(annotation.x) * width;
+        let y = Number(annotation.y) * height;
         if (annotation.type === "point") {
           const radius = Math.max(7, width / 80);
           context.beginPath();
@@ -370,6 +458,32 @@
             Number(annotation.width) * width,
             Number(annotation.height) * height
           );
+        } else if (annotation.type === "vector") {
+          const x1 = Number(annotation.x1) * width;
+          const y1 = Number(annotation.y1) * height;
+          const x2 = Number(annotation.x2) * width;
+          const y2 = Number(annotation.y2) * height;
+          const angle = Math.atan2(y2 - y1, x2 - x1);
+          const headLength = Math.max(10, width / 55);
+          const headWidth = headLength * 0.55;
+          x = x2;
+          y = y2;
+          context.beginPath();
+          context.moveTo(x1, y1);
+          context.lineTo(x2, y2);
+          context.stroke();
+          context.beginPath();
+          context.moveTo(x2, y2);
+          context.lineTo(
+            x2 - Math.cos(angle) * headLength - Math.sin(angle) * headWidth,
+            y2 - Math.sin(angle) * headLength + Math.cos(angle) * headWidth
+          );
+          context.lineTo(
+            x2 - Math.cos(angle) * headLength + Math.sin(angle) * headWidth,
+            y2 - Math.sin(angle) * headLength - Math.cos(angle) * headWidth
+          );
+          context.closePath();
+          context.fill();
         }
         this.drawCanvasLabel(
           context,

@@ -411,52 +411,44 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "working piece",
         )
     )
-    bounds_terms = any(
-        term in normalized
-        for term in (
-            "bounding box",
-            "aabb",
-            "corner",
-            "right-forward",
-            "right forward",
-            "left-forward",
-            "left forward",
-            "right-backward",
-            "right backward",
-            "left-backward",
-            "left backward",
-        )
+    request_words = set(normalized.replace("-", " ").split())
+    contact_work_terms = bool(
+        request_words
+        & {
+            "grip",
+            "gripping",
+            "grasp",
+            "grasping",
+            "scrap",
+            "scraping",
+            "push",
+            "pushing",
+            "press",
+            "pressing",
+            "slice",
+            "slicing",
+            "cut",
+            "cutting",
+        }
+    )
+    physical_action_terms = contact_work_terms or bool(
+        request_words
+        & {
+            "move",
+            "moving",
+            "rotate",
+            "rotating",
+            "position",
+            "positioning",
+            "place",
+            "placing",
+            "bring",
+            "bringing",
+        }
     )
     effector_terms = any(
         term in normalized
         for term in ("gripper", "effector", "arm", "hand")
-    )
-    explicit_motion_terms = any(
-        term in normalized
-        for term in (
-            "move",
-            "position",
-            "place",
-            "send",
-            "bring",
-        )
-    )
-    motion_negated = any(
-        term in normalized
-        for term in (
-            "do not move",
-            "don't move",
-            "without moving",
-            "no movement",
-            "not move",
-        )
-    )
-    work_object_motion_terms = (
-        item_terms
-        and bounds_terms
-        and effector_terms
-        and explicit_motion_terms
-        and not motion_negated
     )
     scene_policy_terms = any(
         term in normalized
@@ -473,6 +465,10 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
         term in normalized
         for term in ("slice", "slicing", "cut with the blade", "blade cut")
     )
+    scrap_grip_terms = (
+        any(term in normalized for term in ("scrap", "scrape", "scraping"))
+        and any(term in normalized for term in ("grip", "grasp"))
+    )
     mixed_frame_terms = any(
         term in normalized
         for term in (
@@ -485,145 +481,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "controlled effector",
         )
     )
-    if (
-        scene_policy_terms
-        and work_object_motion_terms
-        and slicing_terms
-        and mixed_frame_terms
-    ):
-        return {
-            "route": "SCENE_CORNER_MOTION_AND_MIXED_FRAME_SLICING",
-            "allowed_tools": {
-                CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
-                "set_provider_residency",
-                "inspect_arm_semantic_scene",
-                DERIVE_FABRIC_WORLD_POINT_TOOL,
-                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
-                TRANSLATE_FABRIC_DIRECTION_TOOL,
-                OFFSET_WORLD_POINT_TOOL,
-                "slice_with_blade",
-                "tool_search",
-            }
-            | ({"execute_basic_safe_home"} if safe_home_requested else set()),
-            "instruction": (
-                "This request combines scene semantics, an absolute work-object "
-                "corner move, and one or more mixed-frame slicing stages. "
-                "Call configure_scene_policy_and_inspect_runtime once with only "
-                "the requested scene objects. Use its fresh compact runtime "
-                "catalog to request the arm scene compiler HOT in the next "
-                "tool call; do not call inspect_midbrain_runtime separately. "
-                "Then submit one "
-                "complete Limited Graph whose first Skill node is "
-                "inspect_arm_semantic_scene and which contains every remaining requested "
-                "graph-eligible stage in order; never submit a corner-move "
-                "prefix that omits later cutting or repositioning stages. Use "
-                "derive_fabric_world_point for the named corner and unchanged "
-                "offset, bind its world target unchanged into each requested "
-                "absolute return move, and use "
-                "translate_fabric_direction_to_world for every arm-base or "
-                "controlled-effector direction. Keep world directions "
-                "unchanged. Bind translated direction_world unchanged into "
-                "the matching slicing field. A slicing begin offset from the "
-                "current IK uses point_mode="
-                "RELATIVE_TO_CURRENT_EFFECTOR_WORLD. Use null profile selectors "
-                "unless the operator explicitly requested profile numbers. If "
-                "a later target is an offset from an earlier Skill result, use "
-                "offset_world_point: bind the earlier point and its world-frame "
-                "identity unchanged, and supply the operator's exact offset, "
-                "unit, and reference. For an offset above the first slicing "
-                "point, bind /plan/path/slice_begin_point_world_m and "
-                "/plan/workcell_binding/world_frame from that slicing node; "
-                "never substitute /plan/path/planned_retract_endpoint_world_m. "
-                "Give every physical request its own predetermined SKILL node; "
-                "never retry or loop a physical node. A successful terminal "
-                "must follow all requested stages and explicit complete child "
-                "results. If Safe Home was also requested, call "
-                "execute_basic_safe_home directly only after the graph "
-                "completes; it is intentionally not a graph child and is not "
-                "a reason to deny the preceding workflow."
-            ),
-        }
-    if work_object_motion_terms and slicing_terms and mixed_frame_terms:
-        return {
-            "route": "WORK_OBJECT_MOTION_AND_MIXED_FRAME_SLICING",
-            "allowed_tools": {
-                "inspect_midbrain_runtime",
-                "set_provider_residency",
-                "inspect_arm_semantic_scene",
-                DERIVE_FABRIC_WORLD_POINT_TOOL,
-                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
-                TRANSLATE_FABRIC_DIRECTION_TOOL,
-                OFFSET_WORLD_POINT_TOOL,
-                "slice_with_blade",
-                "tool_search",
-            }
-            | ({"execute_basic_safe_home"} if safe_home_requested else set()),
-            "instruction": (
-                "This request combines an absolute work-object corner move "
-                "with one or more mixed-frame slicing stages under the "
-                "existing scene policy. Submit one complete Limited Graph "
-                "starting with inspect_arm_semantic_scene and containing every "
-                "requested graph-eligible stage in order; "
-                "never submit only the corner move or only the slice. Use "
-                "derive_fabric_world_point for the named corner and unchanged "
-                "offset, then bind its world target fields unchanged into "
-                "move_effector_to_world_point. Use "
-                "translate_fabric_direction_to_world for every arm-base or "
-                "controlled-effector direction and keep world directions "
-                "unchanged. Bind direction_world unchanged into the matching "
-                "slicing field. A slicing begin offset from current IK uses "
-                "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD. Use null "
-                "profile selectors unless the operator explicitly requested "
-                "profile numbers. Use offset_world_point for any later target "
-                "defined relative to an earlier Skill result. For a target "
-                "above the first slice point, bind that slicing node's "
-                "/plan/path/slice_begin_point_world_m and "
-                "/plan/workcell_binding/world_frame; never substitute its "
-                "planned retract endpoint. Give every physical request its own "
-                "predetermined SKILL node and never retry or loop it. If Safe "
-                "Home was also requested, call execute_basic_safe_home "
-                "directly after graph completion; it is not graph-eligible "
-                "and must not be treated as unavailable."
-            ),
-        }
-    if scene_policy_terms and work_object_motion_terms:
-        return {
-            "route": "SCENE_POLICY_AND_WORK_OBJECT_WORLD_POINT_MOTION",
-            "allowed_tools": {
-                CONFIGURE_SCENE_POLICY_AND_INSPECT_RUNTIME_TOOL,
-                "set_provider_residency",
-                DERIVE_FABRIC_WORLD_POINT_TOOL,
-                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
-            },
-            "instruction": (
-                "This request first defines scene semantics and then requests "
-                "a work-object corner motion. Call "
-                "configure_scene_policy_and_inspect_runtime with only the objects "
-                "the user described and their requested types. Never infer "
-                "additional KEEP_OUT objects. Include a complete robot-arm "
-                "description for the independent SAM2 arm exclusion mask. "
-                "Use the returned fresh compact runtime catalog, without a "
-                "separate inspect_midbrain_runtime call, and then request "
-                "world_model.arm_scene_compiler HOT with exact "
-                "required_capability=world_model.arm.semantic_scene; Manager "
-                "owns transitive activation of its declared dependencies. "
-                "Do not call inspect_arm_semantic_scene: call "
-                "derive_fabric_world_point directly with the configured "
-                "WORK_OBJECT object_id, canonical named corner, unchanged "
-                "numeric offset and unit, matching offset_reference, and a "
-                "null expected_scene_revision. The coordinate Skill waits "
-                "for and binds one coherent current Fabric snapshot. Never "
-                "perform coordinate addition, unit conversion, transform "
-                "math, or current-pose subtraction in the language model. "
-                "Only after WORLD_POINT_READY, call "
-                "move_effector_to_world_point once, copying "
-                "target_position_world_m, target_world_frame_id, and "
-                "target_session_epoch unchanged. Do not use no-contact "
-                "approach tools for this explicit absolute corner target or "
-                "report completion unless physical_motion_completed=true."
-            ),
-        }
-    if scene_policy_terms:
+    if scene_policy_terms and not physical_action_terms:
         return {
             "route": "EXPLICIT_SCENE_SEGMENTATION_POLICY",
             "allowed_tools": {
@@ -648,9 +506,9 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "world_model.arm.semantic_scene; Manager owns transitive "
                 "activation of its declared SAM2, camera, and Basic "
                 "dependencies. Then call inspect_arm_semantic_scene. Do not "
-                "report that the scan worked "
-                "until inspection returns SCENE_READY with at least one "
-                "KEEP_OUT sphere. The 3D viewer intentionally displays a "
+                "report that the scan worked until inspection returns "
+                "SCENE_READY. A policy with no KEEP_OUT object is valid and "
+                "publishes no blocking scene geometry. The 3D viewer intentionally displays a "
                 "reduced deterministic sample while the controller retains the "
                 "complete scene. "
                 "Only continue into approach planning when the same prompt "
@@ -658,7 +516,43 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             ),
         }
 
-    if slicing_terms and mixed_frame_terms:
+    if scrap_grip_terms and mixed_frame_terms and not scene_policy_terms:
+        return {
+            "route": "MIXED_FRAME_SCRAP_GRIP",
+            "allowed_tools": {
+                "inspect_midbrain_runtime",
+                "set_provider_residency",
+                TRANSLATE_FABRIC_DIRECTION_TOOL,
+                "grip_object",
+                "tool_search",
+            },
+            "instruction": (
+                "This Scrap Grip request contains directions expressed in "
+                "more than one coordinate frame. Keep directions already "
+                "stated in world axes unchanged. For each table-inward or "
+                "insertion direction stated in arm-base or controlled-"
+                "effector axes, call translate_fabric_direction_to_world "
+                "with the exact numeric vector and matching source_reference. "
+                "Copy each returned direction_world unchanged into its "
+                "matching grip_object field; never swap the two roles or do "
+                "transform math in the language model. Interpret a begin "
+                "offset from current IK/current effector by passing "
+                "point_mode=RELATIVE_TO_CURRENT_EFFECTOR_WORLD and the exact "
+                "world-axis metre offset to grip_object. The Skill captures "
+                "current measured effector FK itself. Do not call a VLM arm "
+                "or effector locator, and do not classify the target into a "
+                "work-object motion category. Use the operator's object "
+                "reference as object_binding.object_id. Use null profile "
+                "selectors unless the operator named profile numbers."
+            ),
+        }
+
+    if (
+        slicing_terms
+        and mixed_frame_terms
+        and not item_terms
+        and not scene_policy_terms
+    ):
         return {
             "route": "MIXED_FRAME_SLICING",
             "allowed_tools": {
@@ -703,68 +597,6 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
             "robot coordinate",
         )
     )
-    if work_object_motion_terms:
-        return {
-            "route": "SEMANTIC_WORK_OBJECT_WORLD_POINT_MOTION",
-            "allowed_tools": {
-                "inspect_midbrain_runtime",
-                "set_provider_residency",
-                DERIVE_FABRIC_WORLD_POINT_TOOL,
-                MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
-            },
-            "instruction": (
-                "This is a compound semantic-coordinate and free-space "
-                "motion request. Do not call inspect_arm_semantic_scene. "
-                "Call derive_fabric_world_point directly with the exact "
-                "WORK_OBJECT object_id established by the current scene "
-                "policy or prior structured result, the canonical named corner, "
-                "and the user's unchanged numeric offset and unit. Select "
-                "a zero METRES offset when no offset was requested. Select "
-                "SOURCE_FRAME for arm-base/AABB axes, ACTIVE_WORLD for world "
-                "axes, or CONTROLLED_EFFECTOR_FRAME for hand axes. Never "
-                "perform coordinate addition, unit conversion, transform "
-                "math, or current-pose subtraction in the language model. "
-                "Use null expected_scene_revision unless a structured "
-                "upstream result supplied one. The coordinate Skill performs "
-                "the single authoritative scene read and binds one coherent "
-                "current Fabric snapshot at invocation. If no exact object_id "
-                "is available, report that ambiguity instead of inventing one. "
-                "Only after WORLD_POINT_READY, call "
-                "move_effector_to_world_point once, copying "
-                "target_position_world_m, target_world_frame_id, and "
-                "target_session_epoch unchanged. Do not substitute a "
-                "relative move or report completion unless the motion result "
-                "sets physical_motion_completed=true. A visible-surface AABB "
-                "is not a tracked solid extent or contact authorization."
-            ),
-        }
-    if item_terms and bounds_terms:
-        return {
-            "route": "SEMANTIC_WORK_OBJECT_BOUNDS",
-            "allowed_tools": {
-                "inspect_midbrain_runtime",
-                "set_provider_residency",
-                "inspect_arm_semantic_scene",
-                DERIVE_FABRIC_WORLD_POINT_TOOL,
-                "tool_search",
-            },
-            "instruction": (
-                "This request refers to a work-object bound or named corner. "
-                "Use inspect_arm_semantic_scene and select the fresh "
-                "VISIBLE_SURFACE_AABB whose object_id or description matches "
-                "the requested object. Use only its named corners_m values "
-                "and report frame_id, observed_at_us, expires_at_us, and that "
-                "the extent covers the currently visible surface. In the "
-                "canonical arm-base convention, forward is +X, right is -Y, "
-                "and up is +Z. Do not substitute the first sphere or infer a "
-                "tracked solid extent. If no matching fresh AABB exists, "
-                "report that explicitly instead of guessing. When the user "
-                "requests an additive offset but no motion, call "
-                "derive_fabric_world_point so the Skill performs the unit, "
-                "vector, and transform math. This route is read-only and "
-                "never authorizes movement."
-            ),
-        }
     location_terms = any(
         term in normalized
         for term in ("locate", "location", "position", "where", "identify")
@@ -814,6 +646,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
         approach_terms
         and item_terms
         and (effector_terms or implicit_effector_motion)
+        and not contact_work_terms
     ):
         return {
             "route": "NO_CONTACT_ITEM_APPROACH",
@@ -842,10 +675,7 @@ def deterministic_intent_tool_route(prompt: str) -> dict[str, Any] | None:
                 "retry the preserved plan_no_contact_item_approach arguments. "
                 "If it returns SEMANTIC_SCENE_PROVIDER_REQUIRED, activate its "
                 "exact required provider and retry the preserved arguments in "
-                "the same run. If the SAM2 tracker remains DEGRADED because no "
-                "explicit KEEP_OUT policy exists, do not invent one from this "
-                "move request and do not publish a work-object-only policy; "
-                "report that explicit user obstacle descriptions are required. "
+                "the same run. "
                 "If it returns ITEM_OBSERVATION_REJECTED or "
                 "EFFECTOR_OBSERVATION_REJECTED, reacquire both once with the "
                 "same arguments; stop and report the evidence if the second "
@@ -1258,15 +1088,6 @@ async def arm_base_activation_needs_approval(
 ) -> bool:
     authorization = _session_authorization(context_wrapper)
     return not authorization.auto_authorize_arm_base_activation
-
-
-async def safe_home_needs_approval(
-    context_wrapper: Any,
-    _arguments: dict[str, Any],
-    _call_id: str,
-) -> bool:
-    authorization = _session_authorization(context_wrapper)
-    return not authorization.auto_authorize_safe_home
 
 
 async def space_reinitialization_needs_approval(
@@ -1832,7 +1653,9 @@ class PrototypeAgentDriver:
                 arguments: dict[str, Any],
             ) -> str:
                 result = await arm_base_localization_skill.run(
-                    request=arguments.get("request"),
+                    rough_arm_base_positive_x_world=arguments.get(
+                        "rough_arm_base_positive_x_world"
+                    ),
                 )
                 return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -1940,10 +1763,14 @@ class PrototypeAgentDriver:
                 space_reinitialization_needs_approval
             )
 
+        generic_eligible = eligible - {
+            PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+            MOVE_EFFECTOR_TO_WORLD_POINT_TOOL,
+        }
         tools = build_agent_tools(
             descriptors,
             adapters,
-            eligible_tool_names=eligible,
+            eligible_tool_names=generic_eligible,
             detail_store=skill_result_detail_store,
             defer_loading=defer_loading,
             adapter_timeout_s=adapter_timeout_s,
@@ -1961,7 +1788,7 @@ class PrototypeAgentDriver:
         self.offered_skill_descriptors = [
             descriptor
             for descriptor in descriptors
-            if descriptor.tool_name in eligible
+            if descriptor.tool_name in generic_eligible
         ]
         offered_tools = list(tools)
         if skill_result_detail_store is not None:
@@ -2651,27 +2478,28 @@ class PrototypeAgentDriver:
                 )
             offered_tools.append(
                 FunctionTool(
-                        name=PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
-                        description=(
-                            "Prepare, authorize, and execute one requested "
-                            "relative end-effector translation, bounded "
-                            "controlled-frame rotation, absolute arm-base "
-                            "orientation, or combined pose change "
-                            "as one call-scoped finite action. The host first "
-                            "creates a nonphysical preview. Only PREVIEW_READY "
-                            "with the exact opaque execution continuation can "
-                            "reach the autonomous free-space policy and "
-                            "controller commit. Dependency, alignment, "
-                            "confirmation, preview, authorization, freshness, "
-                            "and controller failures return without motion. "
-                            "Declared structured-result pointers for "
-                            "composition: "
-                            f"{describe_output_schema(integrated_motion_descriptor.output_schema)}."
-                        ),
-                        params_json_schema=integrated_motion_descriptor.input_schema,
-                        on_invoke_tool=perform_relative_effector_motion,
-                        strict_json_schema=True,
-                        needs_approval=False,
+                    name=PERFORM_RELATIVE_EFFECTOR_MOTION_TOOL,
+                    description=(
+                        "Prepare, authorize, and execute one requested "
+                        "relative end-effector translation, bounded "
+                        "controlled-frame rotation, absolute arm-base "
+                        "orientation, or combined pose change "
+                        "as one call-scoped finite action. The host first "
+                        "creates a nonphysical preview. Only PREVIEW_READY "
+                        "with the exact opaque execution continuation can "
+                        "reach the autonomous free-space policy and "
+                        "controller commit. Dependency, alignment, "
+                        "confirmation, preview, authorization, freshness, "
+                        "and controller failures return without motion. "
+                        "Declared structured-result pointers for "
+                        "composition: "
+                        f"{describe_output_schema(integrated_motion_descriptor.output_schema)}."
+                    ),
+                    params_json_schema=integrated_motion_descriptor.input_schema,
+                    on_invoke_tool=perform_relative_effector_motion,
+                    strict_json_schema=True,
+                    needs_approval=False,
+                    defer_loading=defer_loading,
                 )
             )
 
@@ -2793,6 +2621,7 @@ class PrototypeAgentDriver:
                     on_invoke_tool=move_effector_to_world_point,
                     strict_json_schema=True,
                     needs_approval=False,
+                    defer_loading=defer_loading,
                 )
             )
         if basic_safe_home_skill is not None:
@@ -2811,10 +2640,11 @@ class PrototypeAgentDriver:
                         "operation. It preempts active arm control, moves the "
                         "six arm joints to configured home while preserving "
                         "the measured gripper angle, and returns to gravity "
-                        "float. Host session policy may authorize the exact "
-                        "operation without an interactive prompt; controller "
-                        "safety checks remain authoritative. It reports only "
-                        "controller-confirmed completion."
+                        "float. This controller-owned recovery operation never "
+                        "requires an Agent SDK permission prompt; controller "
+                        "safety, fencing, and readiness checks remain "
+                        "authoritative. It reports only controller-confirmed "
+                        "completion."
                     ),
                     params_json_schema={
                         "type": "object",
@@ -2824,7 +2654,7 @@ class PrototypeAgentDriver:
                     },
                     on_invoke_tool=execute_basic_safe_home,
                     strict_json_schema=True,
-                    needs_approval=safe_home_needs_approval,
+                    needs_approval=False,
                 )
             )
         narrow_initial = eligible == {"identify_pointed_object"}
@@ -3080,17 +2910,28 @@ class PrototypeAgentDriver:
                 instructions += (
                     " Use locate_arm_base when the current stationary camera "
                     "rig needs a world-to-arm-base transform and the arm base "
-                    "is visible. The Skill owns the CAD and reference images, "
-                    "uses the generic FoundationPose Provider for one pose, "
-                    "and lets a VLM select only one profiled local-Z rotation; "
-                    "it never infers orientation from a fixed gripper or "
-                    "effector. VIO establishes the world axis but does not "
+                    "is visible. The Skill owns the CAD and reference images "
+                    "and uses the generic FoundationPose Provider for pose "
+                    "measurements. For the final bounded local-Z rotation, one "
+                    "VLM call recognizes a coarse point on the active profiled "
+                    "effector and coded geometry compares it with timestamped "
+                    "Basic FK; VLM confidence is audit-only once at least one "
+                    "point is recognized. It follows the active effector "
+                    "profile and never embeds one fixed gripper model. VIO "
+                    "establishes the world axis but does not "
                     "measure the arm-base extrinsic. The returned candidate is "
                     "not motion-usable: immediately call its required_next_tool "
                     "with the unchanged candidate ID and digest. Report the "
                     "relationship as established only after Manager returns "
                     "motion_usable=true. Do not invent a candidate, rotation, "
                     "mask path, CAD path, or activation digest. A result with "
+                    "retry_allowed=true and required_next_tool requiring "
+                    "rough_arm_base_positive_x_world means the effector was not "
+                    "identified: obtain or ask for a rough world-frame vector "
+                    "pointing along arm-base +X, then call locate_arm_base once "
+                    "with that argument. That explicit retry performs no "
+                    "effector VLM call. If the direction cannot be determined, "
+                    "ask the user instead of inventing it. A result with "
                     "terminal_failure=true or retry_allowed=false terminates the "
                     "current Agent task: report it and never automatically call "
                     "locate_arm_base again. If activation "
@@ -3132,8 +2973,8 @@ class PrototypeAgentDriver:
                 " For an explicit safe-home request, use "
                 "execute_basic_safe_home after ensuring the Basic Provider "
                 "is running. Safe-home preempts active arm control and uses "
-                "the active host authorization policy. Do not substitute "
-                "gravity float, Provider "
+                "controller safety checks without an Agent SDK permission "
+                "prompt. Do not substitute gravity float, Provider "
                 "stop, or healthy status for homing. Report completion only "
                 "when physical_motion_completed=true. Safe-home preempts "
                 "Integrated's Basic lease, so RECOVERY_REQUIRED afterward is "
