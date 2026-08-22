@@ -16,8 +16,9 @@ jobs:
         run: python scripts/run_python_validation.py install
       - name: Seed machine-local test configuration
         run: |
-          mkdir -p providers/rebot_arm_dm/config
+          mkdir -p providers/rebot_arm_dm/config/arm_profiles
           cp providers/rebot_arm_dm/config_templates/arm_model.factory.json providers/rebot_arm_dm/config/arm_model.json
+          cp providers/rebot_arm_dm/config_templates/arm_model.factory.json providers/rebot_arm_dm/config/arm_profiles/rebot_arm_b601_dm.v1.json
           cp providers/rebot_arm_dm/config_templates/arm_calibration.initial.json providers/rebot_arm_dm/config/arm_calibration.json
           cp providers/rebot_arm_dm/config_templates/calibration_collision_model.json providers/rebot_arm_dm/config/calibration_collision_model.json
           python - <<'PY'

@@ -143,6 +143,10 @@ foreach ($command in @("install", "test")) {
         throw "GitHub CI does not invoke the shared Python $command command."
     }
 }
+$selectedArmProfile = "providers/rebot_arm_dm/config/arm_profiles/rebot_arm_b601_dm.v1.json"
+if (-not $ciText.Contains($selectedArmProfile)) {
+    throw "GitHub CI does not seed the arm profile selected by its test assembly."
+}
 if ($ciText -match '(?m)^\s*PYTHONPATH\s*:') {
     throw "GitHub CI duplicates the Python validation source inventory."
 }
