@@ -77,6 +77,56 @@ function Update-WristEnvelopeInArmModel {
     $model.control.physical_test_pos_vel_cap_rad_s = $targetSpeedCaps
     $model.model_revision = $FactoryModel.model_revision
     $model.source_notes = @($FactoryModel.source_notes)
+    $appendixKey = "midbrain.skill.locate_arm_base.v1"
+    $targetAppendixProperty = $null
+    $factoryAppendixProperty = $null
+    $modelAppendixProperty = $model.PSObject.Properties["appendix"]
+    $factoryModelAppendixProperty = $FactoryModel.PSObject.Properties["appendix"]
+    if (
+        $null -ne $modelAppendixProperty -and
+        $null -ne $factoryModelAppendixProperty -and
+        $null -ne $modelAppendixProperty.Value -and
+        $null -ne $factoryModelAppendixProperty.Value
+    ) {
+        $targetAppendixProperty = $modelAppendixProperty.Value.PSObject.Properties[$appendixKey]
+        $factoryAppendixProperty = $factoryModelAppendixProperty.Value.PSObject.Properties[$appendixKey]
+    }
+    if ($null -ne $targetAppendixProperty -and $null -ne $factoryAppendixProperty) {
+        $targetAppendix = $targetAppendixProperty.Value
+        $factoryAppendix = $factoryAppendixProperty.Value
+        $meshRelativePath = [string]$targetAppendix.mesh.path
+        if (-not $meshRelativePath -or [System.IO.Path]::IsPathRooted($meshRelativePath)) {
+            throw "Cannot migrate the localization mesh digest in $Path because its path is invalid."
+        }
+        $workspaceRoot = (Resolve-Path -LiteralPath (Get-WorkspaceRoot)).Path
+        $meshPath = [System.IO.Path]::GetFullPath((Join-Path $workspaceRoot $meshRelativePath))
+        $workspacePrefix = $workspaceRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $meshPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Cannot migrate the localization mesh digest outside the workspace: $meshPath"
+        }
+        if (-not (Test-Path -LiteralPath $meshPath -PathType Leaf)) {
+            throw "Cannot migrate the localization mesh digest because the asset is missing: $meshPath"
+        }
+        if ($meshRelativePath -eq [string]$factoryAppendix.mesh.path) {
+            $meshText = [System.IO.File]::ReadAllText(
+                $meshPath,
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            $normalizedMeshText = $meshText.Replace("`r`n", "`n")
+            if ($normalizedMeshText -cne $meshText) {
+                [System.IO.File]::WriteAllText(
+                    $meshPath,
+                    $normalizedMeshText,
+                    [System.Text.UTF8Encoding]::new($false)
+                )
+            }
+        }
+        $meshDigest = (Get-FileHash -LiteralPath $meshPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $targetAppendix.mesh.sha256 = $meshDigest
+        if ($null -ne $targetAppendix.mesh.preview) {
+            $targetAppendix.mesh.preview.mesh_sha256 = $meshDigest
+        }
+    }
     Write-JsonUtf8NoBom -Value $model -Path $Path
 }
 

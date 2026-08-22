@@ -842,13 +842,13 @@
       "vlm_seed_guidance": "We are annotating the base block of a robot arm. It contains the first motor and is colored black. It may be partially covered by the first joint (silver) and the connecting cables (black). Red or green indicator lights may be present and should not affect the selection.",
       "mesh": {
         "path": "skills/locate_arm_base/assets/rebot_b601_dm/models/Base_clean_centered.obj",
-        "sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+        "sha256": "e04d35931ffa598ca9c6e6026d50cc2e6f2ab7e6da6608a79a12030be21c24ba",
         "scale_to_m": 0.001,
         "origin": "BOUNDING_BOX_CENTER",
         "preview": {
           "path": "skills/locate_arm_base/assets/rebot_b601_dm/references/Base_cad_preview.png",
           "sha256": "371a56157399f9fe50a2f10bb9bdf3a3af71090abba46c137cc617991073a10e",
-          "mesh_sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+          "mesh_sha256": "e04d35931ffa598ca9c6e6026d50cc2e6f2ab7e6da6608a79a12030be21c24ba",
           "role": "EXACT_FOUNDATIONPOSE_CAD_PREVIEW"
         }
       },

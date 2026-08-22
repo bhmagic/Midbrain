@@ -5,7 +5,7 @@
   "blender_version": "5.0.1",
   "label": "reBot B601-DM Arm Base",
   "input_file": "Base_clean_centered.obj",
-  "input_sha256": "41973ae832c43594929b765f778aa45376c24e13e122c1c685308f3287883170",
+  "input_sha256": "e04d35931ffa598ca9c6e6026d50cc2e6f2ab7e6da6608a79a12030be21c24ba",
   "output_file": "Base_cad_preview.png",
   "output_sha256": "371a56157399f9fe50a2f10bb9bdf3a3af71090abba46c137cc617991073a10e",
   "scale_to_m": 0.001,
