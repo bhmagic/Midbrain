@@ -123,4 +123,31 @@ foreach ($file in $operationalFiles) {
     }
 }
 
+$sharedValidation = Join-Path $workspace "scripts\run_python_validation.py"
+if (-not (Test-Path -LiteralPath $sharedValidation -PathType Leaf)) {
+    throw "Shared Python validation runner is missing: $sharedValidation"
+}
+
+$validatorText = Get-Content -Raw -LiteralPath (
+    Join-Path $workspace "scripts\validate.ps1"
+)
+if ($validatorText -notmatch 'run_python_validation\.py') {
+    throw "The official validator does not use the shared Python validation runner."
+}
+
+$ciWorkflow = Join-Path $workspace ".github\workflows\ci.yml"
+$ciText = Get-Content -Raw -LiteralPath $ciWorkflow
+foreach ($command in @("install", "test")) {
+    $expected = "python scripts/run_python_validation.py $command"
+    if (-not $ciText.Contains($expected)) {
+        throw "GitHub CI does not invoke the shared Python $command command."
+    }
+}
+if ($ciText -match '(?m)^\s*PYTHONPATH\s*:') {
+    throw "GitHub CI duplicates the Python validation source inventory."
+}
+if ($ciText -match 'python\s+-m\s+pip\s+install') {
+    throw "GitHub CI duplicates the Python validation dependency inventory."
+}
+
 Write-Host "Python component environment isolation checks passed."

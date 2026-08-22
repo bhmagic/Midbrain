@@ -18,6 +18,14 @@ temporary location, checks Rust formatting, and refreshes checked manifests as
 configured by the script. CameraHost builds only when valid Orbbec SDK paths
 are supplied.
 
+The Python phase and GitHub's `python-tests` job both invoke
+`scripts/run_python_validation.py`. That runner is the single source for
+dependency bounds, editable local packages, source paths, compilation roots,
+test directories, and wheel packages. CI must not duplicate those lists in
+workflow YAML. This parity ensures that contract packages such as
+`midbrain-bufferref-client` and newly added Providers or Skills are installed
+and tested in both environments.
+
 Run the configuration audit independently with:
 
 ```powershell

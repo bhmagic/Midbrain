@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replace GitHub Python CI's stale hand-maintained dependency, source-path,
+  and test-directory lists with the same cross-platform validation runner used
+  by `scripts/validate.ps1`. The shared inventory installs the local
+  `midbrain-bufferref-client`, preserves repository dependency bounds, and
+  includes the Grip, Contact, localization, Provider, Skill, and Agent suites
+  so CI cannot silently omit newly integrated Python components.
 - Add an independent 50 Hz Grip Provider and the finite current-pose Grip,
   Scrap Grip, Move Carried Object, Let Go, and Lay Flat Skills. Keep the
   gripper actuator group, arm Contact group, runtime attachment identity,
