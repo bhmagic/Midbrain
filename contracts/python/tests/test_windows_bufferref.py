@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import mmap
 import struct
+import sys
 import uuid
 
 import pytest
 
 from midbrain_bufferref import WindowsBufferRefReader, copy_buffer_refs
+
+
+requires_windows_named_shared_memory = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="requires Windows named shared memory",
+)
 
 
 def _reference(mapping_name: str, generation: int = 2) -> dict[str, object]:
@@ -20,6 +27,7 @@ def _reference(mapping_name: str, generation: int = 2) -> dict[str, object]:
     }
 
 
+@requires_windows_named_shared_memory
 def test_copy_buffer_refs_reads_a_committed_generation() -> None:
     mapping_name = f"Local\\midbrain_bufferref_test_{uuid.uuid4().hex}"
     producer = mmap.mmap(-1, 1024, tagname=mapping_name)
@@ -33,6 +41,7 @@ def test_copy_buffer_refs_reads_a_committed_generation() -> None:
         producer.close()
 
 
+@requires_windows_named_shared_memory
 def test_reader_rejects_a_recycled_reference() -> None:
     mapping_name = f"Local\\midbrain_bufferref_test_{uuid.uuid4().hex}"
     producer = mmap.mmap(-1, 1024, tagname=mapping_name)

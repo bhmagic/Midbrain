@@ -10,7 +10,9 @@
   so CI cannot silently omit newly integrated Python components. Seed the
   selected arm profile in clean CI checkouts, keep its digest-verified OBJ
   byte-stable with LF endings, and migrate active profile digests during Basic
-  Controller setup without replacing profile-owned localization content.
+  Controller setup without replacing profile-owned localization content. Keep
+  Windows named-shared-memory integration tests platform-scoped and make Skill
+  unit tests consume tracked defaults instead of ignored machine-local files.
 - Add an independent 50 Hz Grip Provider and the finite current-pose Grip,
   Scrap Grip, Move Carried Object, Let Go, and Lay Flat Skills. Keep the
   gripper actuator group, arm Contact group, runtime attachment identity,

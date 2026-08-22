@@ -253,7 +253,9 @@ def test_regular_scrap_grip_uses_slicing_rotation_and_contact_modes(monkeypatch)
             "rebot_b601_dm_bare_gripper_grip_control.v1.json"
         ),
         profiles_path=ROOT / "config_templates/motion_profiles.default.json",
-        vector_profiles_path=ROOT / "config/gripper_vector_profiles.json",
+        vector_profiles_path=(
+            ROOT / "config_templates/gripper_vector_profiles.default.json"
+        ),
     )
 
     result = asyncio.run(

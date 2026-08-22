@@ -225,8 +225,10 @@ def test_regular_lay_flat_uses_slicing_rotation_and_contact_modes(monkeypatch):
             / "providers/rebot_arm_dm/profiles/effectors/"
             "rebot_b601_dm_bare_gripper_grip_control.v1.json"
         ),
-        vector_profiles_path=ROOT / "config/gripper_vector_profiles.json",
-        motion_profiles_path=ROOT / "config/motion_profiles.json",
+        vector_profiles_path=(
+            ROOT / "config_templates/gripper_vector_profiles.default.json"
+        ),
+        motion_profiles_path=ROOT / "config_templates/motion_profiles.default.json",
     )
 
     result = asyncio.run(
