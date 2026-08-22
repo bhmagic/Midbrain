@@ -402,16 +402,26 @@ Assert-True `
     -Message "Locate Arm Base must route segmentation and pose through separate Providers"
 $armModelTemplate = Get-Content -LiteralPath (Join-Path $workspace "providers/rebot_arm_dm/config_templates/arm_model.factory.json") -Raw | ConvertFrom-Json
 $locateArmBaseProfile = $armModelTemplate.appendix."midbrain.skill.locate_arm_base.v1"
+$locateArmBaseMesh = Join-Path $workspace $locateArmBaseProfile.mesh.path
+$locateArmBaseMeshHash = (
+    Get-FileHash -LiteralPath $locateArmBaseMesh -Algorithm SHA256
+).Hash.ToLowerInvariant()
+$locateArmBasePreviewMetadata = Get-Content -LiteralPath (
+    Join-Path $workspace "skills/locate_arm_base/assets/rebot_b601_dm/references/Base_cad_preview.json"
+) -Raw | ConvertFrom-Json
 Assert-True `
     -Condition ($locateArmBaseProfile.semantic_frame -eq "rebot_arm_base" -and @($locateArmBaseProfile.orientation_candidates).Count -eq 4) `
     -Message "The arm profile appendix must select one semantic base frame and four bounded rotations"
+Assert-True `
+    -Condition ($locateArmBaseProfile.mesh.sha256 -eq $locateArmBaseMeshHash -and $locateArmBaseProfile.mesh.preview.mesh_sha256 -eq $locateArmBaseMeshHash -and $locateArmBasePreviewMetadata.input_sha256 -eq $locateArmBaseMeshHash) `
+    -Message "The Locate Arm Base mesh digests must match the cross-platform checkout bytes"
 Assert-True `
     -Condition ($locateArmBaseConfig.arm_profile_selection.appendix_key -eq "midbrain.skill.locate_arm_base.v1") `
     -Message "Locate Arm Base must select CAD through the active arm-profile appendix"
 
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_dm/scripts/setup.ps1" `
-    -Tokens @("arm_model.factory.json", "arm_profiles", "Write-JsonUtf8NoBom", "arm_calibration.initial.json", "calibration_collision_model.json")
+    -Tokens @("arm_model.factory.json", "arm_profiles", "Write-JsonUtf8NoBom", "arm_calibration.initial.json", "calibration_collision_model.json", "midbrain.skill.locate_arm_base.v1", "normalizedMeshText")
 Assert-FileContains `
     -RelativePath "providers/rebot_arm_integrated/scripts/setup.ps1" `
     -Tokens @("controller.default.json", "controller.json")
